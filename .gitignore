@@ -1,0 +1,10 @@
+build/
+out/
+cmake-build-*/
+.cache/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.obj
+.vscode/
+.idea/
