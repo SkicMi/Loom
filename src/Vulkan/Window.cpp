@@ -1,7 +1,8 @@
 #include "Window.h"
+#include <stdexcept>
 
 
-Window::Window(int width, int height, std::string appName) : width(width), height(height), appName(appName){
+Window::Window(uint32_t width, uint32_t height, std::string appName) : width(width), height(height), appName(appName){
 
     //Trying to initialize glfw, if it fails, throw error and return
 

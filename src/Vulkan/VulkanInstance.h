@@ -8,7 +8,7 @@
 class VulkanInstance{
 
     public:
-    VulkanInstance(const Window& window);
+    VulkanInstance(const std::string appName, const std::string engineName, const Window& window);
 
     //getters
     const vk::raii::Context& getContext() const {return context;}
@@ -17,6 +17,8 @@ class VulkanInstance{
     const vk::raii::DebugUtilsMessengerEXT& getMessenger() const {return debugMessenger;}
     
     private:
+    const std::string appName;
+    const std::string engineName;
     const Window& window;
     vk::raii::Context context;
     vk::raii::Instance instance = nullptr;

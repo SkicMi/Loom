@@ -1,13 +1,15 @@
 #include "VulkanInstance.h"
 
-VulkanInstance::VulkanInstance(const Window& window) : window(window){
+VulkanInstance::VulkanInstance(const std::string appName, 
+    const std::string engineName, 
+    const Window& window) : window(window), appName(appName), engineName(engineName){
 
 
     //Creating App Info
     //Later I want to abstract app name and engine name from Uptop(INITIALIZER) for now I will leave it hardcoded
     vk::ApplicationInfo appInfo;
-    appInfo.pApplicationName = "LoomPlaceHolder";
-    appInfo.pEngineName = "LoomPlaceHolder";
+    appInfo.pApplicationName = appName.c_str();
+    appInfo.pEngineName = engineName.c_str();
     appInfo.apiVersion = vk::makeApiVersion(0,1,4,0);
     appInfo.engineVersion = vk::makeApiVersion(0,0,0,1);
 

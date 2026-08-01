@@ -1,6 +1,5 @@
 #pragma once
 #include <GLFW/glfw3.h>
-#include <iostream>
 #include <vector>
 #include <string>
 #include <cstring>
@@ -9,7 +8,7 @@
 class Window{
 
 public:
-Window(int width, int height, std::string appName);
+Window(uint32_t width, uint32_t height, std::string appName);
 ~Window();
 
 Window(const Window&) = delete;
@@ -19,13 +18,14 @@ Window& operator = (const Window&) = delete;
 //Getters
 GLFWwindow* getWindow() const {return window;}
 std::vector<const char*> getGlfwExtensions() const{return glfwExtensions;}
+bool shouldClose() const {return glfwWindowShouldClose(window);}
 
 
 
 private:
 GLFWwindow* window = nullptr;
-int width = 1080;
-int height = 720;
+uint32_t width = 1080;
+uint32_t height = 720;
 std::string appName = "";
 
 std::vector<const char*> glfwExtensions = {};
