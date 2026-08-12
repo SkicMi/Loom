@@ -14,6 +14,9 @@ class VulkanCommand{
     //getters
     const vk::raii::CommandPool& getCommandPool() const {return commandPool;}
     const std::vector<vk::raii::CommandBuffer>& getCommandBuffers() const {return commandBuffers;}
+    void copyBuffer(const vk::raii::Buffer& src,
+                    const vk::raii::Buffer& dst,
+                    vk::DeviceSize size) const;
 
 
     private:
@@ -22,10 +25,12 @@ class VulkanCommand{
 
     vk::raii::CommandPool commandPool = nullptr;
     std::vector<vk::raii::CommandBuffer> commandBuffers;
+    vk::raii::CommandPool transferPool = nullptr;
+
 
     void createCommandPool();
     void allocateCommandBuffers();
-
+    void createTransferPool();
 
 
 };

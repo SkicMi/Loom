@@ -21,12 +21,14 @@ bool VulkanDevice::isDeviceSuitable(const vk::raii::PhysicalDevice& candidate){
 
     //checking if it supports features
     auto features = candidate.getFeatures2<vk::PhysicalDeviceFeatures2,
+    vk::PhysicalDeviceVulkan11Features,
     vk::PhysicalDeviceVulkan13Features>();
 
+    const auto& supported11 = features.get<vk::PhysicalDeviceVulkan11Features>();
     const auto& suported13 = features.get<vk::PhysicalDeviceVulkan13Features>();
     bool supportsRendering = suported13.dynamicRendering && suported13.synchronization2;
     
-    return indices.isComplete() && extensionSupported && supportsRendering;
+    return indices.isComplete() && extensionSupported && supportsRendering && supported11.shaderDrawParameters;
     }
 
 
@@ -76,6 +78,24 @@ QueueFamilyIndices VulkanDevice::findQueueFamilies(const vk::raii::PhysicalDevic
     return indices;
 }
 
+
+vk::Format VulkanDevice::findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features) const{
+    for(vk::Format format : candidates){
+        vk::FormatProperties properties = physicalDevice.getFormatProperties(format);
+
+        if(tiling == vk::ImageTiling::eOptimal && (properties.optimalTilingFeatures & features) == features) {
+            return format;
+        }
+
+        if(tiling == vk::ImageTiling::eLinear && (properties.linearTilingFeatures & features) == features){
+            return format;
+        }
+    }
+
+    throw std::runtime_error("findSupportedFormat: no candidate supports format");
+}
+
+
 void VulkanDevice::createLogicalDevice(){
     //Creating a set that holds bot queue and present families value
     std::set<uint32_t> uniqueQueueFamilies = {
@@ -103,10 +123,16 @@ void VulkanDevice::createLogicalDevice(){
     //Now we check device features
     vk::PhysicalDeviceFeatures deviceFeatures {}; //empty for now, I will add them later 
 
+    //features needed for shaders inn vulan 1.1
+    vk::PhysicalDeviceVulkan11Features features11;
+    features11.shaderDrawParameters = true; //required for shaders to be able to use draw parameters, which is required for ray tracing and other features
+
     //features that are required for the device to be created, if they are not supported, device creation will fail
     vk::PhysicalDeviceVulkan13Features features13;
     features13.dynamicRendering = true; //required for dynamic rendering, which is required for ray tracing and to skip framebuffer
     features13.synchronization2 = true;
+
+    features11.pNext = &features13; //pNext is used to chain additional structures to the features struct, in this case we are chaining the features13 struct to the features struct, so that the device will be created with the features specified in the features13 struct
 
 
 
@@ -118,7 +144,7 @@ void VulkanDevice::createLogicalDevice(){
     deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
     deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
-    deviceCreateInfo.pNext = &features13; //pNext is used to chain additional structures to the device create info, in this case we are chaining the features13 struct to the device create info, so that the device will be created with the features specified in the features13 struct
+    deviceCreateInfo.pNext = &features11; //pNext is used to chain additional structures to the device create info, in this case we are chaining the features13 struct to the device create info, so that the device will be created with the features specified in the features13 struct
 
     //Creating device using Physical Device and device create info
     device = vk::raii::Device(physicalDevice,deviceCreateInfo);
@@ -127,6 +153,19 @@ void VulkanDevice::createLogicalDevice(){
     presentQueue = device.getQueue(queueIndices.presentFamilies.value(),0);
 
    }
+
+   uint32_t VulkanDevice::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) const{
+    vk::PhysicalDeviceMemoryProperties memProperties = getPhysicalDevice().getMemoryProperties();
+
+    for(uint32_t i = 0; i < memProperties.memoryTypeCount; i++){
+        if((typeFilter & (1u << i)) &&
+        (memProperties.memoryTypes[i].propertyFlags & properties) == properties){
+            return i;
+        }
+    }
+    throw std::runtime_error("Failed to find suitable memory type");
+}
+
 
 
 

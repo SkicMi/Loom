@@ -2,7 +2,9 @@
 #include <string>
 #include "../Vulkan/VulkanSwapchain.h"
 #include "../Vulkan/VulkanCommand.h"
+#include "../Vulkan/VulkanGraphicsPipeline.h"
 #include "../Vulkan/VulkanRenderer.h"
+#include "../Vulkan/VulkanImage.h"
 
 
 struct LoomConfig{
@@ -20,8 +22,16 @@ struct LoomConfig{
     //CommandConfiguration
     CommandConfig commandConfig = {};
 
+    //GraphicsPipelineCOnfig
+    PipelineConfig pipelineConfig = {};
+
     //RendererConfiguration
     RendererConfig rendererConfig = {};
+
+    //Image Configuration
+    //Depth
+    bool enableDepth = false; //deault for 2D projects
+    ImageConfig depthConfig = {};
 
 
 };

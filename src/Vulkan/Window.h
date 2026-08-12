@@ -18,7 +18,13 @@ Window& operator = (const Window&) = delete;
 //Getters
 GLFWwindow* getWindow() const {return window;}
 std::vector<const char*> getGlfwExtensions() const{return glfwExtensions;}
+double getTime() const {return glfwGetTime();}
+
+
+
 bool shouldClose() const {return glfwWindowShouldClose(window);}
+void pollEvents() const {glfwPollEvents();}
+
 
 
 

@@ -1,13 +1,18 @@
 #include "VulkanRenderer.h"
+#include <glm/glm.hpp>
 
 VulkanRenderer::VulkanRenderer(
     const VulkanDevice& device,
     VulkanSwapchain& swapchain,
     const VulkanCommand& command,
+    const VulkanGraphicsPipeline& graphicsPipeline,
+    VulkanImage* depthImage,
     const RendererConfig& rendererConfig) : 
-    command(command),
     device(device),
     swapchain(swapchain),
+    command(command),
+    graphicsPipeline(graphicsPipeline),
+    depthImage(depthImage),
     rendererConfig(rendererConfig){
 
         createSyncObjects();
@@ -35,7 +40,7 @@ void VulkanRenderer::createSyncObjects(){
     }
 }
 
-void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex){
+void VulkanRenderer::beginRecording(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex){
 vk::CommandBufferBeginInfo beginInfo;
 commandBuffer.begin(beginInfo);
 
@@ -57,7 +62,24 @@ toColorDep.imageMemoryBarrierCount = 1;
 toColorDep.pImageMemoryBarriers = &toColor;
 commandBuffer.pipelineBarrier2(toColorDep);
 
-//Dynamic rendering: clear the image
+if(depthImage){
+    vk::ImageMemoryBarrier2 toDepth;
+    toDepth.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+    toDepth.srcAccessMask = {};
+    toDepth.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests;
+    toDepth.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    toDepth.oldLayout = vk::ImageLayout::eUndefined;
+    toDepth.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    toDepth.image = *depthImage->getImage();
+    toDepth.subresourceRange = {vk::ImageAspectFlagBits::eDepth,0,1,0,1};
+
+    vk::DependencyInfo toDepthDep;
+    toDepthDep.imageMemoryBarrierCount = 1;
+    toDepthDep.pImageMemoryBarriers = &toDepth;
+    commandBuffer.pipelineBarrier2(toDepthDep);
+}
+
+//color attachment info
 vk::RenderingAttachmentInfo colorAttachment;
 colorAttachment.imageView = *swapchain.getImageViews()[imageIndex];
 colorAttachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
@@ -65,14 +87,73 @@ colorAttachment.loadOp = vk::AttachmentLoadOp::eClear;
 colorAttachment.storeOp = vk::AttachmentStoreOp::eStore;
 colorAttachment.clearValue.color = vk::ClearColorValue(rendererConfig.clearColor);
 
+//depth attachment info
+vk::RenderingAttachmentInfo depthAttachment;
+if(depthImage){
+    depthAttachment.imageView = *depthImage->getImageView();
+    depthAttachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depthAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+    depthAttachment.storeOp = vk::AttachmentStoreOp::eDontCare;
+    depthAttachment.clearValue.depthStencil = vk::ClearDepthStencilValue(rendererConfig.clearDepth,0);
+}
+
 vk::RenderingInfo renderingInfo;
 renderingInfo.renderArea = vk::Rect2D({0,0},swapchain.getExtent());
 renderingInfo.layerCount = 1;
 renderingInfo.colorAttachmentCount = 1;
 renderingInfo.pColorAttachments = &colorAttachment;
+if(depthImage){
+    renderingInfo.pDepthAttachment = &depthAttachment;
+}
 
 commandBuffer.beginRendering(renderingInfo);
-//No actual drawing commands yet, just clearing the image
+
+
+commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,*graphicsPipeline.getPipeline());
+
+vk::Viewport viewport;
+viewport.x = 0.0f;
+viewport.y = 0.0f;
+viewport.width = static_cast<float>(swapchain.getExtent().width);
+viewport.height = static_cast<float>(swapchain.getExtent().height);
+viewport.minDepth = 0.0f;
+viewport.maxDepth = 1.0f;
+commandBuffer.setViewport(0, viewport);
+
+vk::Rect2D scissor({0,0}, swapchain.getExtent());
+commandBuffer.setScissor(0, scissor);
+
+}
+
+void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model){
+    if(!frameActive){
+        throw std::runtime_error("draw: frame nije zapocet (fali beginFrame)");
+    }
+
+    const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
+
+    glm::mat4 mvp = model;
+    if(camera){
+        vk::Extent2D extent = swapchain.getExtent();
+        mvp = camera->getViewProjection(extent.width, extent.height) * model;
+    }
+
+    commandBuffer.pushConstants<glm::mat4>(*graphicsPipeline.getPipelineLayout(), vk::ShaderStageFlagBits::eVertex, 0 , mvp);
+
+    commandBuffer.bindVertexBuffers(0, {*mesh.getVertexBuffer().getBuffer()},{0});
+
+    if(mesh.hasIndices()){
+        commandBuffer.bindIndexBuffer(*mesh.getIndexBuffer().getBuffer(), 0 , vk::IndexType::eUint16);
+        commandBuffer.drawIndexed(mesh.getIndexCount(), 1, 0, 0, 0);
+    }
+    else{
+        commandBuffer.draw(mesh.getVertexCount(), 1, 0, 0);
+    }
+}
+
+void VulkanRenderer::endRecording(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex){
+const vk::Image& image = swapchain.getImages()[imageIndex];
+
 commandBuffer.endRendering();
 
 //Transition: color attachment - present
@@ -95,7 +176,11 @@ commandBuffer.end();
 
 }
 
-void VulkanRenderer::drawFrame(){
+bool VulkanRenderer::beginFrame(){
+    if(frameActive){
+        throw std::runtime_error("beginFrame: frame je vec zapocet (fali endFrame)");
+    }
+
     const auto& dev = device.getDevice();
     const auto& fence = inFlightFences[currentFrame];
 
@@ -103,19 +188,18 @@ void VulkanRenderer::drawFrame(){
     while(vk::Result::eTimeout == dev.waitForFences(*fence, VK_TRUE, UINT64_MAX));
 
     //Acquire an image from the swapchain
-    bool needsRecreate = false;
-    uint32_t imageIndex;
+    needsRecreate = false;
     try{
         auto [acquireResult, index] = swapchain.getSwapchain().acquireNextImage(
             UINT64_MAX, *imageAvailableSemaphores[currentFrame], nullptr);
-        imageIndex = index;
+        currentImageIndex = index;
         if(acquireResult == vk::Result::eSuboptimalKHR){
             needsRecreate = true;
         }
     }
     catch(const vk::OutOfDateKHRError& e){
         recreateSwapchain();
-        return;
+        return false;
     }
         
 
@@ -125,7 +209,21 @@ void VulkanRenderer::drawFrame(){
     //Record commands for this frame
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
     commandBuffer.reset();
-    recordCommandBuffer(commandBuffer, imageIndex);
+    beginRecording(commandBuffer, currentImageIndex);
+
+    frameActive = true;
+    return true;
+}
+
+void VulkanRenderer::endFrame(){
+    if(!frameActive){
+        throw std::runtime_error("endFrame: frame nije zapocet (fali beginFrame)");
+    }
+
+    const auto& fence = inFlightFences[currentFrame];
+    const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
+
+    endRecording(commandBuffer, currentImageIndex);
 
     //Submit via sync2
     vk::SemaphoreSubmitInfo waitInfo;
@@ -136,7 +234,7 @@ void VulkanRenderer::drawFrame(){
     commandBufferInfo.commandBuffer = *commandBuffer;
 
     vk::SemaphoreSubmitInfo signalInfo;
-    signalInfo.semaphore = *renderFinishedSemaphores[imageIndex];
+    signalInfo.semaphore = *renderFinishedSemaphores[currentImageIndex];
     signalInfo.stageMask = vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
 
     vk::SubmitInfo2 submitInfo;
@@ -150,7 +248,7 @@ void VulkanRenderer::drawFrame(){
     device.getGraphicsQueue().submit2(submitInfo, *fence);
 
     //Present the image
-    vk::Semaphore waitSemaphore = *renderFinishedSemaphores[imageIndex];
+    vk::Semaphore waitSemaphore = *renderFinishedSemaphores[currentImageIndex];
     vk::SwapchainKHR swapchainHandle = *swapchain.getSwapchain();
 
     vk::PresentInfoKHR presentInfo;
@@ -158,7 +256,7 @@ void VulkanRenderer::drawFrame(){
     presentInfo.pWaitSemaphores = &waitSemaphore;
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &swapchainHandle;
-    presentInfo.pImageIndices = &imageIndex;
+    presentInfo.pImageIndices = &currentImageIndex;
 
     
    try{
@@ -175,6 +273,7 @@ void VulkanRenderer::drawFrame(){
 
     //Advance to the next frame
     currentFrame = (currentFrame + 1) % command.getCommandBuffers().size();
+    frameActive = false;
 
     if(needsRecreate){
         recreateSwapchain();
@@ -183,6 +282,9 @@ void VulkanRenderer::drawFrame(){
 
 void VulkanRenderer::recreateSwapchain(){
     swapchain.recreateSwapchain();
+    if(depthImage){
+        depthImage->recreate(swapchain.getExtent());
+    }
     imageAvailableSemaphores.clear();
     renderFinishedSemaphores.clear();
     inFlightFences.clear();

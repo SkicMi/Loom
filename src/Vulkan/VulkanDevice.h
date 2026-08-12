@@ -16,6 +16,11 @@ struct QueueFamilyIndices{
     public:
     VulkanDevice(const VulkanInstance& instance);
 
+    vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features) const;
+    uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) const ;
+
+
+
 
 
 
@@ -47,6 +52,11 @@ struct QueueFamilyIndices{
 
     static inline const std::vector<const char*> deviceExtensions = {
         "VK_KHR_swapchain"};
+
+
+
+    
+    
 
    void createLogicalDevice();
 
