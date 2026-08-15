@@ -9,6 +9,7 @@ class VulkanInstance{
 
     public:
     VulkanInstance(const std::string appName, const std::string engineName, const Window& window);
+ 
 
     //getters
     const vk::raii::Context& getContext() const {return context;}

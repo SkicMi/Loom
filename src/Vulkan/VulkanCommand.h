@@ -1,6 +1,7 @@
 #pragma once
 #include "VulkanDevice.h"
 #include "VulkanSwapchain.h"
+#include <functional>
 
 struct CommandConfig{
     uint32_t framesInFlight = 2; //default to 2 frames in flight, can be changed by user
@@ -18,6 +19,10 @@ class VulkanCommand{
                     const vk::raii::Buffer& dst,
                     vk::DeviceSize size) const;
 
+    void transitionImageLayout(const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor) const;
+    void copyBufferToImage(const vk::raii::Buffer& src, const vk::raii::Image& dst, vk::Extent2D extent, vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor) const;
+
+
 
     private:
     const VulkanDevice& device;
@@ -31,6 +36,7 @@ class VulkanCommand{
     void createCommandPool();
     void allocateCommandBuffers();
     void createTransferPool();
+    void oneTimeSubmit(const std::function<void(const vk::raii::CommandBuffer&)>& record) const;
 
 
 };

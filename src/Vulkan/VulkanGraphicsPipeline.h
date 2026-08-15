@@ -15,6 +15,7 @@ struct PipelineConfig{
     //Vertex input(empty = hardcoded in shader)
     std::vector<vk::VertexInputBindingDescription> vertexBindings =  {Vertex::getBindingDescription()};
     std::vector<vk::VertexInputAttributeDescription> vertexAttributes = Vertex::getAttributeDescriptions();
+    std::vector<vk::DescriptorSetLayoutBinding> descriptorBindings;
 
     //Different for every pipeline
     std::string vertShaderPath = std::string(LOOM_SHADER_DIR) + "/triangle.vert.spv";
@@ -56,6 +57,10 @@ class VulkanGraphicsPipeline{
     //getters
     const vk::raii::Pipeline& getPipeline() const {return pipeline;}
     const vk::raii::PipelineLayout& getPipelineLayout() const {return pipelineLayout;}
+    const vk::raii::DescriptorSetLayout& getDescriptorSetLayout() const {return descriptorSetLayout;}
+    bool hasDescriptors() const {return !config.descriptorBindings.empty();}
+   
+    
 
     private:
     const VulkanDevice& device;
@@ -63,6 +68,7 @@ class VulkanGraphicsPipeline{
 
     PipelineConfig config;
     vk::raii::PipelineLayout pipelineLayout = nullptr;
+    vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;   
     vk::raii::Pipeline pipeline = nullptr;
 
     static std::vector<char> readFile(const std::string& path);

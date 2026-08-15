@@ -108,9 +108,6 @@ if(depthImage){
 
 commandBuffer.beginRendering(renderingInfo);
 
-
-commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,*graphicsPipeline.getPipeline());
-
 vk::Viewport viewport;
 viewport.x = 0.0f;
 viewport.y = 0.0f;
@@ -126,11 +123,25 @@ commandBuffer.setScissor(0, scissor);
 }
 
 void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model){
+    draw(mesh,model,Material(graphicsPipeline));
+}
+
+void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model, const Material& material){
     if(!frameActive){
-        throw std::runtime_error("draw: frame nije zapocet (fali beginFrame)");
+        throw std::runtime_error("draw: frame not started( missing beginFrame)");
     }
 
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
+    const VulkanGraphicsPipeline& pipeline = material.getPipeline();
+
+    if(boundPipeline != &pipeline){
+        commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.getPipeline());
+        boundPipeline = &pipeline;
+    }
+
+    if(material.hasDescriptorSet()){
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.getPipelineLayout(), 0, {*material.getDescriptorSet()},{});
+    }
 
     glm::mat4 mvp = model;
     if(camera){
@@ -138,16 +149,17 @@ void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model){
         mvp = camera->getViewProjection(extent.width, extent.height) * model;
     }
 
-    commandBuffer.pushConstants<glm::mat4>(*graphicsPipeline.getPipelineLayout(), vk::ShaderStageFlagBits::eVertex, 0 , mvp);
+    commandBuffer.pushConstants<glm::mat4>(*pipeline.getPipelineLayout(),
+    vk::ShaderStageFlagBits::eVertex,0,mvp);
 
-    commandBuffer.bindVertexBuffers(0, {*mesh.getVertexBuffer().getBuffer()},{0});
+    commandBuffer.bindVertexBuffers(0, {*mesh.getVertexBuffer().getBuffer()}, {0});
 
-    if(mesh.hasIndices()){
-        commandBuffer.bindIndexBuffer(*mesh.getIndexBuffer().getBuffer(), 0 , vk::IndexType::eUint16);
-        commandBuffer.drawIndexed(mesh.getIndexCount(), 1, 0, 0, 0);
+    if(mesh.hasIndices()) {
+        commandBuffer.bindIndexBuffer(*mesh.getIndexBuffer().getBuffer(), 0, vk::IndexType::eUint16);
+        commandBuffer.drawIndexed(mesh.getIndexCount(), 1,0,0,0);
     }
     else{
-        commandBuffer.draw(mesh.getVertexCount(), 1, 0, 0);
+        commandBuffer.draw(mesh.getVertexCount(),1,0,0);
     }
 }
 
@@ -212,6 +224,7 @@ bool VulkanRenderer::beginFrame(){
     beginRecording(commandBuffer, currentImageIndex);
 
     frameActive = true;
+    boundPipeline = nullptr;
     return true;
 }
 

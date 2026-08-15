@@ -24,11 +24,17 @@ bool VulkanDevice::isDeviceSuitable(const vk::raii::PhysicalDevice& candidate){
     vk::PhysicalDeviceVulkan11Features,
     vk::PhysicalDeviceVulkan13Features>();
 
+
+    const auto& supported10 = features.get<vk::PhysicalDeviceFeatures2>().features;
     const auto& supported11 = features.get<vk::PhysicalDeviceVulkan11Features>();
     const auto& suported13 = features.get<vk::PhysicalDeviceVulkan13Features>();
     bool supportsRendering = suported13.dynamicRendering && suported13.synchronization2;
     
-    return indices.isComplete() && extensionSupported && supportsRendering && supported11.shaderDrawParameters;
+    return indices.isComplete() && 
+    extensionSupported && 
+    supportsRendering && 
+    supported11.shaderDrawParameters &&
+    supported10.fillModeNonSolid;
     }
 
 
@@ -121,7 +127,8 @@ void VulkanDevice::createLogicalDevice(){
 
 
     //Now we check device features
-    vk::PhysicalDeviceFeatures deviceFeatures {}; //empty for now, I will add them later 
+    vk::PhysicalDeviceFeatures deviceFeatures {};
+    deviceFeatures.fillModeNonSolid = true; //vulkan 1.0 feature that allows vk::PolygonMode::eLine and ePoint (needed for wireframe)
 
     //features needed for shaders inn vulan 1.1
     vk::PhysicalDeviceVulkan11Features features11;

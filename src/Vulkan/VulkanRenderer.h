@@ -6,6 +6,7 @@
 #include "VulkanBuffer.h"
 #include "VulkanImage.h"
 #include "Core/Camera.h"
+#include "Material.h"
 #include "Mesh.h"
 #include <array>
 #include <cstdint>
@@ -36,6 +37,7 @@ class VulkanRenderer{
     
     bool beginFrame();
     void draw(const Mesh& mesh, const glm::mat4& model = glm::mat4(1.0f));
+    void draw(const Mesh& mesh, const glm::mat4& model, const Material& material); //overload fuction for model with material
     void endFrame();
 
     void setCamera(const Camera& cam) { camera = &cam;}
@@ -56,6 +58,7 @@ class VulkanRenderer{
     uint32_t currentImageIndex = 0;
     bool needsRecreate = false;
     bool frameActive = false;
+    const VulkanGraphicsPipeline* boundPipeline = nullptr;
 
 
     void createSyncObjects();

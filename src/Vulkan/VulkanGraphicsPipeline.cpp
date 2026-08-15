@@ -155,8 +155,16 @@ void VulkanGraphicsPipeline::createPipeline(){
 
     //Pipeline layout
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
-    pipelineLayoutInfo.setLayoutCount = 0;
     pipelineLayoutInfo.setPushConstantRanges(pushRange);
+
+    vk::DescriptorSetLayout setLayout = nullptr;
+    if(!config.descriptorBindings.empty()){
+        vk::DescriptorSetLayoutCreateInfo layoutInfo;
+        layoutInfo.setBindings(config.descriptorBindings);
+        descriptorSetLayout = vk::raii::DescriptorSetLayout(device.getDevice(), layoutInfo);
+        setLayout = *descriptorSetLayout;
+        pipelineLayoutInfo.setSetLayouts(setLayout);
+    }
 
     pipelineLayout = vk::raii::PipelineLayout(device.getDevice(),pipelineLayoutInfo);
 

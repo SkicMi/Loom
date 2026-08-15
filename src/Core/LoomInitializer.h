@@ -21,7 +21,12 @@ class LoomInitializer{
     depthImage(config.enableDepth ? std::optional<VulkanImage>(std::in_place, device, swapchain.getExtent(), makeDepthConfig(device, config.depthConfig)) : std::nullopt),
     vulkanGraphicsPipeline(device,swapchain,config.pipelineConfig, depthImage ? depthImage->getFormat() : vk::Format::eUndefined),
     renderer(device,swapchain,command,vulkanGraphicsPipeline,depthImage ? &*depthImage : nullptr, config.rendererConfig)
-    {}
+    {
+        //descriptors
+        createDescriptorPool(config);
+     
+
+    }
 
 
     LoomInitializer(const LoomInitializer&) = delete;
@@ -36,11 +41,35 @@ class LoomInitializer{
     VulkanSwapchain swapchain;
     VulkanCommand command;
     std::optional<VulkanImage> depthImage;
+    vk::raii::DescriptorPool descriptorPool = nullptr;
     VulkanGraphicsPipeline vulkanGraphicsPipeline;
     VulkanRenderer renderer;
 
 
+    //getters
+    const vk::raii::DescriptorPool& getDescriptorPool() const {return descriptorPool;}
+
+
+
     void waitIdle() const{device.getDevice().waitIdle();}
+    VulkanGraphicsPipeline createPipeline(const PipelineConfig& pipelineConfig) const {
+        return VulkanGraphicsPipeline(device , swapchain, pipelineConfig,
+        depthImage ? depthImage ->getFormat() : vk::Format::eUndefined);
+    }
+
+    void createDescriptorPool(const LoomConfig& config){
+       vk::DescriptorPoolSize poolSize;
+        poolSize.type = vk::DescriptorType::eCombinedImageSampler;
+        poolSize.descriptorCount = config.maxDescriptorSets;
+        
+
+        vk::DescriptorPoolCreateInfo poolInfo;
+        poolInfo.maxSets = config.maxDescriptorSets;
+        poolInfo.setPoolSizes(poolSize);
+        poolInfo.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+
+        descriptorPool = vk::raii::DescriptorPool(device.getDevice(), poolInfo);
+        }
   
 
 

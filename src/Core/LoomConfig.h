@@ -33,5 +33,9 @@ struct LoomConfig{
     bool enableDepth = false; //deault for 2D projects
     ImageConfig depthConfig = {};
 
+    //Descriptors
+    uint32_t maxDescriptorSets = 64;
+    
+
 
 };

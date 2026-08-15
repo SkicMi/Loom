@@ -3,35 +3,52 @@
 #include "Vulkan/Vertex.h"
 #include "Vulkan/VulkanBuffer.h"
 #include "Vulkan/Mesh.h"
+#include "Vulkan/Texture.h"
+#include "Vulkan/Material.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include "Core/Camera.h"
+#include <cstdint>
+
+static std::vector<uint8_t> makeCheckerboard(uint32_t size, uint32_t cell){
+    std::vector<uint8_t> px(size * size * 4);
+    for(uint32_t y = 0; y < size; ++y){
+        for(uint32_t x = 0; x < size; ++x){
+            bool white = (((x / cell) + (y / cell)) % 2) == 0;
+            uint8_t v = white ? 255 : 0;
+            size_t i = (size_t(y) * size + x) * 4;
+            px[i+0] = v; px[i+1] = v; px[i+2] = v; px[i+3] = 255;
+        }
+    }
+    return px;
+}
+
 
 int main(){
-    const std::vector<Vertex> vertices = {
-       {{-0.5f, -0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{ 0.5f, -0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{ 0.5f,  0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{-0.5f,  0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{ 0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{-0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{ 0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{ 0.5f, -0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{ 0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{ 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{ 0.5f,  0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{-0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 0.0f}},
-        {{-0.5f, -0.5f,  0.5f}, {1.0f, 1.0f, 0.0f}},
-        {{-0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 0.0f}},
-        {{-0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 0.0f}},
-        {{-0.5f,  0.5f,  0.5f}, {1.0f, 0.0f, 1.0f}},
-        {{ 0.5f,  0.5f,  0.5f}, {1.0f, 0.0f, 1.0f}},
-        {{ 0.5f,  0.5f, -0.5f}, {1.0f, 0.0f, 1.0f}},
-        {{-0.5f,  0.5f, -0.5f}, {1.0f, 0.0f, 1.0f}},
-        {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 1.0f}},
-        {{ 0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 1.0f}},
-        {{ 0.5f, -0.5f,  0.5f}, {0.0f, 1.0f, 1.0f}},
-        {{-0.5f, -0.5f,  0.5f}, {0.0f, 1.0f, 1.0f}}
+const std::vector<Vertex> vertices = {
+       {{-0.5f, -0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
+        {{ 0.5f, -0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
+        {{ 0.5f,  0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+        {{-0.5f,  0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+        {{ 0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+        {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+        {{-0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{ 0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{ 0.5f, -0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+        {{ 0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+        {{ 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
+        {{ 0.5f,  0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},
+        {{-0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+        {{-0.5f, -0.5f,  0.5f}, {1.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+        {{-0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{-0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{-0.5f,  0.5f,  0.5f}, {1.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+        {{ 0.5f,  0.5f,  0.5f}, {1.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+        {{ 0.5f,  0.5f, -0.5f}, {1.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
+        {{-0.5f,  0.5f, -0.5f}, {1.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},
+        {{-0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+        {{ 0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+        {{ 0.5f, -0.5f,  0.5f}, {0.0f, 1.0f, 1.0f}, {1.0f, 0.0f}},
+        {{-0.5f, -0.5f,  0.5f}, {0.0f, 1.0f, 1.0f}, {0.0f, 0.0f}}
     };
 
     const std::vector<uint16_t> indices = {
@@ -66,13 +83,23 @@ int main(){
     
     loom.renderer.setCamera(cam);
 
+    PipelineConfig texPipelineConfig = config.pipelineConfig;
+    texPipelineConfig.descriptorBindings = {Texture::getLayoutBinding()};
+    texPipelineConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/textured.vert.spv";
+    texPipelineConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/textured.frag.spv";
+    VulkanGraphicsPipeline texPipeline = loom.createPipeline(texPipelineConfig);
+
+    std::vector<uint8_t> pixels = makeCheckerboard(64,8);
+    Texture checker(loom.device,loom.command,pixels.data(), vk::Extent2D{64,64});
+    Material texMat(loom.device,loom.getDescriptorPool(),texPipeline,checker);
+
     
     while(!loom.window.shouldClose()){
         loom.window.pollEvents();
         float time = static_cast<float>(loom.window.getTime());
 
         if(!loom.renderer.beginFrame()) continue;
-        loom.renderer.draw(cube,glm::rotate(glm::mat4(1.0f),time,glm::vec3(0.5f,1.0f,0.0f)));
+        loom.renderer.draw(cube,glm::rotate(glm::mat4(1.0f),time,glm::vec3(0.5f,1.0f,0.0f)), texMat);
 
 
         loom.renderer.endFrame();
