@@ -8,6 +8,7 @@
 #include "Core/Camera.h"
 #include "Material.h"
 #include "Mesh.h"
+#include "Core/FrameData.h"
 #include <array>
 #include <cstdint>
 
@@ -28,6 +29,7 @@ class VulkanRenderer{
     const VulkanCommand& command,
     const VulkanGraphicsPipeline& graphicsPipeline,
     VulkanImage* depthImage,
+    const vk::raii::DescriptorPool& descriptorPool,
     const RendererConfig& rendererConfig = {}
     );
 
@@ -59,9 +61,14 @@ class VulkanRenderer{
     bool needsRecreate = false;
     bool frameActive = false;
     const VulkanGraphicsPipeline* boundPipeline = nullptr;
+    const vk::raii::DescriptorPool& descriptorPool;
+    std::vector<VulkanBuffer> frameBuffers;
+    std::vector<vk::raii::DescriptorSet> frameSets;
+    FrameData frameData;
 
 
     void createSyncObjects();
+    void createFrameResources();
     void beginRecording(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex);
     void endRecording(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex);
     void recreateSwapchain();

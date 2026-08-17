@@ -12,10 +12,14 @@ enum class BlendMode{
 };
 
 struct PipelineConfig{
-    //Vertex input(empty = hardcoded in shader)
+    //Set 1 - material bindings ( texture ) . Set 0 is owned by Loom
     std::vector<vk::VertexInputBindingDescription> vertexBindings =  {Vertex::getBindingDescription()};
     std::vector<vk::VertexInputAttributeDescription> vertexAttributes = Vertex::getAttributeDescriptions();
     std::vector<vk::DescriptorSetLayoutBinding> descriptorBindings;
+
+    //set 0 - per-frame data provided by Loom(view and projection)
+    bool useFrameData = true;
+
 
     //Different for every pipeline
     std::string vertShaderPath = std::string(LOOM_SHADER_DIR) + "/triangle.vert.spv";
@@ -52,24 +56,32 @@ class VulkanGraphicsPipeline{
 
 
     vk::Format depthFormat = vk::Format::eUndefined;
+    static constexpr uint32_t frameSet = 0;
+    static constexpr uint32_t materialSet = 1;
 
 
     //getters
     const vk::raii::Pipeline& getPipeline() const {return pipeline;}
     const vk::raii::PipelineLayout& getPipelineLayout() const {return pipelineLayout;}
-    const vk::raii::DescriptorSetLayout& getDescriptorSetLayout() const {return descriptorSetLayout;}
+    const vk::raii::DescriptorSetLayout& getMaterialSetLayout() const {return setLayouts[materialSet];}
+    const vk::raii::DescriptorSetLayout& getFrameSetLayout() const {return setLayouts[frameSet];}
     bool hasDescriptors() const {return !config.descriptorBindings.empty();}
    
     
 
     private:
+    
+
     const VulkanDevice& device;
     const VulkanSwapchain& swapchain;
 
     PipelineConfig config;
     vk::raii::PipelineLayout pipelineLayout = nullptr;
     vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;   
+    std::vector<vk::raii::DescriptorSetLayout> setLayouts;
     vk::raii::Pipeline pipeline = nullptr;
+
+    
 
     static std::vector<char> readFile(const std::string& path);
     vk::raii::ShaderModule createShaderModule(const std::vector<char>& code);

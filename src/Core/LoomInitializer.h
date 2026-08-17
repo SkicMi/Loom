@@ -19,12 +19,10 @@ class LoomInitializer{
     swapchain(instance,window,device,config.swapchainConfig),
     command(device,config.commandConfig),
     depthImage(config.enableDepth ? std::optional<VulkanImage>(std::in_place, device, swapchain.getExtent(), makeDepthConfig(device, config.depthConfig)) : std::nullopt),
+    descriptorPool(makeDescriptorPool(device,config)),
     vulkanGraphicsPipeline(device,swapchain,config.pipelineConfig, depthImage ? depthImage->getFormat() : vk::Format::eUndefined),
-    renderer(device,swapchain,command,vulkanGraphicsPipeline,depthImage ? &*depthImage : nullptr, config.rendererConfig)
+    renderer(device,swapchain,command,vulkanGraphicsPipeline,depthImage ? &*depthImage : nullptr, descriptorPool, config.rendererConfig)
     {
-        //descriptors
-        createDescriptorPool(config);
-     
 
     }
 
@@ -57,18 +55,20 @@ class LoomInitializer{
         depthImage ? depthImage ->getFormat() : vk::Format::eUndefined);
     }
 
-    void createDescriptorPool(const LoomConfig& config){
-       vk::DescriptorPoolSize poolSize;
-        poolSize.type = vk::DescriptorType::eCombinedImageSampler;
-        poolSize.descriptorCount = config.maxDescriptorSets;
-        
+    static vk::raii::DescriptorPool makeDescriptorPool(const VulkanDevice& device, const LoomConfig& config){
+        std::array<vk::DescriptorPoolSize,2> poolSizes;
+        poolSizes[0].type = vk::DescriptorType::eCombinedImageSampler;
+        poolSizes[0].descriptorCount = config.maxDescriptorSets;
+        poolSizes[1].type = vk::DescriptorType::eUniformBuffer;
+        poolSizes[1].descriptorCount = config.maxDescriptorSets;
 
         vk::DescriptorPoolCreateInfo poolInfo;
         poolInfo.maxSets = config.maxDescriptorSets;
-        poolInfo.setPoolSizes(poolSize);
+        poolInfo.setPoolSizes(poolSizes);
         poolInfo.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
 
-        descriptorPool = vk::raii::DescriptorPool(device.getDevice(), poolInfo);
+        return vk::raii::DescriptorPool(device.getDevice(), poolInfo);
+     
         }
   
 

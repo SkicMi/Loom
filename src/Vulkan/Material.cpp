@@ -5,7 +5,7 @@ Material::Material(const VulkanDevice& device, const vk::raii::DescriptorPool& p
         throw std::runtime_error("Material : pipeline has no descriptor set layout");
     }
 
-    vk::DescriptorSetLayout layout = *pipeline.getDescriptorSetLayout();
+    vk::DescriptorSetLayout layout = *pipeline.getMaterialSetLayout();
     
     vk::DescriptorSetAllocateInfo allocInfo;
     allocInfo.descriptorPool = *pool;

@@ -7,15 +7,18 @@ VulkanRenderer::VulkanRenderer(
     const VulkanCommand& command,
     const VulkanGraphicsPipeline& graphicsPipeline,
     VulkanImage* depthImage,
-    const RendererConfig& rendererConfig) : 
+    const vk::raii::DescriptorPool& descriptorPool,
+    const RendererConfig& rendererConfig) :
     device(device),
     swapchain(swapchain),
     command(command),
     graphicsPipeline(graphicsPipeline),
     depthImage(depthImage),
-    rendererConfig(rendererConfig){
+    rendererConfig(rendererConfig),
+    descriptorPool(descriptorPool){
 
         createSyncObjects();
+        createFrameResources();
 }
 
 void VulkanRenderer::createSyncObjects(){
@@ -120,6 +123,10 @@ commandBuffer.setViewport(0, viewport);
 vk::Rect2D scissor({0,0}, swapchain.getExtent());
 commandBuffer.setScissor(0, scissor);
 
+commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+    *graphicsPipeline.getPipelineLayout(),
+    VulkanGraphicsPipeline::frameSet, {*frameSets[currentFrame]}, {});
+
 }
 
 void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model){
@@ -140,17 +147,13 @@ void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model, const Materi
     }
 
     if(material.hasDescriptorSet()){
-        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.getPipelineLayout(), 0, {*material.getDescriptorSet()},{});
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.getPipelineLayout(), VulkanGraphicsPipeline::materialSet, {*material.getDescriptorSet()},{});
     }
 
-    glm::mat4 mvp = model;
-    if(camera){
-        vk::Extent2D extent = swapchain.getExtent();
-        mvp = camera->getViewProjection(extent.width, extent.height) * model;
-    }
+
 
     commandBuffer.pushConstants<glm::mat4>(*pipeline.getPipelineLayout(),
-    vk::ShaderStageFlagBits::eVertex,0,mvp);
+    vk::ShaderStageFlagBits::eVertex,0,model);
 
     commandBuffer.bindVertexBuffers(0, {*mesh.getVertexBuffer().getBuffer()}, {0});
 
@@ -221,6 +224,16 @@ bool VulkanRenderer::beginFrame(){
     //Record commands for this frame
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
     commandBuffer.reset();
+    frameData.view = glm::mat4(1.0f);
+    frameData.projection = glm::mat4(1.0f);
+    if(camera){
+        vk::Extent2D extent = swapchain.getExtent();
+        frameData.view = camera->getView();
+        frameData.projection = camera->getProjection(extent.width,extent.height);
+    }
+    frameBuffers[currentFrame].upload(&frameData,sizeof(FrameData));
+
+
     beginRecording(commandBuffer, currentImageIndex);
 
     frameActive = true;
@@ -304,4 +317,38 @@ void VulkanRenderer::recreateSwapchain(){
     createSyncObjects();
 
     currentFrame = 0; //Reset current frame to 0 after recreating swapchain
+}
+
+void VulkanRenderer::createFrameResources(){
+    size_t framesInFlight = command.getCommandBuffers().size();
+
+    frameBuffers.reserve(framesInFlight);
+    frameSets.reserve(framesInFlight);
+
+    vk::DescriptorSetLayout layout = *graphicsPipeline.getFrameSetLayout();
+
+    for(size_t i = 0; i < framesInFlight; ++i){
+        frameBuffers.emplace_back(device, sizeof(FrameData),
+        vk::BufferUsageFlagBits::eUniformBuffer,MemoryUsage::CPU_TO_GPU);
+
+        vk::DescriptorSetAllocateInfo allocInfo;
+        allocInfo.descriptorPool = *descriptorPool;
+        allocInfo.setSetLayouts(layout);
+        vk::raii::DescriptorSets sets(device.getDevice(), allocInfo);
+        frameSets.push_back(std::move(sets[0]));
+
+        vk::DescriptorBufferInfo bufferInfo;
+        bufferInfo.buffer = *frameBuffers[i].getBuffer();
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(FrameData);
+
+        vk::WriteDescriptorSet write;
+        write.dstSet = *frameSets[i];
+        write.dstBinding = 0;
+        write.dstArrayElement = 0;
+        write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        write.setBufferInfo(bufferInfo);
+
+        device.getDevice().updateDescriptorSets(write,nullptr);
+    }
 }

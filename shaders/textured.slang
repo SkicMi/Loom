@@ -1,9 +1,16 @@
+
+struct FrameData{
+    float4x4 view;
+    float4x4 projection;
+}
+
 struct Push{
-    float4x4 mvp;
+    float4x4 model;
 }
 
 [[vk::push_constant]] ConstantBuffer<Push> push;
-[[vk::binding(0)]] Sampler2D albedo;
+[[vk::binding(0,0)]] ConstantBuffer<FrameData> frame;
+[[vk::binding(0,1)]] Sampler2D albedo;
 
 struct VSInput{
     [[vk::location(0)]] float3 position;
@@ -21,7 +28,8 @@ struct VSOutput{
 [shader("vertex")]
 VSOutput vertexMain(VSInput input){
     VSOutput output;
-    output.position = mul(push.mvp, float4(input.position,1.0));
+    float4 world = mul(push.model, float4(input.position,1.0));
+    output.position = mul(frame.projection, mul(frame.view, world));
     output.color = input.color;
     output.texCoord = input.texCoord;
     return output;

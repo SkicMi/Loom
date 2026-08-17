@@ -157,14 +157,33 @@ void VulkanGraphicsPipeline::createPipeline(){
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
     pipelineLayoutInfo.setPushConstantRanges(pushRange);
 
-    vk::DescriptorSetLayout setLayout = nullptr;
-    if(!config.descriptorBindings.empty()){
-        vk::DescriptorSetLayoutCreateInfo layoutInfo;
-        layoutInfo.setBindings(config.descriptorBindings);
-        descriptorSetLayout = vk::raii::DescriptorSetLayout(device.getDevice(), layoutInfo);
-        setLayout = *descriptorSetLayout;
-        pipelineLayoutInfo.setSetLayouts(setLayout);
+    std::vector<vk::DescriptorSetLayoutBinding> frameBindings;
+    if(config.useFrameData){
+        vk::DescriptorSetLayoutBinding frameBinding;
+        frameBinding.binding = 0;
+        frameBinding.descriptorType = vk::DescriptorType::eUniformBuffer;
+        frameBinding.descriptorCount = 1;
+        frameBinding.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+        frameBindings.push_back(frameBinding);
     }
+
+    vk::DescriptorSetLayoutCreateInfo frameLayoutInfo;
+    frameLayoutInfo.setBindings(frameBindings);
+    setLayouts.emplace_back(device.getDevice(), frameLayoutInfo);
+
+    if(!config.descriptorBindings.empty()){
+        vk::DescriptorSetLayoutCreateInfo materialLayoutInfo;
+        materialLayoutInfo.setBindings(config.descriptorBindings);
+        setLayouts.emplace_back(device.getDevice(), materialLayoutInfo);
+    }
+
+    std::vector<vk::DescriptorSetLayout> rawLayouts;
+    rawLayouts.reserve(setLayouts.size());
+    for(const auto& layout : setLayouts){
+        rawLayouts.push_back(*layout);
+    }
+
+    pipelineLayoutInfo.setSetLayouts(rawLayouts);
 
     pipelineLayout = vk::raii::PipelineLayout(device.getDevice(),pipelineLayoutInfo);
 
