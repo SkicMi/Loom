@@ -8,6 +8,7 @@
 #include "Core/Camera.h"
 #include "Material.h"
 #include "Mesh.h"
+#include "Core/Light.h"
 #include "Core/FrameData.h"
 #include <array>
 #include <cstdint>
@@ -43,6 +44,7 @@ class VulkanRenderer{
     void endFrame();
 
     void setCamera(const Camera& cam) { camera = &cam;}
+    void setLight(const Light& newLight) {light = &newLight;}
 
 
     private:
@@ -57,6 +59,7 @@ class VulkanRenderer{
     std::vector<vk::raii::Fence> inFlightFences;
     size_t currentFrame = 0;
     const Camera* camera = nullptr;
+    const Light* light = nullptr;
     uint32_t currentImageIndex = 0;
     bool needsRecreate = false;
     bool frameActive = false;

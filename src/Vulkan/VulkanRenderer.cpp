@@ -150,10 +150,13 @@ void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model, const Materi
         commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.getPipelineLayout(), VulkanGraphicsPipeline::materialSet, {*material.getDescriptorSet()},{});
     }
 
+    ObjectData objectData;
+    objectData.model = model;
+    objectData.normalMatrix = glm::transpose(glm::inverse(model));
+    
 
-
-    commandBuffer.pushConstants<glm::mat4>(*pipeline.getPipelineLayout(),
-    vk::ShaderStageFlagBits::eVertex,0,model);
+    commandBuffer.pushConstants<ObjectData>(*pipeline.getPipelineLayout(),
+    vk::ShaderStageFlagBits::eVertex,0,objectData);
 
     commandBuffer.bindVertexBuffers(0, {*mesh.getVertexBuffer().getBuffer()}, {0});
 
@@ -226,10 +229,20 @@ bool VulkanRenderer::beginFrame(){
     commandBuffer.reset();
     frameData.view = glm::mat4(1.0f);
     frameData.projection = glm::mat4(1.0f);
+    frameData.cameraPosition = glm::vec4(0.0f);
     if(camera){
         vk::Extent2D extent = swapchain.getExtent();
         frameData.view = camera->getView();
         frameData.projection = camera->getProjection(extent.width,extent.height);
+        frameData.cameraPosition = glm::vec4(camera->getPosition(), 1.0f);
+    }
+    frameData.lightDirection = glm::vec4(0.0f,0.0f, -1.0f, 0.0f);
+    frameData.lightColor = glm::vec4(0.0f);
+    frameData.ambientColor = glm::vec4(1.0f);
+    if(light){
+        frameData.lightDirection = glm::vec4(light->getDirection(), 0.0f);
+        frameData.lightColor = glm::vec4(light->getColor(), 0.0f);
+        frameData.ambientColor = glm::vec4(light->getAmbient(),0.0f);
     }
     frameBuffers[currentFrame].upload(&frameData,sizeof(FrameData));
 

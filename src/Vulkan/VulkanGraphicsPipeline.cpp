@@ -1,4 +1,5 @@
 #include "VulkanGraphicsPipeline.h"
+#include "Core/FrameData.h"
 #include <fstream>
 #include <glm/glm.hpp>
 
@@ -150,7 +151,7 @@ void VulkanGraphicsPipeline::createPipeline(){
     vk::PushConstantRange pushRange;
     pushRange.stageFlags = vk::ShaderStageFlagBits::eVertex;
     pushRange.offset = 0;
-    pushRange.size = sizeof(glm::mat4);
+    pushRange.size = sizeof(ObjectData);
 
 
     //Pipeline layout
