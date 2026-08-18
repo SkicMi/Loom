@@ -88,14 +88,14 @@ const std::vector<Vertex> vertices = {
     loom.renderer.setLight(light);
 
     PipelineConfig texPipelineConfig = config.pipelineConfig;
-    texPipelineConfig.descriptorBindings = {Texture::getLayoutBinding()};
+    texPipelineConfig.descriptorBindings = {Texture::getLayoutBinding(), Material::getDataLayoutBinding()};
     texPipelineConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/textured.vert.spv";
     texPipelineConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/textured.frag.spv";
     VulkanGraphicsPipeline texPipeline = loom.createPipeline(texPipelineConfig);
 
     std::vector<uint8_t> pixels = makeCheckerboard(64,8);
     Texture checker(loom.device,loom.command,pixels.data(), vk::Extent2D{64,64});
-    Material texMat(loom.device,loom.getDescriptorPool(),texPipeline,checker);
+    Material texMat(loom.device,loom.command, loom.getDescriptorPool(),texPipeline,checker);
 
     
     while(!loom.window.shouldClose()){

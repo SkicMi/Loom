@@ -8,6 +8,14 @@ struct FrameData{
     float4 ambientColor;
 }
 
+struct MaterialData{
+    float4 baseColor;
+    float shininess;
+    float specularStrength;
+    float padding0;
+    float padding1;
+}
+
 struct Push{
     float4x4 model;
     float4x4 normalMatrix;
@@ -16,6 +24,7 @@ struct Push{
 [[vk::push_constant]] ConstantBuffer<Push> push;
 [[vk::binding(0,0)]] ConstantBuffer<FrameData> frame;
 [[vk::binding(0,1)]] Sampler2D albedo;
+[[vk::binding(1,1)]] ConstantBuffer<MaterialData> material;
 
 struct VSInput{
     [[vk::location(0)]] float3 position;
@@ -53,9 +62,9 @@ float4 fragmentMain(VSOutput input) : SV_Target{
     float3 H = normalize(L + V);
 
     float diffuse = max(dot(N,L), 0.0);
-    float specular = pow(max(dot(N,H),0.0),32.0);
+    float specular = pow(max(dot(N,H),0.0),material.shininess) * material.specularStrength;
 
-    float3 base = albedo.Sample(input.texCoord).rgb;
+    float3 base = albedo.Sample(input.texCoord).rgb * material.baseColor.rgb;
     float3 lit = base * (frame.ambientColor.rgb + frame.lightColor.rgb * diffuse) + frame.lightColor.rgb * specular;
 
     return float4(lit,1.0);

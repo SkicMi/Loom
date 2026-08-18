@@ -1,31 +1,114 @@
 #include "Material.h"
 
-Material::Material(const VulkanDevice& device, const vk::raii::DescriptorPool& pool, const VulkanGraphicsPipeline& pipeline, const Texture& texture) : pipeline(&pipeline){
-    if(!pipeline.hasDescriptors()){
+
+
+Material::Material(const VulkanDevice& device,
+    const VulkanCommand& command,
+    const vk::raii::DescriptorPool& pool,
+    const VulkanGraphicsPipeline& pipeline,
+    const Texture& texture,
+    const MaterialData& data) : pipeline(&pipeline), data(data) {
+            build(device, command, pool, &texture);
+
+}
+
+Material::Material(const VulkanDevice& device,
+    const VulkanCommand& command,
+    const vk::raii::DescriptorPool& pool,
+    const VulkanGraphicsPipeline& pipeline,
+    const MaterialData& data) : pipeline(&pipeline), data(data) {
+            build(device, command, pool, nullptr);
+
+}
+
+void Material::build(const VulkanDevice& device,
+                    const VulkanCommand& command,
+                    const vk::raii::DescriptorPool& pool,
+                    const Texture* texture) {
+
+    if(!pipeline-> hasDescriptors()){
         throw std::runtime_error("Material : pipeline has no descriptor set layout");
     }
 
-    vk::DescriptorSetLayout layout = *pipeline.getMaterialSetLayout();
-    
-    vk::DescriptorSetAllocateInfo allocInfo;
-    allocInfo.descriptorPool = *pool;
-    allocInfo.setSetLayouts(layout);
+    size_t framesInFlight = command.getCommandBuffers().size();
 
-    vk::raii::DescriptorSets sets(device.getDevice(), allocInfo);
-    descriptorSet = std::move(sets[0]);
+    descriptorSets.reserve(framesInFlight);
+    dataBuffers.reserve(framesInFlight);
+    dirty.assign(framesInFlight,0);
 
-    vk::DescriptorImageInfo imageInfo;
-    imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    imageInfo.imageView = *texture.getImage().getImageView();
-    imageInfo.sampler = texture.getSampler();
+    vk::DescriptorSetLayout layout = *pipeline->getMaterialSetLayout();
 
-    vk::WriteDescriptorSet write;
-    write.dstSet = *descriptorSet;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    write.setImageInfo(imageInfo);
+    for(size_t i = 0; i < framesInFlight; ++i){
+        vk::DescriptorSetAllocateInfo allocInfo;
+        allocInfo.descriptorPool = *pool;
+        allocInfo.setSetLayouts(layout);
 
-    device.getDevice().updateDescriptorSets(write,nullptr);
+        vk::raii::DescriptorSets sets(device.getDevice(), allocInfo);
+        descriptorSets.push_back(std::move(sets[0]));
 
+        dataBuffers.emplace_back(device, sizeof(MaterialData),
+                                vk::BufferUsageFlagBits::eUniformBuffer,
+                                MemoryUsage::CPU_TO_GPU);
+        dataBuffers[i].upload(&data, sizeof(MaterialData));
+
+        std::vector<vk::WriteDescriptorSet> writes;
+
+        vk::DescriptorImageInfo imageInfo;
+        if(texture){
+            imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            imageInfo.imageView = *texture->getImage().getImageView();
+            imageInfo.sampler = texture->getSampler();
+
+            vk::WriteDescriptorSet imageWrite;
+            imageWrite.dstSet = *descriptorSets[i];
+            imageWrite.dstBinding = 0;
+            imageWrite.dstArrayElement = 0;
+            imageWrite.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            imageWrite.setImageInfo(imageInfo);
+            writes.push_back(imageWrite);
+        }
+
+        vk::DescriptorBufferInfo bufferInfo;
+        bufferInfo.buffer = *dataBuffers[i].getBuffer();
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(MaterialData);
+
+        vk::WriteDescriptorSet bufferWrite;
+        bufferWrite.dstSet = *descriptorSets[i];
+        bufferWrite.dstBinding = 1;
+        bufferWrite.dstArrayElement = 0;
+        bufferWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
+        bufferWrite.setBufferInfo(bufferInfo);
+        writes.push_back(bufferWrite);
+
+        device.getDevice().updateDescriptorSets(writes,nullptr);
+
+    }         
+}
+
+void Material::uploadIfDirty(size_t frame) const{
+    if(dirty[frame]){
+        dataBuffers[frame].upload(&data, sizeof(MaterialData));
+        dirty[frame] = 0;
+    }
+}
+
+void Material::setData(const MaterialData& newData){
+    data = newData;
+    std::fill(dirty.begin(), dirty.end(), uint8_t(1));
+}
+
+void Material::setBaseColor(const glm::vec4& newBaseColor){
+    data.baseColor = newBaseColor;
+    std::fill(dirty.begin(), dirty.end(), uint8_t(1));
+}
+
+void Material::setShininess(float newShininess){
+    data.shininess = newShininess;
+    std::fill(dirty.begin(), dirty.end(), uint8_t(1));
+}
+
+void Material::setSpecularStrength(float newSpecularStrength){
+    data.specularStrength = newSpecularStrength;
+    std::fill(dirty.begin(), dirty.end(), uint8_t(1));
 }

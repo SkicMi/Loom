@@ -147,7 +147,11 @@ void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model, const Materi
     }
 
     if(material.hasDescriptorSet()){
-        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.getPipelineLayout(), VulkanGraphicsPipeline::materialSet, {*material.getDescriptorSet()},{});
+        material.uploadIfDirty(currentFrame);
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+            *pipeline.getPipelineLayout(),
+            VulkanGraphicsPipeline::materialSet,
+            {*material.getDescriptorSet(currentFrame)},{});
     }
 
     ObjectData objectData;
