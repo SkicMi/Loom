@@ -166,6 +166,13 @@ void VulkanGraphicsPipeline::createPipeline(){
         frameBinding.descriptorCount = 1;
         frameBinding.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
         frameBindings.push_back(frameBinding);
+
+        vk::DescriptorSetLayoutBinding lightBinding;
+        lightBinding.binding = 1;
+        lightBinding.descriptorType = vk::DescriptorType::eStorageBuffer;
+        lightBinding.descriptorCount = 1;
+        lightBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+        frameBindings.push_back(lightBinding);
     }
 
     vk::DescriptorSetLayoutCreateInfo frameLayoutInfo;

@@ -240,15 +240,36 @@ bool VulkanRenderer::beginFrame(){
         frameData.projection = camera->getProjection(extent.width,extent.height);
         frameData.cameraPosition = glm::vec4(camera->getPosition(), 1.0f);
     }
-    frameData.lightDirection = glm::vec4(0.0f,0.0f, -1.0f, 0.0f);
-    frameData.lightColor = glm::vec4(0.0f);
+    
     frameData.ambientColor = glm::vec4(1.0f);
-    if(light){
-        frameData.lightDirection = glm::vec4(light->getDirection(), 0.0f);
-        frameData.lightColor = glm::vec4(light->getColor(), 0.0f);
-        frameData.ambientColor = glm::vec4(light->getAmbient(),0.0f);
+    if(environment){
+        frameData.ambientColor = glm::vec4(environment->getAmbient(), 0.0f);
+    }
+    lightStaging.clear();
+    for(const Light* light : lights){
+
+        if(lightStaging.size() >= rendererConfig.maxLights) break;
+
+        GpuLight gpuLight;
+        if(light->getType() == LightType::Directional){
+            gpuLight.positionOrDirection = glm::vec4(light->getDirection(), 0.0f); //direction for directional light
+        }
+        else{
+            gpuLight.positionOrDirection = glm::vec4(light->getPosition(),1.0f); //position for other types of lights
+        }
+        gpuLight.color = glm::vec4(light->getColor(),0.0f);
+        gpuLight.params = glm::vec4(light->getRange(), 0.0f, 0.0f, 0.0f);
+
+        lightStaging.push_back(gpuLight);
+
+    }
+    frameData.lightCount = static_cast<uint32_t>(lightStaging.size());
+    if(!lightStaging.empty()){
+        lightBuffers[currentFrame].upload(lightStaging.data(), lightStaging.size() * sizeof(GpuLight));
     }
     frameBuffers[currentFrame].upload(&frameData,sizeof(FrameData));
+    
+
 
 
     beginRecording(commandBuffer, currentImageIndex);
@@ -341,12 +362,18 @@ void VulkanRenderer::createFrameResources(){
 
     frameBuffers.reserve(framesInFlight);
     frameSets.reserve(framesInFlight);
+    lightBuffers.reserve(framesInFlight);
 
     vk::DescriptorSetLayout layout = *graphicsPipeline.getFrameSetLayout();
 
     for(size_t i = 0; i < framesInFlight; ++i){
-        frameBuffers.emplace_back(device, sizeof(FrameData),
-        vk::BufferUsageFlagBits::eUniformBuffer,MemoryUsage::CPU_TO_GPU);
+        frameBuffers.emplace_back(device, 
+            sizeof(FrameData),
+            vk::BufferUsageFlagBits::eUniformBuffer,MemoryUsage::CPU_TO_GPU);
+        lightBuffers.emplace_back(device, 
+            sizeof(GpuLight) * rendererConfig.maxLights,
+            vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::CPU_TO_GPU);
+    
 
         vk::DescriptorSetAllocateInfo allocInfo;
         allocInfo.descriptorPool = *descriptorPool;
@@ -366,6 +393,19 @@ void VulkanRenderer::createFrameResources(){
         write.descriptorType = vk::DescriptorType::eUniformBuffer;
         write.setBufferInfo(bufferInfo);
 
-        device.getDevice().updateDescriptorSets(write,nullptr);
+        vk::DescriptorBufferInfo lightBufferInfo;
+        lightBufferInfo.buffer = *lightBuffers[i].getBuffer();
+        lightBufferInfo.offset = 0;
+        lightBufferInfo.range = sizeof(GpuLight) * rendererConfig.maxLights;
+
+        vk::WriteDescriptorSet lightWrite;
+        lightWrite.dstSet = *frameSets[i];
+        lightWrite.dstBinding = 1;
+        lightWrite.dstArrayElement = 0;
+        lightWrite.descriptorType = vk::DescriptorType::eStorageBuffer;
+        lightWrite.setBufferInfo(lightBufferInfo);
+
+        std::array<vk::WriteDescriptorSet,2> writes = {write,lightWrite};
+        device.getDevice().updateDescriptorSets(writes,nullptr);
     }
 }

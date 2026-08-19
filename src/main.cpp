@@ -7,6 +7,7 @@
 #include "Vulkan/Material.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include "Core/Camera.h"
+#include "Core/Environment.h"
 #include <cstdint>
 
 static std::vector<uint8_t> makeCheckerboard(uint32_t size, uint32_t cell){
@@ -83,9 +84,20 @@ const std::vector<Vertex> vertices = {
     
     loom.renderer.setCamera(cam);
 
+    EnvironmentConfig envConfig;
+    envConfig.ambientColor = {0.05f, 0.05f, 0.05f};
+    Environment env(envConfig);
+    loom.renderer.setEnvironment(env);
+
     LightConfig lightConfig;
     Light light(lightConfig);
-    loom.renderer.setLight(light);
+    loom.renderer.addLight(light);
+
+    LightConfig lightConfig2;
+    lightConfig2.color = {255.0f, 1.0f, 1.0f};
+    lightConfig2.type = LightType::Point;
+    Light light2(lightConfig2);
+    loom.renderer.addLight(light2);
 
     PipelineConfig texPipelineConfig = config.pipelineConfig;
     texPipelineConfig.descriptorBindings = {Texture::getLayoutBinding(), Material::getDataLayoutBinding()};

@@ -3,9 +3,17 @@ struct FrameData{
     float4x4 view;
     float4x4 projection;
     float4 cameraPosition;
-    float4 lightDirection;
-    float4 lightColor;
     float4 ambientColor;
+    uint lightCount;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+}
+
+struct GpuLight{
+    float4 positionOrDirection;
+    float4 color;
+    float4 params;
 }
 
 struct MaterialData{
@@ -23,6 +31,7 @@ struct Push{
 
 [[vk::push_constant]] ConstantBuffer<Push> push;
 [[vk::binding(0,0)]] ConstantBuffer<FrameData> frame;
+[[vk::binding(1,0)]] StructuredBuffer<GpuLight> lights;
 [[vk::binding(0,1)]] Sampler2D albedo;
 [[vk::binding(1,1)]] ConstantBuffer<MaterialData> material;
 
@@ -57,15 +66,37 @@ VSOutput vertexMain(VSInput input){
 [shader("fragment")]
 float4 fragmentMain(VSOutput input) : SV_Target{
     float3 N = normalize(input.normal);
-    float3 L = normalize(-frame.lightDirection.xyz);
     float3 V = normalize(frame.cameraPosition.xyz - input.worldPos);
-    float3 H = normalize(L + V);
-
-    float diffuse = max(dot(N,L), 0.0);
-    float specular = pow(max(dot(N,H),0.0),material.shininess) * material.specularStrength;
 
     float3 base = albedo.Sample(input.texCoord).rgb * material.baseColor.rgb;
-    float3 lit = base * (frame.ambientColor.rgb + frame.lightColor.rgb * diffuse) + frame.lightColor.rgb * specular;
+    float3 lit = base * frame.ambientColor.rgb;
+
+    for(uint i = 0; i < frame.lightCount; ++i){
+        GpuLight light = lights[i];
+
+        float3 L;
+        float attenuation = 1.0f;
+
+        if(light.positionOrDirection.w == 0.0){
+            L = normalize(-light.positionOrDirection.xyz);
+        }
+        else{
+            float3 toLight = light.positionOrDirection.xyz - input.worldPos;
+            float dist = max(length(toLight), 1e-4);
+            L = toLight / dist;
+
+            float range = max(light.params.x, 1e-4);
+            float window = saturate(1.0 - pow(dist / range , 4.0));
+            attenuation = window * window / (dist * dist);
+        }
+
+        float3 H = normalize(L + V);
+        float diffuse = max(dot(N,L),0.0);
+        float specular = pow(max(dot(N,H), 0.0) , material.shininess) * material.specularStrength;
+
+        lit += base * light.color.rgb * diffuse * attenuation;
+        lit += light.color.rgb * specular * attenuation;
+    }
 
     return float4(lit,1.0);
 }
