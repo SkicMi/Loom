@@ -18,7 +18,7 @@ class VulkanBuffer{
     VulkanBuffer& operator=(const VulkanBuffer&) = delete;
     VulkanBuffer(VulkanBuffer&&) = default;
 
-    void upload(const void* data, vk::DeviceSize uploadSize);
+    void upload(const void* data, vk::DeviceSize uploadSize, vk::DeviceSize offset = 0);
 
     //getter
     const vk::raii::Buffer& getBuffer() const {return buffer;}

@@ -114,9 +114,9 @@ const std::vector<Vertex> vertices = {
         float time = static_cast<float>(loom.window.getTime());
 
         if(!loom.renderer.beginFrame()) continue;
+        loom.renderer.beginPass();
         loom.renderer.draw(cube,glm::rotate(glm::mat4(1.0f),time,glm::vec3(0.5f,1.0f,0.0f)), texMat);
-
-
+        loom.renderer.endPass();
         loom.renderer.endFrame();
     }
     loom.waitIdle();

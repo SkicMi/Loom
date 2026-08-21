@@ -35,15 +35,15 @@ void VulkanBuffer::createBuffer(vk::BufferUsageFlags usage){
 }
 
 
-void VulkanBuffer::upload(const void* data, vk::DeviceSize uploadSize){
+void VulkanBuffer::upload(const void* data, vk::DeviceSize uploadSize, vk::DeviceSize offset){
     if(memoryUsage != MemoryUsage::CPU_TO_GPU){
         throw std::runtime_error("upload() works only on CPU_TO_GPU BUFFER");
     }
-    if(uploadSize > size){
+    if(offset + uploadSize > size){
         throw std::runtime_error("upload() data size bigger then buffer size");
     }
 
-    void* mapped = memory.mapMemory(0,uploadSize);
+    void* mapped = memory.mapMemory(offset,uploadSize);
     std::memcpy(mapped, data, static_cast<size_t>(uploadSize));
     memory.unmapMemory();
 }

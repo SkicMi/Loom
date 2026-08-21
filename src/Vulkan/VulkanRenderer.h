@@ -5,6 +5,7 @@
 #include "VulkanGraphicsPipeline.h"
 #include "VulkanBuffer.h"
 #include "VulkanImage.h"
+#include "RenderTarget.h"
 #include "Core/Camera.h"
 #include "Material.h"
 #include "Mesh.h"
@@ -18,6 +19,7 @@ struct RendererConfig{
     std::array<float,4> clearColor = {0.0f,0.0f,0.0f,1.0f}; //clear color settings for renderer, default to black
     float clearDepth = 1.0f; //Maximum 1, with eLess compare and range 0,1 every first fragement passes, if it was 0.0, nothing would be drawn with zero errors in log
     uint32_t maxLights = 16; //storage buffer capacity, not a shader limit!
+    uint32_t maxPassesPerFrame = 8; //how many FrameData blocks fir in one frame's buffer
 
 };
 
@@ -40,6 +42,9 @@ class VulkanRenderer{
 
     
     bool beginFrame();
+    void beginPass(); //swapchain
+    void beginPass(const RenderTarget& target); //offscreen target
+    void endPass();
     void draw(const Mesh& mesh, const glm::mat4& model = glm::mat4(1.0f));
     void draw(const Mesh& mesh, const glm::mat4& model, const Material& material); //overload fuction for model with material
     void endFrame();
@@ -69,17 +74,20 @@ class VulkanRenderer{
     uint32_t currentImageIndex = 0;
     bool needsRecreate = false;
     bool frameActive = false;
+    bool passActive = false;
+    const RenderTarget* currentTarget = nullptr;
     const VulkanGraphicsPipeline* boundPipeline = nullptr;
     const vk::raii::DescriptorPool& descriptorPool;
     std::vector<VulkanBuffer> frameBuffers;
+    vk::DeviceSize frameDataStride = 0;
+    uint32_t passIndex = 0;
     std::vector<vk::raii::DescriptorSet> frameSets;
     FrameData frameData;
 
 
     void createSyncObjects();
     void createFrameResources();
-    void beginRecording(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex);
-    void endRecording(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex);
+    void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent);
     void recreateSwapchain();
 
 };

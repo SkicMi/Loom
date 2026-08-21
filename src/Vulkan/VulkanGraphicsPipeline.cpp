@@ -162,7 +162,7 @@ void VulkanGraphicsPipeline::createPipeline(){
     if(config.useFrameData){
         vk::DescriptorSetLayoutBinding frameBinding;
         frameBinding.binding = 0;
-        frameBinding.descriptorType = vk::DescriptorType::eUniformBuffer;
+        frameBinding.descriptorType = vk::DescriptorType::eUniformBufferDynamic;
         frameBinding.descriptorCount = 1;
         frameBinding.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
         frameBindings.push_back(frameBinding);

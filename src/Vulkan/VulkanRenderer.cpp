@@ -1,6 +1,24 @@
 #include "VulkanRenderer.h"
 #include <glm/glm.hpp>
 
+static void barrierDstFor(vk::ImageLayout layout, vk::PipelineStageFlags2& stage, vk::AccessFlags2& access){
+    switch(layout){
+        case vk::ImageLayout::eShaderReadOnlyOptimal:
+            stage = vk::PipelineStageFlagBits2::eFragmentShader;
+            access = vk::AccessFlagBits2::eShaderRead;
+            break;
+        case vk::ImageLayout::eTransferSrcOptimal:
+            stage = vk::PipelineStageFlagBits2::eCopy;
+            access = vk::AccessFlagBits2::eTransferRead;
+            break;
+        default:
+            stage = vk::PipelineStageFlagBits2::eBottomOfPipe;
+            access = {};
+            break;
+
+    }
+}
+
 VulkanRenderer::VulkanRenderer(
     const VulkanDevice& device,
     VulkanSwapchain& swapchain,
@@ -43,11 +61,10 @@ void VulkanRenderer::createSyncObjects(){
     }
 }
 
-void VulkanRenderer::beginRecording(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex){
-vk::CommandBufferBeginInfo beginInfo;
-commandBuffer.begin(beginInfo);
+void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent){
 
-const vk::Image& image = swapchain.getImages()[imageIndex];
+
+const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
 
 //Transition: undefined - color attachment
 vk::ImageMemoryBarrier2 toColor;
@@ -57,7 +74,7 @@ toColor.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
 toColor.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
 toColor.oldLayout = vk::ImageLayout::eUndefined;
 toColor.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
-toColor.image = image;
+toColor.image = colorImage;
 toColor.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
 
 vk::DependencyInfo toColorDep;
@@ -65,7 +82,7 @@ toColorDep.imageMemoryBarrierCount = 1;
 toColorDep.pImageMemoryBarriers = &toColor;
 commandBuffer.pipelineBarrier2(toColorDep);
 
-if(depthImage){
+if(depth){
     vk::ImageMemoryBarrier2 toDepth;
     toDepth.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
     toDepth.srcAccessMask = {};
@@ -84,7 +101,7 @@ if(depthImage){
 
 //color attachment info
 vk::RenderingAttachmentInfo colorAttachment;
-colorAttachment.imageView = *swapchain.getImageViews()[imageIndex];
+colorAttachment.imageView = colorView;
 colorAttachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
 colorAttachment.loadOp = vk::AttachmentLoadOp::eClear;
 colorAttachment.storeOp = vk::AttachmentStoreOp::eStore;
@@ -92,7 +109,7 @@ colorAttachment.clearValue.color = vk::ClearColorValue(rendererConfig.clearColor
 
 //depth attachment info
 vk::RenderingAttachmentInfo depthAttachment;
-if(depthImage){
+if(depth){
     depthAttachment.imageView = *depthImage->getImageView();
     depthAttachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     depthAttachment.loadOp = vk::AttachmentLoadOp::eClear;
@@ -101,11 +118,11 @@ if(depthImage){
 }
 
 vk::RenderingInfo renderingInfo;
-renderingInfo.renderArea = vk::Rect2D({0,0},swapchain.getExtent());
+renderingInfo.renderArea = vk::Rect2D({0,0},extent);
 renderingInfo.layerCount = 1;
 renderingInfo.colorAttachmentCount = 1;
 renderingInfo.pColorAttachments = &colorAttachment;
-if(depthImage){
+if(depth){
     renderingInfo.pDepthAttachment = &depthAttachment;
 }
 
@@ -114,18 +131,32 @@ commandBuffer.beginRendering(renderingInfo);
 vk::Viewport viewport;
 viewport.x = 0.0f;
 viewport.y = 0.0f;
-viewport.width = static_cast<float>(swapchain.getExtent().width);
-viewport.height = static_cast<float>(swapchain.getExtent().height);
+viewport.width = static_cast<float>(extent.width);
+viewport.height = static_cast<float>(extent.height);
 viewport.minDepth = 0.0f;
 viewport.maxDepth = 1.0f;
 commandBuffer.setViewport(0, viewport);
 
-vk::Rect2D scissor({0,0}, swapchain.getExtent());
+vk::Rect2D scissor({0,0}, extent);
 commandBuffer.setScissor(0, scissor);
 
+if(passIndex >= rendererConfig.maxPassesPerFrame){
+    throw std::runtime_error("beginPass : to many passes in one frame");
+}
+
+frameData.projection = camera ? camera->getProjection(extent.width, extent.height) : glm::mat4(1.0f);
+
+vk::DeviceSize offset = passIndex * frameDataStride;
+frameBuffers[currentFrame].upload(&frameData, sizeof(FrameData), offset);
+
+uint32_t dynamicOffset = static_cast<uint32_t>(offset);
 commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-    *graphicsPipeline.getPipelineLayout(),
-    VulkanGraphicsPipeline::frameSet, {*frameSets[currentFrame]}, {});
+            *graphicsPipeline.getPipelineLayout(),
+            VulkanGraphicsPipeline::frameSet, {*frameSets[currentFrame]}, {dynamicOffset});
+    ++passIndex;
+
+    passActive = true;
+    boundPipeline = nullptr;
 
 }
 
@@ -134,7 +165,7 @@ void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model){
 }
 
 void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model, const Material& material){
-    if(!frameActive){
+    if(!passActive){
         throw std::runtime_error("draw: frame not started( missing beginFrame)");
     }
 
@@ -173,29 +204,38 @@ void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model, const Materi
     }
 }
 
-void VulkanRenderer::endRecording(const vk::raii::CommandBuffer& commandBuffer, uint32_t imageIndex){
-const vk::Image& image = swapchain.getImages()[imageIndex];
+void VulkanRenderer::endPass(){
+    if(!passActive){
+        throw std::runtime_error("endPass : no pass active");
+    }
 
-commandBuffer.endRendering();
+    const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
+    commandBuffer.endRendering();
 
-//Transition: color attachment - present
-vk::ImageMemoryBarrier2 toPresent;
-toPresent.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
-toPresent.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
-toPresent.dstStageMask = vk::PipelineStageFlagBits2::eBottomOfPipe;
-toPresent.dstAccessMask = {};
-toPresent.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
-toPresent.newLayout = vk::ImageLayout::ePresentSrcKHR;
-toPresent.image = image;
-toPresent.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1}; 
+    vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain.getImages()[currentImageIndex];
+    vk::ImageLayout finalLayout = currentTarget ? currentTarget->getFinalLayout() : vk::ImageLayout::ePresentSrcKHR;
 
-vk::DependencyInfo toPresentDep;
-toPresentDep.imageMemoryBarrierCount = 1;
-toPresentDep.pImageMemoryBarriers = &toPresent;
-commandBuffer.pipelineBarrier2(toPresentDep);
+    vk::PipelineStageFlags2 dstStage;
+    vk::AccessFlags2 dstAccess;
+    barrierDstFor(finalLayout, dstStage, dstAccess);
+    
+    vk::ImageMemoryBarrier2 toFinal;
+    toFinal.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+    toFinal.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+    toFinal.dstStageMask = dstStage;
+    toFinal.dstAccessMask = dstAccess;
+    toFinal.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    toFinal.newLayout = finalLayout;
+    toFinal.image = colorImage;
+    toFinal.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
 
-commandBuffer.end();
+    vk::DependencyInfo dep;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &toFinal;
+    commandBuffer.pipelineBarrier2(dep);
 
+    passActive = false;
+    currentTarget = nullptr;
 }
 
 bool VulkanRenderer::beginFrame(){
@@ -231,13 +271,14 @@ bool VulkanRenderer::beginFrame(){
     //Record commands for this frame
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
     commandBuffer.reset();
+
+    passIndex = 0;
+
     frameData.view = glm::mat4(1.0f);
     frameData.projection = glm::mat4(1.0f);
     frameData.cameraPosition = glm::vec4(0.0f);
     if(camera){
-        vk::Extent2D extent = swapchain.getExtent();
         frameData.view = camera->getView();
-        frameData.projection = camera->getProjection(extent.width,extent.height);
         frameData.cameraPosition = glm::vec4(camera->getPosition(), 1.0f);
     }
     
@@ -267,12 +308,14 @@ bool VulkanRenderer::beginFrame(){
     if(!lightStaging.empty()){
         lightBuffers[currentFrame].upload(lightStaging.data(), lightStaging.size() * sizeof(GpuLight));
     }
-    frameBuffers[currentFrame].upload(&frameData,sizeof(FrameData));
+
+
     
 
 
 
-    beginRecording(commandBuffer, currentImageIndex);
+    vk::CommandBufferBeginInfo beginInfo;
+    commandBuffer.begin(beginInfo);
 
     frameActive = true;
     boundPipeline = nullptr;
@@ -287,7 +330,10 @@ void VulkanRenderer::endFrame(){
     const auto& fence = inFlightFences[currentFrame];
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
 
-    endRecording(commandBuffer, currentImageIndex);
+    if(passActive){
+        throw std::runtime_error("endFrame : a pass is still active ( missing endPass)");
+    }
+    commandBuffer.end();
 
     //Submit via sync2
     vk::SemaphoreSubmitInfo waitInfo;
@@ -366,9 +412,13 @@ void VulkanRenderer::createFrameResources(){
 
     vk::DescriptorSetLayout layout = *graphicsPipeline.getFrameSetLayout();
 
+    vk::DeviceSize alignment = device.getPhysicalDevice().getProperties().limits.minUniformBufferOffsetAlignment;
+    frameDataStride = (sizeof(FrameData) + alignment - 1) & ~ (alignment - 1); //spec garanties that alignment is potent of number 2 and this delets lower bites, for 64 it is & ~ 63
+
+
     for(size_t i = 0; i < framesInFlight; ++i){
         frameBuffers.emplace_back(device, 
-            sizeof(FrameData),
+            frameDataStride * rendererConfig.maxPassesPerFrame,
             vk::BufferUsageFlagBits::eUniformBuffer,MemoryUsage::CPU_TO_GPU);
         lightBuffers.emplace_back(device, 
             sizeof(GpuLight) * rendererConfig.maxLights,
@@ -390,7 +440,7 @@ void VulkanRenderer::createFrameResources(){
         write.dstSet = *frameSets[i];
         write.dstBinding = 0;
         write.dstArrayElement = 0;
-        write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        write.descriptorType = vk::DescriptorType::eUniformBufferDynamic;
         write.setBufferInfo(bufferInfo);
 
         vk::DescriptorBufferInfo lightBufferInfo;
@@ -409,3 +459,37 @@ void VulkanRenderer::createFrameResources(){
         device.getDevice().updateDescriptorSets(writes,nullptr);
     }
 }
+
+void VulkanRenderer::beginPass(){
+    if(!frameActive){
+        throw std::runtime_error("beginPass: frame not started");
+    }
+    if(passActive){
+    throw std::runtime_error("beginPass: a pass is already active (missing endPass)");
+    }
+
+    currentTarget = nullptr;
+    startPass(swapchain.getImages()[currentImageIndex],
+                *swapchain.getImageViews()[currentImageIndex],
+                depthImage,
+                swapchain.getExtent());
+
+}
+
+void VulkanRenderer::beginPass(const RenderTarget& target){
+    if(!frameActive){
+        throw std::runtime_error("beginPass: frame not started");
+    }
+    if(passActive){
+    throw std::runtime_error("beginPass: a pass is already active (missing endPass)");
+    }
+
+    currentTarget = &target;
+    startPass(*target.getColorImage().getImage(),
+                *target.getColorImage().getImageView(),
+                target.getDepthImage(),
+                target.getExtent());
+}
+
+
+
