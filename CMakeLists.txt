@@ -139,6 +139,7 @@ add_library(Loom STATIC
     src/Vulkan/VulkanImage.cpp
     src/Vulkan/Texture.cpp
     src/Vulkan/Material.cpp
+    src/Vulkan/RenderTarget.cpp
     src/Core/Camera.cpp
 )
 
