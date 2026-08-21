@@ -71,7 +71,6 @@ const std::vector<Vertex> vertices = {
     config.appName = "Test";
     config.engineName = "Test Engine";
     config.swapchainConfig.preferredPresentMode = vk::PresentModeKHR::eMailbox;
-    config.commandConfig;
     config.rendererConfig.clearColor = {0.0f,0.0f,0.0f,1.0f}; 
     config.pipelineConfig.cullMode = vk::CullModeFlagBits::eNone;
     config.enableDepth = true;

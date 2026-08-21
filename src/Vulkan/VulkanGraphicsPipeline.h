@@ -77,7 +77,6 @@ class VulkanGraphicsPipeline{
 
     PipelineConfig config;
     vk::raii::PipelineLayout pipelineLayout = nullptr;
-    vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;   
     std::vector<vk::raii::DescriptorSetLayout> setLayouts;
     vk::raii::Pipeline pipeline = nullptr;
 

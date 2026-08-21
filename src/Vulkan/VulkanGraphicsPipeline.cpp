@@ -6,7 +6,7 @@
 VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
     const VulkanSwapchain& swapchain,
     const PipelineConfig& config,
-    vk::Format depthFormat) : device(device), swapchain(swapchain), config(config), depthFormat(depthFormat){
+    vk::Format depthFormat) : depthFormat(depthFormat), device(device), swapchain(swapchain), config(config){
         createPipeline();
 }
 

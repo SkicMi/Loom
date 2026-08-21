@@ -9,11 +9,11 @@ VulkanRenderer::VulkanRenderer(
     VulkanImage* depthImage,
     const vk::raii::DescriptorPool& descriptorPool,
     const RendererConfig& rendererConfig) :
+    depthImage(depthImage),
     device(device),
     swapchain(swapchain),
     command(command),
     graphicsPipeline(graphicsPipeline),
-    depthImage(depthImage),
     rendererConfig(rendererConfig),
     descriptorPool(descriptorPool){
 
