@@ -28,4 +28,25 @@ void RenderTarget::resize(vk::Extent2D newExtent){
     }
 }
 
+ImageData RenderTarget::readPixels(const VulkanCommand& command) const{
+    if(config.finalLayout != vk::ImageLayout::eTransferSrcOptimal){
+        throw std::runtime_error("readPixels: target's finalLayout is not eTransferSrcOptimal");
+    }
+    const vk::Format format = colorImage.getFormat();
+    const vk::DeviceSize bytes = vk::DeviceSize(extent.width) * extent.height * bytesPerPixel(format);
+    device.getDevice().waitIdle();
+
+    VulkanBuffer staging(device, bytes, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::CPU_TO_GPU);
+    command.copyImageToBuffer(colorImage.getImage(), staging.getBuffer(), extent);
+
+    ImageData out;
+    out.extent = extent;
+    out.format = format;
+    out.pixels.resize(static_cast<size_t>(bytes));
+    staging.download(out.pixels.data(), bytes);
+
+    return out;
+}
+
+
   

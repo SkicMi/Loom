@@ -117,3 +117,21 @@ void VulkanCommand::copyBuffer(const vk::raii::Buffer& src, const vk::raii::Buff
         });
     }
 
+    void VulkanCommand::copyImageToBuffer(const vk::raii::Image& src, const vk::raii::Buffer& dst, vk::Extent2D extent, vk::ImageAspectFlags aspect) const{
+        oneTimeSubmit([&](const vk::raii::CommandBuffer& commandBuffer){
+            vk::BufferImageCopy region;
+            region.bufferOffset = 0;
+            region.bufferRowLength = 0;
+            region.bufferImageHeight = 0;
+            region.imageSubresource.aspectMask = aspect;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.baseArrayLayer = 0;
+            region.imageSubresource.layerCount = 1;
+            region.imageOffset = vk::Offset3D{0,0,0};
+            region.imageExtent = vk::Extent3D{extent.width,extent.height,1};
+
+            commandBuffer.copyImageToBuffer(*src, vk::ImageLayout::eTransferSrcOptimal, *dst, region);
+        });
+    }
+
+

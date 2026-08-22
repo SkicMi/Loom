@@ -19,6 +19,7 @@ class VulkanBuffer{
     VulkanBuffer(VulkanBuffer&&) = default;
 
     void upload(const void* data, vk::DeviceSize uploadSize, vk::DeviceSize offset = 0);
+    void download(void* destination, vk::DeviceSize downloadSize, vk::DeviceSize offset = 0) const;
 
     //getter
     const vk::raii::Buffer& getBuffer() const {return buffer;}

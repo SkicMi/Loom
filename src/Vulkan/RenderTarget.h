@@ -2,6 +2,8 @@
 
 #include "VulkanImage.h"
 #include "SampledImage.h"
+#include "VulkanCommand.h"
+#include "ImageData.h"
 #include <optional>
 
 struct RenderTargetConfig{
@@ -30,6 +32,7 @@ class RenderTarget{
     RenderTarget(RenderTarget&&) = default;
 
     void resize(vk::Extent2D newExtent);
+    ImageData readPixels(const VulkanCommand& command) const;
 
     //getters
     const VulkanImage& getColorImage() const {return colorImage;}
