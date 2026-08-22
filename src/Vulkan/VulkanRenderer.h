@@ -87,7 +87,10 @@ class VulkanRenderer{
 
     void createSyncObjects();
     void createFrameResources();
-    void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent);
+    void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, bool isoffscreen);
     void recreateSwapchain();
 
 };
+
+
+  

@@ -1,6 +1,6 @@
 #pragma once
 #include "VulkanGraphicsPipeline.h"
-#include "Texture.h"
+#include "SampledImage.h"
 #include "VulkanCommand.h"
 #include "VulkanBuffer.h"
 #include "Core/MaterialData.h"
@@ -13,7 +13,7 @@ class Material{
             const VulkanCommand& command,
             const vk::raii::DescriptorPool& pool,
             const VulkanGraphicsPipeline& pipeline, 
-            const Texture& texture, 
+            SampledImage image, 
             const MaterialData& data = {});
             
     Material(const VulkanDevice& device, 
@@ -62,6 +62,6 @@ class Material{
     void build(const VulkanDevice& device,
                 const VulkanCommand& command,
                 const vk::raii::DescriptorPool& pool,
-                const Texture* texture);
+                SampledImage image);
 
 };

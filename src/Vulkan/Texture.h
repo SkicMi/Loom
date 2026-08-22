@@ -1,5 +1,6 @@
 #pragma once
 #include "VulkanImage.h"
+#include "SampledImage.h"
 #include "VulkanCommand.h"
 
 struct TextureConfig{
@@ -28,6 +29,7 @@ class Texture{
     //getters
     const VulkanImage& getImage() const {return image;}
     const vk::raii::Sampler& getSampler() const {return sampler;}
+    SampledImage getSampled() const {return SampledImage{*image.getImageView(), *sampler};}
     vk::Extent2D getExtent() const {return image.getExtent();}
 
 

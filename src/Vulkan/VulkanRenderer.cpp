@@ -61,15 +61,15 @@ void VulkanRenderer::createSyncObjects(){
     }
 }
 
-void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent){
+void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, bool isOffscreen){
 
 
 const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
 
 //Transition: undefined - color attachment
 vk::ImageMemoryBarrier2 toColor;
-toColor.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
-toColor.srcAccessMask = {};
+toColor.srcStageMask = isOffscreen ? vk::PipelineStageFlagBits2::eFragmentShader : vk::PipelineStageFlagBits2::eTopOfPipe;
+toColor.srcAccessMask = isOffscreen ? vk::AccessFlagBits2::eShaderRead : vk::AccessFlags2{};
 toColor.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
 toColor.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
 toColor.oldLayout = vk::ImageLayout::eUndefined;
@@ -90,7 +90,7 @@ if(depth){
     toDepth.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
     toDepth.oldLayout = vk::ImageLayout::eUndefined;
     toDepth.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    toDepth.image = *depthImage->getImage();
+    toDepth.image = *depth->getImage();
     toDepth.subresourceRange = {vk::ImageAspectFlagBits::eDepth,0,1,0,1};
 
     vk::DependencyInfo toDepthDep;
@@ -110,7 +110,7 @@ colorAttachment.clearValue.color = vk::ClearColorValue(rendererConfig.clearColor
 //depth attachment info
 vk::RenderingAttachmentInfo depthAttachment;
 if(depth){
-    depthAttachment.imageView = *depthImage->getImageView();
+    depthAttachment.imageView = *depth->getImageView();
     depthAttachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     depthAttachment.loadOp = vk::AttachmentLoadOp::eClear;
     depthAttachment.storeOp = vk::AttachmentStoreOp::eDontCare;
@@ -472,7 +472,7 @@ void VulkanRenderer::beginPass(){
     startPass(swapchain.getImages()[currentImageIndex],
                 *swapchain.getImageViews()[currentImageIndex],
                 depthImage,
-                swapchain.getExtent());
+                swapchain.getExtent(), false);
 
 }
 
@@ -488,7 +488,7 @@ void VulkanRenderer::beginPass(const RenderTarget& target){
     startPass(*target.getColorImage().getImage(),
                 *target.getColorImage().getImageView(),
                 target.getDepthImage(),
-                target.getExtent());
+                target.getExtent(), true);
 }
 
 

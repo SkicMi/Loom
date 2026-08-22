@@ -1,11 +1,16 @@
 #pragma once
 
 #include "VulkanImage.h"
+#include "SampledImage.h"
 #include <optional>
 
 struct RenderTargetConfig{
 //Must match the color format the pipeline was created with
 vk::Format colorFormat = vk::Format::eB8G8R8A8Srgb;
+
+vk::Filter filter = vk::Filter::eLinear;
+vk::SamplerAddressMode addressMode = vk::SamplerAddressMode::eClampToEdge;
+
 
 bool enableDepth = true;
 ImageConfig depthConfig = {};
@@ -15,14 +20,6 @@ vk::ImageUsageFlags extraColorUsage = vk::ImageUsageFlagBits::eSampled;
 
 vk::ImageLayout finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 };
-
-inline ImageConfig makeColorConfig( const RenderTargetConfig& config){
-    ImageConfig imageConfig;
-    imageConfig.format = config.colorFormat;
-    imageConfig.usage = vk::ImageUsageFlagBits::eColorAttachment | config.extraColorUsage;
-    imageConfig.aspect =vk::ImageAspectFlagBits::eColor;
-    return imageConfig;
-}
 
 class RenderTarget{
     public:
@@ -38,6 +35,7 @@ class RenderTarget{
     const VulkanImage& getColorImage() const {return colorImage;}
     const VulkanImage* getDepthImage() const {return depthImage ? &*depthImage : nullptr;}
     bool hasDepth() const {return depthImage.has_value();}
+    SampledImage getSampled() const {return SampledImage{*colorImage.getImageView(), *sampler};}
 
     vk::Extent2D getExtent() const {return extent;}
     vk::Format getColorFormat() const {return colorImage.getFormat();}
@@ -51,5 +49,24 @@ class RenderTarget{
     vk::Extent2D extent;
     VulkanImage colorImage;
     std::optional<VulkanImage> depthImage;
+    vk::raii::Sampler sampler = nullptr;
 
 };
+
+inline ImageConfig makeColorConfig(const RenderTargetConfig& config){
+        ImageConfig imageConfig;
+        imageConfig.format = config.colorFormat;
+        imageConfig.usage = vk::ImageUsageFlagBits::eColorAttachment | config.extraColorUsage;
+
+        if(config.finalLayout == vk::ImageLayout::eShaderReadOnlyOptimal){
+            imageConfig.usage |= vk::ImageUsageFlagBits::eSampled;
+        }
+        if(config.finalLayout ==vk::ImageLayout::eTransferSrcOptimal){
+            imageConfig.usage |= vk::ImageUsageFlagBits::eTransferSrc;
+        }
+
+        imageConfig.aspect = vk::ImageAspectFlagBits::eColor;
+        return imageConfig;
+
+        
+    }

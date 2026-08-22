@@ -6,9 +6,9 @@ Material::Material(const VulkanDevice& device,
     const VulkanCommand& command,
     const vk::raii::DescriptorPool& pool,
     const VulkanGraphicsPipeline& pipeline,
-    const Texture& texture,
+    SampledImage image,
     const MaterialData& data) : pipeline(&pipeline), data(data) {
-            build(device, command, pool, &texture);
+            build(device, command, pool, image);
 
 }
 
@@ -17,14 +17,14 @@ Material::Material(const VulkanDevice& device,
     const vk::raii::DescriptorPool& pool,
     const VulkanGraphicsPipeline& pipeline,
     const MaterialData& data) : pipeline(&pipeline), data(data) {
-            build(device, command, pool, nullptr);
+            build(device, command, pool, SampledImage{});
 
 }
 
 void Material::build(const VulkanDevice& device,
                     const VulkanCommand& command,
                     const vk::raii::DescriptorPool& pool,
-                    const Texture* texture) {
+                    SampledImage image) {
 
     if(!pipeline-> hasDescriptors()){
         throw std::runtime_error("Material : pipeline has no descriptor set layout");
@@ -54,10 +54,10 @@ void Material::build(const VulkanDevice& device,
         std::vector<vk::WriteDescriptorSet> writes;
 
         vk::DescriptorImageInfo imageInfo;
-        if(texture){
+        if(image.isValid()){
             imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-            imageInfo.imageView = *texture->getImage().getImageView();
-            imageInfo.sampler = texture->getSampler();
+            imageInfo.imageView = image.view;
+            imageInfo.sampler = image.sampler;
 
             vk::WriteDescriptorSet imageWrite;
             imageWrite.dstSet = *descriptorSets[i];

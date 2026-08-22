@@ -106,7 +106,7 @@ const std::vector<Vertex> vertices = {
 
     std::vector<uint8_t> pixels = makeCheckerboard(64,8);
     Texture checker(loom.device,loom.command,pixels.data(), vk::Extent2D{64,64});
-    Material texMat(loom.device,loom.command, loom.getDescriptorPool(),texPipeline,checker);
+    Material texMat(loom.device,loom.command, loom.getDescriptorPool(),texPipeline,checker.getSampled());
 
     
     while(!loom.window.shouldClose()){
