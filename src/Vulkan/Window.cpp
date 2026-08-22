@@ -34,6 +34,7 @@ Window::Window(uint32_t width, uint32_t height, std::string appName) : width(wid
 }
 
 Window::~Window(){
+    glfwPollEvents();
     glfwDestroyWindow(window);
     glfwTerminate();
 
