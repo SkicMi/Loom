@@ -40,6 +40,7 @@ class Material{
 
     //Runtime setters, take effect the next frame this material is drawn in. Withing one frame : Last value set wins for every draw using this material
     void setData(const MaterialData& newData);
+    void setSampledImage(const SampledImage& newImage);
     void setBaseColor(const glm::vec4& newBaseColor);
     void setShininess(float newShininess);
     void setSpecularStrength(float newSpecularStrength);
@@ -54,14 +55,19 @@ class Material{
 
     private:
     const VulkanGraphicsPipeline* pipeline;
+    const VulkanDevice* device = nullptr;
     MaterialData data;
+    SampledImage image;
     std::vector<vk::raii::DescriptorSet> descriptorSets;
     mutable std::vector<VulkanBuffer> dataBuffers;
     mutable std::vector<uint8_t> dirty;
+    mutable std::vector<uint8_t> imageDirty;
 
     void build(const VulkanDevice& device,
                 const VulkanCommand& command,
                 const vk::raii::DescriptorPool& pool,
                 SampledImage image);
+
+    void writeImage(size_t frame) const;
 
 };

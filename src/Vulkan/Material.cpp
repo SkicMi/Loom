@@ -30,11 +30,15 @@ void Material::build(const VulkanDevice& device,
         throw std::runtime_error("Material : pipeline has no descriptor set layout");
     }
 
+    this->device = &device;
+    this->image = image;
+
     size_t framesInFlight = command.getCommandBuffers().size();
 
     descriptorSets.reserve(framesInFlight);
     dataBuffers.reserve(framesInFlight);
     dirty.assign(framesInFlight,0);
+    imageDirty.assign(framesInFlight,0);
 
     vk::DescriptorSetLayout layout = *pipeline->getMaterialSetLayout();
 
@@ -51,23 +55,6 @@ void Material::build(const VulkanDevice& device,
                                 MemoryUsage::CPU_TO_GPU);
         dataBuffers[i].upload(&data, sizeof(MaterialData));
 
-        std::vector<vk::WriteDescriptorSet> writes;
-
-        vk::DescriptorImageInfo imageInfo;
-        if(image.isValid()){
-            imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-            imageInfo.imageView = image.view;
-            imageInfo.sampler = image.sampler;
-
-            vk::WriteDescriptorSet imageWrite;
-            imageWrite.dstSet = *descriptorSets[i];
-            imageWrite.dstBinding = 0;
-            imageWrite.dstArrayElement = 0;
-            imageWrite.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-            imageWrite.setImageInfo(imageInfo);
-            writes.push_back(imageWrite);
-        }
-
         vk::DescriptorBufferInfo bufferInfo;
         bufferInfo.buffer = *dataBuffers[i].getBuffer();
         bufferInfo.offset = 0;
@@ -79,11 +66,30 @@ void Material::build(const VulkanDevice& device,
         bufferWrite.dstArrayElement = 0;
         bufferWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
         bufferWrite.setBufferInfo(bufferInfo);
-        writes.push_back(bufferWrite);
 
-        device.getDevice().updateDescriptorSets(writes,nullptr);
+        device.getDevice().updateDescriptorSets(bufferWrite,nullptr);
+
+        if(this->image.isValid()){
+            writeImage(i);
+        }
 
     }         
+}
+
+void Material::writeImage(size_t frame) const{
+    vk::DescriptorImageInfo imageInfo;
+    imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    imageInfo.imageView = image.view;
+    imageInfo.sampler = image.sampler;
+
+    vk::WriteDescriptorSet imageWrite;
+    imageWrite.dstSet = *descriptorSets[frame];
+    imageWrite.dstBinding = 0;
+    imageWrite.dstArrayElement = 0;
+    imageWrite.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    imageWrite.setImageInfo(imageInfo);
+
+    device->getDevice().updateDescriptorSets(imageWrite,nullptr);
 }
 
 void Material::uploadIfDirty(size_t frame) const{
@@ -91,6 +97,21 @@ void Material::uploadIfDirty(size_t frame) const{
         dataBuffers[frame].upload(&data, sizeof(MaterialData));
         dirty[frame] = 0;
     }
+    if(imageDirty[frame]){
+        writeImage(frame);
+        imageDirty[frame] = 0;
+    }
+}
+
+void Material::setSampledImage(const SampledImage& newImage){
+    if(!newImage.isValid()){
+        throw std::runtime_error("setSampledImage: image has no view or no sampler");
+    }
+    if(!image.isValid()){
+        throw std::runtime_error("setSampledImage: material was built without an image");
+    }
+    image = newImage;
+    std::fill(imageDirty.begin(), imageDirty.end(), uint8_t(1));
 }
 
 void Material::setData(const MaterialData& newData){
