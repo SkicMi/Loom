@@ -44,9 +44,8 @@ void ComputeMaterial::setStorageImage(uint32_t binding, const VulkanImage& image
     }
 
     StorageImageSlot slot;
-    slot.image = *image.getImage();
+    slot.image = &image;
     slot.finalLayout = finalLayout;
-    slot.currentLayout = vk::ImageLayout::eUndefined;
     storageImages.push_back(slot);
 
     //eGeneral is the layout the image is in while the dispatch reads or writes it
@@ -59,6 +58,27 @@ void ComputeMaterial::setStorageImage(uint32_t binding, const VulkanImage& image
     write.dstBinding = binding;
     write.dstArrayElement = 0;
     write.descriptorType = vk::DescriptorType::eStorageImage;
+    write.setImageInfo(imageInfo);
+
+    device.getDevice().updateDescriptorSets(write,nullptr);
+}
+
+void ComputeMaterial::setSampledImage(uint32_t binding, const SampledImage& image){
+
+    if(!image.isValid()){
+        throw std::runtime_error("setSampledImage: image has no view or no sampler");
+    }
+
+    vk::DescriptorImageInfo imageInfo;
+    imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    imageInfo.imageView = image.view;
+    imageInfo.sampler = image.sampler;
+
+    vk::WriteDescriptorSet write;
+    write.dstSet = *descriptorSet;
+    write.dstBinding = binding;
+    write.dstArrayElement = 0;
+    write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
     write.setImageInfo(imageInfo);
 
     device.getDevice().updateDescriptorSets(write,nullptr);

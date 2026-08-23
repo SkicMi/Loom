@@ -4,7 +4,7 @@
 static void barrierDstFor(vk::ImageLayout layout, vk::PipelineStageFlags2& stage, vk::AccessFlags2& access){
     switch(layout){
         case vk::ImageLayout::eShaderReadOnlyOptimal:
-            stage = vk::PipelineStageFlagBits2::eFragmentShader;
+            stage = vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader;
             access = vk::AccessFlagBits2::eShaderRead;
             break;
         case vk::ImageLayout::eTransferSrcOptimal:
@@ -128,6 +128,8 @@ if(depth){
 
 commandBuffer.beginRendering(renderingInfo);
 
+//the colour attachment was transitioned from eUndefined, so whatever the image held is gone
+
 vk::Viewport viewport;
 viewport.x = 0.0f;
 viewport.y = 0.0f;
@@ -223,6 +225,10 @@ void VulkanRenderer::endPass(){
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &toFinal;
     commandBuffer.pipelineBarrier2(dep);
+
+    if(currentTarget){
+        currentTarget->getColorImage().setCurrentLayout(finalLayout);
+    }
 
     passActive = false;
     currentTarget = nullptr;
@@ -550,9 +556,9 @@ void VulkanRenderer::dispatch(const ComputeMaterial& material,
             barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
             barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
             barrier.dstAccessMask = vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eShaderRead;
-            barrier.oldLayout = slot.currentLayout;
+            barrier.oldLayout = slot.image->getCurrentLayout();
             barrier.newLayout = vk::ImageLayout::eGeneral;
-            barrier.image = slot.image;
+            barrier.image = *slot.image->getImage();
             barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
             toGeneral.push_back(barrier);
         }
@@ -576,11 +582,11 @@ void VulkanRenderer::dispatch(const ComputeMaterial& material,
             barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead;
             barrier.oldLayout = vk::ImageLayout::eGeneral;
             barrier.newLayout = slot.finalLayout;
-            barrier.image = slot.image;
+            barrier.image = *slot.image->getImage();
             barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
             toFinal.push_back(barrier);
 
-            slot.currentLayout = slot.finalLayout;
+            slot.image->setCurrentLayout(slot.finalLayout);
         }
 
         vk::DependencyInfo dep;

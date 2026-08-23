@@ -27,12 +27,19 @@ class VulkanImage{
     const vk::raii::ImageView& getImageView() const {return imageView;}
     vk::Format getFormat() const {return config.format;}
     vk::ImageUsageFlags getUsage() const {return config.usage;}
+
+    //Where this image currently is. Whoever moves it records it here, so a second user
+    //does not transition out of a layout the image left long ago
+    vk::ImageLayout getCurrentLayout() const {return currentLayout;}
+    void setCurrentLayout(vk::ImageLayout layout) const {currentLayout = layout;}
     vk::Extent2D getExtent() const {return extent;}
 
     private:
     const VulkanDevice& device;
     ImageConfig config;
     vk::Extent2D extent;
+
+    mutable vk::ImageLayout currentLayout = vk::ImageLayout::eUndefined;
 
     vk::raii::Image image = nullptr;
     vk::raii::DeviceMemory memory = nullptr;

@@ -2,14 +2,14 @@
 #include "VulkanComputePipeline.h"
 #include "VulkanBuffer.h"
 #include "VulkanImage.h"
+#include "SampledImage.h"
 #include <vector>
 
-//One storage image as the renderer needs to see it: the handle to put a barrier on,
-//where the image should end up after the dispatch, and where it is right now
+//One storage image as the renderer needs to see it. The image itself remembers which
+//layout it is in, so two materials writing the same image agree about it
 struct StorageImageSlot{
-    vk::Image image = nullptr;
+    const VulkanImage* image = nullptr;
     vk::ImageLayout finalLayout = vk::ImageLayout::eGeneral;
-    mutable vk::ImageLayout currentLayout = vk::ImageLayout::eUndefined;
 };
 
 class ComputeMaterial{
@@ -30,6 +30,10 @@ class ComputeMaterial{
     //eShaderReadOnlyOptimal to sample it in a later pass, eGeneral to keep writing to it
     void setStorageImage(uint32_t binding, const VulkanImage& image,
                          vk::ImageLayout finalLayout = vk::ImageLayout::eGeneral);
+
+    //Read-only input for a dispatch. The image must already be in eShaderReadOnlyOptimal,
+    //which is where a render pass or a previous dispatch leaves it
+    void setSampledImage(uint32_t binding, const SampledImage& image);
 
     //getters
     const VulkanComputePipeline& getPipeline() const {return *pipeline;}
