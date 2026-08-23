@@ -38,7 +38,7 @@ class RenderTarget{
     const VulkanImage& getColorImage() const {return colorImage;}
     const VulkanImage* getDepthImage() const {return depthImage ? &*depthImage : nullptr;}
     bool hasDepth() const {return depthImage.has_value();}
-    SampledImage getSampled() const {return SampledImage{*colorImage.getImageView(), *sampler};}
+    SampledImage getSampled() const {return SampledImage{*colorImage.getImageView(), *sampler, &colorImage, colorImage.getGeneration()};}
 
     vk::Extent2D getExtent() const {return extent;}
     vk::Format getColorFormat() const {return colorImage.getFormat();}

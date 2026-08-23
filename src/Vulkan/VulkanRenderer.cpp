@@ -1,23 +1,6 @@
 #include "VulkanRenderer.h"
+#include "Barriers.h"
 #include <glm/glm.hpp>
-
-static void barrierDstFor(vk::ImageLayout layout, vk::PipelineStageFlags2& stage, vk::AccessFlags2& access){
-    switch(layout){
-        case vk::ImageLayout::eShaderReadOnlyOptimal:
-            stage = vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader;
-            access = vk::AccessFlagBits2::eShaderRead;
-            break;
-        case vk::ImageLayout::eTransferSrcOptimal:
-            stage = vk::PipelineStageFlagBits2::eCopy;
-            access = vk::AccessFlagBits2::eTransferRead;
-            break;
-        default:
-            stage = vk::PipelineStageFlagBits2::eBottomOfPipe;
-            access = {};
-            break;
-
-    }
-}
 
 VulkanRenderer::VulkanRenderer(
     const VulkanDevice& device,
@@ -61,42 +44,26 @@ void VulkanRenderer::createSyncObjects(){
     }
 }
 
-void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, bool isOffscreen){
-
+void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent){
 
 const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
 
-//Transition: undefined - color attachment
-vk::ImageMemoryBarrier2 toColor;
-toColor.srcStageMask = isOffscreen ? vk::PipelineStageFlagBits2::eFragmentShader : vk::PipelineStageFlagBits2::eTopOfPipe;
-toColor.srcAccessMask = isOffscreen ? vk::AccessFlagBits2::eShaderRead : vk::AccessFlags2{};
-toColor.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
-toColor.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
-toColor.oldLayout = vk::ImageLayout::eUndefined;
-toColor.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
-toColor.image = colorImage;
-toColor.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
+//A tracked image is transitioned out of the layout it is really in, so whatever it holds
+//survives. A swapchain image is not tracked, and eUndefined says its contents are free
+const VulkanImage* trackedColor = currentTarget ? &currentTarget->getColorImage() : nullptr;
+const vk::ImageLayout colorFrom = trackedColor ? trackedColor->getCurrentLayout() : vk::ImageLayout::eUndefined;
 
-vk::DependencyInfo toColorDep;
-toColorDep.imageMemoryBarrierCount = 1;
-toColorDep.pImageMemoryBarriers = &toColor;
-commandBuffer.pipelineBarrier2(toColorDep);
+recordBarrier(commandBuffer, imageBarrier(colorImage, colorFrom, vk::ImageLayout::eColorAttachmentOptimal));
+if(trackedColor){
+    trackedColor->setCurrentLayout(vk::ImageLayout::eColorAttachmentOptimal);
+}
 
 if(depth){
-    vk::ImageMemoryBarrier2 toDepth;
-    toDepth.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
-    toDepth.srcAccessMask = {};
-    toDepth.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests;
-    toDepth.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
-    toDepth.oldLayout = vk::ImageLayout::eUndefined;
-    toDepth.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    toDepth.image = *depth->getImage();
-    toDepth.subresourceRange = {vk::ImageAspectFlagBits::eDepth,0,1,0,1};
-
-    vk::DependencyInfo toDepthDep;
-    toDepthDep.imageMemoryBarrierCount = 1;
-    toDepthDep.pImageMemoryBarriers = &toDepth;
-    commandBuffer.pipelineBarrier2(toDepthDep);
+    recordBarrier(commandBuffer, imageBarrier(*depth->getImage(),
+                                              depth->getCurrentLayout(),
+                                              vk::ImageLayout::eDepthAttachmentOptimal,
+                                              vk::ImageAspectFlagBits::eDepth));
+    depth->setCurrentLayout(vk::ImageLayout::eDepthAttachmentOptimal);
 }
 
 //color attachment info
@@ -177,10 +144,13 @@ void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model, const Materi
 
 
 
+    if(pipeline.getPushConstantSize() < sizeof(ObjectData)){
+        throw std::runtime_error("draw: pipeline's push constant range is too small for ObjectData");
+    }
+
     ObjectData objectData;
     objectData.model = model;
     objectData.normalMatrix = glm::transpose(glm::inverse(model));
-    
 
     commandBuffer.pushConstants<ObjectData>(*pipeline.getPipelineLayout(),
     vk::ShaderStageFlagBits::eVertex,0,objectData);
@@ -207,24 +177,7 @@ void VulkanRenderer::endPass(){
     vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain.getImages()[currentImageIndex];
     vk::ImageLayout finalLayout = currentTarget ? currentTarget->getFinalLayout() : vk::ImageLayout::ePresentSrcKHR;
 
-    vk::PipelineStageFlags2 dstStage;
-    vk::AccessFlags2 dstAccess;
-    barrierDstFor(finalLayout, dstStage, dstAccess);
-    
-    vk::ImageMemoryBarrier2 toFinal;
-    toFinal.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
-    toFinal.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
-    toFinal.dstStageMask = dstStage;
-    toFinal.dstAccessMask = dstAccess;
-    toFinal.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
-    toFinal.newLayout = finalLayout;
-    toFinal.image = colorImage;
-    toFinal.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
-
-    vk::DependencyInfo dep;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &toFinal;
-    commandBuffer.pipelineBarrier2(dep);
+    recordBarrier(commandBuffer, imageBarrier(colorImage, vk::ImageLayout::eColorAttachmentOptimal, finalLayout));
 
     if(currentTarget){
         currentTarget->getColorImage().setCurrentLayout(finalLayout);
@@ -468,7 +421,7 @@ void VulkanRenderer::beginPass(){
     startPass(swapchain.getImages()[currentImageIndex],
                 *swapchain.getImageViews()[currentImageIndex],
                 depthImage,
-                swapchain.getExtent(), false);
+                swapchain.getExtent());
 
 }
 
@@ -484,7 +437,7 @@ void VulkanRenderer::beginPass(const RenderTarget& target){
     startPass(*target.getColorImage().getImage(),
                 *target.getColorImage().getImageView(),
                 target.getDepthImage(),
-                target.getExtent(), true);
+                target.getExtent());
 }
 
 void VulkanRenderer::bindMaterial(const Material& material) {
@@ -543,24 +496,17 @@ void VulkanRenderer::dispatch(const ComputeMaterial& material,
             vk::ArrayProxy<const uint8_t>(pushSize, static_cast<const uint8_t*>(pushData)));
     }
 
-    //storage images must be in eGeneral while the dispatch runs. currentLayout starts as
-    //eUndefined, which discards contents - correct only for the first dispatch, and after
-    //that the slot remembers where the previous dispatch left the image
-    if(!material.getStorageImages().empty()){
-        std::vector<vk::ImageMemoryBarrier2> toGeneral;
-        toGeneral.reserve(material.getStorageImages().size());
+    //storage images are moved into eGeneral for the dispatch and back to where the caller
+    //wants them. The image itself carries the layout, so two materials agree about it
+    const std::vector<StorageImageSlot>& images = material.getStorageImages();
 
-        for(const StorageImageSlot& slot : material.getStorageImages()){
-            vk::ImageMemoryBarrier2 barrier;
-            barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
-            barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
-            barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
-            barrier.dstAccessMask = vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eShaderRead;
-            barrier.oldLayout = slot.image->getCurrentLayout();
-            barrier.newLayout = vk::ImageLayout::eGeneral;
-            barrier.image = *slot.image->getImage();
-            barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
-            toGeneral.push_back(barrier);
+    if(!images.empty()){
+        std::vector<vk::ImageMemoryBarrier2> toGeneral;
+        toGeneral.reserve(images.size());
+        for(const StorageImageSlot& slot : images){
+            toGeneral.push_back(imageBarrier(*slot.image->getImage(),
+                                             slot.image->getCurrentLayout(),
+                                             vk::ImageLayout::eGeneral));
         }
 
         vk::DependencyInfo dep;
@@ -570,22 +516,13 @@ void VulkanRenderer::dispatch(const ComputeMaterial& material,
 
     commandBuffer.dispatch(groupsX, groupsY, groupsZ);
 
-    if(!material.getStorageImages().empty()){
+    if(!images.empty()){
         std::vector<vk::ImageMemoryBarrier2> toFinal;
-        toFinal.reserve(material.getStorageImages().size());
-
-        for(const StorageImageSlot& slot : material.getStorageImages()){
-            vk::ImageMemoryBarrier2 barrier;
-            barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
-            barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
-            barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
-            barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead;
-            barrier.oldLayout = vk::ImageLayout::eGeneral;
-            barrier.newLayout = slot.finalLayout;
-            barrier.image = *slot.image->getImage();
-            barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
-            toFinal.push_back(barrier);
-
+        toFinal.reserve(images.size());
+        for(const StorageImageSlot& slot : images){
+            toFinal.push_back(imageBarrier(*slot.image->getImage(),
+                                           vk::ImageLayout::eGeneral,
+                                           slot.finalLayout));
             slot.image->setCurrentLayout(slot.finalLayout);
         }
 
@@ -594,15 +531,50 @@ void VulkanRenderer::dispatch(const ComputeMaterial& material,
         commandBuffer.pipelineBarrier2(dep);
     }
 
-    //deliberately wide: dispatch does not know who reads the result next
-    vk::MemoryBarrier2 barrier;
-    barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
-    barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
-    barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands | vk::PipelineStageFlagBits2::eHost;
-    barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eHostRead;
+    //buffers carry no layout, so they need a plain memory barrier. Images got their own
+    //above, and a dispatch that binds no buffer needs none of this
+    if(material.hasStorageBuffers()){
+        vk::MemoryBarrier2 barrier;
+        barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
+        barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands | vk::PipelineStageFlagBits2::eHost;
+        barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eHostRead;
 
-    vk::DependencyInfo dep;
-    dep.memoryBarrierCount = 1;
-    dep.pMemoryBarriers = &barrier;
-    commandBuffer.pipelineBarrier2(dep);
+        vk::DependencyInfo dep;
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &barrier;
+        commandBuffer.pipelineBarrier2(dep);
+    }
+}
+
+ImageData VulkanRenderer::readLastFrame() const{
+    if(frameActive){
+        throw std::runtime_error("readLastFrame: a frame is still being recorded (missing endFrame)");
+    }
+    if(!swapchain.canReadback()){
+        throw std::runtime_error("readLastFrame: the swapchain was not created for readback (SwapchainConfig::allowReadback, or the surface does not support it)");
+    }
+
+    device.getDevice().waitIdle();
+
+    const vk::Image image = swapchain.getImages()[currentImageIndex];
+    const vk::Extent2D extent = swapchain.getExtent();
+    const vk::Format format = swapchain.getSurfaceFormat().format;
+    const vk::DeviceSize bytes = vk::DeviceSize(extent.width) * extent.height * bytesPerPixel(format);
+
+    //the image was left ready for presentation, so it is borrowed and put back
+    command.transitionImageLayout(image, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferSrcOptimal);
+
+    VulkanBuffer staging(device, bytes, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::CPU_TO_GPU);
+    command.copyImageToBuffer(image, staging.getBuffer(), extent);
+
+    command.transitionImageLayout(image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);
+
+    ImageData out;
+    out.extent = extent;
+    out.format = format;
+    out.pixels.resize(static_cast<size_t>(bytes));
+    staging.download(out.pixels.data(), bytes);
+
+    return out;
 }

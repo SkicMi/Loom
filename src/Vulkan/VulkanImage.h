@@ -31,6 +31,9 @@ class VulkanImage{
     //Where this image currently is. Whoever moves it records it here, so a second user
     //does not transition out of a layout the image left long ago
     vk::ImageLayout getCurrentLayout() const {return currentLayout;}
+
+    //Bumped by recreate. Whoever cached a view can notice it went stale
+    uint64_t getGeneration() const {return generation;}
     void setCurrentLayout(vk::ImageLayout layout) const {currentLayout = layout;}
     vk::Extent2D getExtent() const {return extent;}
 
@@ -40,6 +43,7 @@ class VulkanImage{
     vk::Extent2D extent;
 
     mutable vk::ImageLayout currentLayout = vk::ImageLayout::eUndefined;
+    uint64_t generation = 0;
 
     vk::raii::Image image = nullptr;
     vk::raii::DeviceMemory memory = nullptr;

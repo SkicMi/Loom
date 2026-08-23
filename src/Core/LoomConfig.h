@@ -39,8 +39,10 @@ struct LoomConfig{
 
     
 
-    //Descriptors
+    //Descriptors. descriptorsPerType 0 means "same as maxDescriptorSets", which is what a
+    //small app wants; a scene with many materials raises one or both
     uint32_t maxDescriptorSets = 64;
+    uint32_t descriptorsPerType = 0;
     
 
 

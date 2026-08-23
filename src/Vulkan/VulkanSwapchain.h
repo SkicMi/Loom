@@ -17,6 +17,10 @@ struct SwapchainConfig {
         vk::ColorSpaceKHR::eSrgbNonlinear
     };
     vk::ImageUsageFlags imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+
+    //Lets the window be read back. Added only if the surface supports it, and it is what
+    //makes a window-level regression test possible at all
+    bool allowReadback = true;
     uint32_t preferredImageCount = 0; //0 = use minImageCount + 1 heuristics
 };
 
@@ -36,6 +40,7 @@ class VulkanSwapchain{
     const vk::SurfaceFormatKHR& getSurfaceFormat() const {return surfaceFormat;}
     const vk::Extent2D& getExtent() const {return extent;}
     const std::vector<vk::Image>& getImages() const {return images;}
+    bool canReadback() const {return readbackAvailable;}
 
 
     void recreateSwapchain();
@@ -44,6 +49,8 @@ class VulkanSwapchain{
 
 
     private:
+    bool readbackAvailable = false;
+
     const VulkanInstance& instance;
     const Window& window;
     const VulkanDevice& device;

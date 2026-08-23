@@ -1,4 +1,5 @@
 #include "VulkanCommand.h"
+#include "Barriers.h"
 
 VulkanCommand::VulkanCommand(const VulkanDevice& device, const CommandConfig& config) : device(device), config(config){
     createCommandPool();
@@ -69,35 +70,26 @@ void VulkanCommand::copyBuffer(const vk::raii::Buffer& src, const vk::raii::Buff
         device.getGraphicsQueue().waitIdle();
     }
 
-    void VulkanCommand::transitionImageLayout(const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect) const{
-        vk::ImageMemoryBarrier2 barrier;
-        barrier.oldLayout = oldLayout;
-        barrier.newLayout = newLayout;
-        barrier.image = *image;
-        barrier.subresourceRange = {aspect,0 , 1, 0 , 1};
+    void VulkanCommand::transitionImageLayout(vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect) const{
+        const vk::ImageMemoryBarrier2 barrier = imageBarrier(image, oldLayout, newLayout, aspect);
 
-        if(oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eTransferDstOptimal){
-            barrier.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
-            barrier.srcAccessMask = {};
-            barrier.dstStageMask = vk::PipelineStageFlagBits2::eCopy;
-            barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
-        }
-        else if(oldLayout == vk::ImageLayout::eTransferDstOptimal && newLayout == vk::ImageLayout::eShaderReadOnlyOptimal){
-            barrier.srcStageMask = vk::PipelineStageFlagBits2::eCopy;
-            barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
-            barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
-            barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
-        }
-        else{
-            throw std::runtime_error("transitionImageLayout: unssuported layout combionation");
-        }
         oneTimeSubmit([&](const vk::raii::CommandBuffer& commandBuffer){
-            vk::DependencyInfo dep;
-            dep.imageMemoryBarrierCount = 1;
-            dep.pImageMemoryBarriers = &barrier;
-            commandBuffer.pipelineBarrier2(dep);
-
+            recordBarrier(commandBuffer, barrier);
         });
+    }
+
+    void VulkanCommand::transitionImageLayout(const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect) const{
+        transitionImageLayout(*image, oldLayout, newLayout, aspect);
+    }
+
+    void VulkanCommand::transitionImageLayout(const VulkanImage& image, vk::ImageLayout newLayout) const{
+        vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor;
+        if(image.getUsage() & vk::ImageUsageFlagBits::eDepthStencilAttachment){
+            aspect = vk::ImageAspectFlagBits::eDepth;
+        }
+
+        transitionImageLayout(image.getImage(), image.getCurrentLayout(), newLayout, aspect);
+        image.setCurrentLayout(newLayout);
     }
 
     void VulkanCommand::copyBufferToImage(const vk::raii::Buffer& src, const vk::raii::Image& dst, vk::Extent2D extent, vk::ImageAspectFlags aspect) const{
@@ -117,7 +109,7 @@ void VulkanCommand::copyBuffer(const vk::raii::Buffer& src, const vk::raii::Buff
         });
     }
 
-    void VulkanCommand::copyImageToBuffer(const vk::raii::Image& src, const vk::raii::Buffer& dst, vk::Extent2D extent, vk::ImageAspectFlags aspect) const{
+    void VulkanCommand::copyImageToBuffer(vk::Image src, const vk::raii::Buffer& dst, vk::Extent2D extent, vk::ImageAspectFlags aspect) const{
         oneTimeSubmit([&](const vk::raii::CommandBuffer& commandBuffer){
             vk::BufferImageCopy region;
             region.bufferOffset = 0;
@@ -130,8 +122,12 @@ void VulkanCommand::copyBuffer(const vk::raii::Buffer& src, const vk::raii::Buff
             region.imageOffset = vk::Offset3D{0,0,0};
             region.imageExtent = vk::Extent3D{extent.width,extent.height,1};
 
-            commandBuffer.copyImageToBuffer(*src, vk::ImageLayout::eTransferSrcOptimal, *dst, region);
+            commandBuffer.copyImageToBuffer(src, vk::ImageLayout::eTransferSrcOptimal, *dst, region);
         });
+    }
+
+    void VulkanCommand::copyImageToBuffer(const vk::raii::Image& src, const vk::raii::Buffer& dst, vk::Extent2D extent, vk::ImageAspectFlags aspect) const{
+        copyImageToBuffer(*src, dst, extent, aspect);
     }
 
 

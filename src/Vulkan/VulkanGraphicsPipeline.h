@@ -4,6 +4,7 @@
 #include "VulkanDevice.h"
 #include "VulkanSwapchain.h"
 #include "Vertex.h"
+#include <glm/glm.hpp>
 
 enum class BlendMode{
     None,
@@ -36,6 +37,16 @@ struct PipelineConfig{
     //Color blending
     BlendMode blendMode = BlendMode::None;
 
+    //Colour attachment format. eUndefined means "whatever the swapchain uses", which is
+    //what a pipeline drawing to the window wants. A float target for accumulation, or a
+    //unorm target a compute pass will read, sets it explicitly
+    vk::Format colorFormat = vk::Format::eUndefined;
+
+    //Push constant range. Loom pushes ObjectData in draw, so a pipeline that draws meshes
+    //needs at least that much. A fullscreen pipeline can set 0 and carry no range at all
+    uint32_t pushConstantSize = sizeof(glm::mat4) * 2;
+    vk::ShaderStageFlags pushConstantStages = vk::ShaderStageFlagBits::eVertex;
+
     //Depth
     bool depthTestEnable = false;
     bool depthWriteEnable = false;
@@ -56,6 +67,7 @@ class VulkanGraphicsPipeline{
 
 
     vk::Format depthFormat = vk::Format::eUndefined;
+    vk::Format colorFormat = vk::Format::eUndefined;
     static constexpr uint32_t frameSet = 0;
     static constexpr uint32_t materialSet = 1;
 
@@ -66,6 +78,8 @@ class VulkanGraphicsPipeline{
     const vk::raii::DescriptorSetLayout& getMaterialSetLayout() const {return setLayouts[materialSet];}
     const vk::raii::DescriptorSetLayout& getFrameSetLayout() const {return setLayouts[frameSet];}
     bool hasDescriptors() const {return !config.descriptorBindings.empty();}
+    uint32_t getPushConstantSize() const {return config.pushConstantSize;}
+    vk::Format getColorFormat() const {return colorFormat;}
    
     
 

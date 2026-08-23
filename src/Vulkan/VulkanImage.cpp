@@ -66,6 +66,7 @@ void VulkanImage::build(){
 
 void VulkanImage::recreate(vk::Extent2D newExtent){
     currentLayout = vk::ImageLayout::eUndefined; //a fresh image is in no layout at all
+    ++generation;                                //and every view of the old one is dead
     extent = newExtent;
 
     imageView = nullptr;

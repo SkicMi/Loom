@@ -1,4 +1,5 @@
 #include "Material.h"
+#include <cstring>
 
 
 
@@ -7,7 +8,8 @@ Material::Material(const VulkanDevice& device,
     const vk::raii::DescriptorPool& pool,
     const VulkanGraphicsPipeline& pipeline,
     SampledImage image,
-    const MaterialData& data) : pipeline(&pipeline), data(data) {
+    const MaterialData& data) : pipeline(&pipeline),
+    payload(reinterpret_cast<const uint8_t*>(&data), reinterpret_cast<const uint8_t*>(&data) + sizeof(MaterialData)) {
             build(device, command, pool, image);
 
 }
@@ -16,7 +18,23 @@ Material::Material(const VulkanDevice& device,
     const VulkanCommand& command,
     const vk::raii::DescriptorPool& pool,
     const VulkanGraphicsPipeline& pipeline,
-    const MaterialData& data) : pipeline(&pipeline), data(data) {
+    SampledImage image,
+    const void* data,
+    size_t size) : pipeline(&pipeline){
+
+        if(data == nullptr || size == 0){
+            throw std::runtime_error("Material: payload is empty");
+        }
+        payload.assign(reinterpret_cast<const uint8_t*>(data), reinterpret_cast<const uint8_t*>(data) + size);
+        build(device, command, pool, image);
+}
+
+Material::Material(const VulkanDevice& device,
+    const VulkanCommand& command,
+    const vk::raii::DescriptorPool& pool,
+    const VulkanGraphicsPipeline& pipeline,
+    const MaterialData& data) : pipeline(&pipeline),
+    payload(reinterpret_cast<const uint8_t*>(&data), reinterpret_cast<const uint8_t*>(&data) + sizeof(MaterialData)) {
             build(device, command, pool, SampledImage{});
 
 }
@@ -50,15 +68,15 @@ void Material::build(const VulkanDevice& device,
         vk::raii::DescriptorSets sets(device.getDevice(), allocInfo);
         descriptorSets.push_back(std::move(sets[0]));
 
-        dataBuffers.emplace_back(device, sizeof(MaterialData),
+        dataBuffers.emplace_back(device, payload.size(),
                                 vk::BufferUsageFlagBits::eUniformBuffer,
                                 MemoryUsage::CPU_TO_GPU);
-        dataBuffers[i].upload(&data, sizeof(MaterialData));
+        dataBuffers[i].upload(payload.data(), payload.size());
 
         vk::DescriptorBufferInfo bufferInfo;
         bufferInfo.buffer = *dataBuffers[i].getBuffer();
         bufferInfo.offset = 0;
-        bufferInfo.range = sizeof(MaterialData);
+        bufferInfo.range = payload.size();
 
         vk::WriteDescriptorSet bufferWrite;
         bufferWrite.dstSet = *descriptorSets[i];
@@ -93,14 +111,42 @@ void Material::writeImage(size_t frame) const{
 }
 
 void Material::uploadIfDirty(size_t frame) const{
+    refreshImageIfStale();
+
     if(dirty[frame]){
-        dataBuffers[frame].upload(&data, sizeof(MaterialData));
+        dataBuffers[frame].upload(payload.data(), payload.size());
         dirty[frame] = 0;
     }
     if(imageDirty[frame]){
         writeImage(frame);
         imageDirty[frame] = 0;
     }
+}
+
+//A render target that resized destroyed its view. The image counts its rebuilds, so the
+//material can notice on its own instead of the target having to keep a list of materials
+void Material::refreshImageIfStale() const{
+    if(image.source == nullptr) return;
+    if(image.source->getGeneration() == image.generation) return;
+
+    image.view = *image.source->getImageView();
+    image.generation = image.source->getGeneration();
+    std::fill(imageDirty.begin(), imageDirty.end(), uint8_t(1));
+}
+
+const MaterialData& Material::getData() const{
+    if(payload.size() != sizeof(MaterialData)){
+        throw std::runtime_error("getData: this material does not carry MaterialData");
+    }
+    return *reinterpret_cast<const MaterialData*>(payload.data());
+}
+
+void Material::setData(const void* newData, size_t size){
+    if(size != payload.size()){
+        throw std::runtime_error("setData: payload size does not match the one the material was built with");
+    }
+    std::memcpy(payload.data(), newData, size);
+    std::fill(dirty.begin(), dirty.end(), uint8_t(1));
 }
 
 void Material::setSampledImage(const SampledImage& newImage){
@@ -115,21 +161,28 @@ void Material::setSampledImage(const SampledImage& newImage){
 }
 
 void Material::setData(const MaterialData& newData){
-    data = newData;
-    std::fill(dirty.begin(), dirty.end(), uint8_t(1));
+    setData(&newData, sizeof(MaterialData));
+}
+
+//The three setters below only mean anything for the default payload
+static MaterialData& asMaterialData(std::vector<uint8_t>& payload){
+    if(payload.size() != sizeof(MaterialData)){
+        throw std::runtime_error("Material: this material does not carry MaterialData");
+    }
+    return *reinterpret_cast<MaterialData*>(payload.data());
 }
 
 void Material::setBaseColor(const glm::vec4& newBaseColor){
-    data.baseColor = newBaseColor;
+    asMaterialData(payload).baseColor = newBaseColor;
     std::fill(dirty.begin(), dirty.end(), uint8_t(1));
 }
 
 void Material::setShininess(float newShininess){
-    data.shininess = newShininess;
+    asMaterialData(payload).shininess = newShininess;
     std::fill(dirty.begin(), dirty.end(), uint8_t(1));
 }
 
 void Material::setSpecularStrength(float newSpecularStrength){
-    data.specularStrength = newSpecularStrength;
+    asMaterialData(payload).specularStrength = newSpecularStrength;
     std::fill(dirty.begin(), dirty.end(), uint8_t(1));
 }

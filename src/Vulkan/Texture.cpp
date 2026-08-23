@@ -30,11 +30,11 @@ Texture::Texture(const VulkanDevice& device,
 
             staging.upload(pixels,bytes);
 
-            command.transitionImageLayout(image.getImage(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+            command.transitionImageLayout(image, vk::ImageLayout::eTransferDstOptimal);
 
             command.copyBufferToImage(staging.getBuffer(), image.getImage(), extent);
 
-            command.transitionImageLayout(image.getImage(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+            command.transitionImageLayout(image, vk::ImageLayout::eShaderReadOnlyOptimal);
         }
 
         vk::SamplerCreateInfo samplerInfo;

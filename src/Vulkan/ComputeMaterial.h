@@ -39,11 +39,13 @@ class ComputeMaterial{
     const VulkanComputePipeline& getPipeline() const {return *pipeline;}
     const vk::raii::DescriptorSet& getDescriptorSet() const {return descriptorSet;}
     const std::vector<StorageImageSlot>& getStorageImages() const {return storageImages;}
+    bool hasStorageBuffers() const {return storageBuffers > 0;}
 
     private:
     const VulkanDevice& device;
     const VulkanComputePipeline* pipeline;
     vk::raii::DescriptorSet descriptorSet = nullptr;
     std::vector<StorageImageSlot> storageImages;
+    uint32_t storageBuffers = 0;
 
 };

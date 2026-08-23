@@ -22,6 +22,16 @@ class Material{
         const VulkanGraphicsPipeline& pipeline, 
         const MaterialData& data);
 
+    //Any payload the shader declares at set 1 binding 1. MaterialData is what Loom offers
+    //by default, not what the library is able to carry
+    Material(const VulkanDevice& device,
+        const VulkanCommand& command,
+        const vk::raii::DescriptorPool& pool,
+        const VulkanGraphicsPipeline& pipeline,
+        SampledImage image,
+        const void* data,
+        size_t size);
+
     
 
     Material(const Material&) = delete;
@@ -40,13 +50,15 @@ class Material{
 
     //Runtime setters, take effect the next frame this material is drawn in. Withing one frame : Last value set wins for every draw using this material
     void setData(const MaterialData& newData);
+    void setData(const void* newData, size_t size);
     void setSampledImage(const SampledImage& newImage);
     void setBaseColor(const glm::vec4& newBaseColor);
     void setShininess(float newShininess);
     void setSpecularStrength(float newSpecularStrength);
 
     //getters
-    const MaterialData& getData() const {return data;}
+    const MaterialData& getData() const;
+    size_t getDataSize() const {return payload.size();}
     const VulkanGraphicsPipeline& getPipeline() const{return *pipeline;}
     bool hasDescriptorSet() const {return !descriptorSets.empty();}
     const vk::raii::DescriptorSet& getDescriptorSet(size_t frame) const {return descriptorSets[frame];}
@@ -56,8 +68,8 @@ class Material{
     private:
     const VulkanGraphicsPipeline* pipeline;
     const VulkanDevice* device = nullptr;
-    MaterialData data;
-    SampledImage image;
+    std::vector<uint8_t> payload;
+    mutable SampledImage image;
     std::vector<vk::raii::DescriptorSet> descriptorSets;
     mutable std::vector<VulkanBuffer> dataBuffers;
     mutable std::vector<uint8_t> dirty;
@@ -67,6 +79,8 @@ class Material{
                 const VulkanCommand& command,
                 const vk::raii::DescriptorPool& pool,
                 SampledImage image);
+
+    void refreshImageIfStale() const;
 
     void writeImage(size_t frame) const;
 

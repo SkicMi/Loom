@@ -120,14 +120,15 @@ void VulkanGraphicsPipeline::createPipeline(){
 
 
     vk::PushConstantRange pushRange;
-    pushRange.stageFlags = vk::ShaderStageFlagBits::eVertex;
+    pushRange.stageFlags = config.pushConstantStages;
     pushRange.offset = 0;
-    pushRange.size = sizeof(ObjectData);
-
+    pushRange.size = config.pushConstantSize;
 
     //Pipeline layout
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
-    pipelineLayoutInfo.setPushConstantRanges(pushRange);
+    if(config.pushConstantSize > 0){
+        pipelineLayoutInfo.setPushConstantRanges(pushRange);
+    }
 
     std::vector<vk::DescriptorSetLayoutBinding> frameBindings;
     if(config.useFrameData){
@@ -167,7 +168,9 @@ void VulkanGraphicsPipeline::createPipeline(){
     pipelineLayout = vk::raii::PipelineLayout(device.getDevice(),pipelineLayoutInfo);
 
     //Dynamic rendering - rendering info
-    vk::Format colorFormat = swapchain.getSurfaceFormat().format;
+    colorFormat = config.colorFormat == vk::Format::eUndefined
+                ? swapchain.getSurfaceFormat().format
+                : config.colorFormat;
 
     vk::PipelineRenderingCreateInfo renderingInfo;
     renderingInfo.colorAttachmentCount = 1;

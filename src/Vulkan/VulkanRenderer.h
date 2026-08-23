@@ -6,6 +6,7 @@
 #include "VulkanBuffer.h"
 #include "VulkanImage.h"
 #include "RenderTarget.h"
+#include "ImageData.h"
 #include "Core/Camera.h"
 #include "Material.h"
 #include "ComputeMaterial.h"
@@ -54,6 +55,9 @@ class VulkanRenderer{
                   const void* pushData = nullptr, uint32_t pushSize = 0);
     void endFrame();
 
+    //The window, read back. Only valid between frames
+    ImageData readLastFrame() const;
+
     void setCamera(const Camera& cam) { camera = &cam;}
     void setEnvironment(const Environment& newEnvironment) { environment = &newEnvironment;}
     void addLight(const Light& newLight) {lights.push_back(&newLight);}
@@ -92,7 +96,7 @@ class VulkanRenderer{
 
     void createSyncObjects();
     void createFrameResources();
-    void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, bool isoffscreen);
+    void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent);
     void recreateSwapchain();
     void bindMaterial(const Material& material);
 

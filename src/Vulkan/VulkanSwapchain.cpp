@@ -91,7 +91,16 @@ void VulkanSwapchain::createSwapchain(){
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = config.imageUsage;
+    vk::ImageUsageFlags usage = config.imageUsage;
+    readbackAvailable = false;
+    if(config.allowReadback){
+        const vk::SurfaceCapabilitiesKHR capabilities = device.getPhysicalDevice().getSurfaceCapabilitiesKHR(*instance.getSurface());
+        if(capabilities.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferSrc){
+            usage |= vk::ImageUsageFlagBits::eTransferSrc;
+            readbackAvailable = true;
+        }
+    }
+    createInfo.imageUsage = usage;
 
     const QueueFamilyIndices& indices = device.getQueueIndices();
     uint32_t families[] = {

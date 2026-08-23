@@ -30,6 +30,7 @@ void ComputeMaterial::setStorageBuffer(uint32_t binding, const VulkanBuffer& buf
     write.setBufferInfo(bufferInfo);
 
     device.getDevice().updateDescriptorSets(write,nullptr);
+    ++storageBuffers;
 }
 
 void ComputeMaterial::setStorageImage(uint32_t binding, const VulkanImage& image, vk::ImageLayout finalLayout){

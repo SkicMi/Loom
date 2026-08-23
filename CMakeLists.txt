@@ -89,8 +89,11 @@ message(STATUS "Slang compiler: ${SLANGC_EXECUTABLE}")
 set(LOOM_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${LOOM_SHADER_OUTPUT_DIR})
 
+#   shaders/       - shaders the library ships
+#   shaders/tests/ - shaders only the test harnesses use
 file(GLOB LOOM_SHADER_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tests/*.slang
 )
 
 set(LOOM_COMPILED_SHADERS "")
