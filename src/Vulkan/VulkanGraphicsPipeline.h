@@ -82,8 +82,6 @@ class VulkanGraphicsPipeline{
 
     
 
-    static std::vector<char> readFile(const std::string& path);
-    vk::raii::ShaderModule createShaderModule(const std::vector<char>& code);
     void createPipeline();
 
 

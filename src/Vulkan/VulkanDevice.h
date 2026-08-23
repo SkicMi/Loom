@@ -2,8 +2,18 @@
 #include <vulkan/vulkan_raii.hpp>
 #include "VulkanInstance.h"
 #include <optional>
+#include <string>
 #include <set>
 
+enum class DevicePreference{
+    Discrete,
+    Integrated,
+    Any
+};
+
+struct DeviceConfig{
+    DevicePreference preference = DevicePreference::Discrete;
+};
 
 //Queue Family indices struct used for creation of Device Queue Info
 struct QueueFamilyIndices{
@@ -14,7 +24,7 @@ struct QueueFamilyIndices{
 
  class VulkanDevice{
     public:
-    VulkanDevice(const VulkanInstance& instance);
+    VulkanDevice(const VulkanInstance& instance, const DeviceConfig& config);
 
     vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling, vk::FormatFeatureFlags features) const;
     uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) const ;
@@ -30,9 +40,12 @@ struct QueueFamilyIndices{
     const vk::raii::Queue& getGraphicsQueue() const {return graphicsQueue;}
     const vk::raii::Queue& getPresentQueue() const {return presentQueue;}
     const QueueFamilyIndices& getQueueIndices() const {return queueIndices;}
+    std::string getDeviceName() const {return std::string(physicalDevice.getProperties().deviceName.data());}
+    vk::PhysicalDeviceType getDeviceType() const {return physicalDevice.getProperties().deviceType;}
 
     private:
     const VulkanInstance& instance;
+    DeviceConfig config;
     vk::raii::PhysicalDevice physicalDevice = nullptr;
     vk::raii::Device device = nullptr;
     vk::raii::Queue graphicsQueue = nullptr;

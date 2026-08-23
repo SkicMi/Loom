@@ -8,6 +8,7 @@
 #include "RenderTarget.h"
 #include "Core/Camera.h"
 #include "Material.h"
+#include "ComputeMaterial.h"
 #include "Mesh.h"
 #include "Core/Light.h"
 #include "Core/FrameData.h"
@@ -48,6 +49,9 @@ class VulkanRenderer{
     void draw(const Mesh& mesh, const glm::mat4& model = glm::mat4(1.0f));
     void draw(const Mesh& mesh, const glm::mat4& model, const Material& material); //overload fuction for model with material
     void drawFullscreen(const Material& material);
+    void dispatch(const ComputeMaterial& material,
+                  uint32_t groupsX, uint32_t groupsY = 1, uint32_t groupsZ = 1,
+                  const void* pushData = nullptr, uint32_t pushSize = 0);
     void endFrame();
 
     void setCamera(const Camera& cam) { camera = &cam;}

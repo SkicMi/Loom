@@ -76,10 +76,15 @@ endif()
 message(STATUS "Slang compiler: ${SLANGC_EXECUTABLE}")
 
 # ----------------------------------------------------------------------------
-# Kompilacija shadera: shaders/*.slang -> build/shaders/*.vert.spv i *.frag.spv
-#   Jedan .slang file drzi oba entry pointa (vertexMain + fragmentMain) pa se
-#   prevodi dvaput, jednom po stageu. CONFIGURE_DEPENDS znaci da CMake sam
-#   primijeti novi .slang file kod builda, bez rucne rekonfiguracije.
+# Kompilacija shadera: shaders/*.slang -> build/shaders/*.{vert,frag,comp}.spv
+#   Jedan .slang file moze drzati vise entry pointa. Koje stageove file stvarno
+#   sadrzi otkriva se citanjem [shader("...")] atributa, pa se prevodi samo to -
+#   compute-only shader nema vertexMain i pokusaj prevodenja bi pukao.
+#   Imena entry pointa su konvencija: vertexMain / fragmentMain / computeMain.
+#
+#   CONFIGURE_DEPENDS znaci da CMake sam primijeti novi .slang file. Ako
+#   POSTOJECEM fileu dodas novi stage, treba rucni "cmake -S . -B build",
+#   jer se sadrzaj cita u configure koraku, a ne u buildu.
 # ----------------------------------------------------------------------------
 set(LOOM_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${LOOM_SHADER_OUTPUT_DIR})
@@ -92,11 +97,39 @@ set(LOOM_COMPILED_SHADERS "")
 
 foreach(SHADER ${LOOM_SHADER_SOURCES})
     get_filename_component(SHADER_NAME ${SHADER} NAME_WE)
+    file(READ ${SHADER} SHADER_TEXT)
 
-    # (izlazni sufiks, ime entry pointa u .slang fileu)
-    foreach(STAGE "vert;vertexMain" "frag;fragmentMain")
-        list(GET STAGE 0 STAGE_SUFFIX)
-        list(GET STAGE 1 STAGE_ENTRY)
+    # dvije paralelne liste: izlazni sufiks i ime entry pointa
+    set(STAGE_SUFFIXES "")
+    set(STAGE_ENTRIES  "")
+
+    if(SHADER_TEXT MATCHES "shader\\(\"vertex\"\\)")
+        list(APPEND STAGE_SUFFIXES vert)
+        list(APPEND STAGE_ENTRIES  vertexMain)
+    endif()
+    if(SHADER_TEXT MATCHES "shader\\(\"fragment\"\\)")
+        list(APPEND STAGE_SUFFIXES frag)
+        list(APPEND STAGE_ENTRIES  fragmentMain)
+    endif()
+    if(SHADER_TEXT MATCHES "shader\\(\"compute\"\\)")
+        list(APPEND STAGE_SUFFIXES comp)
+        list(APPEND STAGE_ENTRIES  computeMain)
+    endif()
+
+    list(LENGTH STAGE_SUFFIXES STAGE_COUNT)
+
+    if(STAGE_COUNT EQUAL 0)
+        message(WARNING "Shader ${SHADER_NAME}.slang nema nijedan [shader(...)] entry point - preskacem")
+    endif()
+
+    math(EXPR STAGE_LAST "${STAGE_COUNT} - 1")
+    foreach(STAGE_INDEX RANGE 0 ${STAGE_LAST})
+        if(STAGE_COUNT EQUAL 0)
+            break()
+        endif()
+
+        list(GET STAGE_SUFFIXES ${STAGE_INDEX} STAGE_SUFFIX)
+        list(GET STAGE_ENTRIES  ${STAGE_INDEX} STAGE_ENTRY)
 
         set(SPV_OUTPUT ${LOOM_SHADER_OUTPUT_DIR}/${SHADER_NAME}.${STAGE_SUFFIX}.spv)
 
@@ -134,6 +167,8 @@ add_library(Loom STATIC
     src/Vulkan/VulkanCommand.cpp
     src/Vulkan/VulkanRenderer.cpp
     src/Vulkan/VulkanGraphicsPipeline.cpp
+    src/Vulkan/VulkanComputePipeline.cpp
+    src/Vulkan/ComputeMaterial.cpp
     src/Vulkan/VulkanBuffer.cpp
     src/Vulkan/Mesh.cpp
     src/Vulkan/VulkanImage.cpp

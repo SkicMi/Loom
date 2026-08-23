@@ -6,6 +6,7 @@
 #include "../Vulkan/VulkanCommand.h"
 #include "../Vulkan/VulkanRenderer.h"
 #include "../Vulkan/VulkanGraphicsPipeline.h"
+#include "../Vulkan/VulkanComputePipeline.h"
 #include "LoomConfig.h"
 
 #include <optional>
@@ -15,7 +16,7 @@ class LoomInitializer{
     public:
     LoomInitializer(const LoomConfig& config) : window(config.width,config.height,config.appName),
     instance(config.appName,config.engineName,window),
-    device(instance),
+    device(instance,config.deviceConfig),
     swapchain(instance,window,device,config.swapchainConfig),
     command(device,config.commandConfig),
     depthImage(config.enableDepth ? std::optional<VulkanImage>(std::in_place, device, swapchain.getExtent(), makeDepthConfig(device, config.depthConfig)) : std::nullopt),
@@ -53,6 +54,10 @@ class LoomInitializer{
     VulkanGraphicsPipeline createPipeline(const PipelineConfig& pipelineConfig) const {
         return VulkanGraphicsPipeline(device , swapchain, pipelineConfig,
         depthImage ? depthImage ->getFormat() : vk::Format::eUndefined);
+    }
+
+    VulkanComputePipeline createComputePipeline(const ComputePipelineConfig& computeConfig) const {
+        return VulkanComputePipeline(device, computeConfig);
     }
 
     static vk::raii::DescriptorPool makeDescriptorPool(const VulkanDevice& device, const LoomConfig& config){

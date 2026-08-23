@@ -23,6 +23,7 @@ class VulkanBuffer{
 
     //getter
     const vk::raii::Buffer& getBuffer() const {return buffer;}
+    vk::DeviceSize getSize() const {return size;}
     const vk::raii::DeviceMemory& getMemory() const {return memory;}
 
     private:

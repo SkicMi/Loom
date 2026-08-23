@@ -1,6 +1,6 @@
 #include "VulkanDevice.h"
 
-VulkanDevice::VulkanDevice(const VulkanInstance& instance) : instance(instance){
+VulkanDevice::VulkanDevice(const VulkanInstance& instance, const DeviceConfig& config) : instance(instance), config(config){
     auto physicalDevices = instance.getInstance().enumeratePhysicalDevices();
     
     pickPhysicalDevice(physicalDevices);
@@ -58,6 +58,31 @@ bool VulkanDevice::checkDeviceExtensionSupport(const vk::raii::PhysicalDevice& c
 }
 
 void VulkanDevice::pickPhysicalDevice(const std::vector<vk::raii::PhysicalDevice>& candidates){
+
+    vk::PhysicalDeviceType wanted = vk::PhysicalDeviceType::eOther;
+    bool hasPreference = true;
+
+    switch(config.preference){
+        case DevicePreference::Discrete:
+        wanted = vk::PhysicalDeviceType::eDiscreteGpu;
+        break;
+        case DevicePreference::Integrated:
+        wanted = vk::PhysicalDeviceType::eIntegratedGpu;
+        break;
+        case DevicePreference::Any:
+        hasPreference = false;
+        break;
+    }
+
+    if(hasPreference){
+        for(const auto& candidate : candidates){
+            if(candidate.getProperties().deviceType == wanted && isDeviceSuitable(candidate)){
+                physicalDevice = candidate;
+                return;
+            }
+        }
+    }
+
     for(const auto& candidate : candidates){
         if(isDeviceSuitable(candidate)){
             physicalDevice = candidate;

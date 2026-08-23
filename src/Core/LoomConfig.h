@@ -5,6 +5,7 @@
 #include "../Vulkan/VulkanGraphicsPipeline.h"
 #include "../Vulkan/VulkanRenderer.h"
 #include "../Vulkan/VulkanImage.h"
+#include "../Vulkan/VulkanDevice.h"
 
 
 struct LoomConfig{
@@ -15,6 +16,9 @@ struct LoomConfig{
     std::string engineName = "Loom Engine";
 
     //Per-subsystem coniguration
+
+    //DeviceConfiguration
+    DeviceConfig deviceConfig = {};
 
     //SwapchainConfiguration
     SwapchainConfig swapchainConfig = {};
@@ -32,6 +36,8 @@ struct LoomConfig{
     //Depth
     bool enableDepth = false; //deault for 2D projects
     ImageConfig depthConfig = {};
+
+    
 
     //Descriptors
     uint32_t maxDescriptorSets = 64;

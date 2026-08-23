@@ -1,6 +1,6 @@
 #include "VulkanGraphicsPipeline.h"
+#include "ShaderModule.h"
 #include "Core/FrameData.h"
-#include <fstream>
 #include <glm/glm.hpp>
 
 VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
@@ -10,32 +10,6 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
         createPipeline();
 }
 
-std::vector<char> VulkanGraphicsPipeline::readFile(const std::string& path) {
-    //ate - at the end - opens file with position on end, binary stops that bytes from being interpreted as text
-    std::ifstream file(path, std::ios::ate | std::ios::binary); 
-
-    if(!file.is_open()){
-        throw std::runtime_error("Failed to open file: " + path);
-    }
-
-    size_t fileSize = (size_t)file.tellg();
-    std::vector<char> buffer(fileSize);
-
-    file.seekg(0);
-    file.read(buffer.data(),fileSize);
-
-    return buffer;
-}
-
-vk::raii::ShaderModule VulkanGraphicsPipeline::createShaderModule(const std::vector<char>& code){
-    
-    vk::ShaderModuleCreateInfo createInfo;
-    createInfo.codeSize = code.size(); //code size in bytes
-    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data()); //Vulkan expects array of uint32_t, so reinterpret cast is needed to convert from char to uint32_t
-
-    return vk::raii::ShaderModule(device.getDevice(),createInfo);
-}
-
 void VulkanGraphicsPipeline::createPipeline(){
 
     //depth guard
@@ -43,11 +17,8 @@ void VulkanGraphicsPipeline::createPipeline(){
         throw std::runtime_error("Pipeline: depth test enabled but depth buffer doesnt exist (LoomConfig::enableDepth)");
     }
 
-    auto vertShaderCode = readFile(config.vertShaderPath);
-    auto fragShaderCode = readFile(config.fragShaderPath);
-
-    vk::raii::ShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-    vk::raii::ShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+    vk::raii::ShaderModule vertShaderModule = loadShaderModule(device, config.vertShaderPath);
+    vk::raii::ShaderModule fragShaderModule = loadShaderModule(device, config.fragShaderPath);
 
     //Shader stage creation info
     vk::PipelineShaderStageCreateInfo vertShaderStageInfo;

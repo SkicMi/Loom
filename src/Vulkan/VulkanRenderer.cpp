@@ -509,4 +509,45 @@ void VulkanRenderer::drawFullscreen(const Material& material){
     command.getCommandBuffers()[currentFrame].draw(3,1,0,0);
 }
 
+void VulkanRenderer::dispatch(const ComputeMaterial& material,
+                              uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ,
+                              const void* pushData, uint32_t pushSize){
 
+    if(!frameActive){
+        throw std::runtime_error("dispatch: frame not started (missing beginFrame)");
+    }
+    if(passActive){
+        throw std::runtime_error("dispatch: a pass is active, compute cannot run inside a render pass");
+    }
+
+    const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
+    const VulkanComputePipeline& pipeline = material.getPipeline();
+
+    //compute and graphics are separate bind points, so boundPipeline stays valid
+    commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline.getPipeline());
+
+    commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+        *pipeline.getPipelineLayout(),
+        VulkanComputePipeline::resourceSet,
+        {*material.getDescriptorSet()}, {});
+
+    if(pushData && pushSize > 0){
+        commandBuffer.pushConstants<uint8_t>(*pipeline.getPipelineLayout(),
+            vk::ShaderStageFlagBits::eCompute, 0,
+            vk::ArrayProxy<const uint8_t>(pushSize, static_cast<const uint8_t*>(pushData)));
+    }
+
+    commandBuffer.dispatch(groupsX, groupsY, groupsZ);
+
+    //deliberately wide: dispatch does not know who reads the result next
+    vk::MemoryBarrier2 barrier;
+    barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+    barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
+    barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands | vk::PipelineStageFlagBits2::eHost;
+    barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eHostRead;
+
+    vk::DependencyInfo dep;
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &barrier;
+    commandBuffer.pipelineBarrier2(dep);
+}
