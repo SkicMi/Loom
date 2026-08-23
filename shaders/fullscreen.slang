@@ -24,5 +24,6 @@ VSOutput vertexMain(uint vertexIndex : SV_VertexID){
 
 [shader("fragment")]
 float4 fragmentMain(VSOutput input) : SV_Target{
-    return source.Sample(input.texCoord);
+    float4 color = source.Sample(input.texCoord);
+    return float4(color.rgb * material.baseColor.rgb, color.a);
 }
