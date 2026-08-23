@@ -26,6 +26,7 @@ class VulkanImage{
     const vk::raii::Image& getImage() const {return image;}
     const vk::raii::ImageView& getImageView() const {return imageView;}
     vk::Format getFormat() const {return config.format;}
+    vk::ImageUsageFlags getUsage() const {return config.usage;}
     vk::Extent2D getExtent() const {return extent;}
 
     private:

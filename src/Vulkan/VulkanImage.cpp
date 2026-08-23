@@ -9,6 +9,17 @@ device(device) , config(config) , extent(extent){
 }
 
 void VulkanImage::build(){
+
+    //A sentence now instead of a VK_ERROR_FORMAT_NOT_SUPPORTED and two VUIDs later.
+    //sRGB formats never support storage images, so the usage and the format must agree
+    //before the image is created, not when a descriptor is written
+    if(config.usage & vk::ImageUsageFlagBits::eStorage){
+        vk::FormatProperties formatProperties = device.getPhysicalDevice().getFormatProperties(config.format);
+        if(!(formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eStorageImage)){
+            throw std::runtime_error("VulkanImage: eStorage usage requested but the format does not support storage images");
+        }
+    }
+
     vk::ImageCreateInfo imageInfo;
     imageInfo.imageType = vk::ImageType::e2D;
     imageInfo.format = config.format;

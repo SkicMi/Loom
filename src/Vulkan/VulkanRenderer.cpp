@@ -537,7 +537,56 @@ void VulkanRenderer::dispatch(const ComputeMaterial& material,
             vk::ArrayProxy<const uint8_t>(pushSize, static_cast<const uint8_t*>(pushData)));
     }
 
+    //storage images must be in eGeneral while the dispatch runs. currentLayout starts as
+    //eUndefined, which discards contents - correct only for the first dispatch, and after
+    //that the slot remembers where the previous dispatch left the image
+    if(!material.getStorageImages().empty()){
+        std::vector<vk::ImageMemoryBarrier2> toGeneral;
+        toGeneral.reserve(material.getStorageImages().size());
+
+        for(const StorageImageSlot& slot : material.getStorageImages()){
+            vk::ImageMemoryBarrier2 barrier;
+            barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+            barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
+            barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+            barrier.dstAccessMask = vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eShaderRead;
+            barrier.oldLayout = slot.currentLayout;
+            barrier.newLayout = vk::ImageLayout::eGeneral;
+            barrier.image = slot.image;
+            barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
+            toGeneral.push_back(barrier);
+        }
+
+        vk::DependencyInfo dep;
+        dep.setImageMemoryBarriers(toGeneral);
+        commandBuffer.pipelineBarrier2(dep);
+    }
+
     commandBuffer.dispatch(groupsX, groupsY, groupsZ);
+
+    if(!material.getStorageImages().empty()){
+        std::vector<vk::ImageMemoryBarrier2> toFinal;
+        toFinal.reserve(material.getStorageImages().size());
+
+        for(const StorageImageSlot& slot : material.getStorageImages()){
+            vk::ImageMemoryBarrier2 barrier;
+            barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+            barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
+            barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+            barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead;
+            barrier.oldLayout = vk::ImageLayout::eGeneral;
+            barrier.newLayout = slot.finalLayout;
+            barrier.image = slot.image;
+            barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor,0,1,0,1};
+            toFinal.push_back(barrier);
+
+            slot.currentLayout = slot.finalLayout;
+        }
+
+        vk::DependencyInfo dep;
+        dep.setImageMemoryBarriers(toFinal);
+        commandBuffer.pipelineBarrier2(dep);
+    }
 
     //deliberately wide: dispatch does not know who reads the result next
     vk::MemoryBarrier2 barrier;

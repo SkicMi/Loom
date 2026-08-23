@@ -31,3 +31,35 @@ void ComputeMaterial::setStorageBuffer(uint32_t binding, const VulkanBuffer& buf
 
     device.getDevice().updateDescriptorSets(write,nullptr);
 }
+
+void ComputeMaterial::setStorageImage(uint32_t binding, const VulkanImage& image, vk::ImageLayout finalLayout){
+
+    //the format is already guarded in VulkanImage::build, what is left to catch here is an image that was simply never created for this job
+    if(!(image.getUsage() & vk::ImageUsageFlagBits::eStorage)){
+        throw std::runtime_error("setStorageImage: image was not created with eStorage usage");
+    }
+
+    if(finalLayout == vk::ImageLayout::eUndefined){
+        throw std::runtime_error("setStorageImage: finalLayout eUndefined would discard the result");
+    }
+
+    StorageImageSlot slot;
+    slot.image = *image.getImage();
+    slot.finalLayout = finalLayout;
+    slot.currentLayout = vk::ImageLayout::eUndefined;
+    storageImages.push_back(slot);
+
+    //eGeneral is the layout the image is in while the dispatch reads or writes it
+    vk::DescriptorImageInfo imageInfo;
+    imageInfo.imageLayout = vk::ImageLayout::eGeneral;
+    imageInfo.imageView = *image.getImageView();
+
+    vk::WriteDescriptorSet write;
+    write.dstSet = *descriptorSet;
+    write.dstBinding = binding;
+    write.dstArrayElement = 0;
+    write.descriptorType = vk::DescriptorType::eStorageImage;
+    write.setImageInfo(imageInfo);
+
+    device.getDevice().updateDescriptorSets(write,nullptr);
+}
