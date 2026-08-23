@@ -169,21 +169,11 @@ void VulkanRenderer::draw(const Mesh& mesh, const glm::mat4& model, const Materi
         throw std::runtime_error("draw: frame not started( missing beginFrame)");
     }
 
+    bindMaterial(material);
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
     const VulkanGraphicsPipeline& pipeline = material.getPipeline();
 
-    if(boundPipeline != &pipeline){
-        commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.getPipeline());
-        boundPipeline = &pipeline;
-    }
 
-    if(material.hasDescriptorSet()){
-        material.uploadIfDirty(currentFrame);
-        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-            *pipeline.getPipelineLayout(),
-            VulkanGraphicsPipeline::materialSet,
-            {*material.getDescriptorSet(currentFrame)},{});
-    }
 
     ObjectData objectData;
     objectData.model = model;
@@ -491,5 +481,32 @@ void VulkanRenderer::beginPass(const RenderTarget& target){
                 target.getExtent(), true);
 }
 
+void VulkanRenderer::bindMaterial(const Material& material) {
+    const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
+    const VulkanGraphicsPipeline& pipeline = material.getPipeline();
+
+    if(boundPipeline != &pipeline){
+        commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.getPipeline());
+        boundPipeline = &pipeline;
+    }
+
+    if(material.hasDescriptorSet()){
+        material.uploadIfDirty(currentFrame);
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+            *pipeline.getPipelineLayout(),
+            VulkanGraphicsPipeline::materialSet,
+            {*material.getDescriptorSet(currentFrame)},{});
+    }
+
+}
+
+void VulkanRenderer::drawFullscreen(const Material& material){
+    if(!passActive){
+        throw std::runtime_error("drawFullscreen: no pass active");
+    }
+
+    bindMaterial(material);
+    command.getCommandBuffers()[currentFrame].draw(3,1,0,0);
+}
 
 

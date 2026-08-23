@@ -104,22 +104,60 @@ const std::vector<Vertex> vertices = {
     texPipelineConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/textured.frag.spv";
     VulkanGraphicsPipeline texPipeline = loom.createPipeline(texPipelineConfig);
 
+    PipelineConfig postConfig;
+    postConfig.vertexBindings.clear();
+    postConfig.vertexAttributes.clear();
+    postConfig.descriptorBindings = {Texture::getLayoutBinding(), Material::getDataLayoutBinding()};
+    postConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.vert.spv";
+    postConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.frag.spv";
+    postConfig.cullMode = vk::CullModeFlagBits::eNone;
+    postConfig.depthTestEnable = false;
+    postConfig.depthWriteEnable = false;
+    VulkanGraphicsPipeline postPipeline = loom.createPipeline(postConfig);
+
     std::vector<uint8_t> pixels = makeCheckerboard(64,8);
     Texture checker(loom.device,loom.command,pixels.data(), vk::Extent2D{64,64});
     Material texMat(loom.device,loom.command, loom.getDescriptorPool(),texPipeline,checker.getSampled());
 
+    RenderTargetConfig readConfig;
+    readConfig.finalLayout = vk::ImageLayout::eTransferSrcOptimal;
+    readConfig.extraColorUsage = vk::ImageUsageFlagBits::eTransferSrc;
+
+    RenderTarget sceneRead(loom.device,{512,512},readConfig);
+    RenderTarget sceneSampled(loom.device, {512,512});
+    RenderTarget postOut(loom.device, {512,512}, readConfig);
+
+    Material postMat(loom.device, loom.command, loom.getDescriptorPool(), postPipeline, sceneSampled.getSampled());
+    
+    const glm::mat4 model = glm::rotate(glm::mat4(1.0f),0.7f , glm::vec3(0.5f,1.0f,0.0f));
     
     while(!loom.window.shouldClose()){
         loom.window.pollEvents();
         float time = static_cast<float>(loom.window.getTime());
 
         if(!loom.renderer.beginFrame()) continue;
-        loom.renderer.beginPass();
-        loom.renderer.draw(cube,glm::rotate(glm::mat4(1.0f),time,glm::vec3(0.5f,1.0f,0.0f)), texMat);
+        loom.renderer.beginPass(sceneRead);
+        loom.renderer.draw(cube,model,texMat);
         loom.renderer.endPass();
+
+        loom.renderer.beginPass(sceneSampled);
+        loom.renderer.draw(cube,model,texMat);
+        loom.renderer.endPass();
+
+        loom.renderer.beginPass(postOut);
+        loom.renderer.drawFullscreen(postMat);
+        loom.renderer.endPass();
+
+        loom.renderer.beginPass();
+        loom.renderer.drawFullscreen(postMat);
+        loom.renderer.endPass();
+
+
         loom.renderer.endFrame();
     }
     loom.waitIdle();
+
+
    
     
 }

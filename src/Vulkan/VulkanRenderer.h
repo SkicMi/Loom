@@ -47,6 +47,7 @@ class VulkanRenderer{
     void endPass();
     void draw(const Mesh& mesh, const glm::mat4& model = glm::mat4(1.0f));
     void draw(const Mesh& mesh, const glm::mat4& model, const Material& material); //overload fuction for model with material
+    void drawFullscreen(const Material& material);
     void endFrame();
 
     void setCamera(const Camera& cam) { camera = &cam;}
@@ -89,6 +90,7 @@ class VulkanRenderer{
     void createFrameResources();
     void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, bool isoffscreen);
     void recreateSwapchain();
+    void bindMaterial(const Material& material);
 
 };
 
