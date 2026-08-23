@@ -3,6 +3,7 @@
 #include "Window.h"
 #include <cstring>
 #include <iostream>
+#include <atomic>
 
 
 class VulkanInstance{
@@ -16,11 +17,16 @@ class VulkanInstance{
     const vk::raii::Instance& getInstance() const {return instance;}
     const vk::raii::SurfaceKHR& getSurface() const {return surface;}
     const vk::raii::DebugUtilsMessengerEXT& getMessenger() const {return debugMessenger;}
+
+    //How many warnings and errors the validation layers have reported since the counter was
+    //last reset. A test can assert on this instead of a human reading stderr
+    static uint32_t getValidationMessageCount() {return validationMessages.load();}
+    static void resetValidationMessages() {validationMessages.store(0);}
     
     private:
+    const Window& window;
     const std::string appName;
     const std::string engineName;
-    const Window& window;
     vk::raii::Context context;
     vk::raii::Instance instance = nullptr;
     vk::raii::SurfaceKHR surface = nullptr;
@@ -32,6 +38,8 @@ class VulkanInstance{
 
     std::vector<const char*> getExtensions();
 
+
+    static inline std::atomic<uint32_t> validationMessages{0};
 
     static inline const std::vector<const char*> validationLayers = {
         "VK_LAYER_KHRONOS_validation"};

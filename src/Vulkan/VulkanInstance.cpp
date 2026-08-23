@@ -113,6 +113,13 @@ VKAPI_ATTR VkBool32 VKAPI_CALL VulkanInstance::debugCallback(
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData)
 {
+    (void)type;
+    (void)pUserData;
+
+    if(severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)){
+        ++validationMessages;
+    }
+
     std::cerr << "[validation] " << pCallbackData->pMessage << std::endl;
     return VK_FALSE;
 }

@@ -35,6 +35,7 @@ struct VSInput{
 struct VSOutput {
     float4 position : SV_Position;
     float3 color : COLOR;
+    float2 texCoord : TEXCOORD0;
     float3 worldPos : POSITION;
     float3 normal : NORMAL;
 }
@@ -45,6 +46,7 @@ VSOutput vertexMain(VSInput input){
     float4 world = mul(push.model, float4(input.position,1.0));
     output.position = mul(frame.projection, mul(frame.view,world));
     output.color = input.color;
+    output.texCoord = input.texCoord;
     output.worldPos = world.xyz;
     output.normal = mul(push.normalMatrix, float4(input.normal,0.0)).xyz;
     return output;

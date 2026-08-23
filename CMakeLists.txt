@@ -215,3 +215,34 @@ target_compile_definitions(Loom PUBLIC
 add_executable(LoomApp src/main.cpp)
 target_link_libraries(LoomApp PRIVATE Loom)
 add_dependencies(LoomApp LoomShaders)   # shaderi se prevedu prije exea
+
+# ----------------------------------------------------------------------------
+# Testovi
+#   Svaki tests/test_*.cpp je zaseban executable koji vraca 0 samo ako sve
+#   provjere prodju, pa "ctest" ili "cmake --build build --target LoomTests"
+#   daje odgovor bez citanja ispisa.
+#   Testovi otvaraju prozor i traze GPU - nisu za headless CI bez displaya.
+# ----------------------------------------------------------------------------
+option(LOOM_BUILD_TESTS "Build Loom's test executables" ON)
+
+if(LOOM_BUILD_TESTS)
+    enable_testing()
+
+    file(GLOB LOOM_TEST_SOURCES CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp
+    )
+
+    add_custom_target(LoomTests)
+
+    foreach(TEST_SOURCE ${LOOM_TEST_SOURCES})
+        get_filename_component(TEST_NAME ${TEST_SOURCE} NAME_WE)
+
+        add_executable(${TEST_NAME} ${TEST_SOURCE})
+        target_link_libraries(${TEST_NAME} PRIVATE Loom)
+        target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+        add_dependencies(${TEST_NAME} LoomShaders)
+        add_dependencies(LoomTests ${TEST_NAME})
+
+        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    endforeach()
+endif()
