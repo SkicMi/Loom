@@ -13,7 +13,9 @@ struct FrameData{
 struct GpuLight{
     float4 positionOrDirection;
     float4 color;
+    //x = range, y = 1 when a shadow map is bound for this light, z = shadow depth bias
     float4 params;
+    float4x4 lightViewProjection;
 }
 
 struct Push{
@@ -24,6 +26,31 @@ struct Push{
 [[vk::push_constant]] ConstantBuffer<Push> push;
 [[vk::binding(0,0)]] ConstantBuffer<FrameData> frame;
 [[vk::binding(1,0)]] StructuredBuffer<GpuLight> lights;
+
+//The shadow map, as a comparison sampler on set 0. SampleCmpLevelZero does not return a
+//depth - it returns how much of the 2x2 neighbourhood passed "is my reference nearer than
+//what is stored here", filtered by the same hardware that does bilinear. That free 2x2 is
+//why a shadow edge is not a staircase
+[[vk::binding(2,0)]] Sampler2DShadow shadowMap;
+
+//1.0 fully lit, 0.0 fully shadowed. A light without a map bound (params.y == 0) returns 1.0
+//without ever touching the sampler
+float shadowVisibility(GpuLight light, float3 worldPos){
+    if(light.params.y < 0.5) return 1.0;
+
+    float4 clip = mul(light.lightViewProjection, float4(worldPos, 1.0));
+    float3 proj = clip.xyz / clip.w;
+
+    //Behind the light's far plane there is no map to consult, and the border is opaque white
+    //so anything outside the box sideways already compares as lit
+    if(proj.z > 1.0) return 1.0;
+
+    float2 uv = proj.xy * 0.5 + 0.5;
+
+    //The bias is subtracted from the reference, not added to the stored depth: a fragment
+    //has to be nearer than the map by this much before it counts as lit
+    return shadowMap.SampleCmpLevelZero(uv, proj.z - light.params.z);
+}
 
 struct VSInput{
     [[vk::location(0)]] float3 position;
@@ -83,8 +110,13 @@ float4 fragmentMain(VSOutput input) : SV_Target{
         float diffuse = max(dot(N,L), 0.0);
         float specular = pow(max(dot(N,H),0.0), 32.0);
 
-        lit += base * light.color.rgb * diffuse * attenuation;
-        lit += light.color.rgb * specular * attenuation;
+        //Shadow kills the whole contribution of this light, diffuse and specular alike.
+        //Ambient is untouched, which is why a shadowed surface is exactly its ambient term
+        //and not black
+        float visibility = shadowVisibility(light, input.worldPos);
+
+        lit += base * light.color.rgb * diffuse * attenuation * visibility;
+        lit += light.color.rgb * specular * attenuation * visibility;
     }
 
     return float4(lit,1.0);

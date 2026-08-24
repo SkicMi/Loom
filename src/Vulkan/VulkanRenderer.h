@@ -16,6 +16,7 @@
 #include "Core/Environment.h"
 #include <array>
 #include <cstdint>
+#include <optional>
 
 struct RendererConfig{
     std::array<float,4> clearColor = {0.0f,0.0f,0.0f,1.0f}; //clear color settings for renderer, default to black
@@ -46,6 +47,7 @@ class VulkanRenderer{
     bool beginFrame();
     void beginPass(); //swapchain
     void beginPass(const RenderTarget& target); //offscreen target
+    void beginPass(const RenderTarget& target, const Light& light); //the same target, seen from a light
     void endPass();
     void draw(const Mesh& mesh, const glm::mat4& model = glm::mat4(1.0f));
     void draw(const Mesh& mesh, const glm::mat4& model, const Material& material); //overload fuction for model with material
@@ -57,6 +59,15 @@ class VulkanRenderer{
 
     //The window, read back. Only valid between frames
     ImageData readLastFrame() const;
+
+    //Which depth buffer shadows this scene, and which light cast it. One shadowed
+    //directional light for now: the light space matrix travels in that light's GpuLight, and
+    //the map itself sits on set 0 next to the frame data, because it shadows everything the
+    //pass draws rather than belonging to any one material.
+    //depthBias is subtracted from the reference depth in the lookup - the shader side cure
+    //for acne, tunable without rebuilding a pipeline, unlike PipelineConfig::depthBiasEnable
+    void setShadowMap(const RenderTarget& target, const Light& light, float depthBias = 0.0f);
+    void clearShadowMap();
 
     void setCamera(const Camera& cam) { camera = &cam;}
     void setEnvironment(const Environment& newEnvironment) { environment = &newEnvironment;}
@@ -75,6 +86,7 @@ class VulkanRenderer{
     std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
     std::vector<vk::raii::Fence> inFlightFences;
     size_t currentFrame = 0;
+    uint32_t frameCounter = 0; //never wraps back to a frame in flight, unlike currentFrame - VMA wants the running count
     const Camera* camera = nullptr;
     const Environment* environment = nullptr;
     std::vector<const Light*> lights;
@@ -85,6 +97,21 @@ class VulkanRenderer{
     bool frameActive = false;
     bool passActive = false;
     const RenderTarget* currentTarget = nullptr;
+    const Light* passLight = nullptr; //set only for the duration of a light driven pass
+
+    const RenderTarget* shadowTarget = nullptr;
+    const Light* shadowLight = nullptr;
+    float shadowDepthBias = 0.0f;
+
+    //Binding 2 of set 0 is written per frame, and only for a frame whose fence has already
+    //been waited on - the same trick Material uses, so a descriptor is never rewritten while
+    //the GPU is still reading it
+    std::vector<uint8_t> shadowDirty;
+
+    //One pixel of depth, so binding 2 always points at something real even when no shadow
+    //map is set. A partially bound descriptor set is undefined behaviour, not an empty slot
+    std::optional<VulkanImage> shadowPlaceholder;
+    vk::raii::Sampler shadowPlaceholderSampler = nullptr;
     const VulkanGraphicsPipeline* boundPipeline = nullptr;
     const vk::raii::DescriptorPool& descriptorPool;
     std::vector<VulkanBuffer> frameBuffers;
@@ -95,7 +122,9 @@ class VulkanRenderer{
 
 
     void createSyncObjects();
+    void createShadowPlaceholder();
     void createFrameResources();
+    void writeShadowMap(size_t frame) const;
     void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent);
     void recreateSwapchain();
     void bindMaterial(const Material& material);

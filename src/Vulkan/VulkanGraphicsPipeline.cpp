@@ -17,8 +17,19 @@ void VulkanGraphicsPipeline::createPipeline(){
         throw std::runtime_error("Pipeline: depth test enabled but depth buffer doesnt exist (LoomConfig::enableDepth)");
     }
 
+    //A colour attachment with nobody to write it is a pipeline that draws nothing, and an
+    //empty fragment path with a colour attachment is the same mistake the other way round
+    if(!config.enableColor && !config.fragShaderPath.empty()){
+        throw std::runtime_error("Pipeline: enableColor is off but a fragment shader was given - a depth only pass has nothing for it to return");
+    }
+    if(config.enableColor && config.fragShaderPath.empty()){
+        throw std::runtime_error("Pipeline: no fragment shader, but there is a colour attachment to write (PipelineConfig::enableColor)");
+    }
+
+    const bool hasFragment = !config.fragShaderPath.empty();
+
     vk::raii::ShaderModule vertShaderModule = loadShaderModule(device, config.vertShaderPath);
-    vk::raii::ShaderModule fragShaderModule = loadShaderModule(device, config.fragShaderPath);
+    vk::raii::ShaderModule fragShaderModule = nullptr;
 
     //Shader stage creation info
     vk::PipelineShaderStageCreateInfo vertShaderStageInfo;
@@ -26,12 +37,18 @@ void VulkanGraphicsPipeline::createPipeline(){
     vertShaderStageInfo.module = *vertShaderModule;
     vertShaderStageInfo.pName = "main"; //entry point of shader
 
-    vk::PipelineShaderStageCreateInfo fragShaderStageInfo;
-    fragShaderStageInfo.stage = vk::ShaderStageFlagBits::eFragment;
-    fragShaderStageInfo.module = *fragShaderModule;
-    fragShaderStageInfo.pName = "main"; //entry point of shader
+    std::vector<vk::PipelineShaderStageCreateInfo> shaderStages;
+    shaderStages.push_back(vertShaderStageInfo);
 
-    vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+    if(hasFragment){
+        fragShaderModule = loadShaderModule(device, config.fragShaderPath);
+
+        vk::PipelineShaderStageCreateInfo fragShaderStageInfo;
+        fragShaderStageInfo.stage = vk::ShaderStageFlagBits::eFragment;
+        fragShaderStageInfo.module = *fragShaderModule;
+        fragShaderStageInfo.pName = "main"; //entry point of shader
+        shaderStages.push_back(fragShaderStageInfo);
+    }
 
     vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
     vertexInputInfo.setVertexBindingDescriptions(config.vertexBindings);
@@ -54,7 +71,10 @@ void VulkanGraphicsPipeline::createPipeline(){
     rasterizer.polygonMode = config.polygonMode;
     rasterizer.cullMode = config.cullMode;
     rasterizer.frontFace = config.frontFace;
-    rasterizer.depthBiasEnable = VK_FALSE;
+    rasterizer.depthBiasEnable = config.depthBiasEnable;
+    rasterizer.depthBiasConstantFactor = config.depthBiasConstant;
+    rasterizer.depthBiasSlopeFactor = config.depthBiasSlope;
+    rasterizer.depthBiasClamp = 0.0f;
     rasterizer.lineWidth = 1.0f;
 
     //Multisampling - off
@@ -105,8 +125,8 @@ void VulkanGraphicsPipeline::createPipeline(){
 
     vk::PipelineColorBlendStateCreateInfo colorBlending;
     colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.attachmentCount = config.enableColor ? 1 : 0;
+    colorBlending.pAttachments = config.enableColor ? &colorBlendAttachment : nullptr;
 
     //Dynamic state
     std::vector<vk::DynamicState> dynamicStates = {
@@ -145,6 +165,17 @@ void VulkanGraphicsPipeline::createPipeline(){
         lightBinding.descriptorCount = 1;
         lightBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
         frameBindings.push_back(lightBinding);
+
+        //The shadow map, as a comparison sampler. It sits on set 0 because it belongs to the
+        //frame and its lights, not to any one material - the same map shadows every object
+        //drawn in the pass. The renderer always writes this binding, with a one pixel
+        //placeholder when no shadow map is set, so the set is never partially bound
+        vk::DescriptorSetLayoutBinding shadowBinding;
+        shadowBinding.binding = 2;
+        shadowBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        shadowBinding.descriptorCount = 1;
+        shadowBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+        frameBindings.push_back(shadowBinding);
     }
 
     vk::DescriptorSetLayoutCreateInfo frameLayoutInfo;
@@ -173,15 +204,14 @@ void VulkanGraphicsPipeline::createPipeline(){
                 : config.colorFormat;
 
     vk::PipelineRenderingCreateInfo renderingInfo;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &colorFormat;
+    renderingInfo.colorAttachmentCount = config.enableColor ? 1 : 0;
+    renderingInfo.pColorAttachmentFormats = config.enableColor ? &colorFormat : nullptr;
     renderingInfo.depthAttachmentFormat = depthFormat;
 
     //Assemble everything into the graphics pipeline create info
     vk::GraphicsPipelineCreateInfo pipelineInfo;
     pipelineInfo.pNext = &renderingInfo;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.setStages(shaderStages);
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
     pipelineInfo.pViewportState = &viewportState;

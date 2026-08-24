@@ -6,6 +6,7 @@ VulkanDevice::VulkanDevice(const VulkanInstance& instance, const DeviceConfig& c
     pickPhysicalDevice(physicalDevices);
     queueIndices = findQueueFamilies(physicalDevice);
     createLogicalDevice();
+    createAllocator();
 
 
 
@@ -29,8 +30,12 @@ bool VulkanDevice::isDeviceSuitable(const vk::raii::PhysicalDevice& candidate){
     const auto& supported11 = features.get<vk::PhysicalDeviceVulkan11Features>();
     const auto& suported13 = features.get<vk::PhysicalDeviceVulkan13Features>();
     bool supportsRendering = suported13.dynamicRendering && suported13.synchronization2;
-    
-    return indices.isComplete() && 
+
+    //maintenance4 is what makes vkGetDeviceBufferMemoryRequirements callable, which is the
+    //function VMA reaches for on 1.3. Every device that reports Vulkan 1.3 must support it,
+    //so this filters nothing out in practice - it just says out loud what is being relied on
+    return indices.isComplete() &&
+    suported13.maintenance4 &&
     extensionSupported && 
     supportsRendering && 
     supported11.shaderDrawParameters &&
@@ -55,6 +60,18 @@ bool VulkanDevice::checkDeviceExtensionSupport(const vk::raii::PhysicalDevice& c
     }
     return true;
 
+}
+
+//Same loop as the required check above, but the answer is allowed to be no
+bool VulkanDevice::supportsExtension(const vk::raii::PhysicalDevice& candidate, const char* name){
+    auto available = candidate.enumerateDeviceExtensionProperties();
+
+    for(const auto& ext : available){
+        if(strcmp(name, ext.extensionName) == 0){
+            return true;
+        }
+    }
+    return false;
 }
 
 void VulkanDevice::pickPhysicalDevice(const std::vector<vk::raii::PhysicalDevice>& candidates){
@@ -163,19 +180,43 @@ void VulkanDevice::createLogicalDevice(){
     vk::PhysicalDeviceVulkan13Features features13;
     features13.dynamicRendering = true; //required for dynamic rendering, which is required for ray tracing and to skip framebuffer
     features13.synchronization2 = true;
+    features13.maintenance4 = true; //lets VMA call vkGetDeviceBufferMemoryRequirements, core in 1.3 but gated behind this feature
 
     features11.pNext = &features13; //pNext is used to chain additional structures to the features struct, in this case we are chaining the features13 struct to the features struct, so that the device will be created with the features specified in the features13 struct
 
+    //The required extensions plus whichever optional ones this card offers. Asked once here
+    //and remembered, because the allocator needs the same answer a moment later
+    enabledExtensions = deviceExtensions;
+    hasMemoryBudget = supportsExtension(physicalDevice, "VK_EXT_memory_budget");
+    hasMemoryPriority = supportsExtension(physicalDevice, "VK_EXT_memory_priority");
 
+    if(hasMemoryBudget){
+        enabledExtensions.push_back("VK_EXT_memory_budget");
+    }
 
+    //The extension only exposes the priority field; the feature is what makes the driver read
+    //it, and the spec lets a driver ship the extension with the feature off. Asking first
+    //costs one query and turns a failed vkCreateDevice into a quietly skipped optimisation
+    vk::PhysicalDeviceMemoryPriorityFeaturesEXT memoryPriorityFeatures;
+    if(hasMemoryPriority){
+        auto supported = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2,
+            vk::PhysicalDeviceMemoryPriorityFeaturesEXT>();
+        hasMemoryPriority = static_cast<bool>(supported.get<vk::PhysicalDeviceMemoryPriorityFeaturesEXT>().memoryPriority);
+    }
+
+    if(hasMemoryPriority){
+        enabledExtensions.push_back("VK_EXT_memory_priority");
+        memoryPriorityFeatures.memoryPriority = true;
+        features13.pNext = &memoryPriorityFeatures;
+    }
 
     //Creating device create info
     vk::DeviceCreateInfo deviceCreateInfo;
     deviceCreateInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());    
     deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
     deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
-    deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-    deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
+    deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
     deviceCreateInfo.pNext = &features11; //pNext is used to chain additional structures to the device create info, in this case we are chaining the features13 struct to the device create info, so that the device will be created with the features specified in the features13 struct
 
     //Creating device using Physical Device and device create info
@@ -199,6 +240,16 @@ void VulkanDevice::createLogicalDevice(){
 }
 
 
+void VulkanDevice::createAllocator(){
+    AllocatorConfig allocatorConfig;
+    allocatorConfig.useMemoryBudget = hasMemoryBudget;
+    allocatorConfig.useMemoryPriority = hasMemoryPriority;
 
+    //Loom already demands Vulkan 1.3 features (dynamic rendering, synchronization2), so 1.3
+    //is what VMA is told. Deliberately not more: at 1.4 VMA would reach for maintenance5
+    //entry points, and every entry point it reaches for is one more feature that has to be
+    //switched on above, or the validation layer logs a message and the test suite counts it
+    allocatorConfig.apiVersion = VK_API_VERSION_1_3;
 
-
+    allocator = VulkanAllocator(instance.getInstance(), physicalDevice, device, allocatorConfig);
+}

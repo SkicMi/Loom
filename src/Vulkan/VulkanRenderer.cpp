@@ -19,7 +19,83 @@ VulkanRenderer::VulkanRenderer(
     descriptorPool(descriptorPool){
 
         createSyncObjects();
+        createShadowPlaceholder();
         createFrameResources();
+}
+
+void VulkanRenderer::createShadowPlaceholder(){
+    //A single depth texel that is never rendered into and never read. It exists so that
+    //binding 2 of set 0 always has a valid image and sampler behind it, whether or not the
+    //application ever asks for shadows
+    ImageConfig placeholderConfig;
+    placeholderConfig.usage = vk::ImageUsageFlagBits::eSampled;
+    placeholderConfig.dedicated = false;
+    placeholderConfig.priority = 0.0f;
+
+    shadowPlaceholder.emplace(device, vk::Extent2D{1,1}, makeDepthConfig(device, placeholderConfig));
+
+    //The shader declares a comparison sampler, so this one has to be a comparison sampler
+    //too - a plain sampler bound where the shader expects to compare is a validation error,
+    //not a slightly wrong picture
+    vk::SamplerCreateInfo samplerInfo;
+    samplerInfo.magFilter = vk::Filter::eNearest;
+    samplerInfo.minFilter = vk::Filter::eNearest;
+    samplerInfo.addressModeU = vk::SamplerAddressMode::eClampToBorder;
+    samplerInfo.addressModeV = vk::SamplerAddressMode::eClampToBorder;
+    samplerInfo.addressModeW = vk::SamplerAddressMode::eClampToBorder;
+    samplerInfo.borderColor = vk::BorderColor::eFloatOpaqueWhite;
+    samplerInfo.compareEnable = VK_TRUE;
+    samplerInfo.compareOp = vk::CompareOp::eLessOrEqual;
+    samplerInfo.maxLod = 0.0f;
+
+    shadowPlaceholderSampler = vk::raii::Sampler(device.getDevice(), samplerInfo);
+
+    //It has to be in the layout a shader read expects before anything binds it
+    command.transitionImageLayout(*shadowPlaceholder, vk::ImageLayout::eShaderReadOnlyOptimal);
+}
+
+void VulkanRenderer::setShadowMap(const RenderTarget& target, const Light& light, float depthBias){
+    if(!target.hasDepth()){
+        throw std::runtime_error("setShadowMap: the target has no depth attachment to shadow with");
+    }
+    if(!target.keepsDepth()){
+        throw std::runtime_error("setShadowMap: the target does not keep its depth (RenderTargetConfig::keepDepth), so there would be nothing to sample");
+    }
+    if(light.getType() != LightType::Directional){
+        throw std::runtime_error("setShadowMap: only a directional light has a single light space matrix - a point light needs a cube map");
+    }
+
+    shadowTarget = &target;
+    shadowLight = &light;
+    shadowDepthBias = depthBias;
+    shadowDirty.assign(command.getCommandBuffers().size(), 1);
+}
+
+void VulkanRenderer::clearShadowMap(){
+    shadowTarget = nullptr;
+    shadowLight = nullptr;
+    shadowDepthBias = 0.0f;
+    shadowDirty.assign(command.getCommandBuffers().size(), 1);
+}
+
+void VulkanRenderer::writeShadowMap(size_t frame) const{
+    const SampledImage image = shadowTarget
+        ? shadowTarget->getDepthSampled()
+        : SampledImage{*shadowPlaceholder->getImageView(), *shadowPlaceholderSampler, &*shadowPlaceholder, 0};
+
+    vk::DescriptorImageInfo imageInfo;
+    imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    imageInfo.imageView = image.view;
+    imageInfo.sampler = image.sampler;
+
+    vk::WriteDescriptorSet write;
+    write.dstSet = *frameSets[frame];
+    write.dstBinding = 2;
+    write.dstArrayElement = 0;
+    write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    write.setImageInfo(imageInfo);
+
+    device.getDevice().updateDescriptorSets(write, nullptr);
 }
 
 void VulkanRenderer::createSyncObjects(){
@@ -50,12 +126,18 @@ const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
 
 //A tracked image is transitioned out of the layout it is really in, so whatever it holds
 //survives. A swapchain image is not tracked, and eUndefined says its contents are free
-const VulkanImage* trackedColor = currentTarget ? &currentTarget->getColorImage() : nullptr;
+//A depth only pass has no colour view to hand over. Nothing here is skipped for the
+//window, which always has one
+const bool hasColor = colorView != vk::ImageView(nullptr);
+
+const VulkanImage* trackedColor = (currentTarget && currentTarget->hasColor()) ? &currentTarget->getColorImage() : nullptr;
 const vk::ImageLayout colorFrom = trackedColor ? trackedColor->getCurrentLayout() : vk::ImageLayout::eUndefined;
 
-recordBarrier(commandBuffer, imageBarrier(colorImage, colorFrom, vk::ImageLayout::eColorAttachmentOptimal));
-if(trackedColor){
-    trackedColor->setCurrentLayout(vk::ImageLayout::eColorAttachmentOptimal);
+if(hasColor){
+    recordBarrier(commandBuffer, imageBarrier(colorImage, colorFrom, vk::ImageLayout::eColorAttachmentOptimal));
+    if(trackedColor){
+        trackedColor->setCurrentLayout(vk::ImageLayout::eColorAttachmentOptimal);
+    }
 }
 
 if(depth){
@@ -80,15 +162,19 @@ if(depth){
     depthAttachment.imageView = *depth->getImageView();
     depthAttachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     depthAttachment.loadOp = vk::AttachmentLoadOp::eClear;
-    depthAttachment.storeOp = vk::AttachmentStoreOp::eDontCare;
+    //Depth is scratch space for the depth test and is normally thrown away here. A shadow
+    //map is the exception: there the depth is the whole point of the pass
+    depthAttachment.storeOp = (currentTarget && currentTarget->keepsDepth())
+                            ? vk::AttachmentStoreOp::eStore
+                            : vk::AttachmentStoreOp::eDontCare;
     depthAttachment.clearValue.depthStencil = vk::ClearDepthStencilValue(rendererConfig.clearDepth,0);
 }
 
 vk::RenderingInfo renderingInfo;
 renderingInfo.renderArea = vk::Rect2D({0,0},extent);
 renderingInfo.layerCount = 1;
-renderingInfo.colorAttachmentCount = 1;
-renderingInfo.pColorAttachments = &colorAttachment;
+renderingInfo.colorAttachmentCount = hasColor ? 1 : 0;
+renderingInfo.pColorAttachments = hasColor ? &colorAttachment : nullptr;
 if(depth){
     renderingInfo.pDepthAttachment = &depthAttachment;
 }
@@ -113,7 +199,17 @@ if(passIndex >= rendererConfig.maxPassesPerFrame){
     throw std::runtime_error("beginPass : to many passes in one frame");
 }
 
-frameData.projection = camera ? camera->getProjection(extent.width, extent.height) : glm::mat4(1.0f);
+//Where the pass is looking from. A shadow pass is the same scene seen by a light, so it
+//swaps out both matrices - and because every pass already writes its own FrameData block
+//at its own dynamic offset, nothing has to be restored afterwards
+if(passLight){
+    frameData.view = passLight->getView();
+    frameData.projection = passLight->getProjection();
+}
+else{
+    frameData.view = camera ? camera->getView() : glm::mat4(1.0f);
+    frameData.projection = camera ? camera->getProjection(extent.width, extent.height) : glm::mat4(1.0f);
+}
 
 vk::DeviceSize offset = passIndex * frameDataStride;
 frameBuffers[currentFrame].upload(&frameData, sizeof(FrameData), offset);
@@ -174,17 +270,36 @@ void VulkanRenderer::endPass(){
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
     commandBuffer.endRendering();
 
-    vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain.getImages()[currentImageIndex];
-    vk::ImageLayout finalLayout = currentTarget ? currentTarget->getFinalLayout() : vk::ImageLayout::ePresentSrcKHR;
+    const bool hasColor = currentTarget ? currentTarget->hasColor() : true;
 
-    recordBarrier(commandBuffer, imageBarrier(colorImage, vk::ImageLayout::eColorAttachmentOptimal, finalLayout));
+    if(hasColor){
+        vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain.getImages()[currentImageIndex];
+        vk::ImageLayout finalLayout = currentTarget ? currentTarget->getFinalLayout() : vk::ImageLayout::ePresentSrcKHR;
 
-    if(currentTarget){
-        currentTarget->getColorImage().setCurrentLayout(finalLayout);
+        recordBarrier(commandBuffer, imageBarrier(colorImage, vk::ImageLayout::eColorAttachmentOptimal, finalLayout));
+
+        if(currentTarget){
+            currentTarget->getColorImage().setCurrentLayout(finalLayout);
+        }
+    }
+
+    //Depth that was stored is depth somebody is going to read, so it leaves the pass in the
+    //layout the reader expects instead of in eDepthAttachmentOptimal. Scratch depth is left
+    //alone - the next pass clears it anyway
+    if(currentTarget && currentTarget->keepsDepth()){
+        const VulkanImage* depth = currentTarget->getDepthImage();
+        const vk::ImageLayout depthFinal = currentTarget->getDepthFinalLayout();
+
+        recordBarrier(commandBuffer, imageBarrier(*depth->getImage(),
+                                                  depth->getCurrentLayout(),
+                                                  depthFinal,
+                                                  vk::ImageAspectFlagBits::eDepth));
+        depth->setCurrentLayout(depthFinal);
     }
 
     passActive = false;
     currentTarget = nullptr;
+    passLight = nullptr;
 }
 
 bool VulkanRenderer::beginFrame(){
@@ -223,6 +338,16 @@ bool VulkanRenderer::beginFrame(){
 
     passIndex = 0;
 
+    //The fence above has already been waited on, so nothing is reading this frame's set
+    if(currentFrame < shadowDirty.size() && shadowDirty[currentFrame]){
+        writeShadowMap(currentFrame);
+        shadowDirty[currentFrame] = 0;
+    }
+
+    //VMA times its budget heuristics in frames, and it only knows which frame it is if it is
+    //told. Costs one store; without it every allocation looks equally old
+    device.getAllocator().setCurrentFrameIndex(frameCounter++);
+
     frameData.view = glm::mat4(1.0f);
     frameData.projection = glm::mat4(1.0f);
     frameData.cameraPosition = glm::vec4(0.0f);
@@ -249,6 +374,14 @@ bool VulkanRenderer::beginFrame(){
         }
         gpuLight.color = glm::vec4(light->getColor(),0.0f);
         gpuLight.params = glm::vec4(light->getRange(), 0.0f, 0.0f, 0.0f);
+
+        //Only the one light a shadow map was set for carries a matrix. Everything else keeps
+        //params.y at zero, and the shader leaves it lit without ever touching the map
+        if(shadowTarget && shadowLight == light){
+            gpuLight.params.y = 1.0f;
+            gpuLight.params.z = shadowDepthBias;
+            gpuLight.lightViewProjection = light->getViewProjection();
+        }
 
         lightStaging.push_back(gpuLight);
 
@@ -365,10 +498,20 @@ void VulkanRenderer::createFrameResources(){
     frameDataStride = (sizeof(FrameData) + alignment - 1) & ~ (alignment - 1); //spec garanties that alignment is potent of number 2 and this delets lower bites, for 64 it is & ~ 63
 
 
+    //Both of these are written by the CPU every single frame and never read back, which is
+    //exactly what CPU_TO_GPU promises VMA. They stay mapped for their whole life
+    //(BufferConfig::persistentlyMapped, on by default), so upload() is now a memcpy into a
+    //pointer that already exists instead of a vkMapMemory/vkUnmapMemory pair per frame.
+    //minAlignment makes the buffer itself start on the same boundary the dynamic offsets
+    //below step by, so offset arithmetic and the buffer agree by construction
+    BufferConfig frameBufferConfig;
+    frameBufferConfig.minAlignment = alignment;
+
     for(size_t i = 0; i < framesInFlight; ++i){
         frameBuffers.emplace_back(device, 
             frameDataStride * rendererConfig.maxPassesPerFrame,
-            vk::BufferUsageFlagBits::eUniformBuffer,MemoryUsage::CPU_TO_GPU);
+            vk::BufferUsageFlagBits::eUniformBuffer,MemoryUsage::CPU_TO_GPU,
+            frameBufferConfig);
         lightBuffers.emplace_back(device, 
             sizeof(GpuLight) * rendererConfig.maxLights,
             vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::CPU_TO_GPU);
@@ -406,7 +549,13 @@ void VulkanRenderer::createFrameResources(){
 
         std::array<vk::WriteDescriptorSet,2> writes = {write,lightWrite};
         device.getDevice().updateDescriptorSets(writes,nullptr);
+
+        //Binding 2 gets the placeholder now, so the set is complete from the moment it
+        //exists. setShadowMap marks it dirty and beginFrame swaps in the real map
+        writeShadowMap(i);
     }
+
+    shadowDirty.assign(framesInFlight, 0);
 }
 
 void VulkanRenderer::beginPass(){
@@ -418,6 +567,7 @@ void VulkanRenderer::beginPass(){
     }
 
     currentTarget = nullptr;
+    passLight = nullptr;
     startPass(swapchain.getImages()[currentImageIndex],
                 *swapchain.getImageViews()[currentImageIndex],
                 depthImage,
@@ -434,8 +584,30 @@ void VulkanRenderer::beginPass(const RenderTarget& target){
     }
 
     currentTarget = &target;
-    startPass(*target.getColorImage().getImage(),
-                *target.getColorImage().getImageView(),
+    passLight = nullptr;
+    startPass(target.hasColor() ? *target.getColorImage().getImage() : vk::Image(nullptr),
+                target.hasColor() ? *target.getColorImage().getImageView() : vk::ImageView(nullptr),
+                target.getDepthImage(),
+                target.getExtent());
+}
+
+//The same pass, seen from a light. Everything drawn between here and endPass is projected
+//by the light's matrices, which is what turns a depth buffer into a shadow map
+void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light){
+    if(!frameActive){
+        throw std::runtime_error("beginPass: frame not started");
+    }
+    if(passActive){
+    throw std::runtime_error("beginPass: a pass is already active (missing endPass)");
+    }
+    if(!target.hasDepth()){
+        throw std::runtime_error("beginPass: a light driven pass needs a depth attachment to write into");
+    }
+
+    currentTarget = &target;
+    passLight = &light;
+    startPass(target.hasColor() ? *target.getColorImage().getImage() : vk::Image(nullptr),
+                target.hasColor() ? *target.getColorImage().getImageView() : vk::ImageView(nullptr),
                 target.getDepthImage(),
                 target.getExtent());
 }
@@ -565,7 +737,7 @@ ImageData VulkanRenderer::readLastFrame() const{
     //the image was left ready for presentation, so it is borrowed and put back
     command.transitionImageLayout(image, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferSrcOptimal);
 
-    VulkanBuffer staging(device, bytes, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::CPU_TO_GPU);
+    VulkanBuffer staging(device, bytes, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::GPU_TO_CPU);
     command.copyImageToBuffer(image, staging.getBuffer(), extent);
 
     command.transitionImageLayout(image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);

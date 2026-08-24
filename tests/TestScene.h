@@ -117,7 +117,7 @@ inline ByteDiff diffBytes(const std::vector<uint8_t>& a, const std::vector<uint8
 //A VulkanImage is not a RenderTarget, so it is read back by hand
 inline std::vector<uint8_t> readImagePixels(const LoomInitializer& loom, const VulkanImage& image, vk::Extent2D extent){
     const vk::DeviceSize bytes = vk::DeviceSize(extent.width) * extent.height * 4;
-    VulkanBuffer staging(loom.device, bytes, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::CPU_TO_GPU);
+    VulkanBuffer staging(loom.device, bytes, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::GPU_TO_CPU);
     loom.command.copyImageToBuffer(image.getImage(), staging.getBuffer(), extent);
     std::vector<uint8_t> out(static_cast<size_t>(bytes), 0);
     staging.download(out.data(), bytes);

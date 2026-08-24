@@ -1,4 +1,5 @@
 #include "VulkanImage.h"
+#include <vk_mem_alloc.h>
 
 VulkanImage::VulkanImage(const VulkanDevice& device, vk::Extent2D extent, const ImageConfig& config) : 
 device(device) , config(config) , extent(extent){
@@ -32,24 +33,39 @@ void VulkanImage::build(){
     imageInfo.sharingMode = vk::SharingMode::eExclusive;
     imageInfo.initialLayout = vk::ImageLayout::eUndefined;
 
-    image = vk::raii::Image(device.getDevice(), imageInfo);
+    //VMA sees the whole VkImageCreateInfo, so AUTO can tell an attachment from a staged
+    //texture by its usage flags and place it accordingly. It also honours the driver saying
+    //"this image would rather have its own block" (VK_KHR_dedicated_allocation, core since
+    //1.1), which the old vkAllocateMemory path had no way of even asking about
+    VmaAllocationCreateInfo allocationCreateInfo{};
 
-    vk::MemoryRequirements memRequirements = image.getMemoryRequirements();
-
-    vk::MemoryPropertyFlags properties;
     if(config.memoryUsage == MemoryUsage::GPU_ONLY){
-        properties = vk::MemoryPropertyFlagBits::eDeviceLocal;
+        allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     }
     else{
-        properties = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
+        //A linear tiled image the CPU writes into directly. Rare - textures go through a
+        //staging buffer - but the path stays open
+        allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        allocationCreateInfo.flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
     }
 
-    vk::MemoryAllocateInfo allocInfo;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = device.findMemoryType(memRequirements.memoryTypeBits, properties);
+    if(config.dedicated){
+        allocationCreateInfo.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    }
+    allocationCreateInfo.priority = config.priority;
 
-    memory = vk::raii::DeviceMemory(device.getDevice(), allocInfo);
-    image.bindMemory(*memory,0);
+    const VkImageCreateInfo& rawImageInfo = imageInfo;
+
+    VkImage rawImage = VK_NULL_HANDLE;
+    VmaAllocation rawAllocation = nullptr;
+
+    if(vmaCreateImage(device.getAllocator().get(), &rawImageInfo, &allocationCreateInfo,
+                      &rawImage, &rawAllocation, nullptr) != VK_SUCCESS){
+        throw std::runtime_error("VulkanImage: vmaCreateImage failed");
+    }
+
+    allocation = MemoryAllocation(device.getAllocator().get(), rawAllocation);
+    image = vk::raii::Image(device.getDevice(), rawImage);
 
     vk::ImageViewCreateInfo viewInfo;
     viewInfo.image = *image;
@@ -69,9 +85,12 @@ void VulkanImage::recreate(vk::Extent2D newExtent){
     ++generation;                                //and every view of the old one is dead
     extent = newExtent;
 
+    //View first, then the handle, then the memory under it. build() overwrites all three
+    //anyway, but releasing them here keeps the old and the new image from coexisting -
+    //a full screen colour target is measured in megabytes
     imageView = nullptr;
     image = nullptr;
-    memory = nullptr;
+    allocation.reset();
 
     build();
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan_raii.hpp>
 #include "VulkanInstance.h"
+#include "VulkanAllocator.h"
 #include <optional>
 #include <string>
 #include <set>
@@ -39,6 +40,7 @@ struct QueueFamilyIndices{
     const vk::raii::Device& getDevice() const {return device;}
     const vk::raii::Queue& getGraphicsQueue() const {return graphicsQueue;}
     const vk::raii::Queue& getPresentQueue() const {return presentQueue;}
+    const VulkanAllocator& getAllocator() const {return allocator;}
     const QueueFamilyIndices& getQueueIndices() const {return queueIndices;}
     std::string getDeviceName() const {return std::string(physicalDevice.getProperties().deviceName.data());}
     vk::PhysicalDeviceType getDeviceType() const {return physicalDevice.getProperties().deviceType;}
@@ -50,6 +52,15 @@ struct QueueFamilyIndices{
     vk::raii::Device device = nullptr;
     vk::raii::Queue graphicsQueue = nullptr;
     vk::raii::Queue presentQueue = nullptr;
+
+    //Declared after the device on purpose: it has to be torn down before the device it
+    //allocates from, and members die in reverse declaration order
+    VulkanAllocator allocator;
+
+    //The required list plus whichever optional ones this card turned out to have
+    std::vector<const char*> enabledExtensions;
+    bool hasMemoryBudget = false;
+    bool hasMemoryPriority = false;
 
     QueueFamilyIndices queueIndices;
 
@@ -65,6 +76,16 @@ struct QueueFamilyIndices{
 
     static inline const std::vector<const char*> deviceExtensions = {
         "VK_KHR_swapchain"};
+
+    //Nice to have, never required. Neither changes what Loom can draw - they only let the
+    //allocator ask the driver how much memory is really left, and say which resources should
+    //be the last ones evicted when it runs out. A card without them still runs everything
+    static inline const std::vector<const char*> optionalDeviceExtensions = {
+        "VK_EXT_memory_budget",
+        "VK_EXT_memory_priority"};
+
+    static bool supportsExtension(const vk::raii::PhysicalDevice& candidate, const char* name);
+    void createAllocator();
 
 
 

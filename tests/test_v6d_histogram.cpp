@@ -44,7 +44,7 @@ int main(){
     VulkanBuffer histogram(loom.device, bins * sizeof(uint32_t), bufferUsage, MemoryUsage::GPU_ONLY);
     VulkanBuffer exposure(loom.device, 2 * sizeof(float), bufferUsage, MemoryUsage::GPU_ONLY);
     VulkanBuffer staging(loom.device, bins * sizeof(uint32_t),
-        vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::CPU_TO_GPU);
+        vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::GPU_TO_CPU);
 
     std::vector<uint32_t> zeros(bins, 0);
     staging.upload(zeros.data(), bins * sizeof(uint32_t));
@@ -122,7 +122,7 @@ int main(){
     std::vector<uint32_t> gpuBins(bins, 0);
     staging.download(gpuBins.data(), bins * sizeof(uint32_t));
 
-    VulkanBuffer floatStaging(loom.device, 2 * sizeof(float), vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::CPU_TO_GPU);
+    VulkanBuffer floatStaging(loom.device, 2 * sizeof(float), vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::GPU_TO_CPU);
     loom.command.copyBuffer(exposure.getBuffer(), floatStaging.getBuffer(), 2 * sizeof(float));
     float gpuExposure[2] = {0.0f, 0.0f};
     floatStaging.download(gpuExposure, 2 * sizeof(float));

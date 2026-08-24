@@ -47,10 +47,26 @@ struct PipelineConfig{
     uint32_t pushConstantSize = sizeof(glm::mat4) * 2;
     vk::ShaderStageFlags pushConstantStages = vk::ShaderStageFlagBits::eVertex;
 
+    //A pipeline that writes depth and nothing else - the shadow map pass. With no colour
+    //attachment there is nothing for a fragment shader to return, so fragShaderPath may be
+    //left empty and the pipeline is built with the vertex stage alone
+    bool enableColor = true;
+
     //Depth
     bool depthTestEnable = false;
     bool depthWriteEnable = false;
     vk::CompareOp depthCompare = vk::CompareOp::eLess;
+
+    //Depth bias, the cure for shadow acne. A surface lit at a grazing angle covers a whole
+    //range of depths inside one shadow map texel, so half of it compares as farther than
+    //itself and shadows itself. The constant term pushes every fragment back by a fixed
+    //number of depth units; the slope term pushes steep surfaces back further, because they
+    //are the ones with the most depth inside a texel.
+    //Both are paid for in Peter Panning: push too far and the shadow separates from the
+    //object casting it
+    bool depthBiasEnable = false;
+    float depthBiasConstant = 0.0f;
+    float depthBiasSlope = 0.0f;
 
 
     

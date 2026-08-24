@@ -22,9 +22,11 @@ int main(){
     VulkanBuffer target(loom.device, bytes,
         vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
         MemoryUsage::GPU_ONLY);
+    //Written once and read back later, so GPU_TO_CPU: that asks for cached memory, which is
+    //readable at a sane speed. CPU_TO_GPU would promise VMA the CPU never reads it
     VulkanBuffer staging(loom.device, bytes,
         vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
-        MemoryUsage::CPU_TO_GPU);
+        MemoryUsage::GPU_TO_CPU);
 
     std::vector<uint32_t> initial(total, sentinel);
     staging.upload(initial.data(), bytes);

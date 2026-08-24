@@ -47,7 +47,20 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
-FetchContent_MakeAvailable(VulkanHeaders glfw glm)
+# VulkanMemoryAllocator - suballokator memorije (AMD GPUOpen).
+#   SOURCE_SUBDIR pokazuje na nepostojeci folder kao i kod slanga: VMA-in
+#   vlastiti CMakeLists radi find_package(Vulkan REQUIRED) i trazi SDK na
+#   sustavu, a nama treba samo jedan header. Ovako ga povlacimo kao izvor i
+#   sami kontroliramo sve VMA_* definicije.
+FetchContent_Declare(
+    VulkanMemoryAllocator
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG        v3.4.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  no-cmake-here
+)
+
+FetchContent_MakeAvailable(VulkanHeaders glfw glm VulkanMemoryAllocator)
 
 # ----------------------------------------------------------------------------
 # Slang shader compiler
@@ -172,6 +185,8 @@ add_library(Loom STATIC
     src/Vulkan/VulkanGraphicsPipeline.cpp
     src/Vulkan/VulkanComputePipeline.cpp
     src/Vulkan/ComputeMaterial.cpp
+    src/Vulkan/VulkanAllocator.cpp
+    src/Vulkan/VmaImplementation.cpp
     src/Vulkan/VulkanBuffer.cpp
     src/Vulkan/Mesh.cpp
     src/Vulkan/VulkanImage.cpp
@@ -179,12 +194,41 @@ add_library(Loom STATIC
     src/Vulkan/Material.cpp
     src/Vulkan/RenderTarget.cpp
     src/Core/Camera.cpp
+    src/Core/Light.cpp
 )
 
 # PUBLIC: i Loom i sve sto ga linka vidi ove headere/dependencije,
 # jer su Vulkan/GLFW tipovi dio javnih Loom headera
 target_include_directories(Loom PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(Loom PUBLIC Vulkan::Headers glfw glm::glm)
+
+# VMA je PRIVATE: samo .cpp fileovi koji stvarno alociraju ga includeaju, a Loomovi
+# headeri handleove deklariraju sami (VK_DEFINE_HANDLE), pa korisnikov kod nikad ne
+# mora vidjeti vk_mem_alloc.h.
+target_include_directories(Loom PRIVATE ${vulkanmemoryallocator_SOURCE_DIR}/include)
+
+# VMA_STATIC_VULKAN_FUNCTIONS=0  -> Loom ne linka libvulkan (vk::raii sam otvara loader),
+#                                   pa VMA ne smije traziti simbole u linkanju.
+# VMA_DYNAMIC_VULKAN_FUNCTIONS=1 -> umjesto toga dobije vkGetInstanceProcAddr i
+#                                   vkGetDeviceProcAddr iz raii dispatchera i sve ostalo
+#                                   dohvati sam.
+# VMA_VULKAN_VERSION=1003000     -> Vulkan 1.3, isto sto trazi i VulkanDevice. Headeri su
+#                                   1.4 pa bi default bio 1004000; nizi broj drzi VMA
+#                                   podalje od maintenance5 poziva.
+# Definicije MORAJU biti na targetu, ne u jednom fileu: VMA_VULKAN_VERSION mijenja izgled
+# strukture VmaVulkanFunctions, pa bi se dva TU-a razisla u tome tko koje polje cita.
+target_compile_definitions(Loom PRIVATE
+    VMA_STATIC_VULKAN_FUNCTIONS=0
+    VMA_DYNAMIC_VULKAN_FUNCTIONS=1
+    VMA_VULKAN_VERSION=1003000
+)
+
+# Jedini file koji prevodi samu VMA-u. Tudi kod, pa bez Loomovih -Wall -Wextra: inace
+# upozorenja iz 16000 tudih linija zatrpaju ona koja se nas ticu.
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Vulkan/VmaImplementation.cpp
+    PROPERTIES COMPILE_OPTIONS "-w"
+)
 
 # glm defaults za Vulkan:
 #   DEPTH_ZERO_TO_ONE  -> Vulkanov depth raspon je [0,1], ne OpenGL-ov [-1,1]

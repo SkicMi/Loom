@@ -50,4 +50,22 @@ struct Vertex{
         return attributes;
     }
 
+    //Position alone, for a pass that computes nothing else - a shadow map reads where a
+    //vertex is and has no use for its colour, its texture coordinate or its normal. The
+    //binding stride stays sizeof(Vertex), so the very same Mesh feeds this and the full
+    //layout above without a second copy of the geometry.
+    //
+    //This is not only about fetching less: a pipeline that declares an attribute its shader
+    //never reads is a validation warning, and Slang strips unread inputs out of the SPIR-V
+    static std::vector<vk::VertexInputAttributeDescription> getPositionAttribute(){
+        std::vector<vk::VertexInputAttributeDescription> attributes(1);
+
+        attributes[0].location = 0;
+        attributes[0].binding = 0;
+        attributes[0].format = vk::Format::eR32G32B32Sfloat;
+        attributes[0].offset = offsetof(Vertex,position);
+
+        return attributes;
+    }
+
 };
