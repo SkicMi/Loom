@@ -86,8 +86,8 @@ int main(){
     const glm::mat4 model = glm::rotate(glm::mat4(1.0f), 0.7f, glm::vec3(0.5f,1.0f,0.0f));
 
     int drawn = 0;
-    while(drawn < 3 && !loom.window.shouldClose()){
-        loom.window.pollEvents();
+    while(drawn < 3 && !loom.shouldClose()){
+        loom.pollEvents();
         if(!loom.renderer.beginFrame()) continue;
 
         loom.renderer.beginPass(sceneRead);

@@ -23,11 +23,25 @@ What each one covers:
 | `test_v7c_shadow` | a shadow map is sampled, a shadowed surface keeps exactly its ambient term and loses the rest, depth bias removes the acne a tilted plane inflicts on itself, and too much of it detaches the shadow entirely |
 | `test_v7e_pointshadow` | the shadow box fits itself to the camera's frustum, keeps its size through a full turn of the camera, lands on whole texels, and a point light casts through all six faces of a cube map |
 | `test_shapes` | every primitive is one unit across, wound so its faces agree with their own normals, and one call draws it with a material built once and cached |
+| `test_headless` | a whole frame runs with no window, no surface and no swapchain, and its picture is byte for byte the one the windowed path draws; the same frame number gives the same frame twice |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:
 
-- **They need a GPU and a display.** Each test opens a window; this is not a headless CI suite.
+- **They need a GPU. Most of them still need a display**, because they open a window - but
+  that is now a property of each test rather than of the library. `LoomConfig::headless`
+  builds Loom with no window, no surface and no swapchain, and `test_headless` proves the
+  picture that comes out is byte identical to the windowed one. A test written against the
+  headless path runs with no display at all, on a software rasterizer:
+
+  ```
+  VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json ./build/some_headless_test
+  ```
+
+  Measured on this machine: the same cube covers 2704 pixels on the GTX 1650 and 2704 on
+  llvmpipe, both with `DISPLAY` unset. Coverage is geometry and agrees; **shaded bytes are
+  not promised to agree across devices**, so the exact pixel tests in this suite stay on a
+  reference device until each one has been checked.
 - **`validation` is a check like any other.** The tests assert that the validation layers
   reported zero warnings or errors, counted inside the library rather than grepped out of
   stderr. The first run of this suite failed on a warning that had been filtered by hand

@@ -2,7 +2,6 @@
 
 #include "vulkan/vulkan_raii.hpp"
 #include "VulkanDevice.h"
-#include "VulkanSwapchain.h"
 #include "Vertex.h"
 #include <glm/glm.hpp>
 
@@ -76,9 +75,13 @@ struct PipelineConfig{
 
 class VulkanGraphicsPipeline{
     public:
+    //A pipeline needs two formats, not a swapchain. defaultColorFormat is only the fallback
+    //for a config that left colorFormat undefined - a pipeline drawing to the window wants
+    //the window's format, and one drawing to a target names its own. Taking the format
+    //rather than the swapchain is what lets a pipeline exist in a process with no window
     VulkanGraphicsPipeline(const VulkanDevice& device,
-        const VulkanSwapchain& swapchain,
         const PipelineConfig& config = {},
+        vk::Format defaultColorFormat = vk::Format::eUndefined,
         vk::Format depthFormat = vk::Format::eUndefined);
 
 
@@ -103,7 +106,7 @@ class VulkanGraphicsPipeline{
     
 
     const VulkanDevice& device;
-    const VulkanSwapchain& swapchain;
+    vk::Format defaultColorFormat = vk::Format::eUndefined;
 
     PipelineConfig config;
     vk::raii::PipelineLayout pipelineLayout = nullptr;

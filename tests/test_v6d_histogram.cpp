@@ -100,8 +100,8 @@ int main(){
     const uint32_t rx = (regionW + 7) / 8, ry = (regionH + 7) / 8;
 
     int drawn = 0;
-    while(drawn < 1 && !loom.window.shouldClose()){
-        loom.window.pollEvents();
+    while(drawn < 1 && !loom.shouldClose()){
+        loom.pollEvents();
         if(!loom.renderer.beginFrame()) continue;
 
         loom.renderer.dispatch(write, gx, gy, 1, &whole, sizeof(whole));

@@ -14,15 +14,19 @@
 class LoomInitializer{
 
     public:
-    LoomInitializer(const LoomConfig& config) : window(config.width,config.height,config.appName),
-    instance(config.appName,config.engineName,window),
+    LoomInitializer(const LoomConfig& config) :
+    window(config.headless ? std::nullopt
+                           : std::optional<Window>(std::in_place, config.width, config.height, config.appName)),
+    instance(config.appName, config.engineName, window ? &*window : nullptr),
     device(instance,config.deviceConfig),
-    swapchain(instance,window,device,config.swapchainConfig),
+    swapchain(config.headless ? std::nullopt
+                              : std::optional<VulkanSwapchain>(std::in_place, instance, *window, device, config.swapchainConfig)),
     command(device,config.commandConfig),
-    depthImage(config.enableDepth ? std::optional<VulkanImage>(std::in_place, device, swapchain.getExtent(), makeDepthConfig(device, config.depthConfig)) : std::nullopt),
+    depthImage(config.enableDepth ? std::optional<VulkanImage>(std::in_place, device, pickExtent(config, swapchain), makeDepthConfig(device, config.depthConfig)) : std::nullopt),
     descriptorPool(makeDescriptorPool(device,config)),
-    vulkanGraphicsPipeline(device,swapchain,config.pipelineConfig, depthImage ? depthImage->getFormat() : vk::Format::eUndefined),
-    renderer(device,swapchain,command,vulkanGraphicsPipeline,depthImage ? &*depthImage : nullptr, descriptorPool, config.rendererConfig)
+    vulkanGraphicsPipeline(device,config.pipelineConfig, pickColorFormat(config, swapchain), depthImage ? depthImage->getFormat() : vk::Format::eUndefined),
+    renderer(device, swapchain ? &*swapchain : nullptr, command,vulkanGraphicsPipeline,depthImage ? &*depthImage : nullptr, descriptorPool, config.rendererConfig),
+    config(config)
     {
 
     }
@@ -34,26 +38,52 @@ class LoomInitializer{
     LoomInitializer& operator=(LoomInitializer&&) = delete;
 
 
-    Window window;
+    std::optional<Window> window;
     VulkanInstance instance;
     VulkanDevice device;
-    VulkanSwapchain swapchain;
+    std::optional<VulkanSwapchain> swapchain;
     VulkanCommand command;
     std::optional<VulkanImage> depthImage;
     vk::raii::DescriptorPool descriptorPool = nullptr;
     VulkanGraphicsPipeline vulkanGraphicsPipeline;
     VulkanRenderer renderer;
 
+    //Kept so the getters below can answer without the swapchain
+    LoomConfig config;
+
 
     //getters
     const vk::raii::DescriptorPool& getDescriptorPool() const {return descriptorPool;}
 
+    bool isHeadless() const {return !window.has_value();}
+    bool hasWindow() const {return window.has_value();}
 
+    //What a pipeline drawing to the default target should use, and how big that target is.
+    //With a window they come from the swapchain; without one, from the config
+    vk::Format getColorFormat() const {return pickColorFormat(config, swapchain);}
+    vk::Extent2D getExtent() const {return pickExtent(config, swapchain);}
+
+    //Window chores that a headless run simply does not have. Calling them either way means
+    //the same loop body works in both modes, which is the whole point of a sequence export
+    void pollEvents() const {if(window) window->pollEvents();}
+    bool shouldClose() const {return window ? window->shouldClose() : false;}
+
+    //Wall clock, and only meaningful with a window. A sequence export must drive its own
+    //time - frame N at N/fps - or the same export twice will not give the same frames
+    double getTime() const {return window ? window->getTime() : 0.0;}
 
     void waitIdle() const{device.getDevice().waitIdle();}
     VulkanGraphicsPipeline createPipeline(const PipelineConfig& pipelineConfig) const {
-        return VulkanGraphicsPipeline(device , swapchain, pipelineConfig,
+        return VulkanGraphicsPipeline(device, pipelineConfig, getColorFormat(),
         depthImage ? depthImage ->getFormat() : vk::Format::eUndefined);
+    }
+
+    static vk::Extent2D pickExtent(const LoomConfig& config, const std::optional<VulkanSwapchain>& swapchain){
+        return swapchain ? swapchain->getExtent() : vk::Extent2D{config.width, config.height};
+    }
+
+    static vk::Format pickColorFormat(const LoomConfig& config, const std::optional<VulkanSwapchain>& swapchain){
+        return swapchain ? swapchain->getSurfaceFormat().format : config.headlessColorFormat;
     }
 
     VulkanComputePipeline createComputePipeline(const ComputePipelineConfig& computeConfig) const {

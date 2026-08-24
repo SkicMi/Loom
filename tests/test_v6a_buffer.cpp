@@ -52,8 +52,8 @@ int main(){
 
     bool guardThrew = false;
     int drawn = 0;
-    while(drawn < 1 && !loom.window.shouldClose()){
-        loom.window.pollEvents();
+    while(drawn < 1 && !loom.shouldClose()){
+        loom.pollEvents();
         if(!loom.renderer.beginFrame()) continue;
 
         loom.renderer.dispatch(fill, groups, 1, 1, &count, sizeof(count));

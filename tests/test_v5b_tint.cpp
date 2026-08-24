@@ -82,8 +82,8 @@ int main(){
 
     auto renderFrames = [&](int count){
         int drawn = 0;
-        while(drawn < count && !loom.window.shouldClose()){
-            loom.window.pollEvents();
+        while(drawn < count && !loom.shouldClose()){
+            loom.pollEvents();
             if(!loom.renderer.beginFrame()) continue;
 
             loom.renderer.beginPass(sceneRead);

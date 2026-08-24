@@ -159,8 +159,8 @@ int main(){
     shadowPipelineConfig.depthTestEnable = true;
     shadowPipelineConfig.depthWriteEnable = true;
 
-    VulkanGraphicsPipeline shadowPipeline(loom.device, loom.swapchain,
-        shadowPipelineConfig, depthOnly.getDepthFormat());
+    VulkanGraphicsPipeline shadowPipeline(loom.device, shadowPipelineConfig,
+        loom.getColorFormat(), depthOnly.getDepthFormat());
 
     Material shadowMaterial(shadowPipeline);
 
@@ -187,8 +187,8 @@ int main(){
     const glm::mat4 identity = glm::mat4(1.0f);
 
     int drawn = 0;
-    while(drawn < 3 && !loom.window.shouldClose()){
-        loom.window.pollEvents();
+    while(drawn < 3 && !loom.shouldClose()){
+        loom.pollEvents();
         if(!loom.renderer.beginFrame()) continue;
 
         //depth only, driven by the camera

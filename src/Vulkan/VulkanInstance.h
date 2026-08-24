@@ -9,13 +9,17 @@
 class VulkanInstance{
 
     public:
-    VulkanInstance(const std::string appName, const std::string engineName, const Window& window);
+    //The window is optional. Without one there is no surface, no swapchain and no
+    //presentation - which is exactly what a sequence export or a machine with no display
+    //needs. Everything else Loom does works the same either way
+    VulkanInstance(const std::string appName, const std::string engineName, const Window* window = nullptr);
  
 
     //getters
     const vk::raii::Context& getContext() const {return context;}
     const vk::raii::Instance& getInstance() const {return instance;}
     const vk::raii::SurfaceKHR& getSurface() const {return surface;}
+    bool hasSurface() const {return *surface != VK_NULL_HANDLE;}
     const vk::raii::DebugUtilsMessengerEXT& getMessenger() const {return debugMessenger;}
 
     //How many warnings and errors the validation layers have reported since the counter was
@@ -24,7 +28,7 @@ class VulkanInstance{
     static void resetValidationMessages() {validationMessages.store(0);}
     
     private:
-    const Window& window;
+    const Window* window = nullptr;
     const std::string appName;
     const std::string engineName;
     vk::raii::Context context;

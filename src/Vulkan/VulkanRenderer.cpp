@@ -4,7 +4,7 @@
 
 VulkanRenderer::VulkanRenderer(
     const VulkanDevice& device,
-    VulkanSwapchain& swapchain,
+    VulkanSwapchain* swapchain,
     const VulkanCommand& command,
     const VulkanGraphicsPipeline& graphicsPipeline,
     VulkanImage* depthImage,
@@ -119,9 +119,20 @@ void VulkanRenderer::updateShadowMatrices(){
 
     //Fitting needs a camera to fit to. Without one the light's own box is all there is
     if(shadowConfig.fitToCamera && camera && shadowTarget){
-        const vk::Extent2D viewport = swapchain.getExtent();
+        //The viewport the camera's own pass uses, which is only the window by default
+        uint32_t viewportWidth = shadowConfig.viewportWidth;
+        uint32_t viewportHeight = shadowConfig.viewportHeight;
+
+        if(viewportWidth == 0 || viewportHeight == 0){
+            if(!swapchain){
+                throw std::runtime_error("setShadowMap: fitToCamera needs a viewport - there is no window to take one from, so ShadowConfig::viewportWidth and viewportHeight have to be set");
+            }
+            viewportWidth = swapchain->getExtent().width;
+            viewportHeight = swapchain->getExtent().height;
+        }
+
         shadowMatrices = shadowLight->fitToCamera(*camera,
-            viewport.width, viewport.height,
+            viewportWidth, viewportHeight,
             shadowTarget->getExtent().width,
             shadowConfig.distance);
         return;
@@ -173,7 +184,9 @@ void VulkanRenderer::writeShadowMap(size_t frame) const{
 
 void VulkanRenderer::createSyncObjects(){
     size_t framesInFlight = command.getCommandBuffers().size();
-    size_t imageCount = swapchain.getImageViews().size();
+    //One signal semaphore per swapchain image, because presentation waits on the semaphore
+    //belonging to the image being presented. With no swapchain there is nothing to signal
+    size_t imageCount = swapchain ? swapchain->getImageViews().size() : 0;
 
     imageAvailableSemaphores.reserve(framesInFlight);
     inFlightFences.reserve(framesInFlight);
@@ -366,7 +379,7 @@ void VulkanRenderer::endPass(){
     const bool hasColor = currentTarget ? currentTarget->hasColor() : true;
 
     if(hasColor){
-        vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain.getImages()[currentImageIndex];
+        vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain->getImages()[currentImageIndex];
         vk::ImageLayout finalLayout = currentTarget ? currentTarget->getFinalLayout() : vk::ImageLayout::ePresentSrcKHR;
 
         recordBarrier(commandBuffer, imageBarrier(colorImage, vk::ImageLayout::eColorAttachmentOptimal, finalLayout));
@@ -408,19 +421,22 @@ bool VulkanRenderer::beginFrame(){
     //Wait until GPU finishes the frame that used these resources
     while(vk::Result::eTimeout == dev.waitForFences(*fence, VK_TRUE, UINT64_MAX));
 
-    //Acquire an image from the swapchain
+    //Acquire an image from the swapchain. Headless has none to acquire: the frame below is
+    //identical in every other way, it simply never waits for an image and never presents one
     needsRecreate = false;
-    try{
-        auto [acquireResult, index] = swapchain.getSwapchain().acquireNextImage(
-            UINT64_MAX, *imageAvailableSemaphores[currentFrame], nullptr);
-        currentImageIndex = index;
-        if(acquireResult == vk::Result::eSuboptimalKHR){
-            needsRecreate = true;
+    if(swapchain){
+        try{
+            auto [acquireResult, index] = swapchain->getSwapchain().acquireNextImage(
+                UINT64_MAX, *imageAvailableSemaphores[currentFrame], nullptr);
+            currentImageIndex = index;
+            if(acquireResult == vk::Result::eSuboptimalKHR){
+                needsRecreate = true;
+            }
         }
-    }
-    catch(const vk::OutOfDateKHRError& e){
-        recreateSwapchain();
-        return false;
+        catch(const vk::OutOfDateKHRError& e){
+            recreateSwapchain();
+            return false;
+        }
     }
         
 
@@ -524,48 +540,54 @@ void VulkanRenderer::endFrame(){
     }
     commandBuffer.end();
 
-    //Submit via sync2
+    //Submit via sync2. The two semaphores exist only to hand an image between the acquire
+    //and the present; with no swapchain there is no handover, and the fence alone is what
+    //tells the next frame this one has finished
     vk::SemaphoreSubmitInfo waitInfo;
-    waitInfo.semaphore = *imageAvailableSemaphores[currentFrame];
-    waitInfo.stageMask = vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
+    vk::SemaphoreSubmitInfo signalInfo;
+
+    if(swapchain){
+        waitInfo.semaphore = *imageAvailableSemaphores[currentFrame];
+        waitInfo.stageMask = vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
+
+        signalInfo.semaphore = *renderFinishedSemaphores[currentImageIndex];
+        signalInfo.stageMask = vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
+    }
 
     vk::CommandBufferSubmitInfo commandBufferInfo;
     commandBufferInfo.commandBuffer = *commandBuffer;
 
-    vk::SemaphoreSubmitInfo signalInfo;
-    signalInfo.semaphore = *renderFinishedSemaphores[currentImageIndex];
-    signalInfo.stageMask = vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
-
     vk::SubmitInfo2 submitInfo;
-    submitInfo.waitSemaphoreInfoCount = 1;
-    submitInfo.pWaitSemaphoreInfos = &waitInfo;
+    submitInfo.waitSemaphoreInfoCount = swapchain ? 1 : 0;
+    submitInfo.pWaitSemaphoreInfos = swapchain ? &waitInfo : nullptr;
     submitInfo.commandBufferInfoCount = 1;
     submitInfo.pCommandBufferInfos = &commandBufferInfo;
-    submitInfo.signalSemaphoreInfoCount = 1;
-    submitInfo.pSignalSemaphoreInfos = &signalInfo;
+    submitInfo.signalSemaphoreInfoCount = swapchain ? 1 : 0;
+    submitInfo.pSignalSemaphoreInfos = swapchain ? &signalInfo : nullptr;
 
     device.getGraphicsQueue().submit2(submitInfo, *fence);
 
     //Present the image
-    vk::Semaphore waitSemaphore = *renderFinishedSemaphores[currentImageIndex];
-    vk::SwapchainKHR swapchainHandle = *swapchain.getSwapchain();
+    if(swapchain){
+        vk::Semaphore waitSemaphore = *renderFinishedSemaphores[currentImageIndex];
+        vk::SwapchainKHR swapchainHandle = *swapchain->getSwapchain();
 
-    vk::PresentInfoKHR presentInfo;
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &waitSemaphore;
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &swapchainHandle;
-    presentInfo.pImageIndices = &currentImageIndex;
+        vk::PresentInfoKHR presentInfo;
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = &waitSemaphore;
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = &swapchainHandle;
+        presentInfo.pImageIndices = &currentImageIndex;
 
-    
-   try{
-        auto presentResult = device.getPresentQueue().presentKHR(presentInfo);
-        if(presentResult == vk::Result::eErrorOutOfDateKHR || presentResult == vk::Result::eSuboptimalKHR){
+       try{
+            auto presentResult = device.getPresentQueue().presentKHR(presentInfo);
+            if(presentResult == vk::Result::eErrorOutOfDateKHR || presentResult == vk::Result::eSuboptimalKHR){
+                needsRecreate = true;
+            }
+        }
+        catch(const vk::OutOfDateKHRError& e){
             needsRecreate = true;
         }
-    }
-    catch(const vk::OutOfDateKHRError& e){
-        needsRecreate = true;
     }
 
     
@@ -580,9 +602,13 @@ void VulkanRenderer::endFrame(){
 }
 
 void VulkanRenderer::recreateSwapchain(){
-    swapchain.recreateSwapchain();
+    if(!swapchain){
+        return; //nothing to resize: a headless frame is always the size it was asked for
+    }
+
+    swapchain->recreateSwapchain();
     if(depthImage){
-        depthImage->recreate(swapchain.getExtent());
+        depthImage->recreate(swapchain->getExtent());
     }
     imageAvailableSemaphores.clear();
     renderFinishedSemaphores.clear();
@@ -673,12 +699,16 @@ void VulkanRenderer::beginPass(){
     throw std::runtime_error("beginPass: a pass is already active (missing endPass)");
     }
 
+    if(!swapchain){
+        throw std::runtime_error("beginPass: there is no window to draw into (this Loom was built headless) - render into a RenderTarget instead");
+    }
+
     currentTarget = nullptr;
     passLight = nullptr;
-    startPass(swapchain.getImages()[currentImageIndex],
-                *swapchain.getImageViews()[currentImageIndex],
+    startPass(swapchain->getImages()[currentImageIndex],
+                *swapchain->getImageViews()[currentImageIndex],
                 depthImage,
-                swapchain.getExtent());
+                swapchain->getExtent());
 
 }
 
@@ -857,15 +887,18 @@ ImageData VulkanRenderer::readLastFrame() const{
     if(frameActive){
         throw std::runtime_error("readLastFrame: a frame is still being recorded (missing endFrame)");
     }
-    if(!swapchain.canReadback()){
+    if(!swapchain){
+        throw std::runtime_error("readLastFrame: there is no window to read (this Loom was built headless) - read a RenderTarget instead");
+    }
+    if(!swapchain->canReadback()){
         throw std::runtime_error("readLastFrame: the swapchain was not created for readback (SwapchainConfig::allowReadback, or the surface does not support it)");
     }
 
     device.getDevice().waitIdle();
 
-    const vk::Image image = swapchain.getImages()[currentImageIndex];
-    const vk::Extent2D extent = swapchain.getExtent();
-    const vk::Format format = swapchain.getSurfaceFormat().format;
+    const vk::Image image = swapchain->getImages()[currentImageIndex];
+    const vk::Extent2D extent = swapchain->getExtent();
+    const vk::Format format = swapchain->getSurfaceFormat().format;
     const vk::DeviceSize bytes = vk::DeviceSize(extent.width) * extent.height * bytesPerPixel(format);
 
     //the image was left ready for presentation, so it is borrowed and put back

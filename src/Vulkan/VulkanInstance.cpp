@@ -2,7 +2,7 @@
 
 VulkanInstance::VulkanInstance(const std::string appName, 
     const std::string engineName, 
-    const Window& window) : window(window), appName(appName), engineName(engineName){
+    const Window* window) : window(window), appName(appName), engineName(engineName){
 
 
     //Creating App Info
@@ -61,13 +61,19 @@ VulkanInstance::VulkanInstance(const std::string appName,
 
 
 
+    //No window means no surface. The member stays null and hasSurface() says so, which is
+    //what VulkanDevice reads when it decides whether a present queue is required at all
+    if(window == nullptr){
+        return;
+    }
+
     //Since using raii, I need to wrap surface in rawSurface then use RAII method to create raii SurfaceKHR member
 
     //Creating non raii surface
     VkSurfaceKHR rawSurface;
 
     //Trying to create window surface, if it works, it will save it to rawSurface
-    if(glfwCreateWindowSurface(*instance ,window.getWindow(),nullptr ,&rawSurface) != VK_SUCCESS){
+    if(glfwCreateWindowSurface(*instance ,window->getWindow(),nullptr ,&rawSurface) != VK_SUCCESS){
         throw std::runtime_error("Failed to create Surface");
     }
 
@@ -79,7 +85,12 @@ VulkanInstance::VulkanInstance(const std::string appName,
 
 //Helper that gets glfw extensions from window and adds utils for debug
 std::vector<const char*> VulkanInstance::getExtensions(){
-    auto exts = window.getGlfwExtensions();
+    //GLFW's extensions are the ones a surface needs. Headless asks for none of them, which
+    //also means the loader is never asked for a display it does not have
+    std::vector<const char*> exts;
+    if(window){
+        exts = window->getGlfwExtensions();
+    }
     #ifndef NDEBUG
     exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     #endif

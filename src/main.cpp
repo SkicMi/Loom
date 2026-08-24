@@ -114,8 +114,8 @@ int main(){
     //than any bias could buy
     shadowPipelineConfig.cullMode = vk::CullModeFlagBits::eFront;
 
-    VulkanGraphicsPipeline shadowPipeline(loom.device, loom.swapchain,
-        shadowPipelineConfig, sunMap.getDepthFormat());
+    VulkanGraphicsPipeline shadowPipeline(loom.device, shadowPipelineConfig,
+        loom.getColorFormat(), sunMap.getDepthFormat());
     Material shadowMaterial(shadowPipeline);
 
     ShadowConfig sunShadow;
@@ -134,9 +134,9 @@ int main(){
 
     const glm::mat4 floorModel = glm::scale(glm::mat4(1.0f), glm::vec3(16.0f, 1.0f, 16.0f));
 
-    while(!loom.window.shouldClose()){
-        loom.window.pollEvents();
-        const float time = static_cast<float>(loom.window.getTime());
+    while(!loom.shouldClose()){
+        loom.pollEvents();
+        const float time = static_cast<float>(loom.getTime());
 
         //The camera orbits so the fitted shadow box has to keep up. If the texel snapping
         //were not there this is exactly where the edges would start crawling

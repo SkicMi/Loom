@@ -212,8 +212,8 @@ int main(){
     shadowPipelineConfig.depthTestEnable = true;
     shadowPipelineConfig.depthWriteEnable = true;
 
-    VulkanGraphicsPipeline shadowPipeline(loom.device, loom.swapchain,
-        shadowPipelineConfig, cubeMap.getDepthFormat());
+    VulkanGraphicsPipeline shadowPipeline(loom.device, shadowPipelineConfig,
+        loom.getColorFormat(), cubeMap.getDepthFormat());
     Material shadowMaterial(shadowPipeline);
 
     RenderTargetConfig readConfig;
@@ -239,8 +239,8 @@ int main(){
         }
 
         int drawn = 0;
-        while(drawn < 3 && !loom.window.shouldClose()){
-            loom.window.pollEvents();
+        while(drawn < 3 && !loom.shouldClose()){
+            loom.pollEvents();
             if(!loom.renderer.beginFrame()) continue;
 
             if(bindCube){

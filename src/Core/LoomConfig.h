@@ -32,6 +32,15 @@ struct LoomConfig{
     //RendererConfiguration
     RendererConfig rendererConfig = {};
 
+    //No window, no surface, no swapchain, no presentation. Everything else - passes, shadow
+    //maps, compute, readback - works exactly as it does with a window, which is what makes a
+    //sequence export deterministic and a test runnable on a machine with no display
+    bool headless = false;
+
+    //What a headless pipeline draws into by default, since there is no swapchain to borrow a
+    //format from. Ignored entirely when there is a window
+    vk::Format headlessColorFormat = vk::Format::eB8G8R8A8Srgb;
+
     //Image Configuration
     //Depth
     bool enableDepth = false; //deault for 2D projects

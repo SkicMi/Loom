@@ -40,6 +40,12 @@ struct ShadowConfig{
     //How far from the camera shadows reach when fitting. The whole shadow map is spent on
     //this slice of the frustum, so smaller is sharper
     float distance = 20.0f;
+
+    //The viewport the frustum being fitted belongs to. Zero means the renderer's own default
+    //- the window when there is one. It has to be said out loud whenever the camera draws
+    //into something that is not the window, because the fit is shaped by the aspect ratio
+    uint32_t viewportWidth = 0;
+    uint32_t viewportHeight = 0;
 };
 
 
@@ -48,7 +54,7 @@ class VulkanRenderer{
     public:
     VulkanRenderer(
     const VulkanDevice& device,
-    VulkanSwapchain& swapchain,
+    VulkanSwapchain* swapchain,   //null when there is no window to present to
     const VulkanCommand& command,
     const VulkanGraphicsPipeline& graphicsPipeline,
     VulkanImage* depthImage,
@@ -77,6 +83,10 @@ class VulkanRenderer{
     //The window, read back. Only valid between frames
     ImageData readLastFrame() const;
 
+    //Whether this renderer has a window to present to. Without one beginFrame still runs a
+    //whole frame - passes, shadow maps, compute - it just never acquires and never presents
+    bool hasSwapchain() const {return swapchain != nullptr;}
+
     //Which depth buffer shadows this scene, and which light cast it. The light space matrix
     //travels in that light's GpuLight, and the map itself sits on set 0 next to the frame
     //data, because it shadows everything the pass draws rather than belonging to any one
@@ -102,7 +112,7 @@ class VulkanRenderer{
 
     private:
     const VulkanDevice& device;
-    VulkanSwapchain& swapchain;
+    VulkanSwapchain* swapchain = nullptr;
     const VulkanCommand& command;
     const VulkanGraphicsPipeline& graphicsPipeline;
     RendererConfig rendererConfig;

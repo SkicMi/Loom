@@ -98,8 +98,8 @@ int main(){
     const uint32_t regionX = (regionW + 7) / 8, regionY = (regionH + 7) / 8;
 
     int drawn = 0;
-    while(drawn < 2 && !loom.window.shouldClose()){
-        loom.window.pollEvents();
+    while(drawn < 2 && !loom.shouldClose()){
+        loom.pollEvents();
         if(!loom.renderer.beginFrame()) continue;
 
         loom.renderer.dispatch(toRead, wholeX, wholeY, 1, &whole, sizeof(whole));

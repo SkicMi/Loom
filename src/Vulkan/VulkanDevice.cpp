@@ -2,7 +2,10 @@
 
 VulkanDevice::VulkanDevice(const VulkanInstance& instance, const DeviceConfig& config) : instance(instance), config(config){
     auto physicalDevices = instance.getInstance().enumeratePhysicalDevices();
-    
+
+    //Everything below asks this the same way: is there a surface at all
+    needsPresent = instance.hasSurface();
+
     pickPhysicalDevice(physicalDevices);
     queueIndices = findQueueFamilies(physicalDevice);
     createLogicalDevice();
@@ -34,7 +37,7 @@ bool VulkanDevice::isDeviceSuitable(const vk::raii::PhysicalDevice& candidate){
     //maintenance4 is what makes vkGetDeviceBufferMemoryRequirements callable, which is the
     //function VMA reaches for on 1.3. Every device that reports Vulkan 1.3 must support it,
     //so this filters nothing out in practice - it just says out loud what is being relied on
-    return indices.isComplete() &&
+    return indices.isComplete(needsPresent) &&
     suported13.maintenance4 &&
     extensionSupported && 
     supportsRendering && 
@@ -48,7 +51,12 @@ bool VulkanDevice::isDeviceSuitable(const vk::raii::PhysicalDevice& candidate){
 bool VulkanDevice::checkDeviceExtensionSupport(const vk::raii::PhysicalDevice& candidate){
     auto available = candidate.enumerateDeviceExtensionProperties();
 
-    for(const char* required : deviceExtensions){
+    //Nothing is required of a headless device beyond what core Vulkan already promises
+    if(!needsPresent){
+        return true;
+    }
+
+    for(const char* required : surfaceDeviceExtensions){
         bool found = false;
         for(const auto& ext : available){
             if(strcmp(required,ext.extensionName) == 0){
@@ -117,10 +125,10 @@ QueueFamilyIndices VulkanDevice::findQueueFamilies(const vk::raii::PhysicalDevic
         if(queueFamilies[i].queueFlags & vk::QueueFlagBits::eGraphics){
             indices.graphicsFamilies = i;
         }
-        if(candidate.getSurfaceSupportKHR(i,*instance.getSurface())){
+        if(needsPresent && candidate.getSurfaceSupportKHR(i,*instance.getSurface())){
             indices.presentFamilies = i;
         }
-        if(indices.isComplete()) break; //early exit as soon as we get both present and graphics families
+        if(indices.isComplete(needsPresent)) break; //early exit as soon as we have what this device needs
     }
 
     return indices;
@@ -146,10 +154,10 @@ vk::Format VulkanDevice::findSupportedFormat(const std::vector<vk::Format>& cand
 
 void VulkanDevice::createLogicalDevice(){
     //Creating a set that holds bot queue and present families value
-    std::set<uint32_t> uniqueQueueFamilies = {
-        queueIndices.graphicsFamilies.value(),
-        queueIndices.presentFamilies.value()
- };
+    std::set<uint32_t> uniqueQueueFamilies = {queueIndices.graphicsFamilies.value()};
+    if(queueIndices.presentFamilies.has_value()){
+        uniqueQueueFamilies.insert(queueIndices.presentFamilies.value());
+    }
 
     //Vector that holds al queueCreateInfos
     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
@@ -186,7 +194,7 @@ void VulkanDevice::createLogicalDevice(){
 
     //The required extensions plus whichever optional ones this card offers. Asked once here
     //and remembered, because the allocator needs the same answer a moment later
-    enabledExtensions = deviceExtensions;
+    enabledExtensions = needsPresent ? surfaceDeviceExtensions : std::vector<const char*>{};
     hasMemoryBudget = supportsExtension(physicalDevice, "VK_EXT_memory_budget");
     hasMemoryPriority = supportsExtension(physicalDevice, "VK_EXT_memory_priority");
 
@@ -223,7 +231,9 @@ void VulkanDevice::createLogicalDevice(){
     device = vk::raii::Device(physicalDevice,deviceCreateInfo);
 
     graphicsQueue = device.getQueue(queueIndices.graphicsFamilies.value(),0);
-    presentQueue = device.getQueue(queueIndices.presentFamilies.value(),0);
+    if(queueIndices.presentFamilies.has_value()){
+        presentQueue = device.getQueue(queueIndices.presentFamilies.value(),0);
+    }
 
    }
 

@@ -81,8 +81,8 @@ int main(){
 
     bool drawRefused = false;
     int drawn = 0;
-    while(drawn < 1 && !loom.window.shouldClose()){
-        loom.window.pollEvents();
+    while(drawn < 1 && !loom.shouldClose()){
+        loom.pollEvents();
         if(!loom.renderer.beginFrame()) continue;
 
         loom.renderer.beginPass(target);
@@ -122,8 +122,8 @@ int main(){
     source.resize(extent);
 
     drawn = 0;
-    while(drawn < 2 && !loom.window.shouldClose()){
-        loom.window.pollEvents();
+    while(drawn < 2 && !loom.shouldClose()){
+        loom.pollEvents();
         if(!loom.renderer.beginFrame()) continue;
 
         loom.renderer.beginPass(target);

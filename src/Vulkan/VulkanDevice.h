@@ -20,7 +20,13 @@ struct DeviceConfig{
 struct QueueFamilyIndices{
     std::optional<uint32_t> graphicsFamilies;
     std::optional<uint32_t> presentFamilies;
-    bool isComplete() const { return graphicsFamilies.has_value() && presentFamilies.has_value();}
+
+    //A present queue is only required when there is a surface to present to. Headless needs
+    //graphics and nothing else, and demanding a present family there would reject every
+    //device on a machine with no display
+    bool isComplete(bool needsPresent = true) const {
+        return graphicsFamilies.has_value() && (!needsPresent || presentFamilies.has_value());
+    }
 };
 
  class VulkanDevice{
@@ -41,6 +47,7 @@ struct QueueFamilyIndices{
     const vk::raii::Queue& getGraphicsQueue() const {return graphicsQueue;}
     const vk::raii::Queue& getPresentQueue() const {return presentQueue;}
     const VulkanAllocator& getAllocator() const {return allocator;}
+    bool isHeadless() const {return !needsPresent;}
     const QueueFamilyIndices& getQueueIndices() const {return queueIndices;}
     std::string getDeviceName() const {return std::string(physicalDevice.getProperties().deviceName.data());}
     vk::PhysicalDeviceType getDeviceType() const {return physicalDevice.getProperties().deviceType;}
@@ -62,6 +69,10 @@ struct QueueFamilyIndices{
     bool hasMemoryBudget = false;
     bool hasMemoryPriority = false;
 
+    //Asked once at construction from the instance, because every suitability check and the
+    //extension list both need the same answer
+    bool needsPresent = true;
+
     QueueFamilyIndices queueIndices;
 
 
@@ -74,7 +85,9 @@ struct QueueFamilyIndices{
     void pickPhysicalDevice(const std::vector<vk::raii::PhysicalDevice>& candidates);
     QueueFamilyIndices findQueueFamilies(const vk::raii::PhysicalDevice& candidate);
 
-    static inline const std::vector<const char*> deviceExtensions = {
+    //Only required when there is a surface. A headless device that asked for it would fail
+    //on any driver that does not expose it without a display
+    static inline const std::vector<const char*> surfaceDeviceExtensions = {
         "VK_KHR_swapchain"};
 
     //Nice to have, never required. Neither changes what Loom can draw - they only let the

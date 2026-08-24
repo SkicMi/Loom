@@ -4,9 +4,9 @@
 #include <glm/glm.hpp>
 
 VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
-    const VulkanSwapchain& swapchain,
     const PipelineConfig& config,
-    vk::Format depthFormat) : depthFormat(depthFormat), device(device), swapchain(swapchain), config(config){
+    vk::Format defaultColorFormat,
+    vk::Format depthFormat) : depthFormat(depthFormat), device(device), defaultColorFormat(defaultColorFormat), config(config){
         createPipeline();
 }
 
@@ -210,8 +210,13 @@ void VulkanGraphicsPipeline::createPipeline(){
 
     //Dynamic rendering - rendering info
     colorFormat = config.colorFormat == vk::Format::eUndefined
-                ? swapchain.getSurfaceFormat().format
+                ? defaultColorFormat
                 : config.colorFormat;
+
+    //Undefined on both sides means nobody ever said what this pipeline draws into
+    if(config.enableColor && colorFormat == vk::Format::eUndefined){
+        throw std::runtime_error("Pipeline: no colour format - the config did not name one and no default was given (headless has no swapchain to borrow it from)");
+    }
 
     vk::PipelineRenderingCreateInfo renderingInfo;
     renderingInfo.colorAttachmentCount = config.enableColor ? 1 : 0;
