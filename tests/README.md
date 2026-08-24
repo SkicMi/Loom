@@ -24,6 +24,7 @@ What each one covers:
 | `test_v7e_pointshadow` | the shadow box fits itself to the camera's frustum, keeps its size through a full turn of the camera, lands on whole texels, and a point light casts through all six faces of a cube map |
 | `test_shapes` | every primitive is one unit across, wound so its faces agree with their own normals, and one call draws it with a material built once and cached |
 | `test_headless` | a whole frame runs with no window, no surface and no swapchain, and its picture is byte for byte the one the windowed path draws; the same frame number gives the same frame twice |
+| `test_lifetime` | GLFW is initialised by the first window and terminated by the last, so destroying one window leaves the others alive; a headless Loom never touches GLFW at all, and a Loom built after a full shutdown draws the same picture |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:
@@ -46,6 +47,13 @@ Two things worth knowing before reading a failure:
   reported zero warnings or errors, counted inside the library rather than grepped out of
   stderr. The first run of this suite failed on a warning that had been filtered by hand
   for a whole day.
+
+One thing the hardware here refuses to do: **two VkInstances alive at once, with the
+validation layer loaded, crash this NVIDIA driver when one of them is destroyed** - inside
+the driver, on a null function pointer, after the loader reports unloading the layer that
+the surviving instance is still using. The same code passes on llvmpipe. `test_lifetime`
+therefore proves the window lifetime at the `Window` level, which is where the bug it
+guards actually was, and does not claim two whole Looms can coexist on every driver.
 
 Tolerances are not decoration. Where a test allows a delta of 1 it says so, because this
 hardware does not round float to unorm exactly at .5 - `shaders/tests/unormprobe.slang`
