@@ -20,6 +20,11 @@ struct ImageConfig{
     //0..1, only listened to when VK_EXT_memory_priority is present. Attachments go to 1.0,
     //because a frame without its depth buffer cannot be drawn at all
     float priority = 0.5f;
+
+    //Six layers, flagged cube compatible, and sampled through a cube view. A point light
+    //casts in every direction at once, so its shadow map is not one image but six faces of
+    //one - and the shader looks it up with a direction rather than a coordinate
+    bool cube = false;
 };
 
 class VulkanImage{
@@ -35,6 +40,17 @@ class VulkanImage{
     //getters
     const vk::raii::Image& getImage() const {return image;}
     const vk::raii::ImageView& getImageView() const {return imageView;}
+
+    //One face of a layered image, as something that can be rendered into. The view above
+    //covers all six at once and is what a shader samples; these are what a pass attaches
+    const vk::raii::ImageView& getLayerView(uint32_t layer) const {
+        if(layer >= layerViews.size()){
+            throw std::runtime_error("VulkanImage: no such layer view - this image is not layered");
+        }
+        return layerViews[layer];
+    }
+    uint32_t getLayerCount() const {return layers;}
+    bool isCube() const {return config.cube;}
     vk::Format getFormat() const {return config.format;}
     vk::ImageUsageFlags getUsage() const {return config.usage;}
 
@@ -60,6 +76,8 @@ class VulkanImage{
     MemoryAllocation allocation;
     vk::raii::Image image = nullptr;
     vk::raii::ImageView imageView = nullptr;
+    std::vector<vk::raii::ImageView> layerViews;
+    uint32_t layers = 1;
 
     void build();
 

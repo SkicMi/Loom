@@ -34,6 +34,11 @@ void VulkanRenderer::createShadowPlaceholder(){
 
     shadowPlaceholder.emplace(device, vk::Extent2D{1,1}, makeDepthConfig(device, placeholderConfig));
 
+    //And the same for binding 3, which is a cube and cannot be fed a 2D image
+    ImageConfig cubePlaceholderConfig = placeholderConfig;
+    cubePlaceholderConfig.cube = true;
+    shadowCubePlaceholder.emplace(device, vk::Extent2D{1,1}, makeDepthConfig(device, cubePlaceholderConfig));
+
     //The shader declares a comparison sampler, so this one has to be a comparison sampler
     //too - a plain sampler bound where the shader expects to compare is a validation error,
     //not a slightly wrong picture
@@ -50,11 +55,12 @@ void VulkanRenderer::createShadowPlaceholder(){
 
     shadowPlaceholderSampler = vk::raii::Sampler(device.getDevice(), samplerInfo);
 
-    //It has to be in the layout a shader read expects before anything binds it
+    //Both have to be in the layout a shader read expects before anything binds them
     command.transitionImageLayout(*shadowPlaceholder, vk::ImageLayout::eShaderReadOnlyOptimal);
+    command.transitionImageLayout(*shadowCubePlaceholder, vk::ImageLayout::eShaderReadOnlyOptimal);
 }
 
-void VulkanRenderer::setShadowMap(const RenderTarget& target, const Light& light, float depthBias){
+void VulkanRenderer::setShadowMap(const RenderTarget& target, const Light& light, const ShadowConfig& config){
     if(!target.hasDepth()){
         throw std::runtime_error("setShadowMap: the target has no depth attachment to shadow with");
     }
@@ -62,20 +68,68 @@ void VulkanRenderer::setShadowMap(const RenderTarget& target, const Light& light
         throw std::runtime_error("setShadowMap: the target does not keep its depth (RenderTargetConfig::keepDepth), so there would be nothing to sample");
     }
     if(light.getType() != LightType::Directional){
-        throw std::runtime_error("setShadowMap: only a directional light has a single light space matrix - a point light needs a cube map");
+        throw std::runtime_error("setShadowMap: only a directional light has a single light space matrix - a point light needs a cube map (setShadowCube)");
     }
 
     shadowTarget = &target;
     shadowLight = &light;
-    shadowDepthBias = depthBias;
+    shadowConfig = config;
     shadowDirty.assign(command.getCommandBuffers().size(), 1);
+
+    updateShadowMatrices();
 }
 
 void VulkanRenderer::clearShadowMap(){
     shadowTarget = nullptr;
     shadowLight = nullptr;
-    shadowDepthBias = 0.0f;
+    shadowConfig = {};
+    shadowMatrices = {};
     shadowDirty.assign(command.getCommandBuffers().size(), 1);
+}
+
+void VulkanRenderer::setShadowCube(const RenderTarget& target, const Light& light, const ShadowConfig& config){
+    if(!target.hasDepth() || !target.keepsDepth()){
+        throw std::runtime_error("setShadowCube: the target needs a depth attachment it keeps (RenderTargetConfig::keepDepth)");
+    }
+    if(!target.hasCubeDepth()){
+        throw std::runtime_error("setShadowCube: the target's depth is a single image, not a cube (makeShadowCubeConfig)");
+    }
+    if(light.getType() != LightType::Point){
+        throw std::runtime_error("setShadowCube: a cube map is for a point light - a directional light has one box (setShadowMap)");
+    }
+
+    shadowCubeTarget = &target;
+    shadowCubeLight = &light;
+    shadowCubeConfig = config;
+    shadowDirty.assign(command.getCommandBuffers().size(), 1);
+}
+
+void VulkanRenderer::clearShadowCube(){
+    shadowCubeTarget = nullptr;
+    shadowCubeLight = nullptr;
+    shadowCubeConfig = {};
+    shadowDirty.assign(command.getCommandBuffers().size(), 1);
+}
+
+void VulkanRenderer::updateShadowMatrices(){
+    if(!shadowLight){
+        shadowMatrices = {};
+        return;
+    }
+
+    //Fitting needs a camera to fit to. Without one the light's own box is all there is
+    if(shadowConfig.fitToCamera && camera && shadowTarget){
+        const vk::Extent2D viewport = swapchain.getExtent();
+        shadowMatrices = shadowLight->fitToCamera(*camera,
+            viewport.width, viewport.height,
+            shadowTarget->getExtent().width,
+            shadowConfig.distance);
+        return;
+    }
+
+    shadowMatrices.view = shadowLight->getView();
+    shadowMatrices.projection = shadowLight->getProjection();
+    shadowMatrices.viewProjection = shadowMatrices.projection * shadowMatrices.view;
 }
 
 void VulkanRenderer::writeShadowMap(size_t frame) const{
@@ -95,7 +149,26 @@ void VulkanRenderer::writeShadowMap(size_t frame) const{
     write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
     write.setImageInfo(imageInfo);
 
-    device.getDevice().updateDescriptorSets(write, nullptr);
+    //Binding 3 is the cube. Same sampler, different image, and it has its own placeholder
+    //because a cube descriptor will not accept a 2D view
+    const SampledImage cube = shadowCubeTarget
+        ? shadowCubeTarget->getDepthSampled()
+        : SampledImage{*shadowCubePlaceholder->getImageView(), *shadowPlaceholderSampler, &*shadowCubePlaceholder, 0};
+
+    vk::DescriptorImageInfo cubeInfo;
+    cubeInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    cubeInfo.imageView = cube.view;
+    cubeInfo.sampler = cube.sampler;
+
+    vk::WriteDescriptorSet cubeWrite;
+    cubeWrite.dstSet = *frameSets[frame];
+    cubeWrite.dstBinding = 3;
+    cubeWrite.dstArrayElement = 0;
+    cubeWrite.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    cubeWrite.setImageInfo(cubeInfo);
+
+    const std::array<vk::WriteDescriptorSet,2> writes = {write, cubeWrite};
+    device.getDevice().updateDescriptorSets(writes, nullptr);
 }
 
 void VulkanRenderer::createSyncObjects(){
@@ -120,7 +193,7 @@ void VulkanRenderer::createSyncObjects(){
     }
 }
 
-void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent){
+void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, uint32_t depthFace){
 
 const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
 
@@ -141,10 +214,13 @@ if(hasColor){
 }
 
 if(depth){
+    //All six faces of a cube are moved together: the layout is tracked per image, not per
+    //layer, and leaving five of them behind would be a lie the next pass believes
     recordBarrier(commandBuffer, imageBarrier(*depth->getImage(),
                                               depth->getCurrentLayout(),
                                               vk::ImageLayout::eDepthAttachmentOptimal,
-                                              vk::ImageAspectFlagBits::eDepth));
+                                              vk::ImageAspectFlagBits::eDepth,
+                                              depth->getLayerCount()));
     depth->setCurrentLayout(vk::ImageLayout::eDepthAttachmentOptimal);
 }
 
@@ -159,7 +235,11 @@ colorAttachment.clearValue.color = vk::ClearColorValue(rendererConfig.clearColor
 //depth attachment info
 vk::RenderingAttachmentInfo depthAttachment;
 if(depth){
-    depthAttachment.imageView = *depth->getImageView();
+    //One face at a time. A layered image cannot be attached whole, and its cube view is for
+    //sampling, not for rendering into
+    depthAttachment.imageView = depth->getLayerCount() > 1
+                              ? *depth->getLayerView(depthFace)
+                              : *depth->getImageView();
     depthAttachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     depthAttachment.loadOp = vk::AttachmentLoadOp::eClear;
     //Depth is scratch space for the depth test and is normally thrown away here. A shadow
@@ -203,8 +283,21 @@ if(passIndex >= rendererConfig.maxPassesPerFrame){
 //swaps out both matrices - and because every pass already writes its own FrameData block
 //at its own dynamic offset, nothing has to be restored afterwards
 if(passLight){
-    frameData.view = passLight->getView();
-    frameData.projection = passLight->getProjection();
+    //A cube face has its own pair, one of six
+    if(currentTarget && currentTarget->hasCubeDepth()){
+        frameData.view = passLight->getCubeView(passFace);
+        frameData.projection = passLight->getCubeProjection();
+    }
+    //The light that owns the bound shadow map uses the matrices computed in beginFrame -
+    //fitted and texel snapped if that is on. Any other light falls back to its own box
+    else if(passLight == shadowLight){
+        frameData.view = shadowMatrices.view;
+        frameData.projection = shadowMatrices.projection;
+    }
+    else{
+        frameData.view = passLight->getView();
+        frameData.projection = passLight->getProjection();
+    }
 }
 else{
     frameData.view = camera ? camera->getView() : glm::mat4(1.0f);
@@ -293,13 +386,15 @@ void VulkanRenderer::endPass(){
         recordBarrier(commandBuffer, imageBarrier(*depth->getImage(),
                                                   depth->getCurrentLayout(),
                                                   depthFinal,
-                                                  vk::ImageAspectFlagBits::eDepth));
+                                                  vk::ImageAspectFlagBits::eDepth,
+                                                  depth->getLayerCount()));
         depth->setCurrentLayout(depthFinal);
     }
 
     passActive = false;
     currentTarget = nullptr;
     passLight = nullptr;
+    passFace = 0;
 }
 
 bool VulkanRenderer::beginFrame(){
@@ -337,6 +432,9 @@ bool VulkanRenderer::beginFrame(){
     commandBuffer.reset();
 
     passIndex = 0;
+
+    //The camera has probably moved since last frame, so a fitted box has to be refitted
+    updateShadowMatrices();
 
     //The fence above has already been waited on, so nothing is reading this frame's set
     if(currentFrame < shadowDirty.size() && shadowDirty[currentFrame]){
@@ -379,8 +477,17 @@ bool VulkanRenderer::beginFrame(){
         //params.y at zero, and the shader leaves it lit without ever touching the map
         if(shadowTarget && shadowLight == light){
             gpuLight.params.y = 1.0f;
-            gpuLight.params.z = shadowDepthBias;
-            gpuLight.lightViewProjection = light->getViewProjection();
+            gpuLight.params.z = shadowConfig.depthBias;
+            //The matrices computed once above, not a second call to the light. The pass that
+            //fills the map and the lookup that reads it have to agree exactly
+            gpuLight.lightViewProjection = shadowMatrices.viewProjection;
+        }
+        //A cube needs no matrix in the shader - the lookup is a direction. What it does need
+        //is the near plane, so the fragment can rebuild the same depth the face wrote
+        else if(shadowCubeTarget && shadowCubeLight == light){
+            gpuLight.params.y = 2.0f;
+            gpuLight.params.z = shadowCubeConfig.depthBias;
+            gpuLight.params.w = light->getShadowNear();
         }
 
         lightStaging.push_back(gpuLight);
@@ -606,10 +713,37 @@ void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light){
 
     currentTarget = &target;
     passLight = &light;
+    passFace = 0;
     startPass(target.hasColor() ? *target.getColorImage().getImage() : vk::Image(nullptr),
                 target.hasColor() ? *target.getColorImage().getImageView() : vk::ImageView(nullptr),
                 target.getDepthImage(),
                 target.getExtent());
+}
+
+//One of the six. A point light has no single view, so the caller walks the faces and the
+//pass takes the matrices of whichever one it was handed
+void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light, uint32_t face){
+    if(!frameActive){
+        throw std::runtime_error("beginPass: frame not started");
+    }
+    if(passActive){
+    throw std::runtime_error("beginPass: a pass is already active (missing endPass)");
+    }
+    if(!target.hasCubeDepth()){
+        throw std::runtime_error("beginPass: a face can only be rendered into a cube target (makeShadowCubeConfig)");
+    }
+    if(face > 5){
+        throw std::runtime_error("beginPass: a cube has six faces, numbered 0 to 5");
+    }
+
+    currentTarget = &target;
+    passLight = &light;
+    passFace = face;
+    startPass(target.hasColor() ? *target.getColorImage().getImage() : vk::Image(nullptr),
+                target.hasColor() ? *target.getColorImage().getImageView() : vk::ImageView(nullptr),
+                target.getDepthImage(),
+                target.getExtent(),
+                face);
 }
 
 void VulkanRenderer::bindMaterial(const Material& material) {

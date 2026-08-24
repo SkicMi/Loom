@@ -180,7 +180,13 @@ int main(){
     auto render = [&](const RenderTarget* map, const Material& shadowMat, bool cubeCasts,
                       bool floorCasts, float bias, RenderTarget& out, const glm::mat4& floorModel){
         if(map){
-            loom.renderer.setShadowMap(*map, light, bias);
+            //Fitting is deliberately off here: every number below is predicted from the
+            //light's own shadowExtent of 2.0, and a box refitted to the camera would be a
+            //different box. Fitting has its own test
+            ShadowConfig shadowConfig;
+            shadowConfig.depthBias = bias;
+            shadowConfig.fitToCamera = false;
+            loom.renderer.setShadowMap(*map, light, shadowConfig);
         }
         else{
             loom.renderer.clearShadowMap();

@@ -176,6 +176,16 @@ void VulkanGraphicsPipeline::createPipeline(){
         shadowBinding.descriptorCount = 1;
         shadowBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
         frameBindings.push_back(shadowBinding);
+
+        //Binding 3 is the same thing for a point light: a cube, sampled with a direction.
+        //It is a separate binding rather than the same one because a cube descriptor and a
+        //2D descriptor are different types and cannot share a slot
+        vk::DescriptorSetLayoutBinding shadowCubeBinding;
+        shadowCubeBinding.binding = 3;
+        shadowCubeBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        shadowCubeBinding.descriptorCount = 1;
+        shadowCubeBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+        frameBindings.push_back(shadowCubeBinding);
     }
 
     vk::DescriptorSetLayoutCreateInfo frameLayoutInfo;

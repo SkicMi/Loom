@@ -27,6 +27,22 @@ struct RendererConfig{
 };
 
 
+struct ShadowConfig{
+    //Subtracted from the reference depth in the lookup. The shader side cure for acne, and
+    //the one that can be changed without rebuilding a pipeline
+    float depthBias = 0.0005f;
+
+    //Refit the light's box to the camera's frustum every frame, instead of using the
+    //shadowCenter and shadowExtent the light was given by hand. See Light::fitToCamera for
+    //why it uses a bounding sphere and snaps to texels
+    bool fitToCamera = true;
+
+    //How far from the camera shadows reach when fitting. The whole shadow map is spent on
+    //this slice of the frustum, so smaller is sharper
+    float distance = 20.0f;
+};
+
+
 class VulkanRenderer{
 
     public:
@@ -48,6 +64,7 @@ class VulkanRenderer{
     void beginPass(); //swapchain
     void beginPass(const RenderTarget& target); //offscreen target
     void beginPass(const RenderTarget& target, const Light& light); //the same target, seen from a light
+    void beginPass(const RenderTarget& target, const Light& light, uint32_t face); //one face of a point light's cube
     void endPass();
     void draw(const Mesh& mesh, const glm::mat4& model = glm::mat4(1.0f));
     void draw(const Mesh& mesh, const glm::mat4& model, const Material& material); //overload fuction for model with material
@@ -60,14 +77,22 @@ class VulkanRenderer{
     //The window, read back. Only valid between frames
     ImageData readLastFrame() const;
 
-    //Which depth buffer shadows this scene, and which light cast it. One shadowed
-    //directional light for now: the light space matrix travels in that light's GpuLight, and
-    //the map itself sits on set 0 next to the frame data, because it shadows everything the
-    //pass draws rather than belonging to any one material.
-    //depthBias is subtracted from the reference depth in the lookup - the shader side cure
-    //for acne, tunable without rebuilding a pipeline, unlike PipelineConfig::depthBiasEnable
-    void setShadowMap(const RenderTarget& target, const Light& light, float depthBias = 0.0f);
+    //Which depth buffer shadows this scene, and which light cast it. The light space matrix
+    //travels in that light's GpuLight, and the map itself sits on set 0 next to the frame
+    //data, because it shadows everything the pass draws rather than belonging to any one
+    //material
+    void setShadowMap(const RenderTarget& target, const Light& light, const ShadowConfig& config = {});
     void clearShadowMap();
+
+    //The same, for a point light. A cube instead of one image, sampled with a direction
+    //instead of a coordinate, and the reference depth rebuilt in the shader from the
+    //distance along the major axis - which is why the light's near plane travels with it
+    void setShadowCube(const RenderTarget& target, const Light& light, const ShadowConfig& config = {});
+    void clearShadowCube();
+
+    //The matrices the shadow pass is actually using this frame. With fitToCamera on these
+    //are recomputed every beginFrame and are not the light's own getViewProjection
+    const LightMatrices& getShadowMatrices() const {return shadowMatrices;}
 
     void setCamera(const Camera& cam) { camera = &cam;}
     void setEnvironment(const Environment& newEnvironment) { environment = &newEnvironment;}
@@ -98,10 +123,20 @@ class VulkanRenderer{
     bool passActive = false;
     const RenderTarget* currentTarget = nullptr;
     const Light* passLight = nullptr; //set only for the duration of a light driven pass
+    uint32_t passFace = 0;            //which cube face, when the pass is one of six
 
     const RenderTarget* shadowTarget = nullptr;
     const Light* shadowLight = nullptr;
-    float shadowDepthBias = 0.0f;
+    ShadowConfig shadowConfig;
+
+    const RenderTarget* shadowCubeTarget = nullptr;
+    const Light* shadowCubeLight = nullptr;
+    ShadowConfig shadowCubeConfig;
+
+    //Recomputed in beginFrame when fitting is on, so the pass that fills the map and the
+    //lookup that reads it are driven by one and the same pair of matrices. Two computations
+    //of "almost the same" matrix would put every shadow half a texel out
+    LightMatrices shadowMatrices;
 
     //Binding 2 of set 0 is written per frame, and only for a frame whose fence has already
     //been waited on - the same trick Material uses, so a descriptor is never rewritten while
@@ -111,6 +146,7 @@ class VulkanRenderer{
     //One pixel of depth, so binding 2 always points at something real even when no shadow
     //map is set. A partially bound descriptor set is undefined behaviour, not an empty slot
     std::optional<VulkanImage> shadowPlaceholder;
+    std::optional<VulkanImage> shadowCubePlaceholder;
     vk::raii::Sampler shadowPlaceholderSampler = nullptr;
     const VulkanGraphicsPipeline* boundPipeline = nullptr;
     const vk::raii::DescriptorPool& descriptorPool;
@@ -125,7 +161,8 @@ class VulkanRenderer{
     void createShadowPlaceholder();
     void createFrameResources();
     void writeShadowMap(size_t frame) const;
-    void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent);
+    void updateShadowMatrices();
+    void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, uint32_t depthFace = 0);
     void recreateSwapchain();
     void bindMaterial(const Material& material);
 

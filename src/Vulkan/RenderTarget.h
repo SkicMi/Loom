@@ -36,6 +36,10 @@ vk::ImageLayout depthFinalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 bool depthCompare = false;
 vk::CompareOp depthCompareOp = vk::CompareOp::eLessOrEqual;
 
+//Six faces instead of one image. A point light shines in every direction, so its shadow
+//map is a cube: rendered one face at a time, sampled with a direction
+bool cubeDepth = false;
+
 //eColorAttachment always added. eSampled lats a later pass read result, eTransferSrc lets it be copied back to cpu
 vk::ImageUsageFlags extraColorUsage = vk::ImageUsageFlagBits::eSampled;
 
@@ -55,7 +59,7 @@ class RenderTarget{
 
     //The kept depth buffer, back on the CPU. Only a target created with keepDepth has one
     //to give - anywhere else the depth was thrown away the moment the pass ended
-    ImageData readDepthPixels(const VulkanCommand& command) const;
+    ImageData readDepthPixels(const VulkanCommand& command, uint32_t face = 0) const;
 
     //getters
     bool hasColor() const {return colorImage.has_value();}
@@ -68,6 +72,18 @@ class RenderTarget{
     const VulkanImage* getDepthImage() const {return depthImage ? &*depthImage : nullptr;}
     bool hasDepth() const {return depthImage.has_value();}
     bool keepsDepth() const {return config.keepDepth;}
+    bool hasCubeDepth() const {return config.cubeDepth;}
+
+    //The view a pass attaches when it renders one face. The sampled view is the whole cube
+    const vk::raii::ImageView& getDepthFaceView(uint32_t face) const {
+        if(!depthImage){
+            throw std::runtime_error("getDepthFaceView: this target has no depth attachment");
+        }
+        if(!config.cubeDepth){
+            throw std::runtime_error("getDepthFaceView: this target's depth is a single image, not a cube (RenderTargetConfig::cubeDepth)");
+        }
+        return depthImage->getLayerView(face);
+    }
     //The depth buffer as something a shader can read. With depthCompare the sampler compares
     //rather than fetches, which is what a shadow lookup needs
     SampledImage getDepthSampled() const {
@@ -133,6 +149,7 @@ inline ImageConfig makeTargetDepthConfig(const VulkanDevice& device, const Rende
     if(config.keepDepth){
         depth.usage |= vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc;
     }
+    depth.cube = config.cubeDepth;
     return makeDepthConfig(device, depth);
 }
 
@@ -144,5 +161,12 @@ inline RenderTargetConfig makeShadowMapConfig(RenderTargetConfig config = {}){
     config.keepDepth = true;
     config.depthFinalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
     config.depthCompare = true;
+    return config;
+}
+
+//A point light's shadow map: the same depth only target, six faces deep
+inline RenderTargetConfig makeShadowCubeConfig(RenderTargetConfig config = {}){
+    config = makeShadowMapConfig(config);
+    config.cubeDepth = true;
     return config;
 }

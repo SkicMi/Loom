@@ -21,6 +21,8 @@ What each one covers:
 | `test_api_contracts` | a pipeline is not tied to the swapchain format, a material carries any payload, a push constant range is the pipeline's business, and a material survives its source being resized |
 | `test_v7_shadowmap` | a pass can render depth with no colour attachment, that depth survives the pass and matches the CPU's own projection to the last bit, and a pass driven by a light writes what the light's matrices say it should |
 | `test_v7c_shadow` | a shadow map is sampled, a shadowed surface keeps exactly its ambient term and loses the rest, depth bias removes the acne a tilted plane inflicts on itself, and too much of it detaches the shadow entirely |
+| `test_v7e_pointshadow` | the shadow box fits itself to the camera's frustum, keeps its size through a full turn of the camera, lands on whole texels, and a point light casts through all six faces of a cube map |
+| `test_shapes` | every primitive is one unit across, wound so its faces agree with their own normals, and one call draws it with a material built once and cached |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:

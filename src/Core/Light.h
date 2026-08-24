@@ -1,5 +1,7 @@
 #pragma once
 #include <glm/glm.hpp>
+#include "Camera.h"
+#include <cstdint>
 
 enum class LightType{
     Directional,
@@ -29,6 +31,14 @@ struct LightConfig{
     float shadowFar = 50.0f;
 };
 
+//A light's pair of matrices, handed over together because a fitted light computes both at
+//once and the caller needs them to agree
+struct LightMatrices{
+    glm::mat4 view = glm::mat4(1.0f);
+    glm::mat4 projection = glm::mat4(1.0f);
+    glm::mat4 viewProjection = glm::mat4(1.0f);
+};
+
 class Light{
     public:
     Light(const LightConfig& config = {}) : config(config) {}
@@ -46,6 +56,36 @@ class Light{
     glm::mat4 getView() const;
     glm::mat4 getProjection() const;
     glm::mat4 getViewProjection() const;
+
+    //The same pair, but with the box fitted to the slice of the camera's frustum that
+    //shadows are wanted in, instead of to whatever shadowCenter and shadowExtent were set to
+    //by hand. Two things make this worth doing properly rather than just taking an AABB:
+    //
+    //  - the box is sized by the frustum's bounding SPHERE, whose radius depends only on the
+    //    frustum's shape and not on where the camera is pointing. An AABB of the corners
+    //    grows and shrinks as the camera turns, and a shadow map that changes size every
+    //    frame makes every shadow edge crawl
+    //  - the box is then snapped to whole shadow map texels, so turning or walking the camera
+    //    moves the map by whole texels. Without this the same edge lands on a different part
+    //    of a texel each frame and the whole scene shimmers
+    //
+    //distance is how far from the camera shadows reach: the whole shadow map is spent on
+    //that slice, so smaller is sharper
+    //The six faces of a point light's shadow cube. A point light has no single direction, so
+    //it gets ninety degrees six times over, from its own position outwards. Face order is
+    //Vulkan's own: +X, -X, +Y, -Y, +Z, -Z, which is the order the cube's layers are in
+    glm::mat4 getCubeView(uint32_t face) const;
+    glm::mat4 getCubeProjection() const;
+    glm::mat4 getCubeViewProjection(uint32_t face) const;
+
+    //Near plane of the cube faces. The far plane is the light's range, because past its
+    //range the light contributes nothing and there is nothing left to shadow
+    float getShadowNear() const {return config.shadowNear;}
+
+    LightMatrices fitToCamera(const Camera& camera,
+                              uint32_t viewWidth, uint32_t viewHeight,
+                              uint32_t shadowResolution,
+                              float distance) const;
 
     void setType(const LightType newType) {config.type = newType;}
     void setDirection(const glm::vec3& newDireciton) {config.direction = newDireciton;}

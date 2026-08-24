@@ -81,7 +81,7 @@ ImageData RenderTarget::readPixels(const VulkanCommand& command) const{
     return out;
 }
 
-ImageData RenderTarget::readDepthPixels(const VulkanCommand& command) const{
+ImageData RenderTarget::readDepthPixels(const VulkanCommand& command, uint32_t face) const{
     if(!depthImage){
         throw std::runtime_error("readDepthPixels: this target has no depth attachment (RenderTargetConfig::enableDepth)");
     }
@@ -101,7 +101,7 @@ ImageData RenderTarget::readDepthPixels(const VulkanCommand& command) const{
     command.transitionImageLayout(*depthImage, vk::ImageLayout::eTransferSrcOptimal);
 
     VulkanBuffer staging(device, bytes, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::GPU_TO_CPU);
-    command.copyImageToBuffer(depthImage->getImage(), staging.getBuffer(), extent, vk::ImageAspectFlagBits::eDepth);
+    command.copyImageToBuffer(depthImage->getImage(), staging.getBuffer(), extent, vk::ImageAspectFlagBits::eDepth, face);
 
     command.transitionImageLayout(*depthImage, was);
 

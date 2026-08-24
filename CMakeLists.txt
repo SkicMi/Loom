@@ -195,6 +195,7 @@ add_library(Loom STATIC
     src/Vulkan/RenderTarget.cpp
     src/Core/Camera.cpp
     src/Core/Light.cpp
+    src/Core/LoomShapes.cpp
 )
 
 # PUBLIC: i Loom i sve sto ga linka vidi ove headere/dependencije,

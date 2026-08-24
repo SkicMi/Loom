@@ -52,6 +52,32 @@ float shadowVisibility(GpuLight light, float3 worldPos){
     return shadowMap.SampleCmpLevelZero(uv, proj.z - light.params.z);
 }
 
+//A point light's shadow cube. There is no matrix here on purpose: a cube is looked up with
+//a direction, and the reference depth is rebuilt from how far along its longest axis the
+//fragment is. That is the same number the face wrote, arrived at by arithmetic instead of
+//by another matrix multiply
+[[vk::binding(3,0)]] SamplerCubeShadow shadowCube;
+
+float cubeVisibility(GpuLight light, float3 worldPos){
+    float3 toFragment = worldPos - light.positionOrDirection.xyz;
+    float3 magnitude = abs(toFragment);
+
+    //Whichever face this direction lands on, that face's depth axis is the largest component
+    float axis = max(magnitude.x, max(magnitude.y, magnitude.z));
+
+    float near = max(light.params.w, 1e-4);
+    float far = max(light.params.x, near * 2.0);
+
+    //Closer than the near plane there is no map, and nothing that close is occluded anyway
+    if(axis <= near) return 1.0;
+
+    //The same value a 90 degree projection with these planes writes, worked out by hand:
+    //ndcZ = far * (axis - near) / ((far - near) * axis)
+    float reference = (far * (axis - near)) / ((far - near) * axis);
+
+    return shadowCube.SampleCmpLevelZero(toFragment, reference - light.params.z);
+}
+
 struct VSInput{
     [[vk::location(0)]] float3 position;
     [[vk::location(1)]] float3 color;
@@ -113,7 +139,14 @@ float4 fragmentMain(VSOutput input) : SV_Target{
         //Shadow kills the whole contribution of this light, diffuse and specular alike.
         //Ambient is untouched, which is why a shadowed surface is exactly its ambient term
         //and not black
-        float visibility = shadowVisibility(light, input.worldPos);
+        //params.y says which kind of map this light has, if any: 1 a single image, 2 a cube
+        float visibility = 1.0;
+        if(light.params.y > 1.5){
+            visibility = cubeVisibility(light, input.worldPos);
+        }
+        else if(light.params.y > 0.5){
+            visibility = shadowVisibility(light, input.worldPos);
+        }
 
         lit += base * light.color.rgb * diffuse * attenuation * visibility;
         lit += light.color.rgb * specular * attenuation * visibility;
