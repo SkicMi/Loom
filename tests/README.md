@@ -1,5 +1,9 @@
 # Loom tests
 
+The suite covers both libraries in this repository - `Loom`, which draws, and `Spool`, which
+reads and writes files. The two do not depend on each other in either direction; a test is
+allowed to link both, and that is the only place they meet.
+
 Every test is one executable that returns 0 only if all of its checks hold. Nothing here
 prints a number and leaves the judgement to a human.
 
@@ -25,6 +29,7 @@ What each one covers:
 | `test_shapes` | every primitive is one unit across, wound so its faces agree with their own normals, and one call draws it with a material built once and cached |
 | `test_headless` | a whole frame runs with no window, no surface and no swapchain, and its picture is byte for byte the one the windowed path draws; the same frame number gives the same frame twice |
 | `test_lifetime` | GLFW is initialised by the first window and terminated by the last, so destroying one window leaves the others alive; a headless Loom never touches GLFW at all, and a Loom built after a full shutdown draws the same picture |
+| `test_spool_image` | a real PNG decodes to exactly the pixels that were written into it, three channels come back as four, alpha survives, and those bytes become a Loom texture without either library knowing the other exists |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:

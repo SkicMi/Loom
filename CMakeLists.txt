@@ -173,6 +173,12 @@ else()
 endif()
 
 # ----------------------------------------------------------------------------
+# Spool - import/export biblioteka. Vlastiti folder i vlastiti CMakeLists, jer
+# ne ovisi o Loomu ni Loom o njemu - smjer je uvijek aplikacija -> jedno od njih.
+# ----------------------------------------------------------------------------
+add_subdirectory(spool)
+
+# ----------------------------------------------------------------------------
 # Loom biblioteka
 # ----------------------------------------------------------------------------
 add_library(Loom STATIC
@@ -258,7 +264,7 @@ target_compile_definitions(Loom PUBLIC
 # Testni executable
 # ----------------------------------------------------------------------------
 add_executable(LoomApp src/main.cpp)
-target_link_libraries(LoomApp PRIVATE Loom)
+target_link_libraries(LoomApp PRIVATE Loom Spool)
 add_dependencies(LoomApp LoomShaders)   # shaderi se prevedu prije exea
 
 # ----------------------------------------------------------------------------
@@ -283,7 +289,9 @@ if(LOOM_BUILD_TESTS)
         get_filename_component(TEST_NAME ${TEST_SOURCE} NAME_WE)
 
         add_executable(${TEST_NAME} ${TEST_SOURCE})
-        target_link_libraries(${TEST_NAME} PRIVATE Loom)
+        # Testovi linkaju obje biblioteke. To je dozvoljeno i tu prestaje: same
+        # biblioteke jedna o drugoj ne znaju nista.
+        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool)
         target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         add_dependencies(${TEST_NAME} LoomShaders)
         add_dependencies(LoomTests ${TEST_NAME})
