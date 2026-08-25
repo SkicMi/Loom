@@ -313,7 +313,19 @@ if(depth){
     depthAttachment.clearValue.depthStencil = vk::ClearDepthStencilValue(rendererConfig.clearDepth,0);
 }
 
+//Slika stope se prilaze prolazu, ne pipelineu: rasteriser je cita dok odlucuje koliko
+//puta ce sjenciti svaki blok
+vk::RenderingFragmentShadingRateAttachmentInfoKHR rateAttachment;
+if(shadingRateMap){
+    rateAttachment.imageView = *shadingRateMap->getImage().getImageView();
+    rateAttachment.imageLayout = vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR;
+    rateAttachment.shadingRateAttachmentTexelSize = shadingRateMap->getTexelSize();
+}
+
 vk::RenderingInfo renderingInfo;
+if(shadingRateMap){
+    renderingInfo.pNext = &rateAttachment;
+}
 renderingInfo.renderArea = vk::Rect2D({0,0},extent);
 renderingInfo.layerCount = 1;
 renderingInfo.colorAttachmentCount = hasColor ? 1 : 0;
@@ -339,7 +351,7 @@ commandBuffer.setViewport(0, viewport);
 //krece od jednog sjencanja po pikselu. Materijal koji zeli grublje to kaze u draw pozivu,
 //i sljedeci prolaz opet krece od nule - stopa se ne prelijeva iz prolaza u prolaz
 if(device.hasFragmentShadingRate()){
-    setShadingRate(commandBuffer, ShadingRate::Full);
+    setShadingRate(commandBuffer, ShadingRate::Full, ShadingImportance::Normal);
 }
 
 vk::Rect2D scissor({0,0}, extent);
@@ -841,14 +853,33 @@ void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light, u
                 face);
 }
 
-void VulkanRenderer::setShadingRate(const vk::raii::CommandBuffer& commandBuffer, ShadingRate rate) const{
+void VulkanRenderer::setShadingRateMap(const ShadingRateMap& map){
+    if(!device.hasShadingRateImage()){
+        throw std::runtime_error("setShadingRateMap: this device cannot take the shading rate from an image (attachmentFragmentShadingRate)");
+    }
+    shadingRateMap = &map;
+}
+
+void VulkanRenderer::clearShadingRateMap(){
+    shadingRateMap = nullptr;
+}
+
+void VulkanRenderer::setShadingRate(const vk::raii::CommandBuffer& commandBuffer,
+                                    ShadingRate rate, ShadingImportance importance) const{
     const ShadingRateExtent extent = shadingRateExtent(rate);
 
-    //Kombinatori govore sto s tri izvora stope: pipeline, primitiv i slika stope. Loom
-    //koristi samo prvi, pa oba ostala samo zadrzavaju ono sto je vec tu
+    //Tri izvora stope: pipeline (ovo), primitiv (ne koristi se) i slika. Prvi kombinator
+    //spaja prva dva i ostaje eKeep; drugi spaja rezultat sa slikom.
+    //
+    //eMax znaci "grublje od dvoje pobjeduje", a to je smisleni default upravo zato sto je
+    //materijalova zadana stopa Full: bez toga slika stope ne bi radila nista. Critical
+    //materijal stavlja eKeep i time se ispisuje iz slike
+    const bool imageDecides = shadingRateMap != nullptr && importance == ShadingImportance::Normal;
+
     const std::array<vk::FragmentShadingRateCombinerOpKHR,2> combiners = {
         vk::FragmentShadingRateCombinerOpKHR::eKeep,
-        vk::FragmentShadingRateCombinerOpKHR::eKeep
+        imageDecides ? vk::FragmentShadingRateCombinerOpKHR::eMax
+                     : vk::FragmentShadingRateCombinerOpKHR::eKeep
     };
 
     commandBuffer.setFragmentShadingRateKHR(vk::Extent2D{extent.width, extent.height}, combiners.data());
@@ -878,7 +909,7 @@ void VulkanRenderer::bindMaterial(const Material& material) {
 
     //Po draw pozivu, jer je to razina na kojoj je odluka o vaznosti smislena
     if(device.hasFragmentShadingRate()){
-        setShadingRate(commandBuffer, material.getShadingRate());
+        setShadingRate(commandBuffer, material.getShadingRate(), material.getImportance());
     }
 
     if(material.hasDescriptorSet()){

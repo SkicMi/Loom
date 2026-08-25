@@ -17,6 +17,16 @@ enum class ShadingRate{
     Sixteenth   //4x4 - sesnaestina, i vidljivo grubo
 };
 
+//Sto se dogodi kad i materijal i slika stope imaju misljenje o istom pikselu.
+//
+//Po defaultu odlucuje grublje od dvoje, jer je materijalova zadana stopa Full - pa slika
+//stope, koja zna za udaljenost, ima zadnju rijec. Materijal koji to ne zeli (zrcalo,
+//refleksija, lice) kaze Critical i slika ga vise ne dira.
+enum class ShadingImportance{
+    Normal,     //slika stope smije ovo pogrubiti
+    Critical    //ovo se sjenca stopom koju je materijal rekao, i tocka
+};
+
 struct ShadingRateExtent{
     uint32_t width = 1;
     uint32_t height = 1;

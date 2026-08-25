@@ -6,6 +6,7 @@
 #include "VulkanBuffer.h"
 #include "VulkanImage.h"
 #include "RenderTarget.h"
+#include "ShadingRateMap.h"
 #include "ImageData.h"
 #include "Core/Camera.h"
 #include "Material.h"
@@ -97,6 +98,12 @@ class VulkanRenderer{
     void clearShadowMap();
 
     //How many of each are in use, and how many there is room for
+    //Slika stope koja vrijedi za sve prolaze dok se ne makne. Nije po prolazu jer je
+    //vezana za rezoluciju kojom se crta, a ta se ne mijenja izmedu prolaza
+    void setShadingRateMap(const ShadingRateMap& map);
+    void clearShadingRateMap();
+    bool hasShadingRateMap() const {return shadingRateMap != nullptr;}
+
     uint32_t shadowMapCount() const {return static_cast<uint32_t>(shadowMapSlots.size());}
     uint32_t shadowCubeCount() const {return static_cast<uint32_t>(shadowCubeSlots.size());}
 
@@ -191,7 +198,8 @@ class VulkanRenderer{
     void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, uint32_t depthFace = 0);
     void recreateSwapchain();
     void bindMaterial(const Material& material);
-    void setShadingRate(const vk::raii::CommandBuffer& commandBuffer, ShadingRate rate) const;
+    void setShadingRate(const vk::raii::CommandBuffer& commandBuffer, ShadingRate rate, ShadingImportance importance) const;
+    const ShadingRateMap* shadingRateMap = nullptr;
 
 };
 

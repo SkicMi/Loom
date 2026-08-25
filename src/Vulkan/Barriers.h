@@ -30,6 +30,11 @@ inline LayoutAccess accessForLayout(vk::ImageLayout layout){
             return {vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eFragmentShader,
                     vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite};
 
+        case vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR:
+            //Cita se prije rasterizacije, jer odlucuje koliko ce se puta sjenciti
+            return {vk::PipelineStageFlagBits2::eFragmentShadingRateAttachmentKHR,
+                    vk::AccessFlagBits2::eFragmentShadingRateAttachmentReadKHR};
+
         case vk::ImageLayout::eTransferSrcOptimal:
             return {vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead};
 

@@ -220,8 +220,23 @@ void VulkanDevice::createLogicalDevice(){
     }
 
     if(hasShadingRate){
+        auto supported = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2,
+            vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>();
+        hasRateImage = static_cast<bool>(
+            supported.get<vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>().attachmentFragmentShadingRate);
+    }
+
+    if(hasShadingRate){
         enabledExtensions.push_back("VK_KHR_fragment_shading_rate");
         shadingRateFeatures.pipelineFragmentShadingRate = true;
+        shadingRateFeatures.attachmentFragmentShadingRate = hasRateImage;
+
+        //The texel size is not a choice: the driver names a range, and on this card the two
+        //ends are the same number. Asking for anything outside it is a validation error
+        auto properties = physicalDevice.getProperties2<vk::PhysicalDeviceProperties2,
+            vk::PhysicalDeviceFragmentShadingRatePropertiesKHR>();
+        rateTexelSize = properties.get<vk::PhysicalDeviceFragmentShadingRatePropertiesKHR>()
+                            .minFragmentShadingRateAttachmentTexelSize;
 
         //Which rates this driver actually offers. 2x2 is everywhere the extension is, 4x4
         //is not, and asking for one that was never listed is a validation error

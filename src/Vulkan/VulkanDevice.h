@@ -57,6 +57,14 @@ struct QueueFamilyIndices{
     //Je li BAS ta stopa dozvoljena. Drajver nabraja koje podrzava, i 4x4 nije zajamcen ni
     //tamo gdje 2x2 jest
     bool supportsShadingRate(ShadingRate rate) const;
+
+    //Moze li se stopa zadati SLIKOM, a ne samo po draw pozivu. Zasebna znacajka od
+    //pipelineFragmentShadingRate i kartica smije imati jednu bez druge
+    bool hasShadingRateImage() const {return hasRateImage;}
+
+    //Koliko piksela pokriva jedan teksel te slike. Drajver zadaje raspon, i na ovoj kartici
+    //je min = max = 16, pa slika stope za 1280x720 ima 80x45 teksela
+    vk::Extent2D getShadingRateTexelSize() const {return rateTexelSize;}
     const QueueFamilyIndices& getQueueIndices() const {return queueIndices;}
     std::string getDeviceName() const {return std::string(physicalDevice.getProperties().deviceName.data());}
     vk::PhysicalDeviceType getDeviceType() const {return physicalDevice.getProperties().deviceType;}
@@ -78,6 +86,8 @@ struct QueueFamilyIndices{
     bool hasMemoryBudget = false;
     bool hasMemoryPriority = false;
     bool hasShadingRate = false;
+    bool hasRateImage = false;
+    vk::Extent2D rateTexelSize{16,16};
 
     //Sto je drajver nabrojao. Prazno kad ekstenzije nema
     std::vector<vk::Extent2D> supportedShadingRates;

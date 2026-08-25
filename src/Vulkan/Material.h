@@ -48,6 +48,11 @@ class Material{
     void setShadingRate(ShadingRate rate) {shadingRate = rate;}
     ShadingRate getShadingRate() const {return shadingRate;}
 
+    //Smije li slika stope pogrubiti ovaj materijal. Critical je nacin da refleksija ostane
+    //ostra i kad je daleko - jer je udaljenost dobra procjena vaznosti, ali nije savrsena
+    void setImportance(ShadingImportance value) {importance = value;}
+    ShadingImportance getImportance() const {return importance;}
+
     static vk::DescriptorSetLayoutBinding getDataLayoutBinding(uint32_t binding = 1){
         vk::DescriptorSetLayoutBinding layoutBinding;
         layoutBinding.binding = binding;
@@ -79,6 +84,7 @@ class Material{
     const VulkanDevice* device = nullptr;
     std::vector<uint8_t> payload;
     ShadingRate shadingRate = ShadingRate::Full;
+    ShadingImportance importance = ShadingImportance::Normal;
     mutable SampledImage image;
     std::vector<vk::raii::DescriptorSet> descriptorSets;
     mutable std::vector<VulkanBuffer> dataBuffers;

@@ -248,6 +248,14 @@ void VulkanGraphicsPipeline::createPipeline(){
     pipelineInfo.layout = *pipelineLayout;
     pipelineInfo.renderPass = nullptr; //not using render pass, using dynamic rendering instead
 
+    //Vulkan wants to know at creation time that this pipeline might one day draw into a pass
+    //with a rate attachment, and the map is bound long afterwards. So it is announced for
+    //every pipeline on a device that has the feature - the alternative is a VUID at draw
+    //time for anyone who attaches a map to a pipeline built before they thought of it
+    if(config.allowShadingRateAttachment && device.hasShadingRateImage()){
+        pipelineInfo.flags |= vk::PipelineCreateFlagBits::eRenderingFragmentShadingRateAttachmentKHR;
+    }
+
     pipeline = vk::raii::Pipeline(device.getDevice(), nullptr, pipelineInfo);
 
 

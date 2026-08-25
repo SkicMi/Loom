@@ -63,6 +63,12 @@ struct PipelineConfig{
     //are the ones with the most depth inside a texel.
     //Both are paid for in Peter Panning: push too far and the shadow separates from the
     //object casting it
+    //Smije li ovaj pipeline crtati u prolaz kojemu je prilozena slika stope. Vulkan to trazi
+    //kao zastavicu pri STVARANJU, a slika stope se veze tek kasnije - pa Loom je postavlja
+    //svima na uredaju koji to podrzava. Iskljuci za pipeline za koji sigurno znas da nikad
+    //nece vidjeti takav prolaz
+    bool allowShadingRateAttachment = true;
+
     bool depthBiasEnable = false;
     float depthBiasConstant = 0.0f;
     float depthBiasSlope = 0.0f;
