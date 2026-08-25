@@ -152,6 +152,11 @@ class Scene{
     //-- sadrzaj ----------------------------------------------------------------------------
     TextureHandle loadTexture(const std::string& path);
 
+    //Pikseli koje si sam napravio: RGBA, osam bita po kanalu, gusto pakirano, prvi red prvi.
+    //Isti raspored koji Spool vraca s diska, pa proceduralna tekstura i ucitana idu istim
+    //putem - stepenica 1 koja zna samo za datoteke ne bi mogla nacrtati ni sahovnicu
+    TextureHandle createTexture(const void* pixels, uint32_t width, uint32_t height);
+
     //Cetiri oblika, jedan poziv po obliku
     void drawPlane(TextureHandle texture, const glm::mat4& transform = glm::mat4(1.0f));
     void drawCube(TextureHandle texture, const glm::mat4& transform = glm::mat4(1.0f));

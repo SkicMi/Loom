@@ -309,7 +309,9 @@ endif()
 # Testni executable
 # ----------------------------------------------------------------------------
 add_executable(LoomApp src/main.cpp)
-target_link_libraries(LoomApp PRIVATE Loom Spool)
+# Samo LoomPreset. main.cpp je od sada stepenica 1 plus jedan svjesni spust,
+# a ni jedno ni drugo ne trazi da se Loom ili Spool linkaju izravno.
+target_link_libraries(LoomApp PRIVATE LoomPreset)
 add_dependencies(LoomApp LoomShaders)   # shaderi se prevedu prije exea
 
 # ----------------------------------------------------------------------------

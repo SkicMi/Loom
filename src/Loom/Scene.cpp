@@ -386,6 +386,18 @@ TextureHandle Scene::loadTexture(const std::string& path){
     return TextureHandle{static_cast<uint32_t>(state->textures.size())};
 }
 
+TextureHandle Scene::createTexture(const void* pixels, uint32_t width, uint32_t height){
+    state->build();
+
+    if(pixels == nullptr) throw std::runtime_error("Loom::Scene: createTexture was given no pixels");
+    if(width == 0 || height == 0) throw std::runtime_error("Loom::Scene: createTexture was given an image with no size");
+
+    state->textures.push_back(std::make_unique<Texture>(state->loom->device, state->loom->command,
+        pixels, vk::Extent2D{width, height}));
+
+    return TextureHandle{static_cast<uint32_t>(state->textures.size())};
+}
+
 void Scene::startRendering(){
     state->build();
 

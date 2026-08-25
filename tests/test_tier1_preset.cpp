@@ -234,6 +234,33 @@ int main(){
     scene.setSize(128, 128);
     const Loom::TextureHandle texture = scene.loadTexture(texturePath);
 
+    //A texture made from pixels and the same pixels through a file have to be the same
+    //texture, or "load" and "create" are two different features wearing one name
+    {
+        Loom::Scene fromMemory(Loom::Preset::Offscreen);
+        fromMemory.setSize(sceneWidth, sceneHeight);
+
+        const Spool::Image decoded = Spool::loadImage(texturePath);
+        const Loom::TextureHandle made = fromMemory.createTexture(decoded.pixels.data(),
+            decoded.width, decoded.height);
+
+        fromMemory.startRendering();
+            fromMemory.drawPlane(made, planeTransform());
+            fromMemory.drawCube(made, cubeTransform());
+            fromMemory.drawSphere(made, sphereTransform());
+            fromMemory.drawPyramid(made, pyramidTransform());
+        fromMemory.endRendering();
+
+        const ByteDiff sameTexture = diffBytes(tier1, fromMemory.readPixels());
+        report.check("createTexture = loadTexture", sameTexture.different == 0,
+            fmt("%zu razlicitih od %zu bajtova", sameTexture.different, tier1.size()));
+
+        bool noPixelsThrew = false;
+        try{ fromMemory.createTexture(nullptr, 4, 4); }
+        catch(const std::exception&){ noPixelsThrew = true; }
+        report.check("createTexture bez piksela", noPixelsThrew, "baca iznimku");
+    }
+
     bool sizeAfterBuildThrew = false;
     try{ scene.setSize(64, 64); }
     catch(const std::exception&){ sizeAfterBuildThrew = true; }
