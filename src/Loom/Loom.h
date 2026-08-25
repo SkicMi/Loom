@@ -28,7 +28,17 @@
 #include "Core/Environment.h"
 #include "Core/MaterialData.h"
 
+//Nepotpuni tipovi, i to je dovoljno. Za parametar po const referenci i za referentni
+//povratni tip prevodiocu ne treba definicija - a bez definicije nema ni Vulkana.
+//To je cijeli trik koji dopusta da ovaj header ostane cist, a da vrata na nizu stepenicu
+//ipak postoje: definicije su u <Loom/Preset_Advanced.h> i tek ga taj header povlaci
+struct LoomConfig;
+class LoomInitializer;
+
 namespace Loom{
+
+//Definiran u <Loom/Preset_Advanced.h>. Ovdje je samo ime
+class ConfigOverride;
 
 //Sto preset ispunjava. Ne mijenja kako se crta - mijenja samo ono sto nisi rekao
 enum class Preset{
@@ -104,6 +114,12 @@ class Sequence{
 class Scene{
     public:
     explicit Scene(Preset preset);
+
+    //Isti preset, ali config prije upotrebe prolazi kroz tvoju ruku. Da bi se ovo dalo
+    //pozvati treba ukljuciti <Loom/Preset_Advanced.h> - bez njega je ConfigOverride samo
+    //ime i poziv se ne prevodi. Ne stoji ti nista na putu, ali si svjesno sisao stepenicu
+    Scene(Preset preset, const ConfigOverride& override);
+
     ~Scene();
 
     Scene(const Scene&) = delete;
@@ -158,6 +174,16 @@ class Scene{
     Camera& camera();
     Light& sun();
     Environment& environment();
+
+    //-- izlaz na nizu stepenicu --------------------------------------------------------------
+    //Zivi objekti, onakvi kakve bi rucno slozio. Za razliku od overridea gore, ovo mijenja
+    //stvari DOK rade. Oba potpisa spominju tipove koji su ovdje samo imena, pa se koriste
+    //tek uz <Loom/Preset_Advanced.h>
+    LoomInitializer& loom();
+    const LoomInitializer& loom() const;
+
+    //Sto je preset odlucio, za citanje. Najkraci odgovor na "a sto ovo zapravo postavlja"
+    const LoomConfig& config() const;
 
     private:
     friend class Sequence;

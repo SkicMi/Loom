@@ -17,8 +17,10 @@ preprocess a translation unit and search the result, because a leaked include is
 the file you are looking at - it is in something that file included, and the only honest
 way to see it is to look at all of it at once. Measured today: `<Loom/Loom.h>` comes to
 1622367 characters with **0** `vk::` and **0** `vulkan` in them, while the tier 2 control
-has 29719 and 47986. The control exists because a detector that finds nothing looks
-exactly like a detector that does not work.
+has 29719 and 47986, and `<Loom/Preset_Advanced.h>` - the door down to tier 2 - has
+29738. Both controls exist for the same reason: a detector that finds nothing looks
+exactly like a detector that does not work, and a door that leads nowhere looks exactly
+like a door that leads somewhere.
 
 What each one covers:
 
@@ -40,6 +42,7 @@ What each one covers:
 | `test_spool_image` | a real PNG decodes to exactly the pixels that were written into it, three channels come back as four, alpha survives, and those bytes become a Loom texture without either library knowing the other exists |
 | `test_spool_export` | pixels written as a PNG read back as exactly the same pixels, BGRA becomes RGBA, and five headless frames become five numbered files that hold what was drawn |
 | `test_tier1_preset` | a program written against `<Loom/Loom.h>` draws the same image, byte for byte, as the tier 2 program that does the same thing by hand; `Loom::Transform` produces the same matrix as the glm written out longhand |
+| `test_tier1_override` | a preset and a config combine rather than replace each other: an override reaches the config, leaves everything it did not name alone, changes the picture, and produces the same bytes as the tier 2 program with the same change; `scene.loom()` reaches the live objects |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:

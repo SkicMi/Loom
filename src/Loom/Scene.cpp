@@ -8,6 +8,7 @@
 //  LoomPreset zaseban target, a ne dio Looma. Da je unutra, Loom bi ovisio o Spoolu.
 //=============================================================================================
 #include "Loom.h"
+#include "Preset_Advanced.h"
 
 #include "Core/LoomConfig.h"
 #include "Core/LoomInitializer.h"
@@ -203,7 +204,16 @@ void Scene::State::build(){
     if(built) return;
 
     loom = std::make_unique<LoomInitializer>(config);
-    shapes = std::make_unique<LoomShapes::Primitives>(*loom);
+
+    //Primitives builds its own textured pipeline, so it has to be handed the same settings
+    //the rest of the scene was built with. Without this an override of pipelineConfig lands
+    //in the config, reads back correctly, and then changes nothing at all on screen - which
+    //is worse than not being overridable, because it looks like it worked
+    LoomShapes::PrimitivesConfig primitivesConfig;
+    primitivesConfig.cullMode = config.pipelineConfig.cullMode;
+    primitivesConfig.depthTest = config.pipelineConfig.depthTestEnable;
+
+    shapes = std::make_unique<LoomShapes::Primitives>(*loom, primitivesConfig);
 
     camera = Camera(presetCamera(preset));
     sun = Light(presetSun());
@@ -300,6 +310,13 @@ void Scene::State::replay(const Material* material){
 Scene::Scene(Preset preset) : state(new State()){
     state->preset = preset;
     state->config = presetConfig(preset);
+}
+
+Scene::Scene(Preset preset, const ConfigOverride& override) : Scene(preset){
+    //Runs on the config the preset just filled, before anything has been built from it.
+    //Everything the override does not touch keeps what the preset chose - that is what makes
+    //the two styles combine rather than replace each other
+    override(state->config);
 }
 
 Scene::~Scene(){
@@ -425,6 +442,24 @@ void Scene::drawCube(TextureHandle texture, const glm::mat4& transform){ state->
 void Scene::drawSphere(TextureHandle texture, const glm::mat4& transform){ state->enqueue(Shape::Sphere, texture, transform); }
 void Scene::drawPyramid(TextureHandle texture, const glm::mat4& transform){ state->enqueue(Shape::Pyramid, texture, transform); }
 void Scene::drawSprite(TextureHandle texture, const glm::mat4& transform){ state->enqueue(Shape::Sprite, texture, transform); }
+
+LoomInitializer& Scene::loom(){
+    //build() rather than a throw: asking for the live objects is a perfectly good reason to
+    //bring them into existence, and the alternative is an ordering rule nobody would guess
+    state->build();
+    return *state->loom;
+}
+
+const LoomInitializer& Scene::loom() const{
+    if(!state->built){
+        throw std::runtime_error("Loom::Scene: nothing has been built yet - call the non const loom(), or draw a frame first");
+    }
+    return *state->loom;
+}
+
+const LoomConfig& Scene::config() const{
+    return state->config;
+}
 
 Camera& Scene::camera(){ state->build(); return state->camera; }
 Light& Scene::sun(){ state->build(); return state->sun; }

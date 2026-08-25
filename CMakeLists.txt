@@ -352,6 +352,13 @@ if(LOOM_BUILD_TESTS)
         -DEXPECT=dirty
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/HeaderIsClean.cmake)
 
+    add_test(NAME tier1_advanced_is_dirty COMMAND ${CMAKE_COMMAND}
+        -DCOMPILER=${CMAKE_CXX_COMPILER}
+        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/headers/tier1_advanced.cpp
+        "-DINCLUDES=${LOOM_HEADER_INCLUDES}"
+        -DEXPECT=dirty
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/HeaderIsClean.cmake)
+
     file(GLOB LOOM_TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp
     )
