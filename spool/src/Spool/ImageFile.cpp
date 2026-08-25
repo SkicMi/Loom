@@ -1,5 +1,8 @@
 #include "ImageFile.h"
 #include <stb_image.h>
+#include <stb_image_write.h>
+#include <algorithm>
+#include <filesystem>
 #include <limits>
 #include <stdexcept>
 
@@ -68,6 +71,75 @@ Image decodeImage(const void* data, size_t size){
         static_cast<int>(size), &width, &height, &channels, wantedChannels);
 
     return adopt(decoded, width, height, channels, "the buffer");
+}
+
+Image imageFromPixels(const void* pixels, uint32_t width, uint32_t height, ChannelOrder order){
+    if(pixels == nullptr){
+        throw std::runtime_error("Spool: imageFromPixels was given nothing to wrap");
+    }
+    if(width == 0 || height == 0){
+        throw std::runtime_error("Spool: imageFromPixels was given an image with no size");
+    }
+
+    const size_t bytes = size_t(width) * height * 4;
+    const uint8_t* source = static_cast<const uint8_t*>(pixels);
+
+    Image image;
+    image.width = width;
+    image.height = height;
+    image.sourceChannels = 4;
+    image.pixels.assign(source, source + bytes);
+
+    //Red and blue change places, alpha and green stay where they are
+    if(order == ChannelOrder::BGRA){
+        for(size_t i = 0; i + 3 < image.pixels.size(); i += 4){
+            std::swap(image.pixels[i], image.pixels[i + 2]);
+        }
+    }
+
+    return image;
+}
+
+void savePng(const std::string& path, const Image& image, const SaveConfig& config){
+    if(!image.isValid()){
+        throw std::runtime_error("Spool: refusing to write an empty image to " + path);
+    }
+    if(image.byteSize() != image.pixelCount() * 4){
+        throw std::runtime_error("Spool: image says " + std::to_string(image.width) + "x" +
+            std::to_string(image.height) + " but carries " + std::to_string(image.byteSize()) + " bytes");
+    }
+
+    //A missing directory is the most ordinary reason a sequence fails on its first frame,
+    //and it is one this can simply fix
+    const std::filesystem::path target(path);
+    if(target.has_parent_path() && !target.parent_path().empty()){
+        std::error_code code;
+        std::filesystem::create_directories(target.parent_path(), code);
+    }
+
+    stbi_write_png_compression_level = std::clamp(config.pngCompression, 0, 9);
+
+    const int stride = static_cast<int>(image.width) * 4;
+    const int written = stbi_write_png(path.c_str(),
+        static_cast<int>(image.width), static_cast<int>(image.height), 4,
+        image.pixels.data(), stride);
+
+    if(written == 0){
+        throw std::runtime_error("Spool: could not write " + path + " - the encoder refused it, or the path is not writable");
+    }
+}
+
+void saveImage(const std::string& path, const Image& image, const SaveConfig& config){
+    std::string extension = std::filesystem::path(path).extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+        [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+
+    if(extension == ".png"){
+        savePng(path, image, config);
+        return;
+    }
+
+    throw std::runtime_error("Spool: no encoder for \"" + extension + "\" (" + path + ") - only .png so far");
 }
 
 }

@@ -33,6 +33,21 @@ struct Image{
     size_t byteSize() const {return pixels.size();}
 };
 
+//How four bytes of a pixel are ordered in memory. Loom's swapchain and render targets are
+//eB8G8R8A8Srgb, which is the format nearly every Vulkan surface offers - so the bytes that
+//come back from a readback are BGRA, and a PNG written straight out of them has red and
+//blue swapped. That is a pixel layout question, not a Loom question, which is why it is
+//answered here
+enum class ChannelOrder{
+    RGBA,
+    BGRA
+};
+
+//Wraps bytes that are already decoded - a readback, a generated pattern - as an Image,
+//putting them in RGBA order on the way in. Four bytes per pixel, tightly packed
+Image imageFromPixels(const void* pixels, uint32_t width, uint32_t height,
+                      ChannelOrder order = ChannelOrder::RGBA);
+
 //From a file. Whatever the decoder understands - png, jpg, bmp, tga, gif and more.
 //
 //Throws, with the path and the reason, rather than returning an empty image: a texture that
@@ -42,5 +57,24 @@ Image loadImage(const std::string& path);
 
 //From bytes already in memory: an asset pack, a network reply, a test with the file inlined
 Image decodeImage(const void* data, size_t size);
+
+
+//How hard to work at making the file small. PNG is lossless either way - this only trades
+//encode time against bytes on disk, which is the trade a sequence export cares about most:
+//a preview pass wants frames written faster than they are rendered, a final pass does not
+struct SaveConfig{
+    //0 to 9. stb's own default is 8, which is slow enough to become the bottleneck when a
+    //whole sequence is being written
+    int pngCompression = 6;
+};
+
+//Writes a PNG. Creates the directories above the file if they are not there yet.
+//Throws with the path rather than returning false: a frame that silently failed to write
+//leaves a hole in a sequence that nobody notices until the sequence is played
+void savePng(const std::string& path, const Image& image, const SaveConfig& config = {});
+
+//The same, choosing the encoder from the file's extension. Only .png for now - the point of
+//the seam is that adding another one does not change a single caller
+void saveImage(const std::string& path, const Image& image, const SaveConfig& config = {});
 
 }

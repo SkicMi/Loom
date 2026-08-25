@@ -25,6 +25,7 @@ FetchContent_MakeAvailable(stb)
 
 add_library(Spool STATIC
     src/Spool/ImageFile.cpp
+    src/Spool/Sequence.cpp
     src/Spool/StbImplementation.cpp
 )
 
