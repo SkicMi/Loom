@@ -79,6 +79,29 @@ struct PipelineConfig{
 };
 
 
+//Depth prepass koji se s ovim pipelineom slaze DO ZADNJEG BITA.
+//
+//To nije sitnica nego uvjet: glavni prolaz smije testirati eEqual samo ako je dubinu koju
+//usporeduje izracunao isti vertex shader s istim ulazima. Dva razlicita shadera koja "rade
+//isto" daju brojeve koji se razlikuju u zadnjem bitu, i eEqual tada odbije svaki fragment -
+//slika ostane prazna, a nista u kodu ne izgleda krivo.
+//
+//Zato se prepass IZVODI iz configa za boju umjesto da se pise pokraj njega: ono sto se
+//izvede ne moze se razici. Mijenja se samo ono sto prepass ne treba - fragment stage i boja.
+inline PipelineConfig makeDepthPrepassConfig(PipelineConfig config){
+    //Nema sto vratiti kad nema boje, pa nema ni fragment stagea. Pola posla koje se ne radi
+    config.fragShaderPath.clear();
+    config.enableColor = false;
+
+    //Vertex shader, atributi, push constants i set 0 ostaju netaknuti. Oni su ono zbog cega
+    //ce se dubine poklopiti
+    config.depthTestEnable = true;
+    config.depthWriteEnable = true;
+    config.depthCompare = vk::CompareOp::eLess;
+
+    return config;
+}
+
 class VulkanGraphicsPipeline{
     public:
     //A pipeline needs two formats, not a swapchain. defaultColorFormat is only the fallback

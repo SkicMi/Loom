@@ -135,32 +135,27 @@ int main(){
 
     RenderTarget scene(loom.device, vk::Extent2D{sceneWidth, sceneHeight}, sceneConfig);
 
-    //Depth only, no fragment stage, the same pipeline a shadow pass uses
-    PipelineConfig prepassConfig;
-    prepassConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/shadow.vert.spv";
-    prepassConfig.fragShaderPath = "";
-    prepassConfig.enableColor = false;
-    prepassConfig.vertexAttributes = Vertex::getPositionAttribute();
-    prepassConfig.cullMode = vk::CullModeFlagBits::eNone;
-    prepassConfig.depthTestEnable = true;
-    prepassConfig.depthWriteEnable = true;
-    VulkanGraphicsPipeline prepassPipeline(loom.device, prepassConfig,
-        loom.getColorFormat(), scene.getDepthFormat());
-    Material prepassMaterial(prepassPipeline);
-
-    //The colour pass tests for equality and writes nothing: the prepass already decided what
-    //is visible, so each pixel is shaded exactly once
     PipelineConfig texturedConfig = config.pipelineConfig;
     texturedConfig.descriptorBindings = {Texture::getLayoutBinding(), Material::getDataLayoutBinding()};
     texturedConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/textured.vert.spv";
     texturedConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/textured.frag.spv";
-    //eLessOrEqual rather than eEqual on purpose. eEqual is the tighter prepass and needs the
-    //two passes to agree on the depth to the last bit - which means the same vertex shader,
-    //and here they are two different ones. LessOrEqual still rejects everything the prepass
-    //hid, which is where the saving is
-    texturedConfig.depthCompare = vk::CompareOp::eLessOrEqual;
+
+    //Derived from the colour config, not written beside it. Same vertex shader, same
+    //attributes, same push constants - which is the whole reason eEqual can be used below
+    VulkanGraphicsPipeline prepassPipeline(loom.device, makeDepthPrepassConfig(texturedConfig),
+        loom.getColorFormat(), scene.getDepthFormat());
+    Material prepassMaterial(prepassPipeline);
+
+    //eEqual: the prepass already decided what is visible, so the colour pass shades exactly
+    //the fragments that survived it and not one more
+    texturedConfig.depthCompare = vk::CompareOp::eEqual;
     texturedConfig.depthWriteEnable = false;
     VulkanGraphicsPipeline texturedPipeline = loom.createPipeline(texturedConfig);
+
+    //The same colour pass with the looser test, to measure what eEqual costs in coverage
+    PipelineConfig looseConfig = texturedConfig;
+    looseConfig.depthCompare = vk::CompareOp::eLessOrEqual;
+    VulkanGraphicsPipeline loosePipeline = loom.createPipeline(looseConfig);
 
     const std::vector<uint8_t> checker = makeCheckerboard(64, 4);
     TextureConfig textureConfig;
@@ -178,6 +173,24 @@ int main(){
     distances.quarter = 12.0f;     //beyond twelve units, 2x2
     distances.sixteenth = 45.0f;   //beyond forty five, 4x4
     map.setDistances(distances);
+
+    auto renderWith = [&](const VulkanGraphicsPipeline& colourPipeline){
+        loom.renderer.clearShadingRateMap();
+        Material other(loom.device, loom.command, loom.getDescriptorPool(), colourPipeline, texture.getSampled());
+
+        if(loom.renderer.beginFrame()){
+            loom.renderer.beginDepthPass(scene);
+            loom.renderer.draw(floor, glm::mat4(1.0f), prepassMaterial);
+            loom.renderer.endPass();
+
+            loom.renderer.beginPass(scene);
+            loom.renderer.draw(floor, glm::mat4(1.0f), other);
+            loom.renderer.endPass();
+            loom.renderer.endFrame();
+        }
+        loom.waitIdle();
+        return scene.readPixels(loom.command).pixels;
+    };
 
     auto render = [&](bool useMap){
         if(useMap) loom.renderer.setShadingRateMap(map);
@@ -213,7 +226,18 @@ int main(){
     // -------------------------------------------------------------------------------
 
     report.check("nesto je nacrtano", countNonBlack(withoutMap) > 20000,
-        fmt("%zu ne-crnih piksela", countNonBlack(withoutMap)));
+        fmt("%zu ne-crnih piksela uz eEqual i izvedeni prepass", countNonBlack(withoutMap)));
+
+    //eEqual is the strict test: it shades only fragments whose depth is exactly what the
+    //prepass wrote. If the derived prepass agreed only approximately, this picture would be
+    //missing pixels that the looser test keeps - so comparing the two is the measurement of
+    //whether the derivation actually holds
+    const std::vector<uint8_t> loose = renderWith(loosePipeline);
+    const ByteDiff strictVsLoose = diffBytes(withoutMap, loose);
+
+    report.check("eEqual ne gubi nista", strictVsLoose.different == 0,
+        fmt("%zu razlicitih bajtova izmedu eEqual i eLessOrEqual, %zu ne-crnih u oba",
+            strictVsLoose.different, countNonBlack(loose)));
 
     //With eEqual and depth writes off, the colour pass draws only where the prepass agreed.
     //If loadDepth were not working, the cleared depth would reject every fragment and the
