@@ -279,6 +279,34 @@ option(LOOM_BUILD_TESTS "Build Loom's test executables" ON)
 if(LOOM_BUILD_TESTS)
     enable_testing()
 
+    # ------------------------------------------------------------------------
+    # Granica stepenice 1: provjerava se preprocesiranjem, ne citanjem.
+    #   tier1_header_is_clean - <Loom/Loom.h> ne smije vidjeti Vulkan
+    #   tier1_leak_detector   - kontrola: stepenica 2 mora ga vidjeti, inace
+    #                           detektor koji nista ne nalazi izgleda ispravno
+    # ------------------------------------------------------------------------
+    set(LOOM_HEADER_INCLUDES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${glm_SOURCE_DIR}
+        ${vulkanheaders_SOURCE_DIR}/include
+        ${glfw_SOURCE_DIR}/include
+    )
+    string(REPLACE ";" "$<SEMICOLON>" LOOM_HEADER_INCLUDES_ARG "${LOOM_HEADER_INCLUDES}")
+
+    add_test(NAME tier1_header_is_clean COMMAND ${CMAKE_COMMAND}
+        -DCOMPILER=${CMAKE_CXX_COMPILER}
+        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/headers/tier1.cpp
+        "-DINCLUDES=${LOOM_HEADER_INCLUDES}"
+        -DEXPECT=clean
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/HeaderIsClean.cmake)
+
+    add_test(NAME tier1_leak_detector COMMAND ${CMAKE_COMMAND}
+        -DCOMPILER=${CMAKE_CXX_COMPILER}
+        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/headers/tier2.cpp
+        "-DINCLUDES=${LOOM_HEADER_INCLUDES}"
+        -DEXPECT=dirty
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/HeaderIsClean.cmake)
+
     file(GLOB LOOM_TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp
     )

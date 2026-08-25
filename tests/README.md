@@ -12,6 +12,14 @@ cmake --build build --target LoomTests
 cd build && ctest --output-on-failure
 ```
 
+Two of them are not executables. `tier1_header_is_clean` and `tier1_leak_detector`
+preprocess a translation unit and search the result, because a leaked include is never in
+the file you are looking at - it is in something that file included, and the only honest
+way to see it is to look at all of it at once. Measured today: `<Loom/Loom.h>` comes to
+1622367 characters with **0** `vk::` and **0** `vulkan` in them, while the tier 2 control
+has 29719 and 47986. The control exists because a detector that finds nothing looks
+exactly like a detector that does not work.
+
 What each one covers:
 
 | test | claim |
