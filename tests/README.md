@@ -46,6 +46,7 @@ What each one covers:
 | `test_tier1_presets` | Lit3D and Flat2D draw what the hand written tier 2 programs draw, byte for byte; in Flat2D the order of drawing decides what sits on top because there is no depth to sort by; and `Loom::Sequence` writes the frame tier 1 just drew |
 | `test_tier1_lights` | a scene holds more than the preset's sun, a point light added on tier 1 casts through a cube map byte for byte the same as six hand written face passes, a second shadow map is read rather than ignored, and a refused light leaves nothing behind |
 | `test_mipmaps` | a texture that shrinks into the distance stops being noise: 86% fewer hard edges between neighbouring pixels with a mip chain than without, and the floor a metre away is untouched |
+| `test_shadingrate` | a material can say how many pixels share one run of the fragment shader: at 2x2 every one of 16384 blocks comes out uniform where at 1x1 none of them do, and a coarse draw does not leave its rate behind for the next one |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:

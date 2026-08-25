@@ -2,6 +2,7 @@
 #include <vulkan/vulkan_raii.hpp>
 #include "VulkanInstance.h"
 #include "VulkanAllocator.h"
+#include "Core/ShadingRate.h"
 #include <optional>
 #include <string>
 #include <set>
@@ -48,6 +49,14 @@ struct QueueFamilyIndices{
     const vk::raii::Queue& getPresentQueue() const {return presentQueue;}
     const VulkanAllocator& getAllocator() const {return allocator;}
     bool isHeadless() const {return !needsPresent;}
+
+    //Sjencanje u blokovima. Opcionalno kao i sve ostalo iz ovog reda - kartica koja to nema
+    //crta jednako, samo bez ustede
+    bool hasFragmentShadingRate() const {return hasShadingRate;}
+
+    //Je li BAS ta stopa dozvoljena. Drajver nabraja koje podrzava, i 4x4 nije zajamcen ni
+    //tamo gdje 2x2 jest
+    bool supportsShadingRate(ShadingRate rate) const;
     const QueueFamilyIndices& getQueueIndices() const {return queueIndices;}
     std::string getDeviceName() const {return std::string(physicalDevice.getProperties().deviceName.data());}
     vk::PhysicalDeviceType getDeviceType() const {return physicalDevice.getProperties().deviceType;}
@@ -68,6 +77,10 @@ struct QueueFamilyIndices{
     std::vector<const char*> enabledExtensions;
     bool hasMemoryBudget = false;
     bool hasMemoryPriority = false;
+    bool hasShadingRate = false;
+
+    //Sto je drajver nabrojao. Prazno kad ekstenzije nema
+    std::vector<vk::Extent2D> supportedShadingRates;
 
     //Asked once at construction from the instance, because every suitability check and the
     //extension list both need the same answer
@@ -95,7 +108,8 @@ struct QueueFamilyIndices{
     //be the last ones evicted when it runs out. A card without them still runs everything
     static inline const std::vector<const char*> optionalDeviceExtensions = {
         "VK_EXT_memory_budget",
-        "VK_EXT_memory_priority"};
+        "VK_EXT_memory_priority",
+        "VK_KHR_fragment_shading_rate"};
 
     static bool supportsExtension(const vk::raii::PhysicalDevice& candidate, const char* name);
     void createAllocator();

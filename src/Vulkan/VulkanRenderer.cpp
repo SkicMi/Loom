@@ -335,6 +335,13 @@ viewport.minDepth = 0.0f;
 viewport.maxDepth = 1.0f;
 commandBuffer.setViewport(0, viewport);
 
+//Deklarirano dinamicko stanje mora biti postavljeno prije prvog crtanja, pa svaki prolaz
+//krece od jednog sjencanja po pikselu. Materijal koji zeli grublje to kaze u draw pozivu,
+//i sljedeci prolaz opet krece od nule - stopa se ne prelijeva iz prolaza u prolaz
+if(device.hasFragmentShadingRate()){
+    setShadingRate(commandBuffer, ShadingRate::Full);
+}
+
 vk::Rect2D scissor({0,0}, extent);
 commandBuffer.setScissor(0, scissor);
 
@@ -834,13 +841,44 @@ void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light, u
                 face);
 }
 
+void VulkanRenderer::setShadingRate(const vk::raii::CommandBuffer& commandBuffer, ShadingRate rate) const{
+    const ShadingRateExtent extent = shadingRateExtent(rate);
+
+    //Kombinatori govore sto s tri izvora stope: pipeline, primitiv i slika stope. Loom
+    //koristi samo prvi, pa oba ostala samo zadrzavaju ono sto je vec tu
+    const std::array<vk::FragmentShadingRateCombinerOpKHR,2> combiners = {
+        vk::FragmentShadingRateCombinerOpKHR::eKeep,
+        vk::FragmentShadingRateCombinerOpKHR::eKeep
+    };
+
+    commandBuffer.setFragmentShadingRateKHR(vk::Extent2D{extent.width, extent.height}, combiners.data());
+}
+
 void VulkanRenderer::bindMaterial(const Material& material) {
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
     const VulkanGraphicsPipeline& pipeline = material.getPipeline();
 
+    //Dynamic rendering requires the pipeline's attachment formats to match the pass's. A
+    //target with depth drawn by a pipeline that never declared any is a VUID at draw time
+    //and a picture that mostly looks right - which is the worst kind of wrong. A sentence
+    //here names the two formats instead
+    const vk::Format passDepth = currentTarget ? currentTarget->getDepthFormat()
+                                               : (depthImage ? depthImage->getFormat() : vk::Format::eUndefined);
+
+    if(pipeline.depthFormat != passDepth){
+        throw std::runtime_error("draw: this pass has depth format " + vk::to_string(passDepth) +
+            " but the material's pipeline was built for " + vk::to_string(pipeline.depthFormat) +
+            " - a pass and the pipelines drawing into it have to agree on their attachments");
+    }
+
     if(boundPipeline != &pipeline){
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.getPipeline());
         boundPipeline = &pipeline;
+    }
+
+    //Po draw pozivu, jer je to razina na kojoj je odluka o vaznosti smislena
+    if(device.hasFragmentShadingRate()){
+        setShadingRate(commandBuffer, material.getShadingRate());
     }
 
     if(material.hasDescriptorSet()){

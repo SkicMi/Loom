@@ -206,6 +206,30 @@ void VulkanDevice::createLogicalDevice(){
         enabledExtensions.push_back("VK_EXT_memory_budget");
     }
 
+    //Same story as memory priority: the extension is the door, the feature is whether it
+    //opens. pipelineFragmentShadingRate is the one this uses - the per draw rate. The other
+    //two (per primitive, and a rate image) are separate features and are not asked for
+    hasShadingRate = supportsExtension(physicalDevice, "VK_KHR_fragment_shading_rate");
+    vk::PhysicalDeviceFragmentShadingRateFeaturesKHR shadingRateFeatures;
+
+    if(hasShadingRate){
+        auto supported = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2,
+            vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>();
+        hasShadingRate = static_cast<bool>(
+            supported.get<vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>().pipelineFragmentShadingRate);
+    }
+
+    if(hasShadingRate){
+        enabledExtensions.push_back("VK_KHR_fragment_shading_rate");
+        shadingRateFeatures.pipelineFragmentShadingRate = true;
+
+        //Which rates this driver actually offers. 2x2 is everywhere the extension is, 4x4
+        //is not, and asking for one that was never listed is a validation error
+        for(const auto& rate : physicalDevice.getFragmentShadingRatesKHR()){
+            supportedShadingRates.push_back(rate.fragmentSize);
+        }
+    }
+
     //The extension only exposes the priority field; the feature is what makes the driver read
     //it, and the spec lets a driver ship the extension with the feature off. Asking first
     //costs one query and turns a failed vkCreateDevice into a quietly skipped optimisation
@@ -216,10 +240,19 @@ void VulkanDevice::createLogicalDevice(){
         hasMemoryPriority = static_cast<bool>(supported.get<vk::PhysicalDeviceMemoryPriorityFeaturesEXT>().memoryPriority);
     }
 
+    //Both optional feature structs go on the same chain, each only when it is wanted
+    void** nextInChain = &features13.pNext;
+
     if(hasMemoryPriority){
         enabledExtensions.push_back("VK_EXT_memory_priority");
         memoryPriorityFeatures.memoryPriority = true;
-        features13.pNext = &memoryPriorityFeatures;
+        *nextInChain = &memoryPriorityFeatures;
+        nextInChain = &memoryPriorityFeatures.pNext;
+    }
+
+    if(hasShadingRate){
+        *nextInChain = &shadingRateFeatures;
+        nextInChain = &shadingRateFeatures.pNext;
     }
 
     //Creating device create info
@@ -266,4 +299,17 @@ void VulkanDevice::createAllocator(){
     allocatorConfig.apiVersion = VK_API_VERSION_1_3;
 
     allocator = VulkanAllocator(instance.getInstance(), physicalDevice, device, allocatorConfig);
+}
+
+bool VulkanDevice::supportsShadingRate(ShadingRate rate) const{
+    if(!hasShadingRate) return false;
+
+    //1x1 is always available: it is what every pipeline does without being asked
+    const ShadingRateExtent wanted = shadingRateExtent(rate);
+    if(wanted.width == 1 && wanted.height == 1) return true;
+
+    for(const vk::Extent2D& offered : supportedShadingRates){
+        if(offered.width == wanted.width && offered.height == wanted.height) return true;
+    }
+    return false;
 }

@@ -4,6 +4,7 @@
 #include "VulkanCommand.h"
 #include "VulkanBuffer.h"
 #include "Core/MaterialData.h"
+#include "Core/ShadingRate.h"
 #include <vector>
 
 class Material{
@@ -39,6 +40,14 @@ class Material{
     Material(Material&&) = default;
     
 
+    //Koliko piksela dijeli jedno sjencanje ovog materijala.
+    //
+    //Stoji na materijalu, a ne na pipelineu, jer je to odluka o VAZNOSTI: pod u daljini i
+    //zrcalo u prvom planu mogu dijeliti pipeline i ne bi trebali dijeliti stopu. Uredaj koji
+    //to ne podrzava crta jednako, samo bez ustede
+    void setShadingRate(ShadingRate rate) {shadingRate = rate;}
+    ShadingRate getShadingRate() const {return shadingRate;}
+
     static vk::DescriptorSetLayoutBinding getDataLayoutBinding(uint32_t binding = 1){
         vk::DescriptorSetLayoutBinding layoutBinding;
         layoutBinding.binding = binding;
@@ -69,6 +78,7 @@ class Material{
     const VulkanGraphicsPipeline* pipeline;
     const VulkanDevice* device = nullptr;
     std::vector<uint8_t> payload;
+    ShadingRate shadingRate = ShadingRate::Full;
     mutable SampledImage image;
     std::vector<vk::raii::DescriptorSet> descriptorSets;
     mutable std::vector<VulkanBuffer> dataBuffers;

@@ -191,6 +191,7 @@ class VulkanRenderer{
     void startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, uint32_t depthFace = 0);
     void recreateSwapchain();
     void bindMaterial(const Material& material);
+    void setShadingRate(const vk::raii::CommandBuffer& commandBuffer, ShadingRate rate) const;
 
 };
 

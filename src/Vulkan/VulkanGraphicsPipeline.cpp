@@ -134,6 +134,16 @@ void VulkanGraphicsPipeline::createPipeline(){
         vk::DynamicState::eScissor
     };
 
+    //Stopa sjencanja se zada po draw pozivu, pa je dinamicko stanje. Dodaje se samo kad
+    //uredaj ima ekstenziju - deklarirati dinamicko stanje koje drajver ne poznaje je
+    //greska, a ne tiho ignoriranje.
+    //
+    //Kad je deklarirano, MORA biti postavljeno prije prvog crtanja - inace je stopa
+    //nedefinirana. Zato ga renderer postavlja na Full na pocetku svakog prolaza
+    if(device.hasFragmentShadingRate()){
+        dynamicStates.push_back(vk::DynamicState::eFragmentShadingRateKHR);
+    }
+
     vk::PipelineDynamicStateCreateInfo dynamicState;
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
