@@ -76,7 +76,7 @@ std::vector<uint8_t> renderTier2(const std::string& texturePath){
     config.pipelineConfig.depthWriteEnable = true;
     config.pipelineConfig.cullMode = vk::CullModeFlagBits::eBack;
     config.rendererConfig.clearColor = {0.02f, 0.02f, 0.04f, 1.0f};
-    config.rendererConfig.maxPassesPerFrame = 8;
+    config.rendererConfig.maxPassesPerFrame = 16;
     config.headlessColorFormat = vk::Format::eB8G8R8A8Srgb;
     config.pipelineConfig.colorFormat = vk::Format::eB8G8R8A8Srgb;
 

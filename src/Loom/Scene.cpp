@@ -77,8 +77,9 @@ LoomConfig presetConfig(Preset preset){
             config.pipelineConfig.depthWriteEnable = true;
             config.pipelineConfig.cullMode = vk::CullModeFlagBits::eBack;
             config.rendererConfig.clearColor = {0.02f, 0.02f, 0.04f, 1.0f};
-            //One shadow pass and one camera pass, with room to add a second look at the scene
-            config.rendererConfig.maxPassesPerFrame = 8;
+            //A directional map, six cube faces and the camera pass is eight already, so this
+            //leaves room rather than sitting exactly on the ceiling
+            config.rendererConfig.maxPassesPerFrame = 16;
             break;
 
         case Preset::Flat2D:
@@ -98,7 +99,7 @@ LoomConfig presetConfig(Preset preset){
             config.pipelineConfig.depthWriteEnable = true;
             config.pipelineConfig.cullMode = vk::CullModeFlagBits::eBack;
             config.rendererConfig.clearColor = {0.02f, 0.02f, 0.04f, 1.0f};
-            config.rendererConfig.maxPassesPerFrame = 8;
+            config.rendererConfig.maxPassesPerFrame = 16;
             //Pinned rather than inherited from a swapchain that does not exist
             config.headlessColorFormat = vk::Format::eB8G8R8A8Srgb;
             config.pipelineConfig.colorFormat = vk::Format::eB8G8R8A8Srgb;
@@ -143,6 +144,11 @@ EnvironmentConfig presetEnvironment(Preset preset){
 
 constexpr uint32_t shadowMapSize = 2048;
 
+//A cube is six faces, so the same number of texels costs six times as much. Half the width
+//of the directional map is the usual trade and it is barely visible: a point light's shadow
+//is nearer the thing casting it
+constexpr uint32_t shadowCubeSize = 1024;
+
 ShadowConfig presetShadow(){
     ShadowConfig shadow;
     shadow.fitToCamera = true;
@@ -165,9 +171,22 @@ struct Scene::State{
     //Only the Offscreen preset draws into a target of its own; the others draw to the window
     std::unique_ptr<RenderTarget> offscreen;
 
+    //One directional map and one cube. That ceiling is the renderer's, not the preset's:
+    //set 0 has one binding for each kind, so a second of either would need an array of
+    //descriptors. Asked for a second, this says so rather than silently ignoring it
     std::unique_ptr<RenderTarget> shadowMap;
+    const Light* shadowLight = nullptr;
+
+    std::unique_ptr<RenderTarget> shadowCube;
+    const Light* shadowCubeLight = nullptr;
+
     std::unique_ptr<VulkanGraphicsPipeline> shadowPipeline;
     std::unique_ptr<Material> shadowMaterial;
+
+    //Owned, so that nothing the renderer points at can go out of scope before it does
+    std::vector<std::unique_ptr<Light>> extraLights;
+
+    void ensureShadowPipeline(vk::Format depthFormat);
 
     //unique_ptr rather than Texture by value: a Material holds a view of its texture, and a
     //vector that reallocates would move the object it points at
@@ -237,21 +256,9 @@ void Scene::State::build(){
     if(shadowsWanted && preset != Preset::Flat2D){
         shadowMap = std::make_unique<RenderTarget>(loom->device,
             vk::Extent2D{shadowMapSize, shadowMapSize}, makeShadowMapConfig());
+        shadowLight = &sun;
 
-        PipelineConfig shadowPipelineConfig;
-        shadowPipelineConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/shadow.vert.spv";
-        shadowPipelineConfig.fragShaderPath = "";
-        shadowPipelineConfig.enableColor = false;
-        shadowPipelineConfig.vertexAttributes = Vertex::getPositionAttribute();
-        shadowPipelineConfig.depthTestEnable = true;
-        shadowPipelineConfig.depthWriteEnable = true;
-        //Back faces into the map: a whole object's thickness of margin, which is more than
-        //any bias could buy
-        shadowPipelineConfig.cullMode = vk::CullModeFlagBits::eFront;
-
-        shadowPipeline = std::make_unique<VulkanGraphicsPipeline>(loom->device,
-            shadowPipelineConfig, loom->getColorFormat(), shadowMap->getDepthFormat());
-        shadowMaterial = std::make_unique<Material>(*shadowPipeline);
+        ensureShadowPipeline(shadowMap->getDepthFormat());
 
         ShadowConfig shadow = presetShadow();
         //Headless has no window to take an aspect ratio from, and a fit to the wrong one puts
@@ -264,12 +271,35 @@ void Scene::State::build(){
     built = true;
 }
 
+void Scene::State::ensureShadowPipeline(vk::Format depthFormat){
+    //One pipeline serves both the flat map and the cube: every depth target here comes out of
+    //makeDepthConfig, so they all agree on the format
+    if(shadowPipeline) return;
+
+    PipelineConfig shadowPipelineConfig;
+    shadowPipelineConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/shadow.vert.spv";
+    shadowPipelineConfig.fragShaderPath = "";
+    shadowPipelineConfig.enableColor = false;
+    shadowPipelineConfig.vertexAttributes = Vertex::getPositionAttribute();
+    shadowPipelineConfig.depthTestEnable = true;
+    shadowPipelineConfig.depthWriteEnable = true;
+    //Back faces into the map: a whole object's thickness of margin, which is more than any
+    //bias could buy
+    shadowPipelineConfig.cullMode = vk::CullModeFlagBits::eFront;
+
+    shadowPipeline = std::make_unique<VulkanGraphicsPipeline>(loom->device,
+        shadowPipelineConfig, loom->getColorFormat(), depthFormat);
+    shadowMaterial = std::make_unique<Material>(*shadowPipeline);
+}
+
 void Scene::State::teardown(){
     //By hand and in this order: everything below holds buffers and images allocated out of
     //the Loom's device, so the Loom is the last thing to go
     shadowMaterial.reset();
     shadowPipeline.reset();
+    shadowCube.reset();
     shadowMap.reset();
+    extraLights.clear();
     offscreen.reset();
     textures.clear();
     shapes.reset();
@@ -418,10 +448,20 @@ void Scene::endRendering(){
 
     VulkanRenderer& renderer = state->loom->renderer;
 
-    if(state->shadowMap){
-        renderer.beginPass(*state->shadowMap, state->sun);
+    if(state->shadowMap && state->shadowLight){
+        renderer.beginPass(*state->shadowMap, *state->shadowLight);
         state->replay(state->shadowMaterial.get());
         renderer.endPass();
+    }
+
+    //Six faces for a point light, and the same queue replayed into each. This is exactly why
+    //the draws are queued rather than issued: nobody outside could have driven these passes
+    if(state->shadowCube && state->shadowCubeLight){
+        for(uint32_t face = 0; face < 6; ++face){
+            renderer.beginPass(*state->shadowCube, *state->shadowCubeLight, face);
+            state->replay(state->shadowMaterial.get());
+            renderer.endPass();
+        }
     }
 
     if(state->offscreen){
@@ -471,6 +511,65 @@ const LoomInitializer& Scene::loom() const{
 
 const LoomConfig& Scene::config() const{
     return state->config;
+}
+
+Light& Scene::addLight(const LightConfig& config, bool castsShadows){
+    state->build();
+
+    //Asked and answered before anything is touched. A throw halfway through used to leave a
+    //light in the scene that the caller had been told was refused - it lit the picture, it
+    //counted, and nobody had a reference to it
+    if(castsShadows){
+        if(config.type == LightType::Directional && state->shadowLight != nullptr){
+            throw std::runtime_error("Loom::Scene: a directional shadow map is already in use by the preset's sun - "
+                                     "turn it off with setShadows(false) before adding another shadow casting directional light");
+        }
+        if(config.type == LightType::Point && state->shadowCubeLight != nullptr){
+            throw std::runtime_error("Loom::Scene: a shadow cube is already in use - set 0 has one binding for it, "
+                                     "so only one point light can cast at a time");
+        }
+    }
+
+    state->extraLights.push_back(std::make_unique<Light>(config));
+    Light& light = *state->extraLights.back();
+
+    state->loom->renderer.addLight(light);
+
+    if(!castsShadows){
+        return light;
+    }
+
+    if(config.type == LightType::Directional){
+        state->shadowMap = std::make_unique<RenderTarget>(state->loom->device,
+            vk::Extent2D{shadowMapSize, shadowMapSize}, makeShadowMapConfig());
+        state->shadowLight = &light;
+        state->ensureShadowPipeline(state->shadowMap->getDepthFormat());
+
+        ShadowConfig shadow = presetShadow();
+        shadow.viewportWidth = state->config.width;
+        shadow.viewportHeight = state->config.height;
+        state->loom->renderer.setShadowMap(*state->shadowMap, light, shadow);
+
+        return light;
+    }
+
+    //A point light shines in every direction, so its map is a cube and its pass is six passes
+    state->shadowCube = std::make_unique<RenderTarget>(state->loom->device,
+        vk::Extent2D{shadowCubeSize, shadowCubeSize}, makeShadowCubeConfig());
+    state->shadowCubeLight = &light;
+    state->ensureShadowPipeline(state->shadowCube->getDepthFormat());
+
+    ShadowConfig shadow;
+    shadow.depthBias = 0.0025f;
+    state->loom->renderer.setShadowCube(*state->shadowCube, light, shadow);
+
+    return light;
+}
+
+uint32_t Scene::lightCount() const{
+    //The preset's sun counts, and Flat2D has none at all
+    const uint32_t fromPreset = (state->built && state->preset != Preset::Flat2D) ? 1u : 0u;
+    return fromPreset + static_cast<uint32_t>(state->extraLights.size());
 }
 
 Camera& Scene::camera(){ state->build(); return state->camera; }

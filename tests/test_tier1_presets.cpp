@@ -63,7 +63,7 @@ std::vector<uint8_t> handWrittenLit3D(const std::string& texturePath){
     config.pipelineConfig.depthWriteEnable = true;
     config.pipelineConfig.cullMode = vk::CullModeFlagBits::eBack;
     config.rendererConfig.clearColor = {0.02f, 0.02f, 0.04f, 1.0f};
-    config.rendererConfig.maxPassesPerFrame = 8;
+    config.rendererConfig.maxPassesPerFrame = 16;
 
     LoomInitializer loom(config);
 

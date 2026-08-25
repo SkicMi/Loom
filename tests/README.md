@@ -44,6 +44,7 @@ What each one covers:
 | `test_tier1_preset` | a program written against `<Loom/Loom.h>` draws the same image, byte for byte, as the tier 2 program that does the same thing by hand; `Loom::Transform` produces the same matrix as the glm written out longhand |
 | `test_tier1_override` | a preset and a config combine rather than replace each other: an override reaches the config, leaves everything it did not name alone, changes the picture, and produces the same bytes as the tier 2 program with the same change; `scene.loom()` reaches the live objects |
 | `test_tier1_presets` | Lit3D and Flat2D draw what the hand written tier 2 programs draw, byte for byte; in Flat2D the order of drawing decides what sits on top because there is no depth to sort by; and `Loom::Sequence` writes the frame tier 1 just drew |
+| `test_tier1_lights` | a scene holds more than the preset's sun, a point light added on tier 1 casts through a cube map byte for byte the same as six hand written face passes, and a refused light leaves nothing behind |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:

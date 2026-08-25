@@ -81,7 +81,7 @@ int main(){
     report.check("preset je ostao", touched.headless && touched.enableDepth &&
         touched.pipelineConfig.depthTestEnable &&
         touched.pipelineConfig.cullMode == vk::CullModeFlagBits::eBack &&
-        touched.rendererConfig.maxPassesPerFrame == 8,
+        touched.rendererConfig.maxPassesPerFrame == 16,
         "headless, dubina, cullBack i maxPassesPerFrame netaknuti");
 
     // -------------------------------------------------------------------------------
@@ -147,7 +147,7 @@ int main(){
         config.pipelineConfig.depthWriteEnable = true;
         config.pipelineConfig.cullMode = vk::CullModeFlagBits::eFront;   //the override
         config.rendererConfig.clearColor = {0.02f, 0.02f, 0.04f, 1.0f};
-        config.rendererConfig.maxPassesPerFrame = 8;
+        config.rendererConfig.maxPassesPerFrame = 16;
         config.headlessColorFormat = vk::Format::eB8G8R8A8Srgb;
         config.pipelineConfig.colorFormat = vk::Format::eB8G8R8A8Srgb;
 

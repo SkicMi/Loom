@@ -5,11 +5,12 @@
 // je svjesni silazak, i on je zapisan jednim includeom na vrhu, vidljivo svakome tko file
 // otvori:
 //
-//   stepenica 1  <Loom/Loom.h>            preset, oblici, teksture, petlja
-//   stepenica 2  <Loom/Preset_Advanced.h> config prije upotrebe, i zivi objekti dok rade
+//   stepenica 1  <Loom/Loom.h>            preset, svjetla, oblici, teksture, petlja
+//   stepenica 2  <Loom/Preset_Advanced.h> config prije upotrebe
 //   stepenica 3  ovdje ne treba
 //
-// Bez tog drugog includea ovaj file ne bi vidio nijedan Vulkan simbol.
+// Bez tog drugog includea ovaj file ne bi vidio nijedan Vulkan simbol - a jedino zbog cega
+// je ovdje je nacin prikazivanja, koji na stepenici 1 nema sto traziti.
 #include <Loom/Loom.h>
 #include <Loom/Preset_Advanced.h>
 
@@ -31,16 +32,6 @@ static std::vector<uint8_t> makeCheckerboard(uint32_t size, uint32_t cell,
 }
 
 int main(){
-    //Deklarirana prije scene, pa scena umire prva. Renderer drzi pokazivac na svjetlo, i taj
-    //pokazivac ne smije nadzivjeti ono na sto pokazuje
-    LightConfig bulbConfig;
-    bulbConfig.type = LightType::Point;
-    bulbConfig.position = {2.6f, 2.0f, 0.0f};
-    bulbConfig.color = {1.0f, 0.35f, 0.15f};
-    bulbConfig.intensity = 14.0f;
-    bulbConfig.range = 12.0f;
-    Light bulb(bulbConfig);
-
     // -- stepenica 1, s jednim spustom na stepenicu 2 --------------------------------------
 
     //Preset ispuni config; ovo je trenutak izmedu toga i njegove upotrebe. Nacin
@@ -58,9 +49,15 @@ int main(){
     const Loom::TextureHandle floorTexture = scene.createTexture(floorPixels.data(), 128, 128);
     const Loom::TextureHandle shapeTexture = scene.createTexture(shapePixels.data(), 64, 64);
 
-    //Preset daje jedno usmjereno svjetlo sa sjenom. Drugo svjetlo nije na stepenici 1, pa se
-    //dodaje kroz vrata - zivom rendereru, dok scena vec postoji
-    scene.loom().renderer.addLight(bulb);
+    //Preset daje jedno usmjereno svjetlo sa sjenom. Zarulja je drugo, i baca kroz kocku od
+    //sest lica - scena je posjeduje i sama vodi tih sest prolaza nad istim oblicima
+    LightConfig bulbConfig;
+    bulbConfig.type = LightType::Point;
+    bulbConfig.position = {2.6f, 2.0f, 0.0f};
+    bulbConfig.color = {1.0f, 0.35f, 0.15f};
+    bulbConfig.intensity = 14.0f;
+    bulbConfig.range = 12.0f;
+    Light& bulb = scene.addLight(bulbConfig, true);
 
     scene.environment().setAmbient({0.06f, 0.07f, 0.10f});
 

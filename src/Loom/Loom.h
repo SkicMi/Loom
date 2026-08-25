@@ -180,6 +180,17 @@ class Scene{
     Light& sun();
     Environment& environment();
 
+    //Jos jedno svjetlo. Scena ga POSJEDUJE, a ne posuduje - renderer drzi pokazivace na
+    //svjetla, pa bi Light deklariran pokraj Scene morao nadzivjeti nju, a to je pravilo koje
+    //nitko ne bi trebao morati pamtiti. Vraceni referenca se smije pomicati svaki frame.
+    //
+    //castsShadows radi i za usmjereno (jedna karta) i za tockasto (kocka od sest lica);
+    //scena sama vodi te prolaze, jer su draw pozivi njezini
+    Light& addLight(const LightConfig& config, bool castsShadows = false);
+
+    //Koliko ih je, ukljucujuci presetovo sunce
+    uint32_t lightCount() const;
+
     //-- izlaz na nizu stepenicu --------------------------------------------------------------
     //Zivi objekti, onakvi kakve bi rucno slozio. Za razliku od overridea gore, ovo mijenja
     //stvari DOK rade. Oba potpisa spominju tipove koji su ovdje samo imena, pa se koriste
