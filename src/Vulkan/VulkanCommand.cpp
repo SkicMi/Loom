@@ -70,16 +70,16 @@ void VulkanCommand::copyBuffer(const vk::raii::Buffer& src, const vk::raii::Buff
         device.getGraphicsQueue().waitIdle();
     }
 
-    void VulkanCommand::transitionImageLayout(vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, uint32_t layerCount) const{
-        const vk::ImageMemoryBarrier2 barrier = imageBarrier(image, oldLayout, newLayout, aspect, layerCount);
+    void VulkanCommand::transitionImageLayout(vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, uint32_t layerCount, uint32_t levelCount) const{
+        const vk::ImageMemoryBarrier2 barrier = imageBarrier(image, oldLayout, newLayout, aspect, layerCount, 0, levelCount);
 
         oneTimeSubmit([&](const vk::raii::CommandBuffer& commandBuffer){
             recordBarrier(commandBuffer, barrier);
         });
     }
 
-    void VulkanCommand::transitionImageLayout(const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, uint32_t layerCount) const{
-        transitionImageLayout(*image, oldLayout, newLayout, aspect, layerCount);
+    void VulkanCommand::transitionImageLayout(const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, uint32_t layerCount, uint32_t levelCount) const{
+        transitionImageLayout(*image, oldLayout, newLayout, aspect, layerCount, levelCount);
     }
 
     void VulkanCommand::transitionImageLayout(const VulkanImage& image, vk::ImageLayout newLayout) const{
@@ -88,9 +88,12 @@ void VulkanCommand::copyBuffer(const vk::raii::Buffer& src, const vk::raii::Buff
             aspect = vk::ImageAspectFlagBits::eDepth;
         }
 
-        //All six faces of a cube move together. Transitioning only layer 0 would leave the
-        //other five in a layout the next user does not expect
-        transitionImageLayout(image.getImage(), image.getCurrentLayout(), newLayout, aspect, image.getLayerCount());
+        //All six faces of a cube move together, and so does every mip level. Transitioning
+        //only layer 0 or only level 0 would leave the rest in a layout the next user does
+        //not expect - and a mip chain is exactly where that goes unnoticed, because the top
+        //level is the one anything looks at first
+        transitionImageLayout(image.getImage(), image.getCurrentLayout(), newLayout, aspect,
+            image.getLayerCount(), image.getMipLevels());
         image.setCurrentLayout(newLayout);
     }
 
@@ -132,4 +135,62 @@ void VulkanCommand::copyBuffer(const vk::raii::Buffer& src, const vk::raii::Buff
         copyImageToBuffer(*src, dst, extent, aspect, layer);
     }
 
+    void VulkanCommand::generateMipmaps(const VulkanImage& image) const{
+        const uint32_t levels = image.getMipLevels();
+        if(levels <= 1){
+            return; //nista za smanjivati
+        }
 
+        //The chain is built by blitting, and a blit filters. A format the driver cannot
+        //filter linearly would silently fall back to nearest and the whole point would be
+        //lost, so it is asked rather than assumed
+        const vk::FormatProperties properties = device.getPhysicalDevice().getFormatProperties(image.getFormat());
+        if(!(properties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear)){
+            throw std::runtime_error("generateMipmaps: this format cannot be filtered linearly, so a mip chain built from it would be no better than the top level");
+        }
+
+        const vk::Extent2D extent = image.getExtent();
+        const uint32_t layers = image.getLayerCount();
+
+        oneTimeSubmit([&](const vk::raii::CommandBuffer& commandBuffer){
+            int32_t width = static_cast<int32_t>(extent.width);
+            int32_t height = static_cast<int32_t>(extent.height);
+
+            for(uint32_t level = 1; level < levels; ++level){
+                //The level about to be read has to stop being a destination first
+                recordBarrier(commandBuffer, imageBarrier(*image.getImage(),
+                    vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal,
+                    vk::ImageAspectFlagBits::eColor, layers, level - 1, 1));
+
+                const int32_t nextWidth = width > 1 ? width / 2 : 1;
+                const int32_t nextHeight = height > 1 ? height / 2 : 1;
+
+                vk::ImageBlit blit;
+                blit.srcOffsets[0] = vk::Offset3D{0,0,0};
+                blit.srcOffsets[1] = vk::Offset3D{width, height, 1};
+                blit.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, level - 1, 0, layers};
+                blit.dstOffsets[0] = vk::Offset3D{0,0,0};
+                blit.dstOffsets[1] = vk::Offset3D{nextWidth, nextHeight, 1};
+                blit.dstSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, level, 0, layers};
+
+                commandBuffer.blitImage(*image.getImage(), vk::ImageLayout::eTransferSrcOptimal,
+                    *image.getImage(), vk::ImageLayout::eTransferDstOptimal,
+                    blit, vk::Filter::eLinear);
+
+                //Read from, and finished with: this level goes where a shader can see it
+                recordBarrier(commandBuffer, imageBarrier(*image.getImage(),
+                    vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                    vk::ImageAspectFlagBits::eColor, layers, level - 1, 1));
+
+                width = nextWidth;
+                height = nextHeight;
+            }
+
+            //The last level was only ever written to, so it never became a source
+            recordBarrier(commandBuffer, imageBarrier(*image.getImage(),
+                vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                vk::ImageAspectFlagBits::eColor, layers, levels - 1, 1));
+        });
+
+        image.setCurrentLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+    }

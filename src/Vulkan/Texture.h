@@ -11,6 +11,15 @@ struct TextureConfig{
     float maxAnisotropy = 1.0f;
 
     vk::ImageUsageFlags extraUsage = {};
+
+    //Cijeli lanac razina, svaka upola manja. Bez njega se udaljena tekstura semplira jednom
+    //po pikselu iz pune rezolucije: sahovnica na horizontu postane sum koji se mijenja sa
+    //svakim pomakom kamere, i nikakvo filtriranje to ne moze popraviti jer je informacija
+    //vec izgubljena u trenutku semplirsanja.
+    //
+    //Ukljuceno po defaultu jer je to ispravan default za graficku biblioteku - iskljuci ga
+    //za tekstura koje se nikad ne smanjuju (UI atlas, lookup tablica)
+    bool generateMipmaps = true;
 };
 
 class Texture{
@@ -29,6 +38,7 @@ class Texture{
     //getters
     const VulkanImage& getImage() const {return image;}
     const vk::raii::Sampler& getSampler() const {return sampler;}
+    uint32_t getMipLevels() const {return image.getMipLevels();}
     SampledImage getSampled() const {return SampledImage{*image.getImageView(), *sampler, &image, image.getGeneration()};}
     vk::Extent2D getExtent() const {return image.getExtent();}
 

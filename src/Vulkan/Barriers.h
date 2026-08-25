@@ -50,7 +50,9 @@ inline vk::ImageMemoryBarrier2 imageBarrier(vk::Image image,
                                             vk::ImageLayout oldLayout,
                                             vk::ImageLayout newLayout,
                                             vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor,
-                                            uint32_t layerCount = 1){
+                                            uint32_t layerCount = 1,
+                                            uint32_t baseMipLevel = 0,
+                                            uint32_t levelCount = 1){
     const LayoutAccess source = accessForLayout(oldLayout);
     const LayoutAccess destination = accessForLayout(newLayout);
 
@@ -67,7 +69,7 @@ inline vk::ImageMemoryBarrier2 imageBarrier(vk::Image image,
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
     barrier.image = image;
-    barrier.subresourceRange = {aspect, 0, 1, 0, layerCount};
+    barrier.subresourceRange = {aspect, baseMipLevel, levelCount, 0, layerCount};
     return barrier;
 }
 

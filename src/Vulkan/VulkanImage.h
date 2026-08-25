@@ -3,6 +3,18 @@
 #include "VulkanBuffer.h"
 #include "VulkanAllocator.h"
 
+//Koliko razina stane dok se najveca strana ne svede na jedan piksel. 64x64 daje 7:
+//64, 32, 16, 8, 4, 2, 1
+inline uint32_t mipLevelsFor(vk::Extent2D extent){
+    uint32_t largest = extent.width > extent.height ? extent.width : extent.height;
+    uint32_t levels = 1;
+    while(largest > 1){
+        largest /= 2;
+        ++levels;
+    }
+    return levels;
+}
+
 struct ImageConfig{
     vk::Format format = vk::Format::eUndefined; //must be set
     vk::ImageUsageFlags usage = {};
@@ -50,6 +62,7 @@ class VulkanImage{
         return layerViews[layer];
     }
     uint32_t getLayerCount() const {return layers;}
+    uint32_t getMipLevels() const {return config.mipLevels;}
     bool isCube() const {return config.cube;}
     vk::Format getFormat() const {return config.format;}
     vk::ImageUsageFlags getUsage() const {return config.usage;}

@@ -2,12 +2,21 @@
 #include "VulkanBuffer.h"
 
 
-static ImageConfig makeTextureImageConfig(const TextureConfig& config) {
+static ImageConfig makeTextureImageConfig(const TextureConfig& config, vk::Extent2D extent) {
     ImageConfig imageConfig;
     imageConfig.format = config.format;
     imageConfig.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | config.extraUsage;
     imageConfig.aspect = vk::ImageAspectFlagBits::eColor;
     imageConfig.memoryUsage = MemoryUsage::GPU_ONLY;
+
+    if(config.generateMipmaps){
+        imageConfig.mipLevels = mipLevelsFor(extent);
+
+        //A mip chain is built by blitting each level out of the one above it, so the image
+        //has to be a transfer source as well as a destination
+        imageConfig.usage |= vk::ImageUsageFlagBits::eTransferSrc;
+    }
+
     return imageConfig;
 }
 
@@ -15,7 +24,7 @@ Texture::Texture(const VulkanDevice& device,
     const VulkanCommand& command,
     const void* pixels,
     vk::Extent2D extent,
-    const TextureConfig& config) : image(device,extent,makeTextureImageConfig(config)){
+    const TextureConfig& config) : image(device,extent,makeTextureImageConfig(config, extent)){
         if(pixels == nullptr){
             throw std::runtime_error("Texture: pixels is nullptr");
         }
@@ -34,7 +43,14 @@ Texture::Texture(const VulkanDevice& device,
 
             command.copyBufferToImage(staging.getBuffer(), image.getImage(), extent);
 
-            command.transitionImageLayout(image, vk::ImageLayout::eShaderReadOnlyOptimal);
+            if(image.getMipLevels() > 1){
+                //Fills every level below the top and leaves the whole image where a shader
+                //can read it, so there is no transition to do afterwards
+                command.generateMipmaps(image);
+            }
+            else{
+                command.transitionImageLayout(image, vk::ImageLayout::eShaderReadOnlyOptimal);
+            }
         }
 
         vk::SamplerCreateInfo samplerInfo;
@@ -52,7 +68,8 @@ Texture::Texture(const VulkanDevice& device,
         samplerInfo.mipmapMode = vk::SamplerMipmapMode::eLinear;
         samplerInfo.mipLodBias = 0.0f;
         samplerInfo.minLod = 0.0f;
-        samplerInfo.maxLod = 0.0f;
+        //Zero would pin every lookup to the top level and the chain would exist unused
+        samplerInfo.maxLod = static_cast<float>(image.getMipLevels());
 
         sampler = vk::raii::Sampler(device.getDevice(), samplerInfo);
 
