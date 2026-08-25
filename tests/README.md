@@ -48,6 +48,7 @@ What each one covers:
 | `test_mipmaps` | a texture that shrinks into the distance stops being noise: 86% fewer hard edges between neighbouring pixels with a mip chain than without, and the floor a metre away is untouched |
 | `test_shadingrate` | a material can say how many pixels share one run of the fragment shader: at 2x2 every one of 16384 blocks comes out uniform where at 1x1 none of them do, and a coarse draw does not leave its rate behind for the next one |
 | `test_shadingratemap` | the rate can come from an image instead of a draw call, so it differs from pixel to pixel: a map coarse in its top half leaves the bottom half byte for byte as sharp as no map at all, and a Critical material writes itself out of the map entirely |
+| `test_shadingratedepth` | a compute pass fills the rate map from a depth prepass, so 1528 blocks that had detail lose it because of how far away they are - and not one block in the near band is touched; the colour pass loads the depth the prepass wrote instead of clearing it |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:

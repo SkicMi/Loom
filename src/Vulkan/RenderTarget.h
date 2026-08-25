@@ -29,6 +29,14 @@ bool keepDepth = false;
 //Where the kept depth is left when the pass ends. Only means anything with keepDepth
 vk::ImageLayout depthFinalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
+//Ucitaj dubinu koja je vec unutra umjesto da je ocistis.
+//
+//To je ono sto od depth prepassa radi ustedu umjesto troska: prvi prolaz napise dubinu,
+//drugi je UCITA i crta s eEqual i bez pisanja - pa se svaki piksel sjenca tocno jednom,
+//bez obzira koliko se trokuta preko njega preklapa. Bez ovoga bi drugi prolaz obrisao
+//sve sto je prvi napravio
+bool loadDepth = false;
+
 //A comparison sampler instead of an ordinary one. Sampling it does not return a depth - it
 //returns how much of the 2x2 neighbourhood passed "is my reference closer than what is
 //stored here". That is exactly a shadow lookup, and the filtering across the four texels
@@ -72,6 +80,7 @@ class RenderTarget{
     const VulkanImage* getDepthImage() const {return depthImage ? &*depthImage : nullptr;}
     bool hasDepth() const {return depthImage.has_value();}
     bool keepsDepth() const {return config.keepDepth;}
+    bool loadsDepth() const {return config.loadDepth;}
     bool hasCubeDepth() const {return config.cubeDepth;}
 
     //The view a pass attaches when it renders one face. The sampled view is the whole cube

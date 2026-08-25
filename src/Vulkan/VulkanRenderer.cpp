@@ -304,7 +304,15 @@ if(depth){
                               ? *depth->getLayerView(depthFace)
                               : *depth->getImageView();
     depthAttachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    depthAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+    //Ucitavanje cuva ono sto je prijasnji prolaz napisao; ciscenje ga baca.
+    //
+    //Depth prepass UVIJEK cisti, bez obzira na loadDepth: on je taj koji dubinu uspostavlja,
+    //pa bi ucitavanje znacilo da nastavlja na ono sto je ostalo od proslog framea. loadDepth
+    //se odnosi na prolaz KOJI DOLAZI POSLIJE prepassa, a to je onaj s bojom
+    const bool loadDepth = passUsesColor && currentTarget && currentTarget->loadsDepth();
+
+    depthAttachment.loadOp = loadDepth ? vk::AttachmentLoadOp::eLoad
+                                       : vk::AttachmentLoadOp::eClear;
     //Depth is scratch space for the depth test and is normally thrown away here. A shadow
     //map is the exception: there the depth is the whole point of the pass
     depthAttachment.storeOp = (currentTarget && currentTarget->keepsDepth())
@@ -314,16 +322,22 @@ if(depth){
 }
 
 //Slika stope se prilaze prolazu, ne pipelineu: rasteriser je cita dok odlucuje koliko
-//puta ce sjenciti svaki blok
+//puta ce sjenciti svaki blok.
+//
+//Prolaz bez boje nema fragment shader, pa nema ni sto ocjenjivati - a prilaganje karte
+//depth prepassu ju je trazilo u layoutu u koji je ulazi tek dispatch koji dolazi POSLIJE
+//tog prepassa
+const bool usesRateMap = shadingRateMap != nullptr && hasColor;
+
 vk::RenderingFragmentShadingRateAttachmentInfoKHR rateAttachment;
-if(shadingRateMap){
+if(usesRateMap){
     rateAttachment.imageView = *shadingRateMap->getImage().getImageView();
     rateAttachment.imageLayout = vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR;
     rateAttachment.shadingRateAttachmentTexelSize = shadingRateMap->getTexelSize();
 }
 
 vk::RenderingInfo renderingInfo;
-if(shadingRateMap){
+if(usesRateMap){
     renderingInfo.pNext = &rateAttachment;
 }
 renderingInfo.renderArea = vk::Rect2D({0,0},extent);
@@ -445,7 +459,7 @@ void VulkanRenderer::endPass(){
     const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
     commandBuffer.endRendering();
 
-    const bool hasColor = currentTarget ? currentTarget->hasColor() : true;
+    const bool hasColor = passUsesColor && (currentTarget ? currentTarget->hasColor() : true);
 
     if(hasColor){
         vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain->getImages()[currentImageIndex];
@@ -477,6 +491,7 @@ void VulkanRenderer::endPass(){
     currentTarget = nullptr;
     passLight = nullptr;
     passFace = 0;
+    passUsesColor = true;
 }
 
 bool VulkanRenderer::beginFrame(){
@@ -782,6 +797,7 @@ void VulkanRenderer::beginPass(){
 
     currentTarget = nullptr;
     passLight = nullptr;
+    passUsesColor = true;
     startPass(swapchain->getImages()[currentImageIndex],
                 *swapchain->getImageViews()[currentImageIndex],
                 depthImage,
@@ -807,6 +823,27 @@ void VulkanRenderer::beginPass(const RenderTarget& target){
 
 //The same pass, seen from a light. Everything drawn between here and endPass is projected
 //by the light's matrices, which is what turns a depth buffer into a shadow map
+void VulkanRenderer::beginDepthPass(const RenderTarget& target){
+    if(!frameActive){
+        throw std::runtime_error("beginDepthPass: frame not started");
+    }
+    if(passActive){
+        throw std::runtime_error("beginDepthPass: a pass is already active (missing endPass)");
+    }
+    if(!target.hasDepth()){
+        throw std::runtime_error("beginDepthPass: this target has no depth to write into");
+    }
+
+    //Boja se ne prilaze cak i kad je meta ima. To je ono sto dopusta da isti cilj primi
+    //prepass bez boje i glavni prolaz s njom, dijeleci istu dubinu
+    currentTarget = &target;
+    passLight = nullptr;
+    passFace = 0;
+    passUsesColor = false;
+
+    startPass(vk::Image(nullptr), vk::ImageView(nullptr), target.getDepthImage(), target.getExtent());
+}
+
 void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light){
     if(!frameActive){
         throw std::runtime_error("beginPass: frame not started");
@@ -821,6 +858,7 @@ void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light){
     currentTarget = &target;
     passLight = &light;
     passFace = 0;
+    passUsesColor = true;
     startPass(target.hasColor() ? *target.getColorImage().getImage() : vk::Image(nullptr),
                 target.hasColor() ? *target.getColorImage().getImageView() : vk::ImageView(nullptr),
                 target.getDepthImage(),
@@ -846,6 +884,7 @@ void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light, u
     currentTarget = &target;
     passLight = &light;
     passFace = face;
+    passUsesColor = true;
     startPass(target.hasColor() ? *target.getColorImage().getImage() : vk::Image(nullptr),
                 target.hasColor() ? *target.getColorImage().getImageView() : vk::ImageView(nullptr),
                 target.getDepthImage(),
@@ -862,6 +901,32 @@ void VulkanRenderer::setShadingRateMap(const ShadingRateMap& map){
 
 void VulkanRenderer::clearShadingRateMap(){
     shadingRateMap = nullptr;
+}
+
+void VulkanRenderer::updateShadingRateMap(const ShadingRateMap& map){
+    if(!camera){
+        throw std::runtime_error("updateShadingRateMap: no camera - a depth buffer is not a distance until the near and far planes turn it into one");
+    }
+    if(!map.hasDepthSource()){
+        throw std::runtime_error("updateShadingRateMap: the map has no depth source (setDepthSource)");
+    }
+
+    const vk::Extent2D depthExtent = map.getDepthSource().getExtent();
+    const ShadingRateDistances& distances = map.getDistances();
+
+    ShadingRatePush push;
+    push.rateExtent[0] = map.getExtent().width;
+    push.rateExtent[1] = map.getExtent().height;
+    push.texelSize[0] = map.getTexelSize().width;
+    push.texelSize[1] = map.getTexelSize().height;
+    push.depthSize[0] = static_cast<float>(depthExtent.width);
+    push.depthSize[1] = static_cast<float>(depthExtent.height);
+    push.nearPlane = camera->getConfig().nearPlane;
+    push.farPlane = camera->getConfig().farPlane;
+    push.quarterDistance = distances.quarter;
+    push.sixteenthDistance = distances.sixteenth;
+
+    dispatch(map.getComputeMaterial(), map.groupsX(), map.groupsY(), 1, &push, sizeof(push));
 }
 
 void VulkanRenderer::setShadingRate(const vk::raii::CommandBuffer& commandBuffer,

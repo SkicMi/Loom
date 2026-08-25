@@ -73,3 +73,55 @@ void ShadingRateMap::upload(const VulkanCommand& command, const std::vector<uint
 void ShadingRateMap::fill(const VulkanCommand& command, ShadingRate rate){
     upload(command, std::vector<uint8_t>(texelCount(), pack(rate)));
 }
+
+void ShadingRateMap::setDepthSource(const vk::raii::DescriptorPool& pool, const RenderTarget& depthTarget){
+    if(!depthTarget.hasDepth() || !depthTarget.keepsDepth()){
+        throw std::runtime_error("ShadingRateMap: the depth source has to keep its depth (RenderTargetConfig::keepDepth), or there is nothing there to read");
+    }
+
+    depthSource = &depthTarget;
+
+    if(!computePipeline){
+        //Binding 0 reads the depth, binding 1 writes the rate. Both live on the dispatch's
+        //own set, because compute has no per frame set
+        vk::DescriptorSetLayoutBinding depthBinding;
+        depthBinding.binding = 0;
+        depthBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        depthBinding.descriptorCount = 1;
+        depthBinding.stageFlags = vk::ShaderStageFlagBits::eCompute;
+
+        vk::DescriptorSetLayoutBinding rateBinding;
+        rateBinding.binding = 1;
+        rateBinding.descriptorType = vk::DescriptorType::eStorageImage;
+        rateBinding.descriptorCount = 1;
+        rateBinding.stageFlags = vk::ShaderStageFlagBits::eCompute;
+
+        ComputePipelineConfig computeConfig;
+        computeConfig.shaderPath = std::string(LOOM_SHADER_DIR) + "/shadingrate.comp.spv";
+        computeConfig.descriptorBindings = {depthBinding, rateBinding};
+        computeConfig.pushConstantSize = sizeof(ShadingRatePush);
+
+        computePipeline = std::make_unique<VulkanComputePipeline>(device, computeConfig);
+        computeMaterial = std::make_unique<ComputeMaterial>(device, pool, *computePipeline);
+    }
+
+    computeMaterial->setSampledImage(0, depthTarget.getDepthSampled());
+
+    //The dispatch leaves it exactly where the rasteriser expects to find it, so nothing has
+    //to move it afterwards
+    computeMaterial->setStorageImage(1, image, vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR);
+}
+
+const ComputeMaterial& ShadingRateMap::getComputeMaterial() const{
+    if(!computeMaterial){
+        throw std::runtime_error("ShadingRateMap: no depth source was bound, so there is nothing to dispatch");
+    }
+    return *computeMaterial;
+}
+
+const RenderTarget& ShadingRateMap::getDepthSource() const{
+    if(!depthSource){
+        throw std::runtime_error("ShadingRateMap: no depth source was bound");
+    }
+    return *depthSource;
+}

@@ -12,6 +12,9 @@ depthImage(config.enableDepth ? std::optional<VulkanImage>(std::in_place, device
     if(!config.enableColor && !config.enableDepth){
         throw std::runtime_error("RenderTarget: neither colour nor depth is enabled, so there is nothing to render into");
     }
+    if(config.loadDepth && !config.keepDepth){
+        throw std::runtime_error("RenderTarget: loadDepth without keepDepth - the pass before this one discarded its depth, so there is nothing to load");
+    }
     if(config.keepDepth && !config.enableDepth){
         throw std::runtime_error("RenderTarget: keepDepth was asked for but there is no depth attachment (enableDepth)");
     }

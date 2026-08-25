@@ -70,6 +70,10 @@ class VulkanRenderer{
     bool beginFrame();
     void beginPass(); //swapchain
     void beginPass(const RenderTarget& target); //offscreen target
+
+    //Samo dubina te mete, cak i kad ima boju. Depth prepass: napise dubinu koju glavni
+    //prolaz zatim UCITA (RenderTargetConfig::loadDepth) umjesto da je ponovno racuna
+    void beginDepthPass(const RenderTarget& target);
     void beginPass(const RenderTarget& target, const Light& light); //the same target, seen from a light
     void beginPass(const RenderTarget& target, const Light& light, uint32_t face); //one face of a point light's cube
     void endPass();
@@ -102,6 +106,10 @@ class VulkanRenderer{
     //vezana za rezoluciju kojom se crta, a ta se ne mijenja izmedu prolaza
     void setShadingRateMap(const ShadingRateMap& map);
     void clearShadingRateMap();
+
+    //Napuni kartu iz dubine koju je depth prepass upravo napisao. Kamera daje ravnine, jer
+    //dubina u bufferu nije udaljenost dok je one ne pretvore
+    void updateShadingRateMap(const ShadingRateMap& map);
     bool hasShadingRateMap() const {return shadingRateMap != nullptr;}
 
     uint32_t shadowMapCount() const {return static_cast<uint32_t>(shadowMapSlots.size());}
@@ -147,6 +155,7 @@ class VulkanRenderer{
     const RenderTarget* currentTarget = nullptr;
     const Light* passLight = nullptr; //set only for the duration of a light driven pass
     uint32_t passFace = 0;            //which cube face, when the pass is one of six
+    bool passUsesColor = true;        //false in a depth prepass, even into a target that has colour
 
     //One entry per shadow casting light. Keyed by the light rather than by the order of the
     //calls: setShadowMap for a light that already has a slot replaces that slot, and only a
