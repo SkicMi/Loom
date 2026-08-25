@@ -9,8 +9,10 @@ namjerno: primjer koji bi morao linkati `Loom` ili `Spool` izravno bio bi primje
 sisao stepenicu, a da to nigdje ne pise. Ne pokrecu se kao testovi jer traze assete i
 prozor - ali primjer koji se ne prevodi je specifikacija koja laze, pa se prevodi provjerava.
 
-Ekvivalentnost sa stepenicom 2 dokazuje `tests/test_tier1_preset.cpp`: isti prizor napisan
-oba puta, i slika mora biti **bajt za bajt** ista.
+Ekvivalentnost sa stepenicom 2 dokazuju `tests/test_tier1_preset.cpp` (Offscreen) i
+`tests/test_tier1_presets.cpp` (Lit3D, Flat2D, `Loom::Sequence`): isti prizor napisan oba
+puta, i slika mora biti **bajt za bajt** ista. Tier 2 polovica svakog od tih testova je
+ujedno i dokumentacija - to je ono u sto se preset razvija.
 
 ## Tri stepenice
 
