@@ -91,8 +91,14 @@ class VulkanRenderer{
     //travels in that light's GpuLight, and the map itself sits on set 0 next to the frame
     //data, because it shadows everything the pass draws rather than belonging to any one
     //material
+    //Keyed by the light: the same light again replaces its own map, a new light takes the
+    //next free one. Up to maxShadowMaps of them
     void setShadowMap(const RenderTarget& target, const Light& light, const ShadowConfig& config = {});
     void clearShadowMap();
+
+    //How many of each are in use, and how many there is room for
+    uint32_t shadowMapCount() const {return static_cast<uint32_t>(shadowMapSlots.size());}
+    uint32_t shadowCubeCount() const {return static_cast<uint32_t>(shadowCubeSlots.size());}
 
     //The same, for a point light. A cube instead of one image, sampled with a direction
     //instead of a coordinate, and the reference depth rebuilt in the shader from the
@@ -135,18 +141,28 @@ class VulkanRenderer{
     const Light* passLight = nullptr; //set only for the duration of a light driven pass
     uint32_t passFace = 0;            //which cube face, when the pass is one of six
 
-    const RenderTarget* shadowTarget = nullptr;
-    const Light* shadowLight = nullptr;
-    ShadowConfig shadowConfig;
+    //One entry per shadow casting light. Keyed by the light rather than by the order of the
+    //calls: setShadowMap for a light that already has a slot replaces that slot, and only a
+    //light nobody has seen before takes a new one
+    struct ShadowSlot{
+        const RenderTarget* target = nullptr;
+        const Light* light = nullptr;
+        ShadowConfig config;
 
-    const RenderTarget* shadowCubeTarget = nullptr;
-    const Light* shadowCubeLight = nullptr;
-    ShadowConfig shadowCubeConfig;
+        //Recomputed in beginFrame when fitting is on, so the pass that fills the map and the
+        //lookup that reads it are driven by one and the same pair of matrices. Two
+        //computations of "almost the same" matrix would put the shadow half a texel out
+        LightMatrices matrices;
+    };
 
-    //Recomputed in beginFrame when fitting is on, so the pass that fills the map and the
-    //lookup that reads it are driven by one and the same pair of matrices. Two computations
-    //of "almost the same" matrix would put every shadow half a texel out
+    std::vector<ShadowSlot> shadowMapSlots;
+    std::vector<ShadowSlot> shadowCubeSlots;
+
+    //Slot 0's matrices, which is what a scene with one shadow asks for
     LightMatrices shadowMatrices;
+
+    const ShadowSlot* findSlot(const std::vector<ShadowSlot>& slots, const Light* light) const;
+    int slotIndex(const std::vector<ShadowSlot>& slots, const Light* light) const;
 
     //Binding 2 of set 0 is written per frame, and only for a frame whose fence has already
     //been waited on - the same trick Material uses, so a descriptor is never rewritten while

@@ -71,20 +71,48 @@ void VulkanRenderer::setShadowMap(const RenderTarget& target, const Light& light
         throw std::runtime_error("setShadowMap: only a directional light has a single light space matrix - a point light needs a cube map (setShadowCube)");
     }
 
-    shadowTarget = &target;
-    shadowLight = &light;
-    shadowConfig = config;
+    //Same light again replaces its own slot; a light nobody has seen takes the next one
+    const int existing = slotIndex(shadowMapSlots, &light);
+    if(existing < 0 && shadowMapSlots.size() >= maxShadowMaps){
+        throw std::runtime_error("setShadowMap: set 0 carries " + std::to_string(maxShadowMaps) +
+            " shadow maps and they are all in use - raise maxShadowMaps and the array in the shaders together");
+    }
+
+    ShadowSlot slot;
+    slot.target = &target;
+    slot.light = &light;
+    slot.config = config;
+
+    if(existing < 0){
+        shadowMapSlots.push_back(slot);
+    }
+    else{
+        shadowMapSlots[static_cast<size_t>(existing)] = slot;
+    }
+
     shadowDirty.assign(command.getCommandBuffers().size(), 1);
 
     updateShadowMatrices();
 }
 
 void VulkanRenderer::clearShadowMap(){
-    shadowTarget = nullptr;
-    shadowLight = nullptr;
-    shadowConfig = {};
+    shadowMapSlots.clear();
     shadowMatrices = {};
     shadowDirty.assign(command.getCommandBuffers().size(), 1);
+}
+
+const VulkanRenderer::ShadowSlot* VulkanRenderer::findSlot(const std::vector<ShadowSlot>& slots, const Light* light) const{
+    for(const ShadowSlot& slot : slots){
+        if(slot.light == light) return &slot;
+    }
+    return nullptr;
+}
+
+int VulkanRenderer::slotIndex(const std::vector<ShadowSlot>& slots, const Light* light) const{
+    for(size_t i = 0; i < slots.size(); ++i){
+        if(slots[i].light == light) return static_cast<int>(i);
+    }
+    return -1;
 }
 
 void VulkanRenderer::setShadowCube(const RenderTarget& target, const Light& light, const ShadowConfig& config){
@@ -98,85 +126,107 @@ void VulkanRenderer::setShadowCube(const RenderTarget& target, const Light& ligh
         throw std::runtime_error("setShadowCube: a cube map is for a point light - a directional light has one box (setShadowMap)");
     }
 
-    shadowCubeTarget = &target;
-    shadowCubeLight = &light;
-    shadowCubeConfig = config;
+    const int existing = slotIndex(shadowCubeSlots, &light);
+    if(existing < 0 && shadowCubeSlots.size() >= maxShadowCubes){
+        throw std::runtime_error("setShadowCube: set 0 carries " + std::to_string(maxShadowCubes) +
+            " shadow cubes and they are all in use - raise maxShadowCubes and the array in the shaders together");
+    }
+
+    ShadowSlot slot;
+    slot.target = &target;
+    slot.light = &light;
+    slot.config = config;
+
+    if(existing < 0){
+        shadowCubeSlots.push_back(slot);
+    }
+    else{
+        shadowCubeSlots[static_cast<size_t>(existing)] = slot;
+    }
+
     shadowDirty.assign(command.getCommandBuffers().size(), 1);
 }
 
 void VulkanRenderer::clearShadowCube(){
-    shadowCubeTarget = nullptr;
-    shadowCubeLight = nullptr;
-    shadowCubeConfig = {};
+    shadowCubeSlots.clear();
     shadowDirty.assign(command.getCommandBuffers().size(), 1);
 }
 
 void VulkanRenderer::updateShadowMatrices(){
-    if(!shadowLight){
-        shadowMatrices = {};
-        return;
-    }
+    //Every map refits itself: they follow the same camera but each light sees it from a
+    //different side, so one set of matrices could never serve two of them
+    for(ShadowSlot& slot : shadowMapSlots){
+        if(slot.config.fitToCamera && camera && slot.target){
+            //The viewport the camera's own pass uses, which is only the window by default
+            uint32_t viewportWidth = slot.config.viewportWidth;
+            uint32_t viewportHeight = slot.config.viewportHeight;
 
-    //Fitting needs a camera to fit to. Without one the light's own box is all there is
-    if(shadowConfig.fitToCamera && camera && shadowTarget){
-        //The viewport the camera's own pass uses, which is only the window by default
-        uint32_t viewportWidth = shadowConfig.viewportWidth;
-        uint32_t viewportHeight = shadowConfig.viewportHeight;
-
-        if(viewportWidth == 0 || viewportHeight == 0){
-            if(!swapchain){
-                throw std::runtime_error("setShadowMap: fitToCamera needs a viewport - there is no window to take one from, so ShadowConfig::viewportWidth and viewportHeight have to be set");
+            if(viewportWidth == 0 || viewportHeight == 0){
+                if(!swapchain){
+                    throw std::runtime_error("setShadowMap: fitToCamera needs a viewport - there is no window to take one from, so ShadowConfig::viewportWidth and viewportHeight have to be set");
+                }
+                viewportWidth = swapchain->getExtent().width;
+                viewportHeight = swapchain->getExtent().height;
             }
-            viewportWidth = swapchain->getExtent().width;
-            viewportHeight = swapchain->getExtent().height;
+
+            slot.matrices = slot.light->fitToCamera(*camera,
+                viewportWidth, viewportHeight,
+                slot.target->getExtent().width,
+                slot.config.distance);
+            continue;
         }
 
-        shadowMatrices = shadowLight->fitToCamera(*camera,
-            viewportWidth, viewportHeight,
-            shadowTarget->getExtent().width,
-            shadowConfig.distance);
-        return;
+        slot.matrices.view = slot.light->getView();
+        slot.matrices.projection = slot.light->getProjection();
+        slot.matrices.viewProjection = slot.matrices.projection * slot.matrices.view;
     }
 
-    shadowMatrices.view = shadowLight->getView();
-    shadowMatrices.projection = shadowLight->getProjection();
-    shadowMatrices.viewProjection = shadowMatrices.projection * shadowMatrices.view;
+    //What getShadowMatrices() answers: the first map, which is the only one a scene with a
+    //single shadow ever has
+    shadowMatrices = shadowMapSlots.empty() ? LightMatrices{} : shadowMapSlots.front().matrices;
 }
 
 void VulkanRenderer::writeShadowMap(size_t frame) const{
-    const SampledImage image = shadowTarget
-        ? shadowTarget->getDepthSampled()
-        : SampledImage{*shadowPlaceholder->getImageView(), *shadowPlaceholderSampler, &*shadowPlaceholder, 0};
+    //Every slot of both arrays is written, every time. A descriptor array with a hole in it
+    //is not an empty slot - it is undefined behaviour the moment anything indexes near it,
+    //and the index comes from data, so "near it" is not something this side controls
+    std::array<vk::DescriptorImageInfo, maxShadowMaps> mapInfos{};
+    for(uint32_t i = 0; i < maxShadowMaps; ++i){
+        const SampledImage image = (i < shadowMapSlots.size())
+            ? shadowMapSlots[i].target->getDepthSampled()
+            : SampledImage{*shadowPlaceholder->getImageView(), *shadowPlaceholderSampler, &*shadowPlaceholder, 0};
 
-    vk::DescriptorImageInfo imageInfo;
-    imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    imageInfo.imageView = image.view;
-    imageInfo.sampler = image.sampler;
+        mapInfos[i].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        mapInfos[i].imageView = image.view;
+        mapInfos[i].sampler = image.sampler;
+    }
 
     vk::WriteDescriptorSet write;
     write.dstSet = *frameSets[frame];
     write.dstBinding = 2;
     write.dstArrayElement = 0;
     write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    write.setImageInfo(imageInfo);
+    write.setImageInfo(mapInfos);
 
-    //Binding 3 is the cube. Same sampler, different image, and it has its own placeholder
-    //because a cube descriptor will not accept a 2D view
-    const SampledImage cube = shadowCubeTarget
-        ? shadowCubeTarget->getDepthSampled()
-        : SampledImage{*shadowCubePlaceholder->getImageView(), *shadowPlaceholderSampler, &*shadowCubePlaceholder, 0};
+    //Binding 3 is the cubes. Their own placeholder, because a cube descriptor will not
+    //accept a 2D view
+    std::array<vk::DescriptorImageInfo, maxShadowCubes> cubeInfos{};
+    for(uint32_t i = 0; i < maxShadowCubes; ++i){
+        const SampledImage cube = (i < shadowCubeSlots.size())
+            ? shadowCubeSlots[i].target->getDepthSampled()
+            : SampledImage{*shadowCubePlaceholder->getImageView(), *shadowPlaceholderSampler, &*shadowCubePlaceholder, 0};
 
-    vk::DescriptorImageInfo cubeInfo;
-    cubeInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    cubeInfo.imageView = cube.view;
-    cubeInfo.sampler = cube.sampler;
+        cubeInfos[i].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        cubeInfos[i].imageView = cube.view;
+        cubeInfos[i].sampler = cube.sampler;
+    }
 
     vk::WriteDescriptorSet cubeWrite;
     cubeWrite.dstSet = *frameSets[frame];
     cubeWrite.dstBinding = 3;
     cubeWrite.dstArrayElement = 0;
     cubeWrite.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    cubeWrite.setImageInfo(cubeInfo);
+    cubeWrite.setImageInfo(cubeInfos);
 
     const std::array<vk::WriteDescriptorSet,2> writes = {write, cubeWrite};
     device.getDevice().updateDescriptorSets(writes, nullptr);
@@ -301,11 +351,11 @@ if(passLight){
         frameData.view = passLight->getCubeView(passFace);
         frameData.projection = passLight->getCubeProjection();
     }
-    //The light that owns the bound shadow map uses the matrices computed in beginFrame -
-    //fitted and texel snapped if that is on. Any other light falls back to its own box
-    else if(passLight == shadowLight){
-        frameData.view = shadowMatrices.view;
-        frameData.projection = shadowMatrices.projection;
+    //A light with a map of its own uses the matrices computed in beginFrame - fitted and
+    //texel snapped if that is on. Any other light falls back to its own box
+    else if(const ShadowSlot* slot = findSlot(shadowMapSlots, passLight)){
+        frameData.view = slot->matrices.view;
+        frameData.projection = slot->matrices.projection;
     }
     else{
         frameData.view = passLight->getView();
@@ -489,21 +539,29 @@ bool VulkanRenderer::beginFrame(){
         gpuLight.color = glm::vec4(light->getColor(),0.0f);
         gpuLight.params = glm::vec4(light->getRange(), 0.0f, 0.0f, 0.0f);
 
-        //Only the one light a shadow map was set for carries a matrix. Everything else keeps
-        //params.y at zero, and the shader leaves it lit without ever touching the map
-        if(shadowTarget && shadowLight == light){
+        //A light carries the kind of shadow it has and which map of that kind it is. A light
+        //with neither keeps params.y at zero and the shader leaves it lit without ever
+        //touching an array it has no index into
+        const int mapIndex = slotIndex(shadowMapSlots, light);
+        const int cubeIndex = slotIndex(shadowCubeSlots, light);
+
+        if(mapIndex >= 0){
+            const ShadowSlot& slot = shadowMapSlots[static_cast<size_t>(mapIndex)];
             gpuLight.params.y = 1.0f;
-            gpuLight.params.z = shadowConfig.depthBias;
+            gpuLight.params.z = slot.config.depthBias;
+            gpuLight.shadow.x = float(mapIndex);
             //The matrices computed once above, not a second call to the light. The pass that
             //fills the map and the lookup that reads it have to agree exactly
-            gpuLight.lightViewProjection = shadowMatrices.viewProjection;
+            gpuLight.lightViewProjection = slot.matrices.viewProjection;
         }
         //A cube needs no matrix in the shader - the lookup is a direction. What it does need
         //is the near plane, so the fragment can rebuild the same depth the face wrote
-        else if(shadowCubeTarget && shadowCubeLight == light){
+        else if(cubeIndex >= 0){
+            const ShadowSlot& slot = shadowCubeSlots[static_cast<size_t>(cubeIndex)];
             gpuLight.params.y = 2.0f;
-            gpuLight.params.z = shadowCubeConfig.depthBias;
+            gpuLight.params.z = slot.config.depthBias;
             gpuLight.params.w = light->getShadowNear();
+            gpuLight.shadow.x = float(cubeIndex);
         }
 
         lightStaging.push_back(gpuLight);

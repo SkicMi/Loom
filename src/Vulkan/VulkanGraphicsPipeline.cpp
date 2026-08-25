@@ -173,7 +173,7 @@ void VulkanGraphicsPipeline::createPipeline(){
         vk::DescriptorSetLayoutBinding shadowBinding;
         shadowBinding.binding = 2;
         shadowBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-        shadowBinding.descriptorCount = 1;
+        shadowBinding.descriptorCount = maxShadowMaps;
         shadowBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
         frameBindings.push_back(shadowBinding);
 
@@ -183,7 +183,7 @@ void VulkanGraphicsPipeline::createPipeline(){
         vk::DescriptorSetLayoutBinding shadowCubeBinding;
         shadowCubeBinding.binding = 3;
         shadowCubeBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-        shadowCubeBinding.descriptorCount = 1;
+        shadowCubeBinding.descriptorCount = maxShadowCubes;
         shadowCubeBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
         frameBindings.push_back(shadowCubeBinding);
     }

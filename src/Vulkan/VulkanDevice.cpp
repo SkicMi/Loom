@@ -42,7 +42,10 @@ bool VulkanDevice::isDeviceSuitable(const vk::raii::PhysicalDevice& candidate){
     extensionSupported && 
     supportsRendering && 
     supported11.shaderDrawParameters &&
-    supported10.fillModeNonSolid;
+    supported10.fillModeNonSolid &&
+    //Sjena se bira indeksom iz svjetla, a indeks se cita u shaderu. Bez ovoga polje
+    //shadow karata se smije indeksirati samo konstantom, sto znaci jedna karta
+    supported10.shaderSampledImageArrayDynamicIndexing;
     }
 
 
@@ -179,6 +182,7 @@ void VulkanDevice::createLogicalDevice(){
     //Now we check device features
     vk::PhysicalDeviceFeatures deviceFeatures {};
     deviceFeatures.fillModeNonSolid = true; //vulkan 1.0 feature that allows vk::PolygonMode::eLine and ePoint (needed for wireframe)
+    deviceFeatures.shaderSampledImageArrayDynamicIndexing = true; //indeks shadow karte dolazi iz svjetla, ne iz konstante
 
     //features needed for shaders inn vulan 1.1
     vk::PhysicalDeviceVulkan11Features features11;

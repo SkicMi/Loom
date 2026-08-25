@@ -171,14 +171,20 @@ struct Scene::State{
     //Only the Offscreen preset draws into a target of its own; the others draw to the window
     std::unique_ptr<RenderTarget> offscreen;
 
-    //One directional map and one cube. That ceiling is the renderer's, not the preset's:
-    //set 0 has one binding for each kind, so a second of either would need an array of
-    //descriptors. Asked for a second, this says so rather than silently ignoring it
-    std::unique_ptr<RenderTarget> shadowMap;
-    const Light* shadowLight = nullptr;
+    //Every shadow this scene draws: which target it fills, from which light, and whether it
+    //is a cube - because a cube is six passes and a flat map is one. The queue is replayed
+    //into each of them, which is the whole reason the draws are queued at all
+    struct ShadowPass{
+        const RenderTarget* target = nullptr;
+        const Light* light = nullptr;
+        bool cube = false;
+    };
 
-    std::unique_ptr<RenderTarget> shadowCube;
-    const Light* shadowCubeLight = nullptr;
+    std::vector<ShadowPass> shadowPasses;
+
+    //The preset's own map, plus one target per light that was asked to cast
+    std::unique_ptr<RenderTarget> shadowMap;
+    std::vector<std::unique_ptr<RenderTarget>> extraShadowMaps;
 
     std::unique_ptr<VulkanGraphicsPipeline> shadowPipeline;
     std::unique_ptr<Material> shadowMaterial;
@@ -256,7 +262,6 @@ void Scene::State::build(){
     if(shadowsWanted && preset != Preset::Flat2D){
         shadowMap = std::make_unique<RenderTarget>(loom->device,
             vk::Extent2D{shadowMapSize, shadowMapSize}, makeShadowMapConfig());
-        shadowLight = &sun;
 
         ensureShadowPipeline(shadowMap->getDepthFormat());
 
@@ -266,6 +271,7 @@ void Scene::State::build(){
         shadow.viewportWidth = config.width;
         shadow.viewportHeight = config.height;
         loom->renderer.setShadowMap(*shadowMap, sun, shadow);
+        shadowPasses.push_back({shadowMap.get(), &sun, false});
     }
 
     built = true;
@@ -295,9 +301,10 @@ void Scene::State::ensureShadowPipeline(vk::Format depthFormat){
 void Scene::State::teardown(){
     //By hand and in this order: everything below holds buffers and images allocated out of
     //the Loom's device, so the Loom is the last thing to go
+    shadowPasses.clear();
     shadowMaterial.reset();
     shadowPipeline.reset();
-    shadowCube.reset();
+    extraShadowMaps.clear();
     shadowMap.reset();
     extraLights.clear();
     offscreen.reset();
@@ -448,20 +455,22 @@ void Scene::endRendering(){
 
     VulkanRenderer& renderer = state->loom->renderer;
 
-    if(state->shadowMap && state->shadowLight){
-        renderer.beginPass(*state->shadowMap, *state->shadowLight);
+    //One pass per flat map, six per cube, and the same queue replayed into every one of
+    //them. This is exactly why the draws are queued rather than issued: nobody outside could
+    //have driven these passes over draws the caller writes afterwards
+    for(const State::ShadowPass& pass : state->shadowPasses){
+        if(pass.cube){
+            for(uint32_t face = 0; face < 6; ++face){
+                renderer.beginPass(*pass.target, *pass.light, face);
+                state->replay(state->shadowMaterial.get());
+                renderer.endPass();
+            }
+            continue;
+        }
+
+        renderer.beginPass(*pass.target, *pass.light);
         state->replay(state->shadowMaterial.get());
         renderer.endPass();
-    }
-
-    //Six faces for a point light, and the same queue replayed into each. This is exactly why
-    //the draws are queued rather than issued: nobody outside could have driven these passes
-    if(state->shadowCube && state->shadowCubeLight){
-        for(uint32_t face = 0; face < 6; ++face){
-            renderer.beginPass(*state->shadowCube, *state->shadowCubeLight, face);
-            state->replay(state->shadowMaterial.get());
-            renderer.endPass();
-        }
     }
 
     if(state->offscreen){
@@ -519,14 +528,20 @@ Light& Scene::addLight(const LightConfig& config, bool castsShadows){
     //Asked and answered before anything is touched. A throw halfway through used to leave a
     //light in the scene that the caller had been told was refused - it lit the picture, it
     //counted, and nobody had a reference to it
+    //Asked and answered before anything is touched. A throw halfway through used to leave a
+    //light in the scene that the caller had been told was refused - it lit the picture, it
+    //counted, and nobody had a reference to it
     if(castsShadows){
-        if(config.type == LightType::Directional && state->shadowLight != nullptr){
-            throw std::runtime_error("Loom::Scene: a directional shadow map is already in use by the preset's sun - "
-                                     "turn it off with setShadows(false) before adding another shadow casting directional light");
+        VulkanRenderer& renderer = state->loom->renderer;
+
+        if(config.type == LightType::Directional && renderer.shadowMapCount() >= maxShadowMaps){
+            throw std::runtime_error("Loom::Scene: all " + std::to_string(maxShadowMaps) +
+                " shadow maps are in use (the preset's sun holds one) - turn that one off with setShadows(false), "
+                "or raise maxShadowMaps and the array in the shaders together");
         }
-        if(config.type == LightType::Point && state->shadowCubeLight != nullptr){
-            throw std::runtime_error("Loom::Scene: a shadow cube is already in use - set 0 has one binding for it, "
-                                     "so only one point light can cast at a time");
+        if(config.type == LightType::Point && renderer.shadowCubeCount() >= maxShadowCubes){
+            throw std::runtime_error("Loom::Scene: all " + std::to_string(maxShadowCubes) +
+                " shadow cubes are in use - raise maxShadowCubes and the array in the shaders together");
         }
     }
 
@@ -540,29 +555,33 @@ Light& Scene::addLight(const LightConfig& config, bool castsShadows){
     }
 
     if(config.type == LightType::Directional){
-        state->shadowMap = std::make_unique<RenderTarget>(state->loom->device,
-            vk::Extent2D{shadowMapSize, shadowMapSize}, makeShadowMapConfig());
-        state->shadowLight = &light;
-        state->ensureShadowPipeline(state->shadowMap->getDepthFormat());
+        state->extraShadowMaps.push_back(std::make_unique<RenderTarget>(state->loom->device,
+            vk::Extent2D{shadowMapSize, shadowMapSize}, makeShadowMapConfig()));
+        RenderTarget& map = *state->extraShadowMaps.back();
+
+        state->ensureShadowPipeline(map.getDepthFormat());
 
         ShadowConfig shadow = presetShadow();
         shadow.viewportWidth = state->config.width;
         shadow.viewportHeight = state->config.height;
-        state->loom->renderer.setShadowMap(*state->shadowMap, light, shadow);
+        state->loom->renderer.setShadowMap(map, light, shadow);
 
+        state->shadowPasses.push_back({&map, &light, false});
         return light;
     }
 
     //A point light shines in every direction, so its map is a cube and its pass is six passes
-    state->shadowCube = std::make_unique<RenderTarget>(state->loom->device,
-        vk::Extent2D{shadowCubeSize, shadowCubeSize}, makeShadowCubeConfig());
-    state->shadowCubeLight = &light;
-    state->ensureShadowPipeline(state->shadowCube->getDepthFormat());
+    state->extraShadowMaps.push_back(std::make_unique<RenderTarget>(state->loom->device,
+        vk::Extent2D{shadowCubeSize, shadowCubeSize}, makeShadowCubeConfig()));
+    RenderTarget& cube = *state->extraShadowMaps.back();
+
+    state->ensureShadowPipeline(cube.getDepthFormat());
 
     ShadowConfig shadow;
     shadow.depthBias = 0.0025f;
-    state->loom->renderer.setShadowCube(*state->shadowCube, light, shadow);
+    state->loom->renderer.setShadowCube(cube, light, shadow);
 
+    state->shadowPasses.push_back({&cube, &light, true});
     return light;
 }
 

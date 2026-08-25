@@ -13,8 +13,10 @@ struct FrameData{
 struct GpuLight{
     float4 positionOrDirection;
     float4 color;
-    //x = range, y = 1 when a shadow map is bound for this light, z = shadow depth bias
+    //x = range, y = kind of shadow (0 none, 1 flat map, 2 cube), z = bias, w = cube near
     float4 params;
+    //x = which map of that kind, in the arrays on set 0
+    float4 shadow;
     float4x4 lightViewProjection;
 }
 
@@ -39,7 +41,10 @@ struct Push{
 //depth - it returns how much of the 2x2 neighbourhood passed "is my reference nearer than
 //what is stored here", filtered by the same hardware that does bilinear. That free 2x2 is
 //why a shadow edge is not a staircase
-[[vk::binding(2,0)]] Sampler2DShadow shadowMap;
+//Velicina MORA odgovarati maxShadowMaps / maxShadowCubes u src/Core/FrameData.h. Polje
+//deskriptora i polje ovdje su dvije strane istog broja: ako se raziđu, pipeline se svejedno
+//prevede a citanje ide izvan granica
+[[vk::binding(2,0)]] Sampler2DShadow shadowMaps[4];
 
 //1.0 fully lit, 0.0 fully shadowed. A light without a map bound (params.y == 0) returns 1.0
 //without ever touching the sampler
@@ -57,14 +62,16 @@ float shadowVisibility(GpuLight light, float3 worldPos){
 
     //The bias is subtracted from the reference, not added to the stored depth: a fragment
     //has to be nearer than the map by this much before it counts as lit
-    return shadowMap.SampleCmpLevelZero(uv, proj.z - light.params.z);
+    //Indeks dolazi iz svjetla, a petlja po svjetlima ide jednako u svakoj invokaciji, pa je
+    //dinamicki uniforman - sto je tocno ono sto shaderSampledImageArrayDynamicIndexing trazi
+    return shadowMaps[int(light.shadow.x)].SampleCmpLevelZero(uv, proj.z - light.params.z);
 }
 
 //A point light's shadow cube. There is no matrix here on purpose: a cube is looked up with
 //a direction, and the reference depth is rebuilt from how far along its longest axis the
 //fragment is. That is the same number the face wrote, arrived at by arithmetic instead of
 //by another matrix multiply
-[[vk::binding(3,0)]] SamplerCubeShadow shadowCube;
+[[vk::binding(3,0)]] SamplerCubeShadow shadowCubes[2];
 
 float cubeVisibility(GpuLight light, float3 worldPos){
     float3 toFragment = worldPos - light.positionOrDirection.xyz;
@@ -83,7 +90,7 @@ float cubeVisibility(GpuLight light, float3 worldPos){
     //ndcZ = far * (axis - near) / ((far - near) * axis)
     float reference = (far * (axis - near)) / ((far - near) * axis);
 
-    return shadowCube.SampleCmpLevelZero(toFragment, reference - light.params.z);
+    return shadowCubes[int(light.shadow.x)].SampleCmpLevelZero(toFragment, reference - light.params.z);
 }
 [[vk::binding(0,1)]] Sampler2D albedo;
 [[vk::binding(1,1)]] ConstantBuffer<MaterialData> material;

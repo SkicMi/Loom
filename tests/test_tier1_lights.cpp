@@ -261,58 +261,101 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Granice: sto renderer ne moze, scena kaze naglas
+    // Vise od jedne karte, i indeks koji stvarno odlucuje
+    // -------------------------------------------------------------------------------
+
+    auto twoMaps = [&](bool secondCasts){
+        Loom::Scene scene(Loom::Preset::Offscreen);
+        scene.setSize(sceneWidth, sceneHeight);
+        const Loom::TextureHandle texture = scene.loadTexture(texturePath);
+
+        //A second directional light from the other side. The preset's sun already holds map
+        //zero, so this one can only be seen if the index in its GpuLight is read
+        LightConfig second;
+        second.type = LightType::Directional;
+        second.direction = {0.8f, -1.0f, 0.2f};
+        second.color = {0.4f, 0.6f, 1.0f};
+        second.intensity = 1.2f;
+        scene.addLight(second, secondCasts);
+
+        scene.startRendering();
+            scene.drawPlane(texture, floorTransform());
+            scene.drawCube(texture, blockTransform());
+        scene.endRendering();
+
+        return scene.readPixels();
+    };
+
+    const std::vector<uint8_t> bothCasting = twoMaps(true);
+    const std::vector<uint8_t> onlySunCasting = twoMaps(false);
+
+    report.check("druga karta se cita",
+        diffBytes(bothCasting, onlySunCasting).different > 0,
+        fmt("druga sjena mijenja %zu bajtova", diffBytes(bothCasting, onlySunCasting).different));
+
+    // -------------------------------------------------------------------------------
+    // Granice: gdje je strop, i sto se dogodi na njemu
     // -------------------------------------------------------------------------------
 
     {
         Loom::Scene scene(Loom::Preset::Offscreen);
         scene.setSize(128, 128);
-        scene.addLight(bulbConfig(), true);
 
-        bool secondCubeThrew = false;
-        try{ scene.addLight(bulbConfig(), true); }
-        catch(const std::exception&){ secondCubeThrew = true; }
-        //And the refusal has to leave nothing behind. Before the check moved ahead of the
-        //push, a refused light was still in the scene: lighting the picture, counted in
-        //lightCount, and with nobody holding a reference to it
-        report.check("druga kocka", secondCubeThrew && scene.lightCount() == 2,
-            fmt("baca iznimku i ne ostavlja nista za sobom: %u svjetala", scene.lightCount()));
-
-        //A second point light without shadows is fine, and that is the difference worth saying
-        LightConfig quiet = bulbConfig();
-        quiet.position = {-2.0f, 2.0f, 0.0f};
-        scene.addLight(quiet, false);
-        report.check("bez sjene ih ide vise", scene.lightCount() == 3,
-            fmt("%u svjetala, od kojih jedno baca", scene.lightCount()));
-
-        bool secondDirectionalThrew = false;
-        try{
-            LightConfig anotherSun;
-            anotherSun.type = LightType::Directional;
-            scene.addLight(anotherSun, true);
+        //The preset's sun holds one map, so there is room for maxShadowMaps - 1 more
+        uint32_t added = 0;
+        bool refused = false;
+        for(uint32_t i = 0; i < maxShadowMaps + 2; ++i){
+            LightConfig extra;
+            extra.type = LightType::Directional;
+            extra.direction = {float(i) * 0.1f - 0.5f, -1.0f, 0.2f};
+            try{
+                scene.addLight(extra, true);
+                ++added;
+            }
+            catch(const std::exception&){
+                refused = true;
+                break;
+            }
         }
-        catch(const std::exception&){ secondDirectionalThrew = true; }
-        report.check("drugo usmjereno sa sjenom", secondDirectionalThrew,
-            "baca iznimku - presetovo sunce vec drzi kartu");
+
+        report.check("strop karata", refused && added == maxShadowMaps - 1,
+            fmt("presetovo sunce plus %u dodanih je %u, a stane ih %u", added, added + 1, maxShadowMaps));
+
+        //And the refusal leaves nothing behind: a light that was turned away must not be in
+        //the scene lighting it anyway
+        report.check("odbijeno ne ostaje", scene.lightCount() == added + 1,
+            fmt("%u svjetala, ocekivano %u", scene.lightCount(), added + 1));
     }
 
-    //With the preset's sun turned off, a directional light of your own can take the map
     {
         Loom::Scene scene(Loom::Preset::Offscreen);
         scene.setSize(128, 128);
-        scene.setShadows(false);
 
-        bool ownSunWorked = true;
-        try{
-            LightConfig ownSun;
-            ownSun.type = LightType::Directional;
-            ownSun.direction = {0.0f, -1.0f, -0.2f};
-            scene.addLight(ownSun, true);
+        uint32_t cubes = 0;
+        bool refused = false;
+        for(uint32_t i = 0; i < maxShadowCubes + 2; ++i){
+            LightConfig bulb = bulbConfig();
+            bulb.position = {float(i) * 1.5f - 2.0f, 3.0f, 0.0f};
+            try{
+                scene.addLight(bulb, true);
+                ++cubes;
+            }
+            catch(const std::exception&){
+                refused = true;
+                break;
+            }
         }
-        catch(const std::exception&){ ownSunWorked = false; }
 
-        report.check("vlastito sunce", ownSunWorked,
-            "uz setShadows(false) karta je slobodna");
+        report.check("strop kocaka", refused && cubes == maxShadowCubes,
+            fmt("%u kocaka stane, %u je strop", cubes, maxShadowCubes));
+
+        //A light without a shadow has no ceiling at all - that limit is the descriptor array,
+        //not the list of lights
+        LightConfig quiet = bulbConfig();
+        quiet.position = {-4.0f, 2.0f, 0.0f};
+        scene.addLight(quiet, false);
+        report.check("bez sjene nema stropa", scene.lightCount() == cubes + 2,
+            fmt("%u svjetala, od kojih %u baca", scene.lightCount(), cubes));
     }
 
     std::filesystem::remove_all(work);
