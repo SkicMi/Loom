@@ -6,6 +6,7 @@
 // Jedini include je Loom/Loom.h. Nijedan Vulkan simbol ne smije ovdje biti vidljiv - to
 // cuva test "tier1_header_is_clean".
 #include <Loom/Loom.h>
+#include <cmath>
 
 int main(){
     //Preset odlucuje sve sto nismo rekli: dubinu, sjene, ambijent, sunce, kameru

@@ -39,6 +39,7 @@ What each one covers:
 | `test_lifetime` | GLFW is initialised by the first window and terminated by the last, so destroying one window leaves the others alive; a headless Loom never touches GLFW at all, and a Loom built after a full shutdown draws the same picture |
 | `test_spool_image` | a real PNG decodes to exactly the pixels that were written into it, three channels come back as four, alpha survives, and those bytes become a Loom texture without either library knowing the other exists |
 | `test_spool_export` | pixels written as a PNG read back as exactly the same pixels, BGRA becomes RGBA, and five headless frames become five numbered files that hold what was drawn |
+| `test_tier1_preset` | a program written against `<Loom/Loom.h>` draws the same image, byte for byte, as the tier 2 program that does the same thing by hand; `Loom::Transform` produces the same matrix as the glm written out longhand |
 | `test_vma_memory` | 500 buffers cost no new device memory blocks, each MemoryUsage lands in the kind of memory it asked for, host memory stays mapped, and a CPU write survives the trip back |
 
 Two things worth knowing before reading a failure:

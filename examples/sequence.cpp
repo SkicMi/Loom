@@ -3,6 +3,7 @@
 // Nema prozora, nema sata. Frame N je na N/fps, pa isti program dvaput da iste fileove -
 // to je ono zbog cega je renderer odvojen od swapchaina.
 #include <Loom/Loom.h>
+#include <cmath>
 
 int main(){
     Loom::Scene scene(Loom::Preset::Offscreen);

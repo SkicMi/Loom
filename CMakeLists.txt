@@ -261,6 +261,51 @@ target_compile_definitions(Loom PUBLIC
 )
 
 # ----------------------------------------------------------------------------
+# LoomPreset - stepenica 1.
+#   Zaseban target, ne dio Looma, jer je jedini koji zna i za Loom i za Spool.
+#   Da je unutra, Loom bi ovisio o Spoolu i granica bi nestala.
+# ----------------------------------------------------------------------------
+add_library(LoomPreset STATIC
+    src/Loom/Scene.cpp
+)
+
+target_link_libraries(LoomPreset PUBLIC Loom PRIVATE Spool)
+
+target_compile_options(LoomPreset PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra>
+)
+
+add_dependencies(LoomPreset LoomShaders)   # preset gradi shadow pipeline iz shadow.vert.spv
+
+# ----------------------------------------------------------------------------
+# Primjeri - specifikacija stepenice 1.
+#   Grade se s ostatkom da bi se znalo da se JOS UVIJEK prevode: primjer koji
+#   se ne prevodi je specifikacija koja laze. Ne pokrecu se kao testovi jer
+#   traze assete i prozor.
+# ----------------------------------------------------------------------------
+option(LOOM_BUILD_EXAMPLES "Build the tier 1 examples" ON)
+
+if(LOOM_BUILD_EXAMPLES)
+    file(GLOB LOOM_EXAMPLE_SOURCES CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples/*.cpp
+    )
+
+    add_custom_target(LoomExamples)
+
+    foreach(EXAMPLE_SOURCE ${LOOM_EXAMPLE_SOURCES})
+        get_filename_component(EXAMPLE_NAME ${EXAMPLE_SOURCE} NAME_WE)
+
+        add_executable(example_${EXAMPLE_NAME} ${EXAMPLE_SOURCE})
+
+        # Samo LoomPreset. Primjer koji bi trebao linkati Loom ili Spool izravno
+        # bio bi primjer koji je sisao stepenicu, a da to nigdje ne pise
+        target_link_libraries(example_${EXAMPLE_NAME} PRIVATE LoomPreset)
+
+        add_dependencies(LoomExamples example_${EXAMPLE_NAME})
+    endforeach()
+endif()
+
+# ----------------------------------------------------------------------------
 # Testni executable
 # ----------------------------------------------------------------------------
 add_executable(LoomApp src/main.cpp)
@@ -319,7 +364,7 @@ if(LOOM_BUILD_TESTS)
         add_executable(${TEST_NAME} ${TEST_SOURCE})
         # Testovi linkaju obje biblioteke. To je dozvoljeno i tu prestaje: same
         # biblioteke jedna o drugoj ne znaju nista.
-        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool)
+        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool LoomPreset)
         target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         add_dependencies(${TEST_NAME} LoomShaders)
         add_dependencies(LoomTests ${TEST_NAME})

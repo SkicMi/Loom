@@ -19,6 +19,7 @@
 //=============================================================================================
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <glm/glm.hpp>
 
 //Vulkan-free vec danas, pa se izlazu kakvi jesu umjesto da im se izmisljaju dvojnici
@@ -143,6 +144,14 @@ class Scene{
 
     //2D: ravnina okrenuta prema kameri, bez dubine
     void drawSprite(TextureHandle texture, const glm::mat4& transform = glm::mat4(1.0f));
+
+    //-- citanje ----------------------------------------------------------------------------
+    //Zadnji nacrtani frame, uvijek RGBA. BGRA koji Vulkanova povrsina vraca je detalj
+    //formata koji je swapchain izpregovarao i ovdje mu nije mjesto
+    std::vector<uint8_t> readPixels() const;
+
+    uint32_t width() const;
+    uint32_t height() const;
 
     //-- scena ------------------------------------------------------------------------------
     //Vec bez Vulkana, pa se daju kakvi jesu. Ovo je i dalje stepenica 1

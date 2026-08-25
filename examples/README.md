@@ -4,8 +4,13 @@ Ovi fileovi su napisani **prije** biblioteke koja ih podrzava. Oni su specifikac
 API stepenice 1 je gotov onda kad se ovo prevede, pokrene, i da istu sliku kao rucno
 slozena verzija na stepenici 2.
 
-Zato **jos nisu u buildu**. Kad budu, `examples/` postaje meta i svaki od njih dobiva
-test koji ga usporeduje s ekvivalentnim programom na stepenici 2.
+Od koraka 2 se **grade s ostatkom projekta**, i linkaju **samo `LoomPreset`**. To je
+namjerno: primjer koji bi morao linkati `Loom` ili `Spool` izravno bio bi primjer koji je
+sisao stepenicu, a da to nigdje ne pise. Ne pokrecu se kao testovi jer traze assete i
+prozor - ali primjer koji se ne prevodi je specifikacija koja laze, pa se prevodi provjerava.
+
+Ekvivalentnost sa stepenicom 2 dokazuje `tests/test_tier1_preset.cpp`: isti prizor napisan
+oba puta, i slika mora biti **bajt za bajt** ista.
 
 ## Tri stepenice
 

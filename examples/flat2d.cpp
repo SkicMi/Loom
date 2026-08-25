@@ -3,6 +3,7 @@
 // Isti Scene, drugi preset. Razlika prema Lit3D je samo u tome sto preset ispuni, ne u
 // tome kako se scena crta - inace bi to bile dvije biblioteke, ne dvije postavke.
 #include <Loom/Loom.h>
+#include <cmath>
 
 int main(){
     Loom::Scene scene(Loom::Preset::Flat2D);
