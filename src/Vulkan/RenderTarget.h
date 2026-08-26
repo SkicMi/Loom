@@ -81,6 +81,9 @@ class RenderTarget{
     bool hasDepth() const {return depthImage.has_value();}
     bool keepsDepth() const {return config.keepDepth;}
     bool loadsDepth() const {return config.loadDepth;}
+
+    //Semplira li se dubina usporedbom umjesto citanjem. Sjena to hoce, odprojekcija ne smije
+    bool usesDepthCompare() const {return config.depthCompare;}
     bool hasCubeDepth() const {return config.cubeDepth;}
 
     //The view a pass attaches when it renders one face. The sampled view is the whole cube

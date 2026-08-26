@@ -32,6 +32,10 @@ inline uint32_t bytesPerPixel(vk::Format format){
         case vk::Format::eB8G8R8A8Unorm:
             return 4;
 
+        //Cetiri puna float-a. Slika pozicija, ne boje
+        case vk::Format::eR32G32B32A32Sfloat:
+            return 16;
+
         //Depth, as vkCmdCopyImageToBuffer hands it over. A copy names one aspect, and the
         //depth aspect of a combined format still arrives as its depth part alone - the
         //stencil byte is a separate copy nobody here asks for

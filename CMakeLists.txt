@@ -129,6 +129,13 @@ file(GLOB LOOM_SHADER_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tests/*.slang
 )
 
+#   shaders/include/ - dijelovi koje shaderi ukljucuju, a sami nisu shader.
+# Nisu u popisu iznad (nemaju entry point), ali svaki shader ovisi o svima njima: bez toga
+# promjena formule ne bi ponovno prevela nista i .spv bi ostao od jucer.
+file(GLOB LOOM_SHADER_INCLUDES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/include/*.slang
+)
+
 set(LOOM_COMPILED_SHADERS "")
 
 foreach(SHADER ${LOOM_SHADER_SOURCES})
@@ -177,7 +184,7 @@ foreach(SHADER ${LOOM_SHADER_SOURCES})
                     -entry ${STAGE_ENTRY}
                     ${LOOM_SHADER_DEFINES}
                     -o ${SPV_OUTPUT}
-            DEPENDS ${SHADER}
+            DEPENDS ${SHADER} ${LOOM_SHADER_INCLUDES}
             COMMENT "Slang -> SPIR-V: ${SHADER_NAME}.${STAGE_SUFFIX}.spv"
             VERBATIM
         )
@@ -221,7 +228,9 @@ add_library(Loom STATIC
     src/Vulkan/Material.cpp
     src/Vulkan/RenderTarget.cpp
     src/Vulkan/ShadingRateMap.cpp
+    src/Vulkan/PositionMap.cpp
     src/Core/Camera.cpp
+    src/Core/CameraIntrinsics.cpp
     src/Core/Light.cpp
     src/Core/LoomShapes.cpp
 )

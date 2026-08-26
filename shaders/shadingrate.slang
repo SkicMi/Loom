@@ -5,6 +5,8 @@
 //ostar. Prosjek bi zamutio rub gdje se blizi objekt dodiruje s dalekom pozadinom, a to je
 //tocno mjesto gdje se pogruboljenje najvise vidi.
 
+#include "include/Depth.slang"
+
 struct Push{
     uint2 rateExtent;      //koliko teksela slika stope ima
     uint2 texelSize;       //koliko piksela pokriva jedan teksel
@@ -21,13 +23,10 @@ struct Push{
 [[vk::image_format("r8ui")]]
 [[vk::binding(1,0)]] RWTexture2D<uint> rateMap;
 
-//Dubina u bufferu je nelinearna: gotovo sva preciznost je potrosena blizu kamere. Prag u
-//metrima nad tom vrijednoscu ne bi znacio nista, pa se vraca u prave jedinice.
-//Obrat od ndcZ = far*(z-near)/((far-near)*z)
+//Formula je u include/Depth.slang, jer je treba i odprojekcija. Ovdje ostaje samo ime koje
+//zna za nas push - pozivi ispod se nisu promijenili, pa se ni slika ne smije promijeniti
 float viewDistance(float ndcZ){
-    float denominator = push.farPlane - ndcZ * (push.farPlane - push.nearPlane);
-    if(denominator < 1e-6) return push.farPlane;
-    return (push.farPlane * push.nearPlane) / denominator;
+    return linearizeDepth(ndcZ, push.nearPlane, push.farPlane);
 }
 
 [shader("compute")]
