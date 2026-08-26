@@ -50,10 +50,12 @@ class VulkanInstance{
    
 
     //Static debug callback function 
+    //vk:: tipovi, ne C tipovi. Clan pfnUserCallback ocekuje bas taj potpis, a setter koji
+    //prima C verziju je oznacen kao zastario
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-    VkDebugUtilsMessageTypeFlagsEXT type,
-    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+    vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+    vk::DebugUtilsMessageTypeFlagsEXT type,
+    const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData);
 
  bool checkValidationLayerSupport();

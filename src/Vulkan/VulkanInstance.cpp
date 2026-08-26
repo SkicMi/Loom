@@ -119,15 +119,17 @@ bool VulkanInstance::checkValidationLayerSupport(){
 
 //Debug callback function
 VKAPI_ATTR VkBool32 VKAPI_CALL VulkanInstance::debugCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-    VkDebugUtilsMessageTypeFlagsEXT type,
-    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+    vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+    vk::DebugUtilsMessageTypeFlagsEXT type,
+    const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData)
 {
     (void)type;
     (void)pUserData;
 
-    if(severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)){
+    //severity je jedan bit, ne maska, pa je usporedba jasnija od bitovnog i
+    if(severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning ||
+       severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError){
         ++validationMessages;
     }
 
@@ -150,7 +152,9 @@ createInfo.setMessageType(
     vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
     vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance
 );
-createInfo.setPfnUserCallback(debugCallback);
+//Dodijeljeno izravno umjesto kroz setPfnUserCallback: taj je setter oznacen kao zastario
+//jer prima C tip pokazivaca, a clan je istog tipa i prima ga bez prigovora
+createInfo.pfnUserCallback = debugCallback;
 createInfo.setPUserData(nullptr);
 return createInfo;
 }
