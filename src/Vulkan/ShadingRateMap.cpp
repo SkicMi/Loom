@@ -79,7 +79,19 @@ void ShadingRateMap::setDepthSource(const vk::raii::DescriptorPool& pool, const 
         throw std::runtime_error("ShadingRateMap: the depth source has to keep its depth (RenderTargetConfig::keepDepth), or there is nothing there to read");
     }
 
-    depthSource = &depthTarget;
+    setDepthSource(pool, depthTarget.getDepthSampled(), depthTarget.getExtent());
+}
+
+void ShadingRateMap::setDepthSource(const vk::raii::DescriptorPool& pool,
+                                    const SampledImage& depth, vk::Extent2D size){
+    if(!depth.isValid()){
+        throw std::runtime_error("ShadingRateMap: the depth source has no view or no sampler");
+    }
+    if(size.width == 0 || size.height == 0){
+        throw std::runtime_error("ShadingRateMap: the depth source has no size");
+    }
+
+    depthExtent = size;
 
     if(!computePipeline){
         //Binding 0 reads the depth, binding 1 writes the rate. Both live on the dispatch's
@@ -105,7 +117,7 @@ void ShadingRateMap::setDepthSource(const vk::raii::DescriptorPool& pool, const 
         computeMaterial = std::make_unique<ComputeMaterial>(device, pool, *computePipeline);
     }
 
-    computeMaterial->setSampledImage(0, depthTarget.getDepthSampled());
+    computeMaterial->setSampledImage(0, depth);
 
     //The dispatch leaves it exactly where the rasteriser expects to find it, so nothing has
     //to move it afterwards
@@ -119,9 +131,4 @@ const ComputeMaterial& ShadingRateMap::getComputeMaterial() const{
     return *computeMaterial;
 }
 
-const RenderTarget& ShadingRateMap::getDepthSource() const{
-    if(!depthSource){
-        throw std::runtime_error("ShadingRateMap: no depth source was bound");
-    }
-    return *depthSource;
-}
+

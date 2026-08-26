@@ -126,6 +126,10 @@ class VulkanGraphicsPipeline{
     const vk::raii::DescriptorSetLayout& getMaterialSetLayout() const {return setLayouts[materialSet];}
     const vk::raii::DescriptorSetLayout& getFrameSetLayout() const {return setLayouts[frameSet];}
     bool hasDescriptors() const {return !config.descriptorBindings.empty();}
+
+    //Config kojim je sagraden. Postoji zato da se depth prepass moze IZVESTI iz cjevovoda
+    //kojim se stvarno crta boja, a ne prepisati pokraj njega - vidi makeDepthPrepassConfig
+    const PipelineConfig& getConfig() const {return config;}
     uint32_t getPushConstantSize() const {return config.pushConstantSize;}
     vk::Format getColorFormat() const {return colorFormat;}
    

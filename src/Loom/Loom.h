@@ -52,6 +52,20 @@ enum class Preset{
     Offscreen
 };
 
+//Sjencanje u blokovima, po udaljenosti.
+//
+//Loom crta scenu dvaput: prvo samo dubinu, pa iz nje compute odluci koliko grubo se koji
+//blok piksela smije sjenciti, i tek onda boju. Prvi prolaz nije trosak - drugi ucita dubinu
+//koju je on napisao i ne racuna je ponovno, pa se svaki piksel sjenca tocno jednom bez
+//obzira koliko se trokuta preko njega preklapa.
+//
+//Sto je dalje, to grublje. Vrijednosti su udaljenosti u istim jedinicama u kojima je scena.
+struct AdaptiveShading{
+    bool enabled = false;
+    float quarterDistance = 25.0f;     //dalje od ovoga se sjenca 2x2
+    float sixteenthDistance = 70.0f;   //dalje od ovoga 4x4
+};
+
 //Neprozirni handleovi. Broj, ne pokazivac: kopiranje je besplatno, viseci handle ne
 //postoji, a tip iza njega ostaje na stepenici 2 gdje mu je i mjesto
 struct TextureHandle{
@@ -132,6 +146,11 @@ class Scene{
     void setSize(uint32_t width, uint32_t height);
     void setClearColor(const glm::vec4& color);
     void setShadows(bool enabled);
+
+    //Vidi AdaptiveShading. Uredaj koji to ne podrzava crta jednako, samo bez ustede - pa
+    //ovo nikad ne treba ograditi provjerom
+    void setAdaptiveShading(const AdaptiveShading& settings);
+    bool adaptiveShadingActive() const;
 
     //-- tok --------------------------------------------------------------------------------
     //true dok prozor stoji. Bez prozora uvijek true, pa Offscreen broji frameove sam

@@ -256,7 +256,8 @@ const VulkanGraphicsPipeline& Primitives::getTexturedPipeline(){
         //possible thing rather than refusing to build
         const bool hasDepth = loom.depthImage.has_value();
         pipelineConfig.depthTestEnable = config.depthTest && hasDepth;
-        pipelineConfig.depthWriteEnable = pipelineConfig.depthTestEnable;
+        pipelineConfig.depthWriteEnable = pipelineConfig.depthTestEnable && config.depthWrite;
+        pipelineConfig.depthCompare = config.depthCompare;
 
         texturedPipeline.emplace(loom.createPipeline(pipelineConfig));
     }

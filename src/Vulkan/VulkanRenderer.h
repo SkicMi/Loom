@@ -74,6 +74,11 @@ class VulkanRenderer{
     //Samo dubina te mete, cak i kad ima boju. Depth prepass: napise dubinu koju glavni
     //prolaz zatim UCITA (RenderTargetConfig::loadDepth) umjesto da je ponovno racuna
     void beginDepthPass(const RenderTarget& target);
+
+    //Isto, ali u prozorovu dubinu. Ona nije RenderTarget nego obicna slika, pa ima svoje
+    //preopterecenje - a glavni prolaz koji dolazi poslije UCITA sto je ovaj napisao, bez
+    //da mu itko to mora reci
+    void beginDepthPass();
     void beginPass(const RenderTarget& target, const Light& light); //the same target, seen from a light
     void beginPass(const RenderTarget& target, const Light& light, uint32_t face); //one face of a point light's cube
     void endPass();
@@ -156,6 +161,7 @@ class VulkanRenderer{
     const Light* passLight = nullptr; //set only for the duration of a light driven pass
     uint32_t passFace = 0;            //which cube face, when the pass is one of six
     bool passUsesColor = true;        //false in a depth prepass, even into a target that has colour
+    bool windowDepthWritten = false;  //postavlja beginDepthPass(), cisti se svaki beginFrame
 
     //One entry per shadow casting light. Keyed by the light rather than by the order of the
     //calls: setShadowMap for a light that already has a slot replaces that slot, and only a

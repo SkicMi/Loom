@@ -309,7 +309,10 @@ if(depth){
     //Depth prepass UVIJEK cisti, bez obzira na loadDepth: on je taj koji dubinu uspostavlja,
     //pa bi ucitavanje znacilo da nastavlja na ono sto je ostalo od proslog framea. loadDepth
     //se odnosi na prolaz KOJI DOLAZI POSLIJE prepassa, a to je onaj s bojom
-    const bool loadDepth = passUsesColor && currentTarget && currentTarget->loadsDepth();
+    //Meta to kaze u svom configu; prozor se pamti - ako je depth prepass ovaj frame vec
+    //napisao prozorovu dubinu, glavni prolaz je ucitava. Nema sto zaboraviti postaviti
+    const bool loadDepth = passUsesColor &&
+        (currentTarget ? currentTarget->loadsDepth() : windowDepthWritten);
 
     depthAttachment.loadOp = loadDepth ? vk::AttachmentLoadOp::eLoad
                                        : vk::AttachmentLoadOp::eClear;
@@ -461,6 +464,8 @@ void VulkanRenderer::endPass(){
 
     const bool hasColor = passUsesColor && (currentTarget ? currentTarget->hasColor() : true);
 
+    const VulkanImage* depthOfThisPass = currentTarget ? currentTarget->getDepthImage() : depthImage;
+
     if(hasColor){
         vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain->getImages()[currentImageIndex];
         vk::ImageLayout finalLayout = currentTarget ? currentTarget->getFinalLayout() : vk::ImageLayout::ePresentSrcKHR;
@@ -472,10 +477,20 @@ void VulkanRenderer::endPass(){
         }
     }
 
+    //Prepass postoji zato da ga netko procita - compute koji puni kartu stope, ili glavni
+    //prolaz koji ucitava dubinu. Zato izlazi u layoutu za citanje, i za prozor i za metu
+    if(!passUsesColor && depthOfThisPass != nullptr){
+        recordBarrier(commandBuffer, imageBarrier(*depthOfThisPass->getImage(),
+                                                  depthOfThisPass->getCurrentLayout(),
+                                                  vk::ImageLayout::eShaderReadOnlyOptimal,
+                                                  vk::ImageAspectFlagBits::eDepth,
+                                                  depthOfThisPass->getLayerCount()));
+        depthOfThisPass->setCurrentLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+    }
     //Depth that was stored is depth somebody is going to read, so it leaves the pass in the
     //layout the reader expects instead of in eDepthAttachmentOptimal. Scratch depth is left
     //alone - the next pass clears it anyway
-    if(currentTarget && currentTarget->keepsDepth()){
+    else if(currentTarget && currentTarget->keepsDepth()){
         const VulkanImage* depth = currentTarget->getDepthImage();
         const vk::ImageLayout depthFinal = currentTarget->getDepthFinalLayout();
 
@@ -532,6 +547,7 @@ bool VulkanRenderer::beginFrame(){
     commandBuffer.reset();
 
     passIndex = 0;
+    windowDepthWritten = false;   //dubina proslog framea ne vrijedi za ovaj
 
     //The camera has probably moved since last frame, so a fitted box has to be refitted
     updateShadowMatrices();
@@ -844,6 +860,29 @@ void VulkanRenderer::beginDepthPass(const RenderTarget& target){
     startPass(vk::Image(nullptr), vk::ImageView(nullptr), target.getDepthImage(), target.getExtent());
 }
 
+void VulkanRenderer::beginDepthPass(){
+    if(!frameActive){
+        throw std::runtime_error("beginDepthPass: frame not started");
+    }
+    if(passActive){
+        throw std::runtime_error("beginDepthPass: a pass is already active (missing endPass)");
+    }
+    if(!swapchain){
+        throw std::runtime_error("beginDepthPass: there is no window (this Loom was built headless) - use the overload that takes a target");
+    }
+    if(!depthImage){
+        throw std::runtime_error("beginDepthPass: the window has no depth buffer (LoomConfig::enableDepth)");
+    }
+
+    currentTarget = nullptr;
+    passLight = nullptr;
+    passFace = 0;
+    passUsesColor = false;
+    windowDepthWritten = true;
+
+    startPass(vk::Image(nullptr), vk::ImageView(nullptr), depthImage, swapchain->getExtent());
+}
+
 void VulkanRenderer::beginPass(const RenderTarget& target, const Light& light){
     if(!frameActive){
         throw std::runtime_error("beginPass: frame not started");
@@ -911,7 +950,7 @@ void VulkanRenderer::updateShadingRateMap(const ShadingRateMap& map){
         throw std::runtime_error("updateShadingRateMap: the map has no depth source (setDepthSource)");
     }
 
-    const vk::Extent2D depthExtent = map.getDepthSource().getExtent();
+    const vk::Extent2D depthExtent = map.getDepthExtent();
     const ShadingRateDistances& distances = map.getDistances();
 
     ShadingRatePush push;

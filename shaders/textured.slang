@@ -41,10 +41,9 @@ struct Push{
 //depth - it returns how much of the 2x2 neighbourhood passed "is my reference nearer than
 //what is stored here", filtered by the same hardware that does bilinear. That free 2x2 is
 //why a shadow edge is not a staircase
-//Velicina MORA odgovarati maxShadowMaps / maxShadowCubes u src/Core/FrameData.h. Polje
-//deskriptora i polje ovdje su dvije strane istog broja: ako se raziđu, pipeline se svejedno
-//prevede a citanje ide izvan granica
-[[vk::binding(2,0)]] Sampler2DShadow shadowMaps[4];
+//Velicina dolazi iz CMakea kroz -D, isti broj koji vidi i C++. Prije je stajala ovdje kao
+//literal uz komentar da se mora poklapati - a da se raziđe, pipeline bi se svejedno preveo
+[[vk::binding(2,0)]] Sampler2DShadow shadowMaps[LOOM_MAX_SHADOW_MAPS];
 
 //1.0 fully lit, 0.0 fully shadowed. A light without a map bound (params.y == 0) returns 1.0
 //without ever touching the sampler
@@ -71,7 +70,7 @@ float shadowVisibility(GpuLight light, float3 worldPos){
 //a direction, and the reference depth is rebuilt from how far along its longest axis the
 //fragment is. That is the same number the face wrote, arrived at by arithmetic instead of
 //by another matrix multiply
-[[vk::binding(3,0)]] SamplerCubeShadow shadowCubes[2];
+[[vk::binding(3,0)]] SamplerCubeShadow shadowCubes[LOOM_MAX_SHADOW_CUBES];
 
 float cubeVisibility(GpuLight light, float3 worldPos){
     float3 toFragment = worldPos - light.positionOrDirection.xyz;

@@ -15,6 +15,7 @@
 #include "Core/LoomShapes.h"
 #include "Vulkan/Material.h"
 #include "Vulkan/RenderTarget.h"
+#include "Vulkan/ShadingRateMap.h"
 #include "Vulkan/Texture.h"
 #include "Spool/ImageFile.h"
 #include "Spool/Sequence.h"
@@ -189,10 +190,24 @@ struct Scene::State{
     std::unique_ptr<VulkanGraphicsPipeline> shadowPipeline;
     std::unique_ptr<Material> shadowMaterial;
 
+    //Sjencanje u blokovima. Sve troje postoji samo ako je ukljuceno PRIJE prvog framea:
+    //trazi dubinu koja se moze semplirati i cjevovod koji je testira na eEqual, a ni jedno
+    //ni drugo se ne da promijeniti nakon sto je slozeno
+    AdaptiveShading adaptive;
+    bool adaptiveActive = false;
+
+    std::unique_ptr<VulkanGraphicsPipeline> prepassPipeline;
+    std::unique_ptr<Material> prepassMaterial;
+    std::unique_ptr<ShadingRateMap> rateMap;
+
+    //Prozorska dubina nije meta pa nema svoj sampler; ovaj je njen
+    vk::raii::Sampler depthSampler = nullptr;
+
     //Owned, so that nothing the renderer points at can go out of scope before it does
     std::vector<std::unique_ptr<Light>> extraLights;
 
     void ensureShadowPipeline(vk::Format depthFormat);
+    void buildAdaptive();
 
     //unique_ptr rather than Texture by value: a Material holds a view of its texture, and a
     //vector that reallocates would move the object it points at
@@ -228,7 +243,22 @@ struct Scene::State{
 void Scene::State::build(){
     if(built) return;
 
+    //Odluka pada ovdje, dok se jos nista nije sagradilo: trazi li uredaj koji ovo uopce
+    //podrzava. Ako ne podrzava, scena se crta jednako, samo bez ustede - nitko iznad ne mora
+    //to ograditi provjerom
+    adaptiveActive = adaptive.enabled && config.enableDepth && preset != Preset::Flat2D;
+
+    if(adaptiveActive){
+        //Compute cita ovu dubinu, pa ona mora biti semplirljiva - i mora prezivjeti prolaz
+        //koji je napisao, jer je glavni prolaz ucitava umjesto da je racuna ponovno
+        config.depthConfig.usage |= vk::ImageUsageFlagBits::eSampled;
+    }
+
     loom = std::make_unique<LoomInitializer>(config);
+
+    if(adaptiveActive && !loom->device.hasShadingRateImage()){
+        adaptiveActive = false;
+    }
 
     //Primitives builds its own textured pipeline, so it has to be handed the same settings
     //the rest of the scene was built with. Without this an override of pipelineConfig lands
@@ -237,6 +267,14 @@ void Scene::State::build(){
     LoomShapes::PrimitivesConfig primitivesConfig;
     primitivesConfig.cullMode = config.pipelineConfig.cullMode;
     primitivesConfig.depthTest = config.pipelineConfig.depthTestEnable;
+
+    if(adaptiveActive){
+        //Dubina je vec tocna kad glavni prolaz krene, pa je ne pise ponovno i propusta tocno
+        //one fragmente koje je prepass ostavio - svaki piksel se sjenca jednom, koliko god
+        //se trokuta preko njega preklapalo
+        primitivesConfig.depthWrite = false;
+        primitivesConfig.depthCompare = vk::CompareOp::eEqual;
+    }
 
     shapes = std::make_unique<LoomShapes::Primitives>(*loom, primitivesConfig);
 
@@ -255,6 +293,11 @@ void Scene::State::build(){
         targetConfig.finalLayout = vk::ImageLayout::eTransferSrcOptimal;
         targetConfig.extraColorUsage = vk::ImageUsageFlagBits::eTransferSrc;
         targetConfig.enableDepth = config.enableDepth;
+        if(adaptiveActive){
+            targetConfig.keepDepth = true;
+            targetConfig.loadDepth = true;
+            targetConfig.depthCompare = false;   //compute cita vrijednost, ne odgovor na usporedbu
+        }
         offscreen = std::make_unique<RenderTarget>(loom->device,
             vk::Extent2D{config.width, config.height}, targetConfig);
     }
@@ -274,7 +317,55 @@ void Scene::State::build(){
         shadowPasses.push_back({shadowMap.get(), &sun, false});
     }
 
+    if(adaptiveActive){
+        buildAdaptive();
+    }
+
     built = true;
+}
+
+void Scene::State::buildAdaptive(){
+    const vk::Format depthFormat = offscreen ? offscreen->getDepthFormat()
+                                             : loom->depthImage->getFormat();
+
+    //Izveden iz cjevovoda kojim se crta boja, ne napisan pokraj njega: isti vertex shader,
+    //isti atributi, iste push konstante. Zato eEqual gore uopce smije stajati
+    PipelineConfig colourConfig = shapes->getTexturedPipeline().getConfig();
+
+    prepassPipeline = std::make_unique<VulkanGraphicsPipeline>(loom->device,
+        makeDepthPrepassConfig(colourConfig), loom->getColorFormat(), depthFormat);
+    prepassMaterial = std::make_unique<Material>(*prepassPipeline);
+
+    rateMap = std::make_unique<ShadingRateMap>(loom->device,
+        vk::Extent2D{config.width, config.height});
+
+    if(offscreen){
+        rateMap->setDepthSource(loom->getDescriptorPool(), *offscreen);
+    }
+    else{
+        //Prozorska dubina je obicna slika, pa joj sampler radimo ovdje. Bez usporedbe:
+        //compute cita samu vrijednost dubine
+        vk::SamplerCreateInfo samplerInfo;
+        samplerInfo.magFilter = vk::Filter::eNearest;
+        samplerInfo.minFilter = vk::Filter::eNearest;
+        samplerInfo.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+        samplerInfo.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+        samplerInfo.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+        samplerInfo.borderColor = vk::BorderColor::eFloatOpaqueWhite;
+        depthSampler = vk::raii::Sampler(loom->device.getDevice(), samplerInfo);
+
+        const VulkanImage& depth = *loom->depthImage;
+        rateMap->setDepthSource(loom->getDescriptorPool(),
+            SampledImage{*depth.getImageView(), *depthSampler, &depth, depth.getGeneration()},
+            depth.getExtent());
+    }
+
+    ShadingRateDistances distances;
+    distances.quarter = adaptive.quarterDistance;
+    distances.sixteenth = adaptive.sixteenthDistance;
+    rateMap->setDistances(distances);
+
+    loom->renderer.setShadingRateMap(*rateMap);
 }
 
 void Scene::State::ensureShadowPipeline(vk::Format depthFormat){
@@ -299,9 +390,20 @@ void Scene::State::ensureShadowPipeline(vk::Format depthFormat){
 }
 
 void Scene::State::teardown(){
+    //Prvo cekanje, pa rusenje. Zadnji frame je predan redu i jos se izvrsava; slika koju
+    //rusimo dok je command buffer jos drzi je pravo krsenje, ne kozmetika - a bez ovoga se
+    //dogada svaki put kad scena nestane odmah nakon endRendering
+    if(loom){
+        loom->waitIdle();
+    }
+
     //By hand and in this order: everything below holds buffers and images allocated out of
     //the Loom's device, so the Loom is the last thing to go
     shadowPasses.clear();
+    rateMap.reset();
+    prepassMaterial.reset();
+    prepassPipeline.reset();
+    depthSampler = nullptr;
     shadowMaterial.reset();
     shadowPipeline.reset();
     extraShadowMaps.clear();
@@ -384,6 +486,18 @@ void Scene::setClearColor(const glm::vec4& color){
 void Scene::setShadows(bool enabled){
     if(state->built) throw std::runtime_error("Loom::Scene: setShadows has to be called before the first frame");
     state->shadowsWanted = enabled;
+}
+
+void Scene::setAdaptiveShading(const AdaptiveShading& settings){
+    if(state->built){
+        throw std::runtime_error("Loom::Scene: setAdaptiveShading has to be called before the first frame - "
+                                 "it decides how the depth buffer and the pipelines are built");
+    }
+    state->adaptive = settings;
+}
+
+bool Scene::adaptiveShadingActive() const{
+    return state->adaptiveActive;
 }
 
 bool Scene::isRunning(){
@@ -471,6 +585,17 @@ void Scene::endRendering(){
         renderer.beginPass(*pass.target, *pass.light);
         state->replay(state->shadowMaterial.get());
         renderer.endPass();
+    }
+
+    //Kad je sjencanje u blokovima ukljuceno, glavni prolaz nije prvi: prije njega ide prolaz
+    //koji pise samo dubinu, pa compute koji iz te dubine odluci koliko je koji blok daleko
+    if(state->adaptiveActive){
+        if(state->offscreen) renderer.beginDepthPass(*state->offscreen);
+        else                 renderer.beginDepthPass();
+        state->replay(state->prepassMaterial.get());
+        renderer.endPass();
+
+        renderer.updateShadingRateMap(*state->rateMap);
     }
 
     if(state->offscreen){

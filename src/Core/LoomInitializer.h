@@ -7,6 +7,9 @@
 #include "../Vulkan/VulkanRenderer.h"
 #include "../Vulkan/VulkanGraphicsPipeline.h"
 #include "../Vulkan/VulkanComputePipeline.h"
+#include "../Vulkan/Material.h"
+#include "../Vulkan/Texture.h"
+#include "../Vulkan/Mesh.h"
 #include "LoomConfig.h"
 
 #include <optional>
@@ -71,6 +74,41 @@ class LoomInitializer{
     //Wall clock, and only meaningful with a window. A sequence export must drive its own
     //time - frame N at N/fps - or the same export twice will not give the same frames
     double getTime() const {return window ? window->getTime() : 0.0;}
+
+    //-- gradnja stvari kojima trebaju cetiri stvari iz ovog objekta ------------------------
+    //
+    //Material je do sada trazio device, command, pool, pipeline, sliku i podatke - sest
+    //argumenata od kojih cetiri dolaze odavde. Pozivatelj ih je prepisivao svaki put i nije
+    //imao nikakav izbor u njima, sto je definicija suvisnog argumenta
+    Material createMaterial(const VulkanGraphicsPipeline& pipeline,
+                            SampledImage image,
+                            const MaterialData& data = {}) const {
+        return Material(device, command, descriptorPool, pipeline, image, data);
+    }
+
+    //Bez teksture: materijal koji nosi samo svoje podatke
+    Material createMaterial(const VulkanGraphicsPipeline& pipeline,
+                            const MaterialData& data) const {
+        return Material(device, command, descriptorPool, pipeline, data);
+    }
+
+    //Proizvoljan payload umjesto MaterialData, za shader koji na set 1 binding 1 ocekuje
+    //nesto svoje
+    Material createMaterial(const VulkanGraphicsPipeline& pipeline,
+                            SampledImage image,
+                            const void* payload, size_t size) const {
+        return Material(device, command, descriptorPool, pipeline, image, payload, size);
+    }
+
+    Texture createTexture(const void* pixels, vk::Extent2D extent,
+                          const TextureConfig& textureConfig = {}) const {
+        return Texture(device, command, pixels, extent, textureConfig);
+    }
+
+    Mesh createMesh(const std::vector<Vertex>& vertices,
+                    const std::vector<uint16_t>& indices = {}) const {
+        return Mesh(device, command, vertices, indices);
+    }
 
     void waitIdle() const{device.getDevice().waitIdle();}
     VulkanGraphicsPipeline createPipeline(const PipelineConfig& pipelineConfig) const {

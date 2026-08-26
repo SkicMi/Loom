@@ -294,6 +294,50 @@ int main(){
         fmt("druga sjena mijenja %zu bajtova", diffBytes(bothCasting, onlySunCasting).different));
 
     // -------------------------------------------------------------------------------
+    // Zadnji slot polja: onaj koji bi prvi otisao izvan granica
+    // -------------------------------------------------------------------------------
+
+    //The array size lives in CMake and reaches C++ through a generated header and the
+    //shaders through -D. If the two ever drifted, the pipeline would still compile and the
+    //read would go past the end - so the test uses the HIGHEST index there is
+    auto fullHouse = [&](bool lastOneCasts){
+        Loom::Scene scene(Loom::Preset::Offscreen);
+        scene.setSize(sceneWidth, sceneHeight);
+        const Loom::TextureHandle texture = scene.loadTexture(texturePath);
+
+        //The preset's sun holds slot zero; these fill the rest
+        for(uint32_t i = 1; i < maxShadowMaps; ++i){
+            const bool isLast = (i == maxShadowMaps - 1);
+
+            LightConfig extra;
+            extra.type = LightType::Directional;
+            //The last one comes from the opposite side, so its shadow lands where no other
+            //light's does and cannot be confused for theirs
+            extra.direction = isLast ? glm::vec3(0.9f, -1.0f, 0.3f)
+                                     : glm::vec3(-0.2f * float(i), -1.0f, -0.4f);
+            extra.color = isLast ? glm::vec3(0.3f, 0.7f, 1.0f) : glm::vec3(0.2f);
+            extra.intensity = isLast ? 1.5f : 0.3f;
+
+            scene.addLight(extra, isLast ? lastOneCasts : true);
+        }
+
+        scene.startRendering();
+            scene.drawPlane(texture, floorTransform());
+            scene.drawCube(texture, blockTransform());
+        scene.endRendering();
+
+        return scene.readPixels();
+    };
+
+    const std::vector<uint8_t> lastCasting = fullHouse(true);
+    const std::vector<uint8_t> lastNotCasting = fullHouse(false);
+
+    report.check("zadnji slot se cita",
+        diffBytes(lastCasting, lastNotCasting).different > 0,
+        fmt("svjetlo u slotu %u mijenja %zu bajtova kad baca",
+            maxShadowMaps - 1, diffBytes(lastCasting, lastNotCasting).different));
+
+    // -------------------------------------------------------------------------------
     // Granice: gdje je strop, i sto se dogodi na njemu
     // -------------------------------------------------------------------------------
 

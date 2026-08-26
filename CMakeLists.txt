@@ -99,6 +99,26 @@ message(STATUS "Slang compiler: ${SLANGC_EXECUTABLE}")
 #   POSTOJECEM fileu dodas novi stage, treba rucni "cmake -S . -B build",
 #   jer se sadrzaj cita u configure koraku, a ne u buildu.
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# Granice koje C++ i shaderi MORAJU dijeliti.
+#   Odavde idu u C++ kroz generirani header, a u shadere kroz -D na slangc.
+#   Prije su stajale na tri mjesta i sinkronizirale se rukom; da se raziđu,
+#   pipeline bi se svejedno preveo a citanje bi otislo izvan granica polja.
+# ----------------------------------------------------------------------------
+set(LOOM_MAX_SHADOW_MAPS  4)
+set(LOOM_MAX_SHADOW_CUBES 2)
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ShadowLimits.h.in
+    ${CMAKE_BINARY_DIR}/generated/Core/ShadowLimits.h
+    @ONLY
+)
+
+set(LOOM_SHADER_DEFINES
+    -DLOOM_MAX_SHADOW_MAPS=${LOOM_MAX_SHADOW_MAPS}
+    -DLOOM_MAX_SHADOW_CUBES=${LOOM_MAX_SHADOW_CUBES}
+)
+
 set(LOOM_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${LOOM_SHADER_OUTPUT_DIR})
 
@@ -155,6 +175,7 @@ foreach(SHADER ${LOOM_SHADER_SOURCES})
                     -target spirv
                     -profile spirv_1_5
                     -entry ${STAGE_ENTRY}
+                    ${LOOM_SHADER_DEFINES}
                     -o ${SPV_OUTPUT}
             DEPENDS ${SHADER}
             COMMENT "Slang -> SPIR-V: ${SHADER_NAME}.${STAGE_SUFFIX}.spv"
@@ -207,7 +228,7 @@ add_library(Loom STATIC
 
 # PUBLIC: i Loom i sve sto ga linka vidi ove headere/dependencije,
 # jer su Vulkan/GLFW tipovi dio javnih Loom headera
-target_include_directories(Loom PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(Loom PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(Loom PUBLIC Vulkan::Headers glfw glm::glm)
 
 # VMA je PRIVATE: samo .cpp fileovi koji stvarno alociraju ga includeaju, a Loomovi
@@ -335,6 +356,7 @@ if(LOOM_BUILD_TESTS)
     # ------------------------------------------------------------------------
     set(LOOM_HEADER_INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_BINARY_DIR}/generated
         ${glm_SOURCE_DIR}
         ${vulkanheaders_SOURCE_DIR}/include
         ${glfw_SOURCE_DIR}/include

@@ -48,16 +48,23 @@ class ShadingRateMap{
     //Jedan bajt po tekselu, vec zapakiran. Toliko ih mora biti koliko ih slika ima
     void upload(const VulkanCommand& command, const std::vector<uint8_t>& packed);
 
-    //Odakle se cita dubina. Meta mora cuvati dubinu i NE smije imati comparison sampler -
-    //ovdje se cita prava vrijednost, ne odgovor na usporedbu
+    //Odakle se cita dubina. Semplirljiva slika i njena velicina - ne nuzno RenderTarget,
+    //jer prozorska dubina nije meta nego obicna slika.
+    //
+    //Sampler NE smije biti comparison: ovdje se cita prava vrijednost, a ne odgovor na
+    //usporedbu
+    void setDepthSource(const vk::raii::DescriptorPool& pool,
+                        const SampledImage& depth, vk::Extent2D depthExtent);
+
+    //Isto, kad dubina jest meta
     void setDepthSource(const vk::raii::DescriptorPool& pool, const RenderTarget& depthTarget);
 
     void setDistances(const ShadingRateDistances& value) {distances = value;}
     const ShadingRateDistances& getDistances() const {return distances;}
 
-    bool hasDepthSource() const {return depthSource != nullptr;}
+    bool hasDepthSource() const {return depthExtent.width > 0;}
     const ComputeMaterial& getComputeMaterial() const;
-    const RenderTarget& getDepthSource() const;
+    vk::Extent2D getDepthExtent() const {return depthExtent;}
 
     //8x8 niti po grupi, zaokruzeno gore
     uint32_t groupsX() const {return (extent.width + 7) / 8;}
@@ -80,7 +87,7 @@ class ShadingRateMap{
     VulkanImage image;
 
     ShadingRateDistances distances;
-    const RenderTarget* depthSource = nullptr;
+    vk::Extent2D depthExtent{0,0};
 
     //Sagradeni tek kad se veze izvor dubine: karta koja se puni rukom ne treba pipeline
     std::unique_ptr<VulkanComputePipeline> computePipeline;

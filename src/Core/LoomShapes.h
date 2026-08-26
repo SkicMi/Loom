@@ -46,6 +46,11 @@ struct PrimitivesConfig{
     //their own pipeline inside the Material, so these do not touch them
     vk::CullModeFlags cullMode = vk::CullModeFlagBits::eBack;
     bool depthTest = true;
+
+    //Uz depth prepass glavni prolaz vise ne treba pisati dubinu - ona je vec tocna - i smije
+    //testirati eEqual, cime se svaki piksel sjenca tocno jednom bez obzira na preklapanje
+    bool depthWrite = true;
+    vk::CompareOp depthCompare = vk::CompareOp::eLess;
 };
 
 

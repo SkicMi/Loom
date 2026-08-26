@@ -2,6 +2,9 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 
+//maxShadowMaps i maxShadowCubes: generira ih CMake, isti broj ide i u shadere
+#include "Core/ShadowLimits.h"
+
 struct FrameData{
     glm::mat4 view = glm::mat4(1.0f);
     glm::mat4 projection = glm::mat4(1.0f);
@@ -13,13 +16,6 @@ struct FrameData{
     uint32_t padding2 = 0;
 };
 
-
-//Koliko shadow karata set 0 nosi. MORA se poklapati s velicinom polja u shaderima
-//(triangle.slang i textured.slang) - polje deskriptora i polje u shaderu su dvije strane
-//istog broja, i ako se raziđu prevodenje pipelinea prolazi a citanje je izvan granica.
-//Kocka je skuplja sest puta, pa ih je manje
-inline constexpr uint32_t maxShadowMaps = 4;
-inline constexpr uint32_t maxShadowCubes = 2;
 
 //one light as the shader sees it. Lives in the storage buffer at set 0 , binding 1.
 //Growing this is cheap precisely because it is a storage buffer and not a push constant:
