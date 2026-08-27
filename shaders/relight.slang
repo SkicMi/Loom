@@ -1,36 +1,19 @@
 //Svjetlo nad G-bufferom: ploha dolazi iz slike, a ne iz mesha.
 //
-//Ovo je mjesto na kojem se ubacivanje svjetla u snimku konacno dogada. Fragment ne zna ni za
-//jedan trokut - zna gdje je tocka (iz slike pozicija) i kamo gleda (iz slike normala), a to
-//je sve sto osvjetljenje ikad i treba.
-//
-//Racuna ISTIM kodom kao i crtez preko mesha: shadeSurface iz include/Lighting.slang. Da su
+//Fragment ne zna ni za jedan trokut - zna gdje je tocka i kamo gleda, a to je sve sto
+//osvjetljenje ikad treba. Racuna ISTIM kodom kao i crtez preko mesha (shadeSurface). Da su
 //to dvije funkcije koje "rade isto", tvrdnja da relight daje istu sliku ne bi se dala
 //dokazati - dala bi se samo izjaviti.
+//
+//Ovdje se crta samo nase svjetlo. Za ubacivanje u postojecu snimku ide relight_composite.
 
-#include "include/Lighting.slang"
+#include "include/Relight.slang"
 
-struct RelightData{
-    //Tocke i normale su u view prostoru, jer je dubina iz koje su nastale bila. Svjetla su u
-    //svjetskom. Ovo je most izmedu to dvoje, i jedini razlog zasto relight treba kameru
-    float4x4 inverseView;
-
-    float4 baseColor;
-    float shininess;
-    float specularStrength;
-    float padding0;
-    float padding1;
-}
-
-[[vk::binding(0,1)]] Sampler2D positionMap;
-[[vk::binding(1,1)]] Sampler2D normalMap;
 [[vk::binding(2,1)]] ConstantBuffer<RelightData> relight;
 
-struct VSOutput{
-    float4 position : SV_Position;
-    float2 texCoord : TEXCOORD0;
-}
-
+//Jedini vertex stage cijelog relighta: trokut preko ekrana je isti trokut, pa ga
+//relight_composite koristi iz ovog filea. Stoji ovdje a ne u includeu jer CMake stageove
+//trazi u tekstu samog shadera
 [shader("vertex")]
 VSOutput vertexMain(uint vertexIndex : SV_VertexID){
     VSOutput output;
@@ -41,22 +24,15 @@ VSOutput vertexMain(uint vertexIndex : SV_VertexID){
 
 [shader("fragment")]
 float4 fragmentMain(VSOutput input) : SV_Target{
-    float4 point = positionMap.SampleLevel(input.texCoord, 0.0);
-    float4 surface = normalMap.SampleLevel(input.texCoord, 0.0);
+    Surface surface = surfaceAt(input.texCoord, relight.inverseView);
 
     //Gdje nema plohe, nema ni osvjetljenja. Ne crta se crno nego se ne crta nista - pozadina
-    //ostaje ono sto je vec bilo, a to je tocno ono sto kompozicija poslije treba
-    if(point.w < 0.5 || surface.w < 0.5){
+    //ostaje ono sto je vec bilo
+    if(!surface.exists){
         discard;
     }
 
-    float3 worldPos = mul(relight.inverseView, float4(point.xyz, 1.0)).xyz;
-
-    //Normala je smjer, ne mjesto: w = 0, pa je translacija ne dira
-    float3 N = normalize(mul(relight.inverseView, float4(surface.xyz, 0.0)).xyz);
-    float3 V = normalize(frame.cameraPosition.xyz - worldPos);
-
-    float3 lit = shadeSurface(relight.baseColor.rgb, worldPos, N, V,
+    float3 lit = shadeSurface(relight.baseColor.rgb, surface.worldPos, surface.N, surface.V,
                               relight.shininess, relight.specularStrength);
 
     return float4(lit, 1.0);

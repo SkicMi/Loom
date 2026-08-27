@@ -19,11 +19,23 @@ Relight::Relight(const VulkanDevice& device,
                  const vk::raii::DescriptorPool& pool,
                  const PositionMap& positions,
                  const NormalMap& normals,
+                 const RelightConfig& config)
+: Relight(device, command, pool, positions, normals, SampledImage{}, config){
+}
+
+Relight::Relight(const VulkanDevice& device,
+                 const VulkanCommand& command,
+                 const vk::raii::DescriptorPool& pool,
+                 const PositionMap& positions,
+                 const NormalMap& normals,
+                 SampledImage plate,
                  const RelightConfig& config){
 
     if(positions.getExtent() != normals.getExtent()){
         throw std::runtime_error("Relight: the position and normal maps are different sizes, so they do not describe the same surface");
     }
+
+    hasPlate = plate.isValid();
 
     data.baseColor = config.surface.baseColor;
     data.shininess = config.surface.shininess;
@@ -34,13 +46,22 @@ Relight::Relight(const VulkanDevice& device,
     PipelineConfig pipelineConfig;
     pipelineConfig.vertexBindings.clear();
     pipelineConfig.vertexAttributes.clear();
-    pipelineConfig.descriptorBindings = {
-        imageBinding(0),                        //pozicije
-        imageBinding(1),                        //normale
-        Material::getDataLayoutBinding(2)       //payload iza njih
-    };
+    std::vector<SampledImage> images{positions.getSampled(), normals.getSampled()};
+    if(hasPlate){
+        images.push_back(plate);
+    }
+
+    pipelineConfig.descriptorBindings.clear();
+    for(uint32_t slot = 0; slot < images.size(); ++slot){
+        pipelineConfig.descriptorBindings.push_back(imageBinding(slot));
+    }
+    //Payload uvijek iza slika - isto pravilo po kojem ih i Material rasporeduje
+    pipelineConfig.descriptorBindings.push_back(Material::getDataLayoutBinding(uint32_t(images.size())));
+
+    //Trokut preko ekrana je isti trokut u oba slucaja, pa je i vertex stage isti file
     pipelineConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/relight.vert.spv";
-    pipelineConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/relight.frag.spv";
+    pipelineConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) +
+        (hasPlate ? "/relight_composite.frag.spv" : "/relight.frag.spv");
     pipelineConfig.cullMode = vk::CullModeFlagBits::eNone;
     pipelineConfig.colorFormat = config.colorFormat;
     pipelineConfig.depthTestEnable = false;
@@ -48,9 +69,7 @@ Relight::Relight(const VulkanDevice& device,
 
     pipeline.emplace(device, pipelineConfig, config.colorFormat, config.depthFormat);
 
-    material.emplace(device, command, pool, *pipeline,
-                     std::vector<SampledImage>{positions.getSampled(), normals.getSampled()},
-                     &data, sizeof(data));
+    material.emplace(device, command, pool, *pipeline, std::move(images), &data, sizeof(data));
 }
 
 void Relight::setCamera(const Camera& camera){
@@ -65,4 +84,11 @@ void Relight::setSurface(const MaterialData& surface){
     data.shininess = surface.shininess;
     data.specularStrength = surface.specularStrength;
     material->setData(&data, sizeof(data));
+}
+
+void Relight::setPlate(const SampledImage& plate){
+    if(!hasPlate){
+        throw std::runtime_error("Relight: this pass was built without a plate, so there is no footage to composite over - use the constructor that takes one");
+    }
+    material->setSampledImage(2, plate);
 }

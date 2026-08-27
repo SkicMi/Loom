@@ -93,9 +93,15 @@ float cubeVisibility(GpuLight light, float3 worldPos){
 //
 //Odavde nadalje je svejedno je li ploha dosla iz mesha ili iz slike dubine - sve sto ova
 //funkcija zna je gdje je tocka, kamo gleda i koje je boje
-float3 shadeSurface(float3 base, float3 worldPos, float3 N, float3 V,
-                    float shininess, float specularStrength){
-    float3 lit = base * frame.ambientColor.rgb;
+//Doprinos svih svjetala, dodan na ono sto je vec bilo.
+//
+//start postoji zbog kompozicije: kad se svjetlo ubacuje u snimku, ono sto je vec na slici
+//JEST pocetna vrijednost, pa se zbraja istim redom kojim bi se zbrajalo da je scena crtana
+//odjednom. Da kompozicija zbraja na kraju, zbroj bi se razlikovao u zadnjem bitu - a onda
+//se "isto svjetlo" vise ne bi dalo dokazati, samo izjaviti
+float3 accumulateLight(float3 start, float3 base, float3 worldPos, float3 N, float3 V,
+                       float shininess, float specularStrength){
+    float3 lit = start;
 
     for(uint i = 0; i < frame.lightCount; ++i){
         GpuLight light = lights[i];
@@ -136,5 +142,12 @@ float3 shadeSurface(float3 base, float3 worldPos, float3 N, float3 V,
         lit += light.color.rgb * specular * attenuation * visibility;
     }
 
-    return lit;
+        return lit;
+}
+
+//Ploha osvijetljena od nule: ambijent pa svjetla. Ono sto crtez preko mesha oduvijek radi
+float3 shadeSurface(float3 base, float3 worldPos, float3 N, float3 V,
+                    float shininess, float specularStrength){
+    return accumulateLight(base * frame.ambientColor.rgb, base, worldPos, N, V,
+                           shininess, specularStrength);
 }

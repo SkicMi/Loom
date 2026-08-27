@@ -142,6 +142,14 @@ foreach(SHADER ${LOOM_SHADER_SOURCES})
     get_filename_component(SHADER_NAME ${SHADER} NAME_WE)
     file(READ ${SHADER} SHADER_TEXT)
 
+    # Stage moze biti napisan i u includeu. Bez ovoga bi takav shader tiho izgubio taj
+    # stage - ne bi pao build nego bi nedostajao .spv, a stari bi jos lezao u build mapi i
+    # sve bi radilo do prvog ciscenja. Jednom se dogodilo, vise ne moze
+    foreach(SHADER_INCLUDE ${LOOM_SHADER_INCLUDES})
+        file(READ ${SHADER_INCLUDE} INCLUDE_TEXT)
+        string(APPEND SHADER_TEXT "${INCLUDE_TEXT}")
+    endforeach()
+
     # dvije paralelne liste: izlazni sufiks i ime entry pointa
     set(STAGE_SUFFIXES "")
     set(STAGE_ENTRIES  "")

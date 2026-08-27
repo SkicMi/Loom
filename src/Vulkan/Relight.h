@@ -47,6 +47,17 @@ class Relight{
             const NormalMap& normals,
             const RelightConfig& config = {});
 
+    //Svjetlo ubaceno U SNIMKU: plate je ono sto se vec vidi, i ujedno albedo kojim ploha
+    //odbija novo svjetlo. Gdje plohe nema, snimka prolazi nedirnuta - pa je izlaz ovog
+    //prolaza cijela slika i ne trazi da je itko prije njega ispunio
+    Relight(const VulkanDevice& device,
+            const VulkanCommand& command,
+            const vk::raii::DescriptorPool& pool,
+            const PositionMap& positions,
+            const NormalMap& normals,
+            SampledImage plate,
+            const RelightConfig& config = {});
+
     Relight(const Relight&) = delete;
     Relight& operator=(const Relight&) = delete;
 
@@ -54,8 +65,14 @@ class Relight{
     //osvjetljavale svjetlima iz svjetskog, sto je tiho krivo - slika izade, samo ne ta
     void setCamera(const Camera& camera);
 
-    //Boja i sjaj plohe. Dok albedo ne dolazi iz slike, ovo je jedino cime se to zadaje
+    //Boja i sjaj plohe. U kompoziciji baseColor MNOZI snimku, pa se albedo da prigusiti bez
+    //diranja same snimke
     void setSurface(const MaterialData& surface);
+
+    //Sljedeci frame snimke. Postoji zato da se za video ne gradi novi materijal po frameu
+    void setPlate(const SampledImage& plate);
+
+    bool compositesOverPlate() const {return hasPlate;}
 
     const Material& getMaterial() const {return *material;}
     const VulkanGraphicsPipeline& getPipeline() const {return *pipeline;}
@@ -63,6 +80,7 @@ class Relight{
 
     private:
     RelightData data;
+    bool hasPlate = false;
 
     //Redoslijed je bitan: materijal drzi pokazivac na pipeline, pa pipeline mora zivjeti
     //duze - a clanovi se rusе obrnutim redom od deklaracije
