@@ -1,6 +1,8 @@
 #pragma once
 #include "ImageFile.h"
+#include "Sequence.h"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -95,5 +97,46 @@ class VideoReader{
     struct State;
     std::unique_ptr<State> state;
 };
+
+
+//-------------------------------------------------------------------------------------------
+// Snimka na disk, frame po frame
+//-------------------------------------------------------------------------------------------
+
+struct TranscodeConfig{
+    //Kamo i pod kojim imenom. Brojanje datoteka je NEOVISNO o broju framea u snimci: izvoz
+    //od stotog framea nadalje pise frame_0000 osim ako se ovdje ne kaze drugacije. To je
+    //namjerno - sekvenca se najcesce gleda kao cjelina za sebe
+    SequenceConfig sequence = {};
+
+    //Odakle i koliko. -1 znaci do kraja snimke
+    int64_t firstFrame = 0;
+    int64_t frameCount = -1;
+
+    //Zove se nakon svakog zapisanog framea. Vrati false da se izvoz prekine - dugotrajan
+    //posao koji se ne da zaustaviti je posao koji se pokrece jednom pa nikad vise.
+    //written je koliko ih je do sad zapisano, expected koliko ih se ocekuje (-1 ako se ne zna)
+    std::function<bool(uint32_t written, int64_t expected)> onFrame;
+};
+
+struct TranscodeResult{
+    uint32_t framesWritten = 0;
+    std::string firstPath;
+    std::string lastPath;
+
+    //Prekinut izvoz nije neuspjeh - datoteke koje su zapisane su i dalje tu. Ali jest nesto
+    //drugo od dovrsenog, i pozivatelj to mora moci razlikovati
+    bool cancelled = false;
+
+    //Sto je snimka rekla o sebi, da je pozivatelj ne mora otvarati drugi put
+    VideoInfo info;
+};
+
+//Snimka -> niz slika na disku.
+//
+//Ovo je put kojim snimka dolazi do modela za procjenu dubine: oni rade nad slikama, ne nad
+//kontejnerima. Cita se NAPRIJED jer je to jedini nacin na koji dekoder radi ono za sto je
+//gradcen - trazenje po broju bi svaki frame platilo skokom na kljucni frame ispred njega.
+TranscodeResult videoToSequence(const std::string& videoPath, const TranscodeConfig& config = {});
 
 }

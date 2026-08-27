@@ -1,4 +1,4 @@
-// 0a: Spool cita video.
+// 0a: Spool cita video.  0b: i pise ga natrag kao niz slika.
 //
 // Prvi korak prema tome da svjetlo koje smo dokazali u koraku 1 dobije pravu snimku umjesto
 // Loomove vlastite dubine. Dekoder zivi u procesu - nema temp fileova i nema medukoraka - a
@@ -7,6 +7,9 @@
 // Istina se pravi ovdje: Spool sam napise frameove kao PNG, ffmpeg ih spoji BEZ GUBITKA, i
 // onda ih Spool procita natrag. Ako se piksel vrati bit za bit, put je zatvoren s obje strane
 // i nijedna od te dvije polovice ne moze tiho lagati.
+//
+// Isti krug zatvara i izvoz: PNG -> video -> PNG. To je put kojim ce snimka doci do modela za
+// procjenu dubine, jer oni rade nad slikama a ne nad kontejnerima.
 #include "TestHarness.h"
 
 #include <Spool/ImageFile.h>
@@ -60,7 +63,7 @@ int worstChannelDelta(const Spool::Image& a, const Spool::Image& b){
 }
 
 int main(){
-    TestReport report("0a spool video");
+    TestReport report("0a+0b spool video");
 
     if(!haveFfmpeg()){
         report.check("ffmpeg", false,
@@ -203,6 +206,102 @@ int main(){
     }
     else{
         report.check("metapodaci", false, "H.264 kodiranje nije uspjelo, pa se nema odakle citati");
+    }
+
+    // -------------------------------------------------------------------------------
+    // 0b: snimka natrag na disk
+    // -------------------------------------------------------------------------------
+
+    //Ovo je put kojim snimka dolazi do modela za procjenu dubine - oni rade nad slikama, ne
+    //nad kontejnerima. Krug se zatvara: PNG -> video -> PNG, sve bez gubitka, pa se smije
+    //traziti da izade tocno ono sto je uslo
+    {
+        Spool::TranscodeConfig transcode;
+        transcode.sequence.directory = (work / "out").string();
+        transcode.sequence.prefix = "shot_";
+
+        std::vector<uint32_t> progress;
+        transcode.onFrame = [&](uint32_t written, int64_t expected){
+            progress.push_back(written);
+            (void)expected;
+            return true;
+        };
+
+        const Spool::TranscodeResult out = Spool::videoToSequence(lossless, transcode);
+
+        report.check("izvezeno je koliko je i bilo",
+            out.framesWritten == frameTotal && !out.cancelled,
+            fmt("%u frameova, prvi '%s', zadnji '%s'", out.framesWritten,
+                std::filesystem::path(out.firstPath).filename().string().c_str(),
+                std::filesystem::path(out.lastPath).filename().string().c_str()));
+
+        report.check("izvjestaj o snimci dolazi s njim",
+            out.info.width == frameWidth && out.info.height == frameHeight,
+            fmt("%ux%u pri %.3f slika u sekundi - pozivatelj je ne mora otvarati drugi put",
+                out.info.width, out.info.height, out.info.frameRate()));
+
+        report.check("napredak se javlja svaki frame",
+            progress.size() == frameTotal && progress.front() == 1 && progress.back() == frameTotal,
+            fmt("%zu javljanja, od %u do %u", progress.size(),
+                progress.empty() ? 0 : progress.front(), progress.empty() ? 0 : progress.back()));
+
+        //I da je na disku doslovno ono sto je u snimku uslo
+        size_t different = 0;
+        int worstOut = 0;
+        for(uint32_t i = 0; i < frameTotal; ++i){
+            const Spool::Image fromDisk = Spool::loadImage(
+                (work / "out" / ("shot_" + fmt("%04u", i))).string() + ".png");
+            const int delta = worstChannelDelta(source[i], fromDisk);
+            worstOut = std::max(worstOut, delta);
+            if(delta != 0) ++different;
+        }
+
+        report.check("krug PNG -> video -> PNG je zatvoren",
+            different == 0 && worstOut == 0,
+            fmt("%zu od %u frameova odstupa od izvornika, najveca razlika po kanalu %d",
+                different, frameTotal, worstOut));
+    }
+
+    // -------------------------------------------------------------------------------
+    // Raspon i prekid
+    // -------------------------------------------------------------------------------
+
+    {
+        Spool::TranscodeConfig slice;
+        slice.sequence.directory = (work / "slice").string();
+        slice.firstFrame = 4;
+        slice.frameCount = 3;
+
+        const Spool::TranscodeResult out = Spool::videoToSequence(lossless, slice);
+
+        //Brojanje datoteka je neovisno o broju framea u snimci: peti frame snimke je i dalje
+        //frame_0000 na disku, jer se sekvenca najcesce gleda kao cjelina za sebe
+        size_t wrong = 0;
+        for(uint32_t i = 0; i < 3; ++i){
+            const Spool::Image fromDisk = Spool::loadImage(
+                (work / "slice" / ("frame_" + fmt("%04u", i))).string() + ".png");
+            if(worstChannelDelta(source[4 + i], fromDisk) != 0) ++wrong;
+        }
+
+        report.check("izvozi se trazeni raspon",
+            out.framesWritten == 3 && wrong == 0,
+            fmt("%u frameova od cetvrtog nadalje, %zu ih nije taj frame", out.framesWritten, wrong));
+    }
+
+    {
+        Spool::TranscodeConfig stopped;
+        stopped.sequence.directory = (work / "stopped").string();
+        stopped.onFrame = [](uint32_t written, int64_t){ return written < 5; };
+
+        const Spool::TranscodeResult out = Spool::videoToSequence(lossless, stopped);
+
+        //Dugotrajan posao koji se ne da zaustaviti je posao koji se pokrene jednom pa nikad
+        //vise. Prekid nije neuspjeh - zapisano ostaje zapisano - ali se mora razlikovati od
+        //dovrsenog, inace se ne zna je li sekvenca cijela
+        report.check("prekid staje i kaze da je stao",
+            out.framesWritten == 5 && out.cancelled,
+            fmt("zapisano %u od %u, prekinuto: %s", out.framesWritten, frameTotal,
+                out.cancelled ? "da" : "ne"));
     }
 
     // -------------------------------------------------------------------------------

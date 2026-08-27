@@ -404,4 +404,50 @@ Image VideoReader::readFrame(int64_t index){
     return {};
 }
 
+
+//-------------------------------------------------------------------------------------------
+
+TranscodeResult videoToSequence(const std::string& videoPath, const TranscodeConfig& config){
+    if(config.firstFrame < 0){
+        throw std::runtime_error("Spool::videoToSequence: cannot start before frame 0");
+    }
+
+    VideoReader reader(videoPath);
+
+    TranscodeResult result;
+    result.info = reader.info();
+
+    //Koliko ih se ocekuje - samo za izvjestavanje, ne za odluku o zaustavljanju. Broj
+    //frameova iz kontejnera zna biti procjena, a izvoz se zaustavlja kad snimke stvarno
+    //nestane, ne kad brojka kaze da bi trebala
+    int64_t expected = config.frameCount;
+    if(expected < 0){
+        expected = result.info.frameCount - config.firstFrame;
+        if(expected < 0) expected = 0;
+    }
+
+    SequenceWriter writer(config.sequence);
+
+    Image frame = (config.firstFrame > 0) ? reader.readFrame(config.firstFrame) : reader.readNext();
+
+    while(frame.isValid()){
+        if(config.frameCount >= 0 && int64_t(result.framesWritten) >= config.frameCount) break;
+
+        const std::string path = writer.write(frame);
+        ++result.framesWritten;
+
+        if(result.firstPath.empty()) result.firstPath = path;
+        result.lastPath = path;
+
+        if(config.onFrame && !config.onFrame(result.framesWritten, expected)){
+            result.cancelled = true;
+            break;
+        }
+
+        frame = reader.readNext();
+    }
+
+    return result;
+}
+
 }
