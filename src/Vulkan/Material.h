@@ -33,6 +33,19 @@ class Material{
         const void* data,
         size_t size);
 
+    //Vise slika odjednom, vezanih redom na bindinge 0, 1, 2... a payload na onaj iza njih.
+    //
+    //Postoji zbog G-buffera: pozicije i normale su dvije slike koje opisuju istu plohu i
+    //nijedna od njih nije "tekstura ovog objekta". Materijal s jednom slikom je i dalje isti
+    //materijal - ovo je nadogradnja, ne zamjena
+    Material(const VulkanDevice& device,
+        const VulkanCommand& command,
+        const vk::raii::DescriptorPool& pool,
+        const VulkanGraphicsPipeline& pipeline,
+        std::vector<SampledImage> images,
+        const void* data,
+        size_t size);
+
     
 
     Material(const Material&) = delete;
@@ -66,6 +79,7 @@ class Material{
     void setData(const MaterialData& newData);
     void setData(const void* newData, size_t size);
     void setSampledImage(const SampledImage& newImage);
+    void setSampledImage(size_t index, const SampledImage& newImage);
     void setBaseColor(const glm::vec4& newBaseColor);
     void setShininess(float newShininess);
     void setSpecularStrength(float newSpecularStrength);
@@ -85,7 +99,11 @@ class Material{
     std::vector<uint8_t> payload;
     ShadingRate shadingRate = ShadingRate::Full;
     ShadingImportance importance = ShadingImportance::Normal;
-    mutable SampledImage image;
+    mutable std::vector<SampledImage> images;
+
+    //Na koji binding ide payload. Jedna slika ostavlja ga na 1, kako je oduvijek bilo; N
+    //slika ga gura na N, jer bindingi ispod pripadaju slikama
+    uint32_t dataBinding = 1;
     std::vector<vk::raii::DescriptorSet> descriptorSets;
     mutable std::vector<VulkanBuffer> dataBuffers;
     mutable std::vector<uint8_t> dirty;
@@ -94,10 +112,10 @@ class Material{
     void build(const VulkanDevice& device,
                 const VulkanCommand& command,
                 const vk::raii::DescriptorPool& pool,
-                SampledImage image);
+                std::vector<SampledImage> images);
 
     void refreshImageIfStale() const;
 
-    void writeImage(size_t frame) const;
+    void writeImages(size_t frame) const;
 
 };

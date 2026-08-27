@@ -1,9 +1,47 @@
 #pragma once
+#include "Core/CameraIntrinsics.h"
 #include "Core/LoomInitializer.h"
 #include "Vulkan/Vertex.h"
+#include <glm/glm.hpp>
 #include <cmath>
 #include <cstdint>
 #include <vector>
+
+//Koliko kuta smije otici na sam ZAPIS dubine, prije nego se racunu ista prigovori.
+//
+//Zapisana dubina je float32: na vrijednosti d njen korak je d * 2^-23. Kroz obrat
+//linearizacije taj korak u pravim jedinicama iznosi (far-near) * D^2 / (near*far) puta
+//toliko, a normala ga vidi kao nagib te visine nad sirinom jednog piksela. Sve je poznato,
+//pa se prag racuna umjesto da se bira okom.
+//
+//Vrijedi za ravne plohe okrenute prema kameri; ploha pod ostrim kutom ima veci korak dubine
+//po pikselu, pa je ovo donja granica i mjereni broj se uvijek i ispisuje
+inline float depthPrecisionAngle(float viewDepth, const CameraIntrinsics& intrinsics){
+    const float n = intrinsics.nearPlane;
+    const float f = intrinsics.farPlane;
+
+    const float storedDepth = (f / (f - n)) * (1.0f - n / viewDepth);
+    const float depthStep = storedDepth * 1.1920929e-7f;                //float32 eps
+    const float unitsPerStep = (f - n) * viewDepth * viewDepth / (n * f) * depthStep;
+
+    const float pixelSize = viewDepth / std::abs(intrinsics.fx);
+    return glm::degrees(std::atan(unitsPerStep / pixelSize));
+}
+
+//Najveci nagib zrcalnog clana pow(cos, shininess) po kutu. Postize se na cos^2 = (s-1)/s
+inline float specularSlope(float shininess){
+    if(shininess <= 1.0f) return 1.0f;
+    const float cosine = std::sqrt((shininess - 1.0f) / shininess);
+    return shininess * std::pow(cosine, shininess - 1.0f) * std::sqrt(1.0f - cosine * cosine);
+}
+
+//Koliko se izracunato svjetlo smije razlikovati samo zato sto normala dolazi iz zapisane
+//dubine umjesto iz trokuta. Difuzni clan se s kutom mijenja najvise 1:1, zrcalni najvise
+//specularSlope puta - i oboje je pomnozeno bojom svjetla, koja nije veca od 1
+inline float lightingTolerance(float viewDepth, const CameraIntrinsics& intrinsics, float shininess){
+    const float radians = glm::radians(depthPrecisionAngle(viewDepth, intrinsics));
+    return radians * (1.0f + specularSlope(shininess));
+}
 
 //Shared material for the tests: one cube, one checkerboard, one known pattern, and the
 //sRGB conversions the GPU performs, so a test can predict what the GPU should produce

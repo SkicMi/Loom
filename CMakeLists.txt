@@ -230,6 +230,7 @@ add_library(Loom STATIC
     src/Vulkan/ShadingRateMap.cpp
     src/Vulkan/PositionMap.cpp
     src/Vulkan/NormalMap.cpp
+    src/Vulkan/Relight.cpp
     src/Core/Camera.cpp
     src/Core/CameraIntrinsics.cpp
     src/Core/Light.cpp

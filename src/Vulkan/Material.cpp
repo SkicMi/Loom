@@ -10,7 +10,8 @@ Material::Material(const VulkanDevice& device,
     SampledImage image,
     const MaterialData& data) : pipeline(&pipeline),
     payload(reinterpret_cast<const uint8_t*>(&data), reinterpret_cast<const uint8_t*>(&data) + sizeof(MaterialData)) {
-            build(device, command, pool, image);
+            build(device, command, pool, image.isValid() ? std::vector<SampledImage>{image}
+                                                         : std::vector<SampledImage>{});
 
 }
 
@@ -26,7 +27,26 @@ Material::Material(const VulkanDevice& device,
             throw std::runtime_error("Material: payload is empty");
         }
         payload.assign(reinterpret_cast<const uint8_t*>(data), reinterpret_cast<const uint8_t*>(data) + size);
-        build(device, command, pool, image);
+        build(device, command, pool, image.isValid() ? std::vector<SampledImage>{image}
+                                                     : std::vector<SampledImage>{});
+}
+
+Material::Material(const VulkanDevice& device,
+    const VulkanCommand& command,
+    const vk::raii::DescriptorPool& pool,
+    const VulkanGraphicsPipeline& pipeline,
+    std::vector<SampledImage> images,
+    const void* data,
+    size_t size) : pipeline(&pipeline){
+
+        if(data == nullptr || size == 0){
+            throw std::runtime_error("Material: payload is empty");
+        }
+        if(images.empty()){
+            throw std::runtime_error("Material: this constructor is for a material built from several images, and none were given");
+        }
+        payload.assign(reinterpret_cast<const uint8_t*>(data), reinterpret_cast<const uint8_t*>(data) + size);
+        build(device, command, pool, std::move(images));
 }
 
 Material::Material(const VulkanDevice& device,
@@ -35,21 +55,25 @@ Material::Material(const VulkanDevice& device,
     const VulkanGraphicsPipeline& pipeline,
     const MaterialData& data) : pipeline(&pipeline),
     payload(reinterpret_cast<const uint8_t*>(&data), reinterpret_cast<const uint8_t*>(&data) + sizeof(MaterialData)) {
-            build(device, command, pool, SampledImage{});
+            build(device, command, pool, std::vector<SampledImage>{});
 
 }
 
 void Material::build(const VulkanDevice& device,
                     const VulkanCommand& command,
                     const vk::raii::DescriptorPool& pool,
-                    SampledImage image) {
+                    std::vector<SampledImage> images) {
 
     if(!pipeline-> hasDescriptors()){
         throw std::runtime_error("Material : pipeline has no descriptor set layout");
     }
 
     this->device = &device;
-    this->image = image;
+    this->images = std::move(images);
+
+    //Slike zauzimaju bindinge od nule redom, pa payload ide na prvi slobodan iza njih. S
+    //jednom slikom to je 1 - tocno ono sto je bilo i prije
+    this->dataBinding = this->images.empty() ? 1u : uint32_t(this->images.size());
 
     size_t framesInFlight = command.getCommandBuffers().size();
 
@@ -80,34 +104,36 @@ void Material::build(const VulkanDevice& device,
 
         vk::WriteDescriptorSet bufferWrite;
         bufferWrite.dstSet = *descriptorSets[i];
-        bufferWrite.dstBinding = 1;
+        bufferWrite.dstBinding = dataBinding;
         bufferWrite.dstArrayElement = 0;
         bufferWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
         bufferWrite.setBufferInfo(bufferInfo);
 
         device.getDevice().updateDescriptorSets(bufferWrite,nullptr);
 
-        if(this->image.isValid()){
-            writeImage(i);
+        if(!this->images.empty()){
+            writeImages(i);
         }
 
     }         
 }
 
-void Material::writeImage(size_t frame) const{
-    vk::DescriptorImageInfo imageInfo;
-    imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    imageInfo.imageView = image.view;
-    imageInfo.sampler = image.sampler;
+void Material::writeImages(size_t frame) const{
+    for(size_t slot = 0; slot < images.size(); ++slot){
+        vk::DescriptorImageInfo imageInfo;
+        imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        imageInfo.imageView = images[slot].view;
+        imageInfo.sampler = images[slot].sampler;
 
-    vk::WriteDescriptorSet imageWrite;
-    imageWrite.dstSet = *descriptorSets[frame];
-    imageWrite.dstBinding = 0;
-    imageWrite.dstArrayElement = 0;
-    imageWrite.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    imageWrite.setImageInfo(imageInfo);
+        vk::WriteDescriptorSet imageWrite;
+        imageWrite.dstSet = *descriptorSets[frame];
+        imageWrite.dstBinding = uint32_t(slot);
+        imageWrite.dstArrayElement = 0;
+        imageWrite.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        imageWrite.setImageInfo(imageInfo);
 
-    device->getDevice().updateDescriptorSets(imageWrite,nullptr);
+        device->getDevice().updateDescriptorSets(imageWrite,nullptr);
+    }
 }
 
 void Material::uploadIfDirty(size_t frame) const{
@@ -118,7 +144,7 @@ void Material::uploadIfDirty(size_t frame) const{
         dirty[frame] = 0;
     }
     if(imageDirty[frame]){
-        writeImage(frame);
+        writeImages(frame);
         imageDirty[frame] = 0;
     }
 }
@@ -126,12 +152,14 @@ void Material::uploadIfDirty(size_t frame) const{
 //A render target that resized destroyed its view. The image counts its rebuilds, so the
 //material can notice on its own instead of the target having to keep a list of materials
 void Material::refreshImageIfStale() const{
-    if(image.source == nullptr) return;
-    if(image.source->getGeneration() == image.generation) return;
+    for(SampledImage& image : images){
+        if(image.source == nullptr) continue;
+        if(image.source->getGeneration() == image.generation) continue;
 
-    image.view = *image.source->getImageView();
-    image.generation = image.source->getGeneration();
-    std::fill(imageDirty.begin(), imageDirty.end(), uint8_t(1));
+        image.view = *image.source->getImageView();
+        image.generation = image.source->getGeneration();
+        std::fill(imageDirty.begin(), imageDirty.end(), uint8_t(1));
+    }
 }
 
 const MaterialData& Material::getData() const{
@@ -150,13 +178,18 @@ void Material::setData(const void* newData, size_t size){
 }
 
 void Material::setSampledImage(const SampledImage& newImage){
+    setSampledImage(0, newImage);
+}
+
+void Material::setSampledImage(size_t index, const SampledImage& newImage){
     if(!newImage.isValid()){
         throw std::runtime_error("setSampledImage: image has no view or no sampler");
     }
-    if(!image.isValid()){
-        throw std::runtime_error("setSampledImage: material was built without an image");
+    if(index >= images.size()){
+        throw std::runtime_error("setSampledImage: this material was built with " +
+            std::to_string(images.size()) + " images, so there is no slot " + std::to_string(index));
     }
-    image = newImage;
+    images[index] = newImage;
     std::fill(imageDirty.begin(), imageDirty.end(), uint8_t(1));
 }
 

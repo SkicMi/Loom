@@ -46,24 +46,6 @@ float angleBetween(const glm::vec3& a, const glm::vec3& b){
     return glm::degrees(std::acos(glm::clamp(glm::dot(a, b), -1.0f, 1.0f)));
 }
 
-//Koliko kuta smije otici na sam ZAPIS dubine, prije nego se racunu ista prigovori.
-//
-//Zapisana dubina je float32: na vrijednosti d njen korak je d * 2^-23. Kroz obrat
-//linearizacije taj korak u pravim jedinicama iznosi (far-near) * D^2 / (near*far) puta
-//toliko, a normala ga vidi kao nagib te visine nad sirinom jednog piksela. Sve je poznato,
-//pa se prag racuna umjesto da se bira okom
-float precisionLimit(float viewDepth, const CameraIntrinsics& intrinsics){
-    const float n = intrinsics.nearPlane;
-    const float f = intrinsics.farPlane;
-
-    const float storedDepth = (f / (f - n)) * (1.0f - n / viewDepth);
-    const float depthStep = storedDepth * 1.1920929e-7f;                //float32 eps
-    const float unitsPerStep = (f - n) * viewDepth * viewDepth / (n * f) * depthStep;
-
-    const float pixelSize = viewDepth / std::abs(intrinsics.fx);
-    return glm::degrees(std::atan(unitsPerStep / pixelSize));
-}
-
 struct AngleError{
     float worst = 0.0f;
     double sum = 0.0;
@@ -174,7 +156,7 @@ int main(){
 
         const AngleError error = errorAgainst(facing, {0.0f, 0.0f, 1.0f});
 
-        const float limit = precisionLimit(5.0f, intrinsics);
+        const float limit = depthPrecisionAngle(5.0f, intrinsics);
 
         report.check("ploha prema kameri daje (0,0,1)",
             error.count == size_t(sceneWidth) * sceneHeight && error.worst < limit,
@@ -197,7 +179,7 @@ int main(){
         const glm::vec3 truth = {std::sin(tilt), 0.0f, std::cos(tilt)};
         const AngleError error = errorAgainst(tilted, truth);
 
-        const float limit = precisionLimit(6.0f, intrinsics);
+        const float limit = depthPrecisionAngle(6.0f, intrinsics);
 
         report.check("nagib oko Y",
             error.worst < limit,
@@ -217,7 +199,7 @@ int main(){
         const glm::vec3 truth = glm::normalize(glm::vec3(rotation * glm::vec4(0,0,1,0)));
         const AngleError error = errorAgainst(tilted, truth);
 
-        const float limit = precisionLimit(7.0f, intrinsics);
+        const float limit = depthPrecisionAngle(7.0f, intrinsics);
 
         report.check("nagib oko obje osi",
             error.worst < limit,
