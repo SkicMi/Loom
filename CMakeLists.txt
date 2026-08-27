@@ -3,6 +3,12 @@
 #  Struktura builda:
 #    - "Loom"    -> staticka biblioteka (src/Core + src/Vulkan)
 #    - "LoomApp" -> testni executable (src/main.cpp) koji linka Loom
+#
+#  Sistemske ovisnosti (sve ostalo se dovlaci FetchContentom):
+#    - Vulkan drajver i validation layeri
+#    - slangc (Vulkan SDK) - prevodi shadere
+#    - FFmpeg razvojni paketi - Spool cita video; vidi spool/CMakeLists.txt
+#    - ffmpeg CLI - samo za testove, koji sami prave testni materijal
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 
