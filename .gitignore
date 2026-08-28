@@ -8,3 +8,5 @@ CMakeCache.txt
 *.obj
 .vscode/
 .idea/
+tools/depth/.venv/
+__pycache__/
