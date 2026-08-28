@@ -30,9 +30,11 @@ import argparse, math, os, re, subprocess, sys, tempfile
 import numpy
 
 
-def run_loom(loom, plate, depth, near, far, fov, angle, shadow, out):
+def run_loom(loom, plate, depth, near, far, fov, angle, shadow, out, shadowMask=None):
     command = [loom, plate, depth, str(near), str(far), "--fov", str(fov),
                "--angle", str(angle), "--save", out]
+    if shadowMask:
+        command += ["--mask", shadowMask]
     if not shadow:
         command.append("--no-shadow")
 
@@ -77,7 +79,12 @@ def main():
     parser = argparse.ArgumentParser(description="mjerenje ubacenog svjetla nad maskom")
     parser.add_argument("--plate", required=True)
     parser.add_argument("--depth", required=True)
-    parser.add_argument("--mask", required=True, help="maska subjekta (PNG, 255 = subjekt)")
+    parser.add_argument("--mask", required=True,
+                        help="maska kojom se MJERI: dijeli subjekt od pozadine")
+    parser.add_argument("--shadow-mask", dest="shadowMask",
+                        help="maska koju dobiva LoomApp da iz nje izvede debljinu zaklona. "
+                             "Namjerno odvojena od --mask: ako se istom maskom i popravlja i "
+                             "provjerava, mjeri se stapom kojim se i pomelo")
     parser.add_argument("--near", type=float, required=True)
     parser.add_argument("--far", type=float, required=True)
     parser.add_argument("--fov", type=float, default=50.0, help="okomiti kut kamere")
@@ -108,10 +115,14 @@ def main():
         for shadow in (True, False):
             name = os.path.join(keep, "kut%.0f_%s.png" % (angle, "sjena" if shadow else "bez"))
             output = run_loom(args.loom, args.plate, args.depth, args.near, args.far,
-                              args.fov, angle, shadow, name)
+                              args.fov, angle, shadow, name, args.shadowMask)
             shots[(angle, shadow)] = grey(name)
             if geometry is None:
                 geometry = geometry_from(output)
+
+    thickness = re.search(r"debljina zaklona ([\d.]+) m", output)
+    if thickness:
+        print("  debljina zaklona iz maske: %s m" % thickness.group(1))
 
     predicted = fy * geometry["sjena"] / geometry["pozadina"]
     print("  app tvrdi: subjekt %.2f m, pozadina %.2f m, sjena %.2f m u stranu"
@@ -149,13 +160,19 @@ def main():
         abs(abs(measured[first]) - abs(measured[second])) < 0.15 * predicted,
         "%.0f px naspram %.0f px" % (abs(measured[first]), abs(measured[second])))
 
-    #Sjena je uvijek BLIZE subjektu nego sto geometrija kaze, jer trag zaklon ne vidi kao plohu
-    #nego kao kutiju duboku `thickness` - pa pokrije i put od subjekta do svog pravog mjesta.
-    #Isto odstupanje je izmjereno i u test_screen_shadow, tamo kao 933 piksela
+    #ZASTO JE OVO POSTOTAK A NE JEDNAKOST, i zasto obrazlozenje NIJE ono koje je ovdje prvo
+    #pisalo. Tvrdio sam da sjenu prema subjektu povlaci kutija debljine - i to je izmjereno
+    #krivo: debljina od 0.466 m (izvedena iz maske) i od 6 m daju istu sliku, 54508 naspram
+    #54572 piksela i isto teziste. Zagrize tek ispod pola metra.
+    #
+    #Ostaje ono sto se vidi u brojkama: sjena je VELIKA REGIJA (x 52..573 na portretu), a
+    #predvidjeni pomak je TOCKA. Regija je odrezana rubom kadra s jedne strane i subjektom s
+    #druge, pa njeno teziste nije ondje gdje je sredina neodrezane sjene. Postotak je zato
+    #gruba mjera i tu stoji kao takva - prava provjera trazi predvidjenu SILUETU, ne tocku
     ratio = 0.5 * (abs(measured[first]) + abs(measured[second])) / predicted
     report.check("pomak je u redu velicine geometrijskog",
-        0.6 < ratio < 1.1,
-        "izmjereno %.0f%% predvidjenog (manje od 100%% se ocekuje: kutija debljine)"
+        0.6 < ratio < 1.4,
+        "izmjereno %.0f%% predvidjenog (teziste odrezane regije naspram tocke)"
         % (100.0 * ratio))
 
     # -------------------------------------------------------------------------------

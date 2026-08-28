@@ -83,6 +83,8 @@ int main(int argc, char** argv){
                "  --save <file.png>   jedan kadar na disk umjesto prozora\n"
                "  --angle <stupnjeva> gdje je svjetlo na kruznici (uz --save)\n"
                "  --fov <stupnjeva>   okomiti kut kamere kojom je snimljeno (default 50)\n"
+               "  --mask <maska.png>  silueta subjekta; iz nje se izvede debljina zaklona\n"
+               "  --thickness <m>     debljina zaklona rukom, umjesto izvedene\n"
                "  --radius <n>        razmak iz kojeg se racunaju normale (default 3)\n"
                "  --specular <0..1>   koliko ploha odsjaji (default 0.10)\n"
                "  --no-shadow         bez trazenja zaklona\n", argv[0]);
@@ -93,6 +95,8 @@ int main(int argc, char** argv){
         const std::string platePath = argv[1];
         std::string depthPath;
         std::string savePath;
+        std::string maskPath;
+        float thicknessOverride = 0.0f;   //0 = izvedi je
 
         //Raspon je jedina stvar koju model ne moze znati: karta kaze sto je blize a sto dalje,
         //ne koliko je to u metrima. Bez metara inverzni kvadrat nema smisla
@@ -119,6 +123,8 @@ int main(int argc, char** argv){
             if(arg == "--save" && i + 1 < argc)        savePath = argv[++i];
             else if(arg == "--angle" && i + 1 < argc)  lightAngle = std::stof(argv[++i]);
             else if(arg == "--fov" && i + 1 < argc)    fovDegrees = std::stof(argv[++i]);
+            else if(arg == "--mask" && i + 1 < argc)   maskPath = argv[++i];
+            else if(arg == "--thickness" && i + 1 < argc) thicknessOverride = std::stof(argv[++i]);
             else if(arg == "--radius" && i + 1 < argc) normalRadius = uint32_t(std::stoi(argv[++i]));
             else if(arg == "--specular" && i + 1 < argc) specular = std::stof(argv[++i]);
             else if(arg == "--no-shadow")              wantShadow = false;
@@ -320,14 +326,69 @@ int main(int argc, char** argv){
             ScreenShadowConfig shadowConfig;
             shadowConfig.enabled = wantShadow;
             shadowConfig.steps = 40;
-            //Doseg mora prijeci razmak subjekta i onoga iza njega, inace sjena nema na sto
-            //pasti; debljina je koliko se dubokim pretpostavlja ono sto se vidi
-            //Doseg mora prijeci put od pozadine do svjetla, inace trag stane prije zaklona.
-            //Debljina se veze uz razmak subjekta i pozadine, jer je to jedina duljina u sceni
-            //koja govori koliko duboka ploha smije zakloniti
+            //Doseg mora prijeci put od pozadine do svjetla, inace trag stane prije zaklona
             shadowConfig.maxDistance = 1.5f * (backdropDistance + orbitCentre);
+
+            //KOLIKO JE DUBOK ZAKLON.
+            //
+            //Dubina daje ljusku: vidi se prednja ploha i nista iza nje, pa trag mora
+            //pretpostaviti koliko je ono sto vidi debelo. Bez maske se to nema odakle znati,
+            //pa se uzimalo poldrug razmaka subjekta i pozadine - jedina duljina koja je bila
+            //pri ruci, ali duljina o NECEM DRUGOM: na portretu je glavi davala dva metra.
+            //
+            //POSTENO O UCINKU, jer je izmjeren: na portretu se slika time nije promijenila.
+            //Debljina zagrize tek ispod pola metra (na 0.05 m sjena padne s 54572 na 21573
+            //piksela), a iznad toga je mrtva - jer svjetlo stoji ISPRED subjekta, pa zrake s
+            //pozadine prelaze preko njega blizu njegove vlastite dubine i gornja granica se
+            //nikad ne dosegne. Vrijedit ce tamo gdje svjetlo ide u stranu, i vrijedi kao
+            //brojka koja ima razlog umjesto pretpostavke koja ga nema
+            //
+            //Maska zna dokle subjekt see, pa se debljina moze izvesti iz njegovog vlastitog
+            //raspona dubine. Za kuglu je racun tocan: gledana sprijeda, njene vidljive dubine
+            //se protezu tocno polumjer (najbliza tocka pa silueta), a puna debljina je dva
+            //polumjera. Za sve pljosnatije od kugle je to donja granica, i to je posteno
+            //stanje stvari - ljuska o vlastitim ledima ne zna nista
             shadowConfig.thickness = 1.5f * std::max(backdropDistance - subjectDistance, 0.1f);
+
+            if(!maskPath.empty()){
+                const Spool::Image mask = Spool::loadImage(maskPath);
+                if(mask.width != plateWidth || mask.height != plateHeight){
+                    throw std::runtime_error("maska je " + std::to_string(mask.width) + "x" +
+                        std::to_string(mask.height) + ", a snimka " + std::to_string(plateWidth) +
+                        "x" + std::to_string(plateHeight) + " - moraju biti piksel na piksel");
+                }
+
+                const DepthMapping calibration = DepthMapping::fromRange(nearDistance, farDistance);
+
+                std::vector<float> inside;
+                inside.reserve(depth.values.size() / 4);
+                for(size_t i = 0; i < depth.values.size(); ++i){
+                    if(mask.pixels[i * 4] > 127) inside.push_back(calibration.distanceAt(depth.values[i]));
+                }
+
+                if(inside.size() < 64){
+                    throw std::runtime_error("u maski nema dovoljno piksela da se izmjeri dubina subjekta");
+                }
+
+                std::sort(inside.begin(), inside.end());
+
+                //Peti i devedeset peti postotak, ne krajnje vrijednosti: jedan piksel ruba u
+                //kojem se dubina prelijeva na pozadinu inace odredi debljinu cijelog subjekta
+                const float front = inside[inside.size() * 5 / 100];
+                const float back = inside[inside.size() * 95 / 100];
+
+                shadowConfig.thickness = std::max(2.0f * (back - front), 0.05f);
+
+                printf("  maska: subjekt je vidljivo dubok %.3f m (%.2f do %.2f m) "
+                       "-> debljina zaklona %.3f m\n",
+                       back - front, front, back, shadowConfig.thickness);
+            }
             shadowConfig.bias = 0.02f * subjectDistance;
+            //Rukom zadana debljina nadglasa i masku i pretpostavku. Postoji da se moze
+            //IZMJERITI koliko debljina uopce mijenja - a odgovor je ispao "u ovoj postavci
+            //gotovo nista", sto se drukcije ne bi ni vidjelo
+            if(thicknessOverride > 0.0f) shadowConfig.thickness = thicknessOverride;
+
             relight->setShadow(shadowConfig);
 
             printf("\nSvjetlo kruzi oko scene i baca sjene od svega sto je u kadru.\n"

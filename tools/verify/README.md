@@ -79,9 +79,26 @@ ok  subjekt je tamo gdje uistinu jest      app 1.36 m, istina 1.30 m (+4.6 %)
 ok  pozadina je tamo gdje uistinu jest     app 2.80 m, istina 3.20 m (-12.5 %)
 ```
 
-Da je 84 % manje od 100 % je ocekivano i ima ime: trag zaklon ne vidi kao plohu nego kao
-kutiju duboku `thickness`, pa sjena pokrije i put od subjekta do svog pravog mjesta. Isti
-efekt je u `test_screen_shadow` izmjeren kao 933 piksela.
+Da je 84 % manje od 100 % **nije** ono sto je ovdje prvo pisalo. Tvrdio sam da sjenu prema
+subjektu povlaci kutija debljine; izmjereno je da ne:
+
+```
+debljina   zatamnjeno   teziste x
+  0.05 m      21573        210
+  0.20 m      52841        227
+  0.47 m      54508        231     <- izvedeno iz maske
+  1.00 m      54572        231
+  6.00 m      54572        231
+```
+
+Iznad pola metra je debljina mrtva, jer svjetlo stoji ISPRED subjekta (0.68 m naspram 1.36) pa
+zrake s pozadine prelaze preko njega blizu njegove vlastite dubine - `inFront` je tamo blizu
+nule i gornja granica se nikad ne dosegne. Zagrize tek ispod 0.2 m.
+
+Ostaje ono sto se vidi u brojkama: **sjena je velika regija, a predvidjeni pomak je tocka.**
+Regija je odrezana rubom kadra s jedne strane i subjektom s druge, pa njeno teziste nije ondje
+gdje je sredina neodrezane sjene. Postotak je zato gruba mjera; prava provjera trazi
+predvidjenu SILUETU, i to je sljedeci korak.
 
 ### Sto ovo mjerenje NE moze uhvatiti
 
