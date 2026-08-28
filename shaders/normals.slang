@@ -25,6 +25,31 @@ struct Push{
     //Siri razmak to smiruje, i gubi tocno onoliko sitnog detalja koliko ga u procjeni ionako
     //nije bilo
     int radius;
+
+    //Koliki nagib model izmislja na plohi koja je RAVNA, bezdimenzionalno (dz po dx).
+    //
+    //Mjeri se, ne pogada: nad ravnim zidom sintetskog portreta Depth Anything V2 small daje
+    //RMS 0.20 i 95. postotak 0.30, dok je istina 0.0000 tocno. Sirenje stencila protiv toga
+    //ne pomaze nista (greska normale 10.46 stupnjeva na radiusu 3, 10.41 na radiusu 7) jer
+    //sum nije bijeli po pikselu nego niskofrekventna struktura - prosjecivanje je ne dira.
+    //
+    //Zato se ne mazi nego se oduzima ENERGIJA: sqrt(max(m^2 - noise^2, 0)). Nagib velicine
+    //samog suma padne na nulu, a pravi nagib od 1.0 se sa 0.30 smanji na 0.954 - izmisljeni
+    //reljef nestane, a oblik ostane.
+    //
+    //Koliko oduzeti kaze SUBJEKT, ne zid: zid se s vecim brojem samo sve vise izravnava, ali
+    //greska na subjektu ima minimum i tamo se vidi gdje je pretjerano. Mjereno protiv pravih
+    //normala, radius 3:
+    //    noise  0.00  0.20  0.30  0.35  0.50  0.70  1.00
+    //    zid   10.46  3.30  0.68  0.29  0.06  0.01  0.00
+    //    lice  10.51  9.62  9.26  9.28  9.84 11.69 16.13
+    //Minimum je na 0.30, a to je bas 95. postotak izmisljenog nagiba - pa je pravilo
+    //"oduzmi 95. postotak onoga sto model izmislja na ravnom", ne RMS
+    float noiseSlope;
+
+    //Gornja granica nagiba, mekano preko tanh. Na silueti razlika dubine preko dva piksela
+    //odleti u desetke, pa normala legne skoro vodoravno i rub zasvijetli. Nula iskljucuje
+    float slopeLimit;
 }
 
 [[vk::push_constant]] ConstantBuffer<Push> push;
@@ -96,12 +121,32 @@ void computeMain(uint3 id : SV_DispatchThreadID){
     //view prostor ima Y prema gore. Ovim redom ploha okrenuta prema kameri dobije (0,0,1)
     float3 normal = cross(alongY, alongX);
 
-    float length = sqrt(dot(normal, normal));
-    if(length < 1e-12){
+    float size = sqrt(dot(normal, normal));
+    if(size < 1e-12){
         //Dvije tangente su iste crte - kroz njih prolazi beskonacno ploha, pa nijedna nije ta
         normalMap[id.xy] = float4(0.0, 0.0, 0.0, 0.0);
         return;
     }
 
-    normalMap[id.xy] = float4(normal / length, 1.0);
+    normal = normal / size;
+
+    //Normala i nagib su ista stvar zapisana dvaput: N = normalize(float3(slope, 1)). Zato se
+    //ovdje ide u nagib, dira mu se samo DULJINA, i vraca natrag - smjer se ne pomice ni za
+    //koliko, a rastav je tocan pa je bez diranja identitet.
+    //
+    //Ploha gotovo okrenuta na bok (mali z) se preskace: tamo nagib tezi u beskonacno i
+    //rastav vise nije upotrebljiv
+    if((push.noiseSlope > 0.0 || push.slopeLimit > 0.0) && normal.z > 1e-3){
+        float2 slope = normal.xy / normal.z;
+        float magnitude = sqrt(dot(slope, slope));
+
+        if(magnitude > 1e-9){
+            float shrunk = sqrt(max(magnitude * magnitude - push.noiseSlope * push.noiseSlope, 0.0));
+            if(push.slopeLimit > 0.0) shrunk = push.slopeLimit * tanh(shrunk / push.slopeLimit);
+
+            normal = normalize(float3(slope * (shrunk / magnitude), 1.0));
+        }
+    }
+
+    normalMap[id.xy] = float4(normal, 1.0);
 }

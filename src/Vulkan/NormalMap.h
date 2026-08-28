@@ -12,7 +12,9 @@
 struct NormalPush{
     uint32_t size[2];
     int32_t radius;
-    int32_t padding0;
+    float noiseSlope;
+    float slopeLimit;
+    float padding0[3];
 };
 
 struct NormalMapConfig{
@@ -29,6 +31,16 @@ struct NormalMapConfig{
     //Za procijenjenu dubinu 2 do 4 obicno smiri sliku a da se ne izgubi nista sto je u
     //procjeni stvarno bilo
     uint32_t radius = 1;
+
+    //Koliki nagib model dubine izmislja na plohi koja je RAVNA (bezdimenzionalno, dz po dx).
+    //Oduzima se u kvadratu, pa nagib velicine samog suma padne na nulu a pravi ostane skoro
+    //netaknut. Nula znaci "dubina je nacrtana, ne procijenjena" - za rasterizator je tocno
+    //nula i zato je to default
+    float noiseSlope = 0.0f;
+
+    //Gornja granica nagiba, mekano preko tanh. Na silueti razlika dubine preko dva piksela
+    //odleti u desetke i normala legne skoro vodoravno. Nula iskljucuje
+    float slopeLimit = 0.0f;
 };
 
 //Normale plohe, izvedene iz slike tocaka.
@@ -59,6 +71,10 @@ class NormalMap{
     //Mijenja se i nakon gradnje: koliko je karta bucna vidi se tek kad se pogleda
     void setRadius(uint32_t radius);
     uint32_t getRadius() const {return config.radius;}
+
+    //Isto vrijedi i za sum: koliko ga ima vidi se tek kad se pogleda
+    void setNoiseSlope(float noiseSlope) {config.noiseSlope = noiseSlope;}
+    void setSlopeLimit(float slopeLimit) {config.slopeLimit = slopeLimit;}
     const ComputeMaterial& getComputeMaterial() const;
 
     uint32_t groupsX() const {return (extent.width + 7) / 8;}

@@ -87,7 +87,9 @@ NormalPush NormalMap::makePush() const{
     push.size[0] = extent.width;
     push.size[1] = extent.height;
     push.radius = int32_t(config.radius);
-    push.padding0 = 0;
+    push.noiseSlope = config.noiseSlope;
+    push.slopeLimit = config.slopeLimit;
+    push.padding0[0] = push.padding0[1] = push.padding0[2] = 0.0f;
     return push;
 }
 

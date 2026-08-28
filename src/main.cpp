@@ -86,6 +86,8 @@ int main(int argc, char** argv){
                "  --mask <maska.png>  silueta subjekta; iz nje se izvede debljina zaklona\n"
                "  --thickness <m>     debljina zaklona rukom, umjesto izvedene\n"
                "  --radius <n>        razmak iz kojeg se racunaju normale (default 3)\n"
+               "  --noise <nagib>     koliko nagiba model izmislja na ravnom (default 0.30)\n"
+               "  --limit <nagib>     gornja granica nagiba, 0 iskljucuje (default 6)\n"
                "  --specular <0..1>   koliko ploha odsjaji (default 0.10)\n"
                "  --no-shadow         bez trazenja zaklona\n", argv[0]);
         return 1;
@@ -107,6 +109,16 @@ int main(int argc, char** argv){
         float lightAngle = 0.0f;       //stupnjeva na kruznici, samo za --save
         uint32_t normalRadius = 3;
 
+        //Izmjereno, ne pogodeno: 95. postotak nagiba koji Depth Anything V2 small izmislja
+        //nad ravnim zidom, gdje je istina tocno nula. Na tom broju greska normale na SUBJEKTU
+        //ima minimum (9.26 stupnjeva naspram 10.51 bez oduzimanja), a zid padne s 10.46 na
+        //0.68. Za dubinu koju je nacrtao rasterizator je nula, i zato je nula default u samoj
+        //biblioteci a ovdje nije - ovaj program postoji zbog PROCIJENJENE dubine
+        float noiseSlope = 0.30f;
+
+        //Sest je oko 80 stupnjeva. Iznad toga na ovoj sceni nema prave plohe, ima siluete
+        float slopeLimit = 6.0f;
+
         //Kut lece kojom je snimka nastala. Model dubine ga ne zna i ne moze znati, a o njemu
         //ovisi CIJELA geometrija: iz njega su intrinsici, iz intrinsika odprojekcija, iz nje
         //normale i mjesto sjene. Kriv kut ne izgleda kao greska nego kao scena razvucena po
@@ -126,6 +138,8 @@ int main(int argc, char** argv){
             else if(arg == "--mask" && i + 1 < argc)   maskPath = argv[++i];
             else if(arg == "--thickness" && i + 1 < argc) thicknessOverride = std::stof(argv[++i]);
             else if(arg == "--radius" && i + 1 < argc) normalRadius = uint32_t(std::stoi(argv[++i]));
+            else if(arg == "--noise" && i + 1 < argc)  noiseSlope = std::stof(argv[++i]);
+            else if(arg == "--limit" && i + 1 < argc)  slopeLimit = std::stof(argv[++i]);
             else if(arg == "--specular" && i + 1 < argc) specular = std::stof(argv[++i]);
             else if(arg == "--no-shadow")              wantShadow = false;
             else if(positional == 0){ depthPath = arg; ++positional; }
@@ -254,6 +268,8 @@ int main(int argc, char** argv){
             //razmak to smiruje i gubi tocno onoliko detalja koliko ga u procjeni nije ni bilo
             NormalMapConfig normalConfig;
             normalConfig.radius = normalRadius;
+            normalConfig.noiseSlope = noiseSlope;
+            normalConfig.slopeLimit = slopeLimit;
             normals = std::make_unique<NormalMap>(loom.device, plateSize, normalConfig);
             normals->setPositionSource(loom.getDescriptorPool(), *positions);
 
