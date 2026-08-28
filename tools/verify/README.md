@@ -1,4 +1,9 @@
-# Sinteticki portret
+# Mjerenje ubacenog svjetla
+
+`make_portrait.py` pravi scenu koja zna svoj odgovor, `measure_relight.py` nad njom (ili nad
+pravom fotkom) mjeri je li svjetlo stvarno u prostoru.
+
+## Sinteticki portret
 
 Stalak za mjerenje, dok ne dode prava fotka.
 
@@ -20,7 +25,7 @@ koji je poslije i osvjetljava, greske bi se mogle pokratiti. Ovako je plate potp
 Sve je deterministicki (sjeme suma je fiksno), pa se fileovi ne drze u gitu nego se
 pregenerira.
 
-## Sto je ovime izmjereno
+### Sto je ovime izmjereno
 
 **Dubina** (Depth Anything V2 `small`) protiv tocne karte, `fromRange(1.24, 3.20)`:
 
@@ -38,8 +43,69 @@ mjesto sjene - i to je prvi broj koji o toj gresci nesto kaze.
 **Maska** (SAM2 `small`, prompt iz te iste procijenjene dubine): **IoU 0.9871**, glava
 uhvacena 98 %, manjak 1168 piksela, visak 7.
 
-## Sto ovo NE dokazuje
+### Sto ovo NE dokazuje
 
 Da Depth Anything i SAM2 rade na pravoj kozi, kosi i tkanini - kugla pred zidom je za oba
 modela laksi zadatak od covjeka. Ovime se dokazuje da **lanac radi i da mjerenje hvata ono
 sto tvrdi**, a to je jedino sto se bez prave fotke uopce moze dokazati.
+
+## Mjerenje
+
+```
+tools/verify/measure_relight.py --plate portret.png --depth portret.pfm \
+    --mask portret_mask.png --near 1.24 --far 3.20 --fov 40 \
+    --truth portret_truth.txt
+```
+
+**Kontrola je isti kut BEZ traga, a ne drugi kut.** Usporedba dvaju kutova mijesa sjenu s
+padom svjetla po strani: tako mjereno je "sjena" ispala jednako tamna kao svoja okolina i
+dala laznu nulu. Zato se svaki kut snima dvaput, pa je razlika tocno ono sto je trag
+napravio i nista drugo.
+
+Izmjereno nad sintetskim portretom:
+
+```
+app tvrdi: subjekt 1.36 m, pozadina 2.80 m, sjena 0.68 m u stranu -> 200 px od subjekta
+
+ok  kut 90: trag baca sjenu                zatamnjeno 54586 px, najdublje 73.0 razina
+ok  kut 90: sjena pada na pozadinu         na subjektu promijenjeno 28 px naspram 54586
+ok  kut 270: trag baca sjenu               zatamnjeno 53458 px, najdublje 50.7 razina
+ok  kut 270: sjena pada na pozadinu        na subjektu promijenjeno 49 px naspram 53458
+ok  sjena skace na suprotnu stranu         -169 px na kutu 90, +168 px na kutu 270
+ok  obje strane jednako daleko             169 px naspram 168 px
+ok  pomak je u redu velicine geometrijskog izmjereno 84 % predvidjenog
+ok  subjekt se sjenca kao oblik            nagib subjekta 51.8 razina, pozadine 9.5 (5.5x)
+ok  subjekt je tamo gdje uistinu jest      app 1.36 m, istina 1.30 m (+4.6 %)
+ok  pozadina je tamo gdje uistinu jest     app 2.80 m, istina 3.20 m (-12.5 %)
+```
+
+Da je 84 % manje od 100 % je ocekivano i ima ime: trag zaklon ne vidi kao plohu nego kao
+kutiju duboku `thickness`, pa sjena pokrije i put od subjekta do svog pravog mjesta. Isti
+efekt je u `test_screen_shadow` izmjeren kao 933 piksela.
+
+### Sto ovo mjerenje NE moze uhvatiti
+
+**Samodosljedno je.** Pusteno s krivom lecom - 50 stupnjeva na portretu snimljenom s 40 -
+prolazi svih osam provjera jednako dobro, jer app tada rekonstruira drugu scenu, ispise drugu
+sjenu (0.87 m umjesto 0.68) i nacrta je dosljedno toj drugoj sceni. Obje polovice imaju istu
+manu, pa se ne mogu uhvatiti jedna drugom.
+
+To nije propust skripte nego svojstvo zadatka: **svjetlo koje ubacujemo je izmisljeno, ne
+izmjereno**, pa nema vanjske cinjenice s kojom bi se njegova sjena mogla sukobiti. Kut lece se
+iz same slike ne da izvesti - dolazi iz EXIF-a, iz kalibracije, ili se pogodi.
+
+`--truth` je jedino vanjsko sidro koje postoji, i ono provjerava ono sto se izvana DA
+provjeriti: udaljenosti koje je app ocitao iz karte dubine. Odstupanje koje ono pokazuje
+(pozadina -12.5 %) nije greska Looma nego pristranost modela dubine.
+
+### Provjera koja je usput bacena
+
+Prva verzija tvrdnje "svjetlo je u prostoru, a ne naljepnica" usporedivala je srednju svjetlinu
+subjekta i pozadine kroz kutove. Bila je **prazna**: kod zrcalnih kutova nad simetricnom
+scenom se te dvije srednje vrijednosti po simetriji moraju poklopiti. Davala je 0.64 %
+razlike, sto ne znaci ni da svjetlo jest ni da nije u prostoru.
+
+Zamijenjena je onime sto se da tvrditi: subjekt ima normale koje se okrecu od svjetla, a
+pozadina je ravnina na jednoj dubini - pa se nagib svjetline preko subjekta mora promijeniti
+mnogo vise nego preko pozadine, koja je kontrola u istoj slici pod istim svjetlom. Izmjereno
+5.5 puta.

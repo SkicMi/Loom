@@ -82,6 +82,7 @@ int main(int argc, char** argv){
                "S njom se u nju ubacuje svjetlo koje kruzi oko scene.\n\n"
                "  --save <file.png>   jedan kadar na disk umjesto prozora\n"
                "  --angle <stupnjeva> gdje je svjetlo na kruznici (uz --save)\n"
+               "  --fov <stupnjeva>   okomiti kut kamere kojom je snimljeno (default 50)\n"
                "  --radius <n>        razmak iz kojeg se racunaju normale (default 3)\n"
                "  --specular <0..1>   koliko ploha odsjaji (default 0.10)\n"
                "  --no-shadow         bez trazenja zaklona\n", argv[0]);
@@ -101,6 +102,12 @@ int main(int argc, char** argv){
         bool wantShadow = true;
         float lightAngle = 0.0f;       //stupnjeva na kruznici, samo za --save
         uint32_t normalRadius = 3;
+
+        //Kut lece kojom je snimka nastala. Model dubine ga ne zna i ne moze znati, a o njemu
+        //ovisi CIJELA geometrija: iz njega su intrinsici, iz intrinsika odprojekcija, iz nje
+        //normale i mjesto sjene. Kriv kut ne izgleda kao greska nego kao scena razvucena po
+        //dubini - i onda se sve mjeri u prostoru kojeg nema
+        float fovDegrees = 50.0f;
         float specular = 0.10f;
 
         int positional = 0;
@@ -111,6 +118,7 @@ int main(int argc, char** argv){
             //samo pogledati - "sjena se ne vidi" i "sjene nema" su dvije razlicite stvari
             if(arg == "--save" && i + 1 < argc)        savePath = argv[++i];
             else if(arg == "--angle" && i + 1 < argc)  lightAngle = std::stof(argv[++i]);
+            else if(arg == "--fov" && i + 1 < argc)    fovDegrees = std::stof(argv[++i]);
             else if(arg == "--radius" && i + 1 < argc) normalRadius = uint32_t(std::stoi(argv[++i]));
             else if(arg == "--specular" && i + 1 < argc) specular = std::stof(argv[++i]);
             else if(arg == "--no-shadow")              wantShadow = false;
@@ -179,7 +187,7 @@ int main(int argc, char** argv){
         CameraConfig cameraConfig;
         cameraConfig.position = {0.0f, 0.0f, 0.0f};
         cameraConfig.target = {0.0f, 0.0f, -1.0f};
-        cameraConfig.fovY = glm::radians(50.0f);
+        cameraConfig.fovY = glm::radians(fovDegrees);
         cameraConfig.nearPlane = 0.05f;
         cameraConfig.farPlane = std::max(200.0f, farDistance * 4.0f);
         Camera camera(cameraConfig);
