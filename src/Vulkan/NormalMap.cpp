@@ -26,6 +26,9 @@ image(device, extent, makeNormalImageConfig()){
     if(extent.width == 0 || extent.height == 0){
         throw std::runtime_error("NormalMap: an image with no size has no normals in it");
     }
+    if(config.radius == 0){
+        throw std::runtime_error("NormalMap: a radius of zero has no neighbour to take a slope from");
+    }
 
     vk::SamplerCreateInfo samplerInfo;
     samplerInfo.magFilter = vk::Filter::eNearest;
@@ -83,7 +86,16 @@ NormalPush NormalMap::makePush() const{
     NormalPush push;
     push.size[0] = extent.width;
     push.size[1] = extent.height;
+    push.radius = int32_t(config.radius);
+    push.padding0 = 0;
     return push;
+}
+
+void NormalMap::setRadius(uint32_t radius){
+    if(radius == 0){
+        throw std::runtime_error("NormalMap::setRadius: a radius of zero has no neighbour to take a slope from");
+    }
+    config.radius = radius;
 }
 
 const ComputeMaterial& NormalMap::getComputeMaterial() const{

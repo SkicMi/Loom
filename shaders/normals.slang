@@ -14,6 +14,17 @@
 
 struct Push{
     uint2 size;
+
+    //Koliko je piksela daleko susjed iz kojeg se racuna nagib.
+    //
+    //Jedan je tocno za dubinu koju je nacrtao rasterizator - ona je glatka do piksela. Karta
+    //iz modela nije: ona je procjena, i na skali jednog piksela je sum. Nagib racunat iz
+    //susjednih piksela taj sum pojacava, pa normale poskakuju i ploha koja je glatka ispadne
+    //zrnata - na licu se to vidi kao da je ispikselirano.
+    //
+    //Siri razmak to smiruje, i gubi tocno onoliko sitnog detalja koliko ga u procjeni ionako
+    //nije bilo
+    int radius;
 }
 
 [[vk::push_constant]] ConstantBuffer<Push> push;
@@ -70,9 +81,11 @@ void computeMain(uint3 id : SV_DispatchThreadID){
         return;
     }
 
+    int step = max(push.radius, 1);
+
     bool haveX, haveY;
-    float3 alongX = tangentAlong(center.xyz, fetch(pixel + int2(-1,0)), fetch(pixel + int2(1,0)), haveX);
-    float3 alongY = tangentAlong(center.xyz, fetch(pixel + int2(0,-1)), fetch(pixel + int2(0,1)), haveY);
+    float3 alongX = tangentAlong(center.xyz, fetch(pixel + int2(-step,0)), fetch(pixel + int2(step,0)), haveX);
+    float3 alongY = tangentAlong(center.xyz, fetch(pixel + int2(0,-step)), fetch(pixel + int2(0,step)), haveY);
 
     if(!haveX || !haveY){
         normalMap[id.xy] = float4(0.0, 0.0, 0.0, 0.0);

@@ -294,6 +294,100 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
+    // Gdje zaklona NE MOZE biti, slika mora ostati netaknuta
+    // -------------------------------------------------------------------------------
+
+    //Sve gornje provjere pitaju je li sjena tamna i je li ostatak osvijetljen. Nijedna ne
+    //pita je li ostatak osvijetljen JEDNAKO - a trag koji na cistom putu vrati bilo sto
+    //osim 1.0 zatamni cijelu sliku dok sve gore i dalje prolazi. To nije izmisljena rupa:
+    //dijagnostika koja je privremeno stajala u ScreenTrace vracala je 0.25 do 0.99 umjesto
+    //1.0, cijela slika je bila do cetiri puta pretamna, i suite je javio 9/9.
+    //
+    //Da bi se jednakost smjela traziti DO BITA, mora se znati sto trag smije zamraciti - a
+    //to je vise od geometrijske sjene. Plocica za trag nije ploha nego KUTIJA duboka
+    //`thickness`: zaklanja svaku tocku ciji uzorak padne na njen otisak dok mu je dubina
+    //izmedu panelZ+bias i panelZ+thickness. Zato se ista aproksimacija ovdje racuna na
+    //procesoru, pa se GPU usporeduje s njom umjesto s geometrijom.
+    {
+        const glm::vec3 toLight = glm::normalize(-lightTravel);
+
+        //Polusirina plocicina otiska, izrazena po dubini: na udaljenosti d njen rub je na
+        //panelAngle * d. Otisak je ono sto trag stvarno gleda - on ne zna za metre nego za
+        //piksele u koje uzorak padne
+        const float panelAngle = panelHalf / (-panelZ);
+
+        //Moze li trag ovu tocku zakloniti. slack je dopusteno rasipanje u metrima na dubini
+        //plocice - dither i konacan korak pomicu rub sjene za oko toliko
+        auto couldOcclude = [&](float wallXp, float wallYp, float slack){
+            //Samo pojas u kojem uzorak uopce pada u prozor debljine; izvan njega nema sto
+            //traziti, pa se ne hoda cijelih osam metara
+            const float tNear = (-wallZ - (-panelZ + shadowConfig.thickness + slack)) / toLight.z;
+            const float tFar  = (-wallZ - (-panelZ + shadowConfig.bias - slack)) / toLight.z;
+
+            for(int k = 0; k <= 256; ++k){
+                const float t = tNear + (tFar - tNear) * float(k) / 256.0f;
+                if(t <= 0.0f) continue;
+
+                const glm::vec3 sample = glm::vec3(wallXp, wallYp, wallZ) + toLight * t;
+                const float depth = -sample.z;
+                if(depth < 1e-3f) continue;
+
+                const float widen = panelAngle + slack / (-panelZ);
+                if(std::abs(sample.x) / depth <= widen && std::abs(sample.y) / depth <= widen){
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        //Pet centimetara: izmjereno, ne pogodeno. S nula rasipanja model i GPU se razilaze
+        //na 10 piksela ruba, s 5 cm ni na jednom - a to je ujedno i mjera koliko rub sjene
+        //rasipa dither
+        const float slack = 0.05f;
+
+        size_t clear = 0, untouched = 0, darkened = 0, predicted = 0;
+        for(uint32_t y = 0; y < sceneHeight; ++y){
+            for(uint32_t x = 0; x < sceneWidth; ++x){
+                const size_t i = size_t(y) * sceneWidth + x;
+                const float dx = (float(x) + 0.5f - intrinsics.cx) / intrinsics.fx;
+                const float dy = (float(y) + 0.5f - intrinsics.cy) / intrinsics.fy;
+
+                const float panelX = dx * (-panelZ), panelY = dy * (-panelZ);
+                if(std::abs(panelX) <= panelHalf && std::abs(panelY) <= panelHalf) continue;
+
+                const float wallX = dx * (-wallZ), wallY = dy * (-wallZ);
+
+                //Do bita, ne s tolerancijom: shader je isti binarni kod u oba crteza i
+                //razlikuje se samo uniform, a mnozenje s tocno 1.0 je u IEEE tocno
+                const bool differs = at(shadowed, i).r != at(unshadowed, i).r;
+
+                if(differs) ++darkened;
+                if(couldOcclude(wallX, wallY, 0.0f)) ++predicted;
+
+                if(!couldOcclude(wallX, wallY, slack)){
+                    ++clear;
+                    if(!differs) ++untouched;
+                }
+            }
+        }
+
+        report.check("gdje zaklona nema slika je ista do bita",
+            clear > 50000 && untouched == clear,
+            fmt("%zu od %zu piksela bez moguceg zaklona je nepromijenjeno", untouched, clear));
+
+        //I obrnuto: da gornja provjera ne prolazi zato sto trag ne radi nista. Koliko je
+        //zamracio mora se slagati s modelom iste aproksimacije
+        const size_t larger = darkened > predicted ? darkened : predicted;
+        const size_t smaller = darkened > predicted ? predicted : darkened;
+
+        report.check("koliko je trag zamracio slaze se s modelom",
+            darkened > 1000 && (larger - smaller) * 20 < predicted,
+            fmt("GPU je zamracio %zu piksela, model kutije debele %.1f m predvida %zu "
+                "(razlika %.1f%%)", darkened, shadowConfig.thickness, predicted,
+                100.0 * double(larger - smaller) / double(predicted)));
+    }
+
+    // -------------------------------------------------------------------------------
     // Debljina: ploha se ne pretvara u beskonacan zid
     // -------------------------------------------------------------------------------
 

@@ -11,12 +11,24 @@
 //Slaze se s Push strukturom u normals.slang
 struct NormalPush{
     uint32_t size[2];
+    int32_t radius;
+    int32_t padding0;
 };
 
 struct NormalMapConfig{
     //Gdje dispatch ostavlja sliku. eShaderReadOnlyOptimal da je relight prolaz semplira,
     //eTransferSrcOptimal da je se procita natrag
     vk::ImageLayout finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+    //Koliko je piksela daleko susjed iz kojeg se racuna nagib.
+    //
+    //Jedan je tocno za dubinu koju je nacrtao rasterizator - ona je glatka do piksela. Karta
+    //iz modela nije: na skali jednog piksela je sum, koji racun nagiba jos i pojaca. Ploha
+    //koja je glatka tada ispadne zrnata, a na licu se to vidi kao da je ispikselirano.
+    //
+    //Za procijenjenu dubinu 2 do 4 obicno smiri sliku a da se ne izgubi nista sto je u
+    //procjeni stvarno bilo
+    uint32_t radius = 1;
 };
 
 //Normale plohe, izvedene iz slike tocaka.
@@ -43,6 +55,10 @@ class NormalMap{
     void setPositionSource(const vk::raii::DescriptorPool& pool, const PositionMap& positions);
 
     NormalPush makePush() const;
+
+    //Mijenja se i nakon gradnje: koliko je karta bucna vidi se tek kad se pogleda
+    void setRadius(uint32_t radius);
+    uint32_t getRadius() const {return config.radius;}
     const ComputeMaterial& getComputeMaterial() const;
 
     uint32_t groupsX() const {return (extent.width + 7) / 8;}

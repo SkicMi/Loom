@@ -34,6 +34,8 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <algorithm>
+#include <vector>
 #include <string>
 #include <thread>
 
@@ -75,20 +77,47 @@ bool looksLikeVideo(const std::string& path){
 int main(int argc, char** argv){
     if(argc < 2){
         printf("Loom - snimka u prozoru, i svjetlo ubaceno u nju\n\n"
-               "  %s <snimka|slika> [dubina.pfm] [najblize_m] [najdalje_m]\n\n"
+               "  %s <snimka|slika> [dubina.pfm] [najblize_m] [najdalje_m] [opcije]\n\n"
                "Bez karte dubine snimka se samo prikazuje.\n"
-               "S njom se u nju ubacuje svjetlo koje kruzi oko scene.\n", argv[0]);
+               "S njom se u nju ubacuje svjetlo koje kruzi oko scene.\n\n"
+               "  --save <file.png>   jedan kadar na disk umjesto prozora\n"
+               "  --angle <stupnjeva> gdje je svjetlo na kruznici (uz --save)\n"
+               "  --radius <n>        razmak iz kojeg se racunaju normale (default 3)\n"
+               "  --specular <0..1>   koliko ploha odsjaji (default 0.10)\n"
+               "  --no-shadow         bez trazenja zaklona\n", argv[0]);
         return 1;
     }
 
     try{
         const std::string platePath = argv[1];
-        const std::string depthPath = argc > 2 ? argv[2] : std::string();
+        std::string depthPath;
+        std::string savePath;
 
         //Raspon je jedina stvar koju model ne moze znati: karta kaze sto je blize a sto dalje,
         //ne koliko je to u metrima. Bez metara inverzni kvadrat nema smisla
-        const float nearDistance = argc > 3 ? std::stof(argv[3]) : 1.5f;
-        const float farDistance = argc > 4 ? std::stof(argv[4]) : 20.0f;
+        float nearDistance = 1.5f;
+        float farDistance = 20.0f;
+
+        bool wantShadow = true;
+        float lightAngle = 0.0f;       //stupnjeva na kruznici, samo za --save
+        uint32_t normalRadius = 3;
+        float specular = 0.10f;
+
+        int positional = 0;
+        for(int i = 2; i < argc; ++i){
+            const std::string arg = argv[i];
+
+            //--save izvuce jedan kadar i izade. Postoji zato da se rezultat da IZMJERITI, a ne
+            //samo pogledati - "sjena se ne vidi" i "sjene nema" su dvije razlicite stvari
+            if(arg == "--save" && i + 1 < argc)        savePath = argv[++i];
+            else if(arg == "--angle" && i + 1 < argc)  lightAngle = std::stof(argv[++i]);
+            else if(arg == "--radius" && i + 1 < argc) normalRadius = uint32_t(std::stoi(argv[++i]));
+            else if(arg == "--specular" && i + 1 < argc) specular = std::stof(argv[++i]);
+            else if(arg == "--no-shadow")              wantShadow = false;
+            else if(positional == 0){ depthPath = arg; ++positional; }
+            else if(positional == 1){ nearDistance = std::stof(arg); ++positional; }
+            else if(positional == 2){ farDistance = std::stof(arg); ++positional; }
+        }
 
         // -- sto crtamo --------------------------------------------------------------------
 
@@ -140,6 +169,7 @@ int main(int argc, char** argv){
         config.engineName = "Loom";
         config.enableDepth = false;   //plate je jedan crtez preko cijelog kadra
         config.swapchainConfig.preferredPresentMode = vk::PresentModeKHR::eMailbox;
+        config.swapchainConfig.allowReadback = !savePath.empty();
 
         LoomInitializer loom(config);
 
@@ -186,6 +216,10 @@ int main(int argc, char** argv){
         std::unique_ptr<NormalMap> normals;
         std::unique_ptr<Relight> relight;
         std::unique_ptr<Light> bulb;
+        float subjectDistance = 2.0f;
+        float backdropDistance = 5.0f;
+        float orbitRadius = 0.5f;
+        float orbitCentre = 1.0f;
 
         if(depth.isValid()){
             TextureConfig depthConfig;
@@ -202,14 +236,20 @@ int main(int argc, char** argv){
             positions->setIntrinsics(CameraIntrinsics::fromProjection(
                 camera.getProjection(plateWidth, plateHeight), plateWidth, plateHeight));
 
-            normals = std::make_unique<NormalMap>(loom.device, plateSize);
+            //Karta iz modela je na skali jednog piksela sum, a racun nagiba ga pojaca. Siri
+            //razmak to smiruje i gubi tocno onoliko detalja koliko ga u procjeni nije ni bilo
+            NormalMapConfig normalConfig;
+            normalConfig.radius = normalRadius;
+            normals = std::make_unique<NormalMap>(loom.device, plateSize, normalConfig);
             normals->setPositionSource(loom.getDescriptorPool(), *positions);
 
             RelightConfig relightConfig;
             relightConfig.colorFormat = loom.getColorFormat();
             relightConfig.surface.baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
             relightConfig.surface.shininess = 24.0f;
-            relightConfig.surface.specularStrength = 0.35f;
+            //Zrcalni clan pojacava svaku gresku u normali za oko tri puta, pa je na
+            //procijenjenoj dubini prvo sto pretvori plohu u zrnje. Koza ionako nije zrcalo
+            relightConfig.surface.specularStrength = specular;
 
             relight = std::make_unique<Relight>(loom.device, loom.command, loom.getDescriptorPool(),
                                                 *positions, *normals, plate.getSampled(), relightConfig);
@@ -220,26 +260,77 @@ int main(int argc, char** argv){
                 camera.getProjection(plateWidth, plateHeight), plateWidth, plateHeight),
                 plateSize);
 
-            ScreenShadowConfig shadowConfig;
-            shadowConfig.enabled = true;
-            shadowConfig.steps = 32;
-            shadowConfig.maxDistance = 0.5f * (nearDistance + farDistance);
-            shadowConfig.thickness = 0.15f * (nearDistance + farDistance);
-            relight->setShadow(shadowConfig);
+
+            //Gdje je subjekt, doslovno iz karte: udaljenost desetine slike koja je najbliza.
+            //Bez toga bi se svjetlo vrtjelo oko sredine RASPONA, a to je kod portreta iza
+            //osobe - pa bi pola kruga osvjetljavalo zid, a osobu ostavljalo u mraku
+            {
+                std::vector<float> sorted = depth.values;
+                std::sort(sorted.begin(), sorted.end());
+                const DepthMapping calibration = DepthMapping::fromRange(nearDistance, farDistance);
+
+                subjectDistance = calibration.distanceAt(sorted[sorted.size() * 9 / 10]);
+                backdropDistance = calibration.distanceAt(sorted[sorted.size() / 10]);
+
+                //Gdje svjetlo mora stajati da bi se sjena VIDJELA.
+                //
+                //Sjena subjekta pada na pozadinu uvecana za s = (Zp - Zs) / (Zs - Zl), pa je
+                //njen pomak s puta pomak svjetla. Svjetlo blizu osi baca sjenu ravno IZA
+                //osobe, gdje je ona sama zaklanja; svjetlo predaleko u stranu je izbaci iz
+                //kadra. Zato se ne bira pomak svjetla nego mjesto sjene, pa se pomak izvede.
+                //
+                //Ovo je bilo i cijelo objasnjenje zasto se sjene "nije vidjelo": bila je tamo,
+                //samo dva i pol metra izvan slike
+                const float lightDistance = 0.5f * subjectDistance;
+                const float spread = std::max(backdropDistance - subjectDistance, 0.05f) /
+                                     std::max(subjectDistance - lightDistance, 0.05f);
+
+                //Pola polusirine kadra na pozadini: dovoljno u stranu da se vidi, dovoljno
+                //unutra da ne izade
+                const float halfWidth = backdropDistance * std::tan(cameraConfig.fovY * 0.5f)
+                                      * float(plateWidth) / float(plateHeight);
+
+                orbitRadius = 0.5f * halfWidth / std::max(spread, 0.05f);
+                orbitCentre = lightDistance;
+
+                printf("  subjekt %.2f m, pozadina %.2f m; svjetlo na %.2f m, pomak %.2f m "
+                       "-> sjena pada %.2f m u stranu\n",
+                       subjectDistance, backdropDistance, orbitCentre, orbitRadius,
+                       orbitRadius * spread);
+            }
 
             LightConfig bulbConfig;
             bulbConfig.type = LightType::Point;
             bulbConfig.color = {1.0f, 0.82f, 0.55f};
-            bulbConfig.intensity = 40.0f;
-            bulbConfig.range = farDistance;
+            //Jacina raste s kvadratom udaljenosti, jer svjetlo po njemu i pada - inace bi
+            //ista brojka bila zasljepljujuca u portretu i nevidljiva u sobi
+            bulbConfig.intensity = 0.8f * subjectDistance * subjectDistance;
+            bulbConfig.range = std::max(4.0f * backdropDistance, farDistance);
             bulb = std::make_unique<Light>(bulbConfig);
             loom.renderer.addLight(*bulb);
+
+            ScreenShadowConfig shadowConfig;
+            shadowConfig.enabled = wantShadow;
+            shadowConfig.steps = 40;
+            //Doseg mora prijeci razmak subjekta i onoga iza njega, inace sjena nema na sto
+            //pasti; debljina je koliko se dubokim pretpostavlja ono sto se vidi
+            //Doseg mora prijeci put od pozadine do svjetla, inace trag stane prije zaklona.
+            //Debljina se veze uz razmak subjekta i pozadine, jer je to jedina duljina u sceni
+            //koja govori koliko duboka ploha smije zakloniti
+            shadowConfig.maxDistance = 1.5f * (backdropDistance + orbitCentre);
+            shadowConfig.thickness = 1.5f * std::max(backdropDistance - subjectDistance, 0.1f);
+            shadowConfig.bias = 0.02f * subjectDistance;
+            relight->setShadow(shadowConfig);
 
             printf("\nSvjetlo kruzi oko scene i baca sjene od svega sto je u kadru.\n"
                    "Zatvori prozor za izlaz.\n");
         }
 
         // -- petlja ------------------------------------------------------------------------
+
+        //Jedan kadar na disk: fiksni kut svjetla, jedan frame, gotovo. Sve sto se poslije
+        //mjeri mjeri se nad ovim, jer se dvije slike daju oduzeti a dva dojma ne
+        const bool once = !savePath.empty();
 
         const double secondsPerFrame = 1.0 / frameRate;
         auto nextFrameDue = std::chrono::steady_clock::now();
@@ -273,16 +364,18 @@ int main(int argc, char** argv){
                 //Svjetlo kruzi ispred scene, na visini sredine raspona. Kruzi zato sto je to
                 //jedini nacin da se OKOM vidi da je stvarno u prostoru: da je nalijepljeno na
                 //sliku, sjencanje se ne bi mijenjalo dok putuje
-                const double time = std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - started).count();
+                const double time = once ? double(glm::radians(lightAngle)) / 0.6
+                    : std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - started).count();
 
-                const float radius = 0.45f * (nearDistance + farDistance) * 0.5f;
-                const float middle = 0.5f * (nearDistance + farDistance);
-
+                //Kruzi ISPRED subjekta, kao kljucno svjetlo koje netko nosi oko njega - ne
+                //oko sredine scene, jer je tamo vec zid
+                //Kruzi u ravnini okomitoj na pogled, na udaljenosti s koje sjena pada u
+                //kadar. Kruzenje je jedini nacin da se OKOM vidi da je svjetlo u prostoru
                 bulb->setPosition({
-                    radius * float(std::sin(time * 0.6)),
-                    0.35f * middle,
-                    -middle + radius * float(std::cos(time * 0.6))
+                    orbitRadius * float(std::sin(time * 0.6)),
+                    orbitRadius * float(std::cos(time * 0.6)) + 0.15f * subjectDistance,
+                    -orbitCentre
                 });
 
                 relight->setPlate(plate.getSampled());
@@ -310,6 +403,16 @@ int main(int argc, char** argv){
             }
 
             loom.renderer.endFrame();
+
+            if(once){
+                loom.waitIdle();
+                const ImageData shot = loom.renderer.readLastFrame();
+                Spool::savePng(savePath, Spool::imageFromPixels(
+                    shot.pixels.data(), shot.extent.width, shot.extent.height,
+                    Spool::ChannelOrder::BGRA));
+                printf("zapisano: %s\n", savePath.c_str());
+                break;
+            }
 
             //Snimku treba gledati njenom brzinom, a ne brzinom kojom je karta stigne nacrtati
             nextFrameDue += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
