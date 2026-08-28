@@ -26,8 +26,13 @@ struct Push{
     float farPlane;
 
     uint encoding;
-    float nearDistance;  //DEPTH_DISPARITY: sto znaci vrijednost 1
-    float farDistance;   //DEPTH_DISPARITY: sto znaci vrijednost 0
+
+    //DEPTH_DISPARITY: 1/Z = disparityScale * v + disparityOffset.
+    //Dva broja, jer je toliko i nepoznanica - model daje nesto proporcionalno reciprocnoj
+    //udaljenosti, a ne zna ni razmjer ni pomak. Cijela kalibracija je u ta dva broja
+    float disparityScale;
+    float disparityOffset;
+
     float metricScale;   //DEPTH_METRIC: metri = vrijednost * ovo
 }
 
@@ -63,16 +68,18 @@ void computeMain(uint3 id : SV_DispatchThreadID){
     }
     else if(push.encoding == DEPTH_DISPARITY){
         //Model za relativnu dubinu ne daje udaljenost nego nesto proporcionalno njenoj
-        //RECIPROCNOJ vrijednosti - blize je vece. Zato se ne interpolira udaljenost izmedu
-        //blizu i daleko, nego njena reciprocna vrijednost; inace scena ispadne rastegnuta
-        //u daljini a zbijena blizu.
-        //
-        //    1/Z = (1/near - 1/far) * d + 1/far
-        float nearD = max(push.nearDistance, 1e-4);
-        float farD = max(push.farDistance, nearD * 1.0001);
+        //RECIPROCNOJ vrijednosti - blize je vece. Kalibracija je zato pravac U TOM prostoru,
+        //ne u prostoru udaljenosti: da se interpolira udaljenost, scena bi ispala rastegnuta
+        //u daljini i zbijena blizu, a nista u njoj ne bi izgledalo kao greska
+        float reciprocal = push.disparityScale * stored + push.disparityOffset;
 
-        float reciprocal = (1.0 / nearD - 1.0 / farD) * saturate(stored) + 1.0 / farD;
-        viewDepth = 1.0 / max(reciprocal, 1e-6);
+        //Iza obzora, gdje racun da nulu ili manje, nema plohe. Tocka na udaljenosti nula je
+        //tocka u oku kamere, a svjetlo bi je obasjalo beskonacno jako
+        if(reciprocal <= 1e-6){
+            positionMap[id.xy] = float4(0.0, 0.0, 0.0, 0.0);
+            return;
+        }
+        viewDepth = 1.0 / reciprocal;
     }
     else{
         viewDepth = stored * push.metricScale;

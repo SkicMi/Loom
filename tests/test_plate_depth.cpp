@@ -200,10 +200,7 @@ int main(){
     Texture depthTexture(loom.device, loom.command, loaded.values.data(),
                          vk::Extent2D{sceneWidth, sceneHeight}, depthTextureConfig);
 
-    DepthMapping mapping;
-    mapping.encoding = DepthEncoding::Disparity;
-    mapping.nearDistance = nearDistance;
-    mapping.farDistance = farDistance;
+    const DepthMapping mapping = DepthMapping::fromRange(nearDistance, farDistance);
 
     PositionMap fromFile(loom.device, vk::Extent2D{sceneWidth, sceneHeight},
                          PositionMapConfig{vk::ImageLayout::eTransferSrcOptimal});
@@ -256,8 +253,7 @@ int main(){
     //Kriv raspon je jedini nacin na koji se u ovom koraku moze pogrijesiti tako da slika i
     //dalje izgleda uvjerljivo - scena samo bude dublja ili plica nego sto jest
     {
-        DepthMapping wrong = mapping;
-        wrong.farDistance = 12.0f;
+        const DepthMapping wrong = DepthMapping::fromRange(nearDistance, 12.0f);
 
         fromFile.setMapping(wrong);
         const std::vector<uint8_t> misjudged = unproject(fromFile);
@@ -271,7 +267,7 @@ int main(){
 
         report.check("kriv raspon daje krivu scenu", worstWrong > 100.0f * tolerance,
             fmt("s rasponom do %.0f m dubina promasi za %.4f, s pravim za %.9f",
-                wrong.farDistance, worstWrong, worst));
+                12.0f, worstWrong, worst));
 
         fromFile.setMapping(mapping);
     }

@@ -31,13 +31,34 @@ enum class DepthEncoding : uint32_t{
 struct DepthMapping{
     DepthEncoding encoding = DepthEncoding::Disparity;
 
-    //Disparity: sto znace krajnje vrijednosti. "Najblize je metar i pol, najdalje dvadeset"
-    //je pitanje na koje covjek zna odgovoriti gledajuci sliku
-    float nearDistance = 1.0f;
-    float farDistance = 30.0f;
+    //Disparity:  1/Z = disparityScale * vrijednost + disparityOffset
+    //
+    //Dva broja, jer je toliko i nepoznanica. Model daje nesto proporcionalno reciprocnoj
+    //udaljenosti i ne zna ni razmjer ni pomak - cijela kalibracija je u ta dva broja, i to
+    //je isti oblik u kojem se relativna dubina poravnava s istinom i u literaturi.
+    //
+    //Ne postavljaju se rukom nego kroz fromRange ili fromReferences
+    float disparityScale = 1.0f;
+    float disparityOffset = 0.0f;
 
     //Metric: metri = vrijednost * ovo
     float metricScale = 1.0f;
+
+    //"Najblize je metar i pol, najdalje dvadeset" - pitanje na koje covjek zna odgovoriti
+    //gledajuci sliku. Vrijedi kad je karta normalizirana na 0..1, sto vecina skripti radi
+    static DepthMapping fromRange(float nearDistance, float farDistance);
+
+    //Dvije poznate udaljenosti na dvije poznate vrijednosti. Ovo je prava kalibracija: ne
+    //treba znati raspon karte ni je normalizirati, dovoljno je pokazati na dvije stvari u
+    //slici i reci koliko su daleko
+    static DepthMapping fromReferences(float valueA, float distanceA,
+                                       float valueB, float distanceB);
+
+    //Za modele koji vec daju metre
+    static DepthMapping metric(float scale = 1.0f);
+
+    //Isti racun koji radi i shader. Postoji da se kalibracija moze provjeriti bez karte
+    float distanceAt(float value) const;
 };
 
 //Ono sto compute shader treba znati. Slaze se s Push strukturom u unproject.slang, i ako se
@@ -52,8 +73,8 @@ struct UnprojectPush{
     float farPlane;
 
     uint32_t encoding;
-    float nearDistance;
-    float farDistance;
+    float disparityScale;
+    float disparityOffset;
     float metricScale;
 };
 
@@ -133,7 +154,7 @@ class PositionMap{
     VulkanImage image;
 
     CameraIntrinsics intrinsics;
-    DepthMapping mapping{DepthEncoding::Buffer, 0.0f, 0.0f, 1.0f};
+    DepthMapping mapping{DepthEncoding::Buffer, 1.0f, 0.0f, 1.0f};
     vk::Extent2D depthExtent{0,0};
 
     vk::raii::Sampler sampler = nullptr;

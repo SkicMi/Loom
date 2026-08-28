@@ -2,6 +2,53 @@
 #include "VulkanBuffer.h"
 #include <stdexcept>
 
+//-------------------------------------------------------------------------------------------
+// Kalibracija
+//-------------------------------------------------------------------------------------------
+
+DepthMapping DepthMapping::fromRange(float nearDistance, float farDistance){
+    if(!(nearDistance > 0.0f) || !(farDistance > nearDistance)){
+        throw std::runtime_error("DepthMapping::fromRange: needs 0 < near < far, otherwise the whole scene lands at one distance");
+    }
+
+    //Vrijednost 1 je najblize, 0 najdalje - kako karte relativne dubine i izlaze
+    return fromReferences(1.0f, nearDistance, 0.0f, farDistance);
+}
+
+DepthMapping DepthMapping::fromReferences(float valueA, float distanceA,
+                                          float valueB, float distanceB){
+    if(valueA == valueB){
+        throw std::runtime_error("DepthMapping::fromReferences: both references have the same value in the map, so they say nothing about how it scales");
+    }
+    if(!(distanceA > 0.0f) || !(distanceB > 0.0f)){
+        throw std::runtime_error("DepthMapping::fromReferences: a reference has to be a real distance in front of the camera");
+    }
+
+    //Pravac kroz dvije tocke, ali u prostoru RECIPROCNIH udaljenosti - jer je to prostor u
+    //kojem je karta linearna. Isto poravnanje razmjerom i pomakom kakvo se u literaturi radi
+    //najmanjim kvadratima kad tocaka ima vise
+    DepthMapping out;
+    out.encoding = DepthEncoding::Disparity;
+    out.disparityScale = (1.0f / distanceA - 1.0f / distanceB) / (valueA - valueB);
+    out.disparityOffset = 1.0f / distanceA - out.disparityScale * valueA;
+    return out;
+}
+
+DepthMapping DepthMapping::metric(float scale){
+    DepthMapping out;
+    out.encoding = DepthEncoding::Metric;
+    out.metricScale = scale;
+    return out;
+}
+
+float DepthMapping::distanceAt(float value) const{
+    if(encoding == DepthEncoding::Metric) return value * metricScale;
+
+    const float reciprocal = disparityScale * value + disparityOffset;
+    if(reciprocal <= 1e-6f) return 0.0f;   //iza obzora: nema plohe
+    return 1.0f / reciprocal;
+}
+
 namespace{
 
 ImageConfig makePositionImageConfig(){
@@ -58,8 +105,8 @@ void PositionMap::setPlateDepth(const vk::raii::DescriptorPool& pool,
     if(value.encoding == DepthEncoding::Buffer){
         throw std::runtime_error("PositionMap::setPlateDepth: DepthEncoding::Buffer is for depth this Loom drew itself - a map from a file is Disparity or Metric");
     }
-    if(value.encoding == DepthEncoding::Disparity && !(value.farDistance > value.nearDistance)){
-        throw std::runtime_error("PositionMap::setPlateDepth: the far distance has to be greater than the near one, or every pixel lands at the same depth");
+    if(value.encoding == DepthEncoding::Disparity && value.disparityScale == 0.0f){
+        throw std::runtime_error("PositionMap::setPlateDepth: a disparity scale of zero puts every pixel at the same distance - calibrate with fromRange or fromReferences");
     }
 
     mapping = value;
@@ -123,8 +170,8 @@ UnprojectPush PositionMap::makePush() const{
     push.farPlane = intrinsics.farPlane;
 
     push.encoding = static_cast<uint32_t>(mapping.encoding);
-    push.nearDistance = mapping.nearDistance;
-    push.farDistance = mapping.farDistance;
+    push.disparityScale = mapping.disparityScale;
+    push.disparityOffset = mapping.disparityOffset;
     push.metricScale = mapping.metricScale;
     return push;
 }
