@@ -215,6 +215,18 @@ int main(int argc, char** argv){
                                                 *positions, *normals, plate.getSampled(), relightConfig);
             relight->setCamera(camera);
 
+            //Sjena se trazi kroz samu sliku - baca je sve sto je u kadru, i nista sto nije
+            relight->setIntrinsics(CameraIntrinsics::fromProjection(
+                camera.getProjection(plateWidth, plateHeight), plateWidth, plateHeight),
+                plateSize);
+
+            ScreenShadowConfig shadowConfig;
+            shadowConfig.enabled = true;
+            shadowConfig.steps = 32;
+            shadowConfig.maxDistance = 0.5f * (nearDistance + farDistance);
+            shadowConfig.thickness = 0.15f * (nearDistance + farDistance);
+            relight->setShadow(shadowConfig);
+
             LightConfig bulbConfig;
             bulbConfig.type = LightType::Point;
             bulbConfig.color = {1.0f, 0.82f, 0.55f};
@@ -223,7 +235,8 @@ int main(int argc, char** argv){
             bulb = std::make_unique<Light>(bulbConfig);
             loom.renderer.addLight(*bulb);
 
-            printf("\nSvjetlo kruzi oko scene. Zatvori prozor za izlaz.\n");
+            printf("\nSvjetlo kruzi oko scene i baca sjene od svega sto je u kadru.\n"
+                   "Zatvori prozor za izlaz.\n");
         }
 
         // -- petlja ------------------------------------------------------------------------

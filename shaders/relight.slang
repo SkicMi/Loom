@@ -33,7 +33,7 @@ float4 fragmentMain(VSOutput input) : SV_Target{
     }
 
     float3 lit = shadeSurface(relight.baseColor.rgb, surface.worldPos, surface.N, surface.V,
-                              relight.shininess, relight.specularStrength);
+                              relight.surface.x, relight.surface.y);
 
     return float4(lit, 1.0);
 }

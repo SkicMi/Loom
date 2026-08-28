@@ -33,10 +33,16 @@ float4 fragmentMain(VSOutput input) : SV_Target{
     //baseColor mnozi snimku, pa se albedo moze prigusiti bez diranja same snimke
     float3 base = existing.rgb * relight.baseColor.rgb;
 
+    //Zaklon se trazi kroz samu sliku - jedina sjena koju snimka moze dati
+    ScreenTrace trace;
+    trace.point = surface.viewPos;
+    trace.pixel = input.texCoord * relight.imageSize.xy;
+    trace.data = relight;
+
     //Krece se OD snimke, ne zbraja na kraju: isti redoslijed zbrajanja kao da je scena
     //crtana odjednom, pa se rezultat da usporediti do zadnjeg bita
     float3 lit = accumulateLight(existing.rgb, base, surface.worldPos, surface.N, surface.V,
-                                 relight.shininess, relight.specularStrength);
+                                 relight.surface.x, relight.surface.y, trace);
 
     return float4(lit, existing.a);
 }

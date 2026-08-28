@@ -1,4 +1,5 @@
 #include "Relight.h"
+#include <stdexcept>
 #include <glm/gtc/matrix_inverse.hpp>
 
 namespace{
@@ -38,8 +39,10 @@ Relight::Relight(const VulkanDevice& device,
     hasPlate = plate.isValid();
 
     data.baseColor = config.surface.baseColor;
-    data.shininess = config.surface.shininess;
-    data.specularStrength = config.surface.specularStrength;
+    data.surface = {config.surface.shininess, config.surface.specularStrength, 0.0f, 0.0f};
+    data.shadow = {config.shadow.enabled ? float(config.shadow.steps) : 0.0f,
+                   config.shadow.maxDistance, config.shadow.thickness, config.shadow.bias};
+    data.imageSize = {float(positions.getExtent().width), float(positions.getExtent().height), 0.0f, 0.0f};
 
     //Fullscreen: nema vrhova, nema atributa, nema dubine. Trokut koji pokriva ekran dolazi
     //iz SV_VertexID, kao i u svakom drugom fullscreen prolazu
@@ -75,14 +78,30 @@ Relight::Relight(const VulkanDevice& device,
 void Relight::setCamera(const Camera& camera){
     //Pogled je kruta transformacija, pa je njegov obrat samo obrat - bez ikakve skale koju
     //bi trebalo posebno paziti
-    data.inverseView = glm::inverse(camera.getView());
+    data.view = camera.getView();
+    data.inverseView = glm::inverse(data.view);
+    material->setData(&data, sizeof(data));
+}
+
+void Relight::setIntrinsics(const CameraIntrinsics& intrinsics, vk::Extent2D imageSize){
+    data.intrinsics = {intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy};
+    data.imageSize = {float(imageSize.width), float(imageSize.height), 0.0f, 0.0f};
+    material->setData(&data, sizeof(data));
+}
+
+void Relight::setShadow(const ScreenShadowConfig& shadow){
+    if(shadow.enabled && data.intrinsics.x == 0.0f){
+        throw std::runtime_error("Relight::setShadow: the trace turns a point back into a pixel, so it needs the intrinsics the points came from (setIntrinsics)");
+    }
+
+    data.shadow = {shadow.enabled ? float(shadow.steps) : 0.0f,
+                   shadow.maxDistance, shadow.thickness, shadow.bias};
     material->setData(&data, sizeof(data));
 }
 
 void Relight::setSurface(const MaterialData& surface){
     data.baseColor = surface.baseColor;
-    data.shininess = surface.shininess;
-    data.specularStrength = surface.specularStrength;
+    data.surface = {surface.shininess, surface.specularStrength, 0.0f, 0.0f};
     material->setData(&data, sizeof(data));
 }
 

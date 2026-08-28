@@ -93,14 +93,32 @@ float cubeVisibility(GpuLight light, float3 worldPos){
 //
 //Odavde nadalje je svejedno je li ploha dosla iz mesha ili iz slike dubine - sve sto ova
 //funkcija zna je gdje je tocka, kamo gleda i koje je boje
+//Zaklon koji shadeSurface ne zna sam izracunati.
+//
+//Sjenu iz karte sjena Loom vec racuna ovdje. Ali kad se svjetlo ubacuje u snimku, karte
+//sjena nema - postoji samo ono sto se vidi u kadru, i zaklon se mora TRAZITI kroz tu istu
+//dubinu. Taj racun ne pripada osvjetljenju nego prolazu koji ima dubinu pri ruci.
+//
+//Zato je zaklon parametar. Crtez preko mesha ubaci NoOcclusion, koja se prevede u nista, pa
+//taj put ne placa ni jednu instrukciju - a osvjetljenje ostaje jedna funkcija za oba puta
+interface IOcclusion{
+    float visibility(GpuLight light, float3 worldPos);
+}
+
+struct NoOcclusion : IOcclusion{
+    float visibility(GpuLight light, float3 worldPos){ return 1.0; }
+}
+
 //Doprinos svih svjetala, dodan na ono sto je vec bilo.
 //
 //start postoji zbog kompozicije: kad se svjetlo ubacuje u snimku, ono sto je vec na slici
 //JEST pocetna vrijednost, pa se zbraja istim redom kojim bi se zbrajalo da je scena crtana
 //odjednom. Da kompozicija zbraja na kraju, zbroj bi se razlikovao u zadnjem bitu - a onda
 //se "isto svjetlo" vise ne bi dalo dokazati, samo izjaviti
-float3 accumulateLight(float3 start, float3 base, float3 worldPos, float3 N, float3 V,
-                       float shininess, float specularStrength){
+float3 accumulateLight<T : IOcclusion>(float3 start, float3 base, float3 worldPos,
+                                       float3 N, float3 V,
+                                       float shininess, float specularStrength,
+                                       T occlusion){
     float3 lit = start;
 
     for(uint i = 0; i < frame.lightCount; ++i){
@@ -138,16 +156,26 @@ float3 accumulateLight(float3 start, float3 base, float3 worldPos, float3 N, flo
             visibility = shadowVisibility(light, worldPos);
         }
 
+        //Zaklon iz kadra mnozi ono sto je karta sjena vec rekla. Svjetlo koje je zaklonjeno
+        //jednim od ta dva puta zaklonjeno je - drugi ga ne moze vratiti
+        visibility *= occlusion.visibility(light, worldPos);
+
         lit += base * light.color.rgb * diffuse * attenuation * visibility;
         lit += light.color.rgb * specular * attenuation * visibility;
     }
 
-        return lit;
+    return lit;
+}
+
+float3 accumulateLight(float3 start, float3 base, float3 worldPos, float3 N, float3 V,
+                       float shininess, float specularStrength){
+    return accumulateLight(start, base, worldPos, N, V, shininess, specularStrength,
+                           NoOcclusion());
 }
 
 //Ploha osvijetljena od nule: ambijent pa svjetla. Ono sto crtez preko mesha oduvijek radi
 float3 shadeSurface(float3 base, float3 worldPos, float3 N, float3 V,
                     float shininess, float specularStrength){
     return accumulateLight(base * frame.ambientColor.rgb, base, worldPos, N, V,
-                           shininess, specularStrength);
+                           shininess, specularStrength, NoOcclusion());
 }
