@@ -354,6 +354,28 @@ int main(int argc, char** argv){
                 frame = &decoded;
             }
 
+            //Svjetlo se postavlja PRIJE beginFrame, i to nije stvar ukusa: renderer skuplja
+            //svjetla i salje ih na karticu unutar beginFrame (VulkanRenderer.cpp, lightStaging).
+            //Pomak nakon toga vrijedi tek za SLJEDECI kadar - u prozoru se to vidi samo kao
+            //kasnjenje od jednog framea, ali --save snima prvi i jedini kadar, pa je svaki kut
+            //davao bit-identicnu sliku. Tri md5-a ista, i to je bila prva stvar koju je
+            //mjerenje naslo
+            if(relight){
+                //Svjetlo kruzi ISPRED subjekta, kao kljucno svjetlo koje netko nosi oko njega
+                //- ne oko sredine scene, jer je tamo vec zid. Kruzenje je jedini nacin da se
+                //OKOM vidi da je svjetlo u prostoru: da je nalijepljeno na sliku, sjencanje se
+                //ne bi mijenjalo dok putuje
+                const double time = once ? double(glm::radians(lightAngle)) / 0.6
+                    : std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - started).count();
+
+                bulb->setPosition({
+                    orbitRadius * float(std::sin(time * 0.6)),
+                    orbitRadius * float(std::cos(time * 0.6)) + 0.15f * subjectDistance,
+                    -orbitCentre
+                });
+            }
+
             if(!loom.renderer.beginFrame()) continue;
 
             //Tek NAKON beginFrame: prsten se oslanja na to da je renderer vec pricekao frame
@@ -361,23 +383,6 @@ int main(int argc, char** argv){
             plate.update(frame->pixels.data(), frame->pixels.size());
 
             if(relight){
-                //Svjetlo kruzi ispred scene, na visini sredine raspona. Kruzi zato sto je to
-                //jedini nacin da se OKOM vidi da je stvarno u prostoru: da je nalijepljeno na
-                //sliku, sjencanje se ne bi mijenjalo dok putuje
-                const double time = once ? double(glm::radians(lightAngle)) / 0.6
-                    : std::chrono::duration<double>(
-                        std::chrono::steady_clock::now() - started).count();
-
-                //Kruzi ISPRED subjekta, kao kljucno svjetlo koje netko nosi oko njega - ne
-                //oko sredine scene, jer je tamo vec zid
-                //Kruzi u ravnini okomitoj na pogled, na udaljenosti s koje sjena pada u
-                //kadar. Kruzenje je jedini nacin da se OKOM vidi da je svjetlo u prostoru
-                bulb->setPosition({
-                    orbitRadius * float(std::sin(time * 0.6)),
-                    orbitRadius * float(std::cos(time * 0.6)) + 0.15f * subjectDistance,
-                    -orbitCentre
-                });
-
                 relight->setPlate(plate.getSampled());
 
                 const UnprojectPush unproject = positions->makePush();
