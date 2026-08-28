@@ -48,7 +48,22 @@ void PositionMap::setDepthSource(const vk::raii::DescriptorPool& pool, const Ren
         throw std::runtime_error("PositionMap: this target's depth sampler compares instead of reading (RenderTargetConfig::depthCompare) - unprojecting needs the depth value itself, not the answer to a comparison");
     }
 
+    mapping.encoding = DepthEncoding::Buffer;
     setDepthSource(pool, depthTarget.getDepthSampled(), depthTarget.getExtent());
+}
+
+void PositionMap::setPlateDepth(const vk::raii::DescriptorPool& pool,
+                                const SampledImage& depth, vk::Extent2D size,
+                                const DepthMapping& value){
+    if(value.encoding == DepthEncoding::Buffer){
+        throw std::runtime_error("PositionMap::setPlateDepth: DepthEncoding::Buffer is for depth this Loom drew itself - a map from a file is Disparity or Metric");
+    }
+    if(value.encoding == DepthEncoding::Disparity && !(value.farDistance > value.nearDistance)){
+        throw std::runtime_error("PositionMap::setPlateDepth: the far distance has to be greater than the near one, or every pixel lands at the same depth");
+    }
+
+    mapping = value;
+    setDepthSource(pool, depth, size);
 }
 
 void PositionMap::setDepthSource(const vk::raii::DescriptorPool& pool,
@@ -106,6 +121,11 @@ UnprojectPush PositionMap::makePush() const{
     push.cy = intrinsics.cy;
     push.nearPlane = intrinsics.nearPlane;
     push.farPlane = intrinsics.farPlane;
+
+    push.encoding = static_cast<uint32_t>(mapping.encoding);
+    push.nearDistance = mapping.nearDistance;
+    push.farDistance = mapping.farDistance;
+    push.metricScale = mapping.metricScale;
     return push;
 }
 

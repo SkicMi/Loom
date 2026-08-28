@@ -1,5 +1,6 @@
 #include "Texture.h"
 #include "VulkanBuffer.h"
+#include "ImageData.h"
 
 
 static ImageConfig makeTextureImageConfig(const TextureConfig& config, vk::Extent2D extent) {
@@ -32,7 +33,9 @@ Texture::Texture(const VulkanDevice& device,
             throw std::runtime_error("Texture: extent is 0");
         }
 
-        vk::DeviceSize bytes = vk::DeviceSize(extent.width) * extent.height * 4;
+        //Iz formata, ne cetiri fiksno: karta dubine je jedan float po pikselu i nema sto
+        //raditi u cetiri kanala
+        vk::DeviceSize bytes = vk::DeviceSize(extent.width) * extent.height * bytesPerPixel(config.format);
 
         {
             VulkanBuffer staging(device, bytes, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CPU_TO_GPU);

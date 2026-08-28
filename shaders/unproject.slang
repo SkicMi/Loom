@@ -9,6 +9,13 @@
 
 #include "include/Depth.slang"
 
+//Odakle je dubina i sto njen broj znaci. Cjevovod je isti u oba slucaja - i jedno i drugo
+//je jedan kanal iz semplirljive slike - pa se razlikuje samo racun koji broj pretvori u
+//udaljenost
+static const uint DEPTH_FROM_BUFFER = 0;   //Loomov depth buffer: nelinearan, kroz near/far
+static const uint DEPTH_DISPARITY   = 1;   //model za relativnu dubinu: 1 blizu, 0 daleko
+static const uint DEPTH_METRIC      = 2;   //metri izravno
+
 struct Push{
     uint2 size;          //velicina slike, u pikselima; dubina i pozicije su iste velicine
     float fx;            //zariste u pikselima
@@ -17,6 +24,11 @@ struct Push{
     float cy;
     float nearPlane;
     float farPlane;
+
+    uint encoding;
+    float nearDistance;  //DEPTH_DISPARITY: sto znaci vrijednost 1
+    float farDistance;   //DEPTH_DISPARITY: sto znaci vrijednost 0
+    float metricScale;   //DEPTH_METRIC: metri = vrijednost * ovo
 }
 
 [[vk::push_constant]] ConstantBuffer<Push> push;
@@ -36,16 +48,42 @@ void computeMain(uint3 id : SV_DispatchThreadID){
     float2 pixel = float2(id.xy) + 0.5;
     float2 uv = pixel / float2(push.size);
 
-    float ndcZ = depthMap.SampleLevel(uv, 0.0).r;
+    float stored = depthMap.SampleLevel(uv, 0.0).r;
 
-    //Pozadina: nista nije nacrtano, dubina je ostala na vrijednosti brisanja. Tu nema plohe,
-    //pa nema ni tocke - i svjetlo je ne smije obasjati. w = 0 znaci "ovdje nicega nema"
-    if(ndcZ >= 1.0){
-        positionMap[id.xy] = float4(0.0, 0.0, 0.0, 0.0);
-        return;
+    float viewDepth;
+
+    if(push.encoding == DEPTH_FROM_BUFFER){
+        //Pozadina: nista nije nacrtano, dubina je ostala na vrijednosti brisanja. Tu nema
+        //plohe, pa nema ni tocke - i svjetlo je ne smije obasjati
+        if(stored >= 1.0){
+            positionMap[id.xy] = float4(0.0, 0.0, 0.0, 0.0);
+            return;
+        }
+        viewDepth = linearizeDepth(stored, push.nearPlane, push.farPlane);
     }
+    else if(push.encoding == DEPTH_DISPARITY){
+        //Model za relativnu dubinu ne daje udaljenost nego nesto proporcionalno njenoj
+        //RECIPROCNOJ vrijednosti - blize je vece. Zato se ne interpolira udaljenost izmedu
+        //blizu i daleko, nego njena reciprocna vrijednost; inace scena ispadne rastegnuta
+        //u daljini a zbijena blizu.
+        //
+        //    1/Z = (1/near - 1/far) * d + 1/far
+        float nearD = max(push.nearDistance, 1e-4);
+        float farD = max(push.farDistance, nearD * 1.0001);
 
-    float viewDepth = linearizeDepth(ndcZ, push.nearPlane, push.farPlane);
+        float reciprocal = (1.0 / nearD - 1.0 / farD) * saturate(stored) + 1.0 / farD;
+        viewDepth = 1.0 / max(reciprocal, 1e-6);
+    }
+    else{
+        viewDepth = stored * push.metricScale;
+
+        //Nula znaci "model ovdje nije imao sto reci" - najcesce nebo. Tocka na udaljenosti
+        //nula je tocka u oku kamere, a svjetlo bi je obasjalo beskonacno jako
+        if(viewDepth <= 0.0){
+            positionMap[id.xy] = float4(0.0, 0.0, 0.0, 0.0);
+            return;
+        }
+    }
 
     //px = fx * x / dubina + cx, rijeseno po x. Isto za y. z je udaljenost, s predznakom
     //jer kamera gleda niz -Z
