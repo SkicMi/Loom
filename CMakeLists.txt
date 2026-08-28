@@ -357,9 +357,11 @@ endif()
 # Testni executable
 # ----------------------------------------------------------------------------
 add_executable(LoomApp src/main.cpp)
-# Samo LoomPreset. main.cpp je od sada stepenica 1 plus jedan svjesni spust,
-# a ni jedno ni drugo ne trazi da se Loom ili Spool linkaju izravno.
-target_link_libraries(LoomApp PRIVATE LoomPreset)
+# main.cpp je trenutno STEPENICA 2 i linka Loom i Spool izravno: prikaz snimke
+# trazi StreamingTexture (Loom) i VideoReader (Spool), a stepenica 1 jos nema
+# gdje drzati plate. To pise i u samom fileu - spust koji se ne vidi je spust
+# koji se zaboravi.
+target_link_libraries(LoomApp PRIVATE Loom Spool)
 add_dependencies(LoomApp LoomShaders)   # shaderi se prevedu prije exea
 
 # ----------------------------------------------------------------------------

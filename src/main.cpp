@@ -1,94 +1,149 @@
-// Loom, na tri stepenice odjednom.
+// Plate: snimka u prozoru.
 //
-// Ovo je ista scena kao prije - cetiri oblika na podu, sunce sa sjenama, pokretna zarulja -
-// ali napisana onako kako se od sada pise. Vecina je stepenica 1. Ono sto preset ne pokriva
-// je svjesni silazak, i on je zapisan jednim includeom na vrhu, vidljivo svakome tko file
-// otvori:
+// Ovo je STEPENICA 2, i to namjerno.
 //
-//   stepenica 1  <Loom/Loom.h>            preset, svjetla, oblici, teksture, petlja
-//   stepenica 2  <Loom/Preset_Advanced.h> config prije upotrebe
-//   stepenica 3  ovdje ne treba
+// Stepenica 1 danas nema gdje drzati snimku. Scene crta oblike iz svog reda i sama vodi svoje
+// prolaze; plate nije oblik nego cijeli kadar ispod svega, pa se u taj red ne uklapa. Ta je
+// rupa poznata i zatvorit ce se kad korak 2 pokaze kakav oblik snimci stvarno treba - do tada
+// je ovo posteniji zapis od API-ja izmisljenog unaprijed.
 //
-// Bez tog drugog includea ovaj file ne bi vidio nijedan Vulkan simbol - a jedino zbog cega
-// je ovdje je nacin prikazivanja, koji na stepenici 1 nema sto traziti.
-#include <Loom/Loom.h>
-#include <Loom/Preset_Advanced.h>
+// Prijasnja scena s cetiri oblika i sjenama zivi dalje u examples/lit3d.
+//
+//   ./LoomApp snimka.mp4
+#include "Core/LoomInitializer.h"
+#include "Vulkan/Material.h"
+#include "Vulkan/StreamingTexture.h"
+#include "Vulkan/Texture.h"
 
-#include <cmath>
-#include <cstdint>
-#include <vector>
+#include <Spool/VideoFile.h>
 
-static std::vector<uint8_t> makeCheckerboard(uint32_t size, uint32_t cell,
-                                             uint8_t light = 235, uint8_t dark = 40){
-    std::vector<uint8_t> pixels(size_t(size) * size * 4);
-    for(uint32_t y = 0; y < size; ++y){
-        for(uint32_t x = 0; x < size; ++x){
-            const uint8_t value = (((x / cell) + (y / cell)) % 2) == 0 ? light : dark;
-            const size_t i = (size_t(y) * size + x) * 4;
-            pixels[i+0] = value; pixels[i+1] = value; pixels[i+2] = value; pixels[i+3] = 255;
-        }
-    }
-    return pixels;
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <exception>
+#include <thread>
+
+namespace{
+
+//Snimka od 4K ne stane na ekran, a fullscreen prolaz je ionako semplira po uv-u - pa se
+//prozor smanji, a ne slika
+vk::Extent2D windowSizeFor(uint32_t width, uint32_t height){
+    const uint32_t maxWidth = 1600;
+    const uint32_t maxHeight = 900;
+
+    double scale = 1.0;
+    if(width > maxWidth) scale = std::min(scale, double(maxWidth) / double(width));
+    if(height > maxHeight) scale = std::min(scale, double(maxHeight) / double(height));
+
+    return vk::Extent2D{
+        std::max(1u, uint32_t(double(width) * scale)),
+        std::max(1u, uint32_t(double(height) * scale))
+    };
 }
 
-int main(){
-    // -- stepenica 1, s jednim spustom na stepenicu 2 --------------------------------------
+}
 
-    //Preset ispuni config; ovo je trenutak izmedu toga i njegove upotrebe. Nacin
-    //prikazivanja nije na stepenici 1 i ne treba biti - a i dalje je dohvatljiv
-    Loom::Scene scene(Loom::Preset::Lit3D, [](LoomConfig& config){
-        config.swapchainConfig.preferredPresentMode = vk::PresentModeKHR::eMailbox;
-    });
-
-    scene.setTitle("Loom");
-    scene.setSize(1280, 720);
-
-    const std::vector<uint8_t> floorPixels = makeCheckerboard(128, 16, 210, 60);
-    const std::vector<uint8_t> shapePixels = makeCheckerboard(64, 8, 245, 90);
-
-    const Loom::TextureHandle floorTexture = scene.createTexture(floorPixels.data(), 128, 128);
-    const Loom::TextureHandle shapeTexture = scene.createTexture(shapePixels.data(), 64, 64);
-
-    //Preset daje jedno usmjereno svjetlo sa sjenom. Zarulja je drugo, i baca kroz kocku od
-    //sest lica - scena je posjeduje i sama vodi tih sest prolaza nad istim oblicima
-    LightConfig bulbConfig;
-    bulbConfig.type = LightType::Point;
-    bulbConfig.position = {2.6f, 2.0f, 0.0f};
-    bulbConfig.color = {1.0f, 0.35f, 0.15f};
-    bulbConfig.intensity = 14.0f;
-    bulbConfig.range = 12.0f;
-    Light& bulb = scene.addLight(bulbConfig, true);
-
-    scene.environment().setAmbient({0.06f, 0.07f, 0.10f});
-
-    // -- petlja je i dalje nasa ------------------------------------------------------------
-
-    while(scene.isRunning()){
-        const float time = scene.time();
-
-        //Kamera kruzi, pa se sjenina kutija svaki frame ponovno pripasuje frustumu i snapa na
-        //cijele teksele. Da toga nema, ovdje bi rubovi sjena puzali
-        scene.camera().setPosition({6.5f * std::sin(time * 0.25f), 3.0f, 6.5f * std::cos(time * 0.25f)});
-        scene.camera().lookAt({0.0f, 0.6f, 0.0f});
-
-        bulb.setPosition({2.6f * std::cos(time * 0.7f), 2.0f, 2.6f * std::sin(time * 0.7f)});
-
-        scene.startRendering();
-
-            scene.drawPlane(floorTexture, Loom::Transform().scaled(16.0f));
-
-            scene.drawCube(shapeTexture, Loom::Transform()
-                .at(-1.8f, 0.5f, 0.0f)
-                .spun(time * 0.8f, {0.3f, 1.0f, 0.15f}));
-
-            scene.drawSphere(shapeTexture, Loom::Transform()
-                .at(0.0f, 0.75f + 0.25f * std::sin(time * 1.6f), 0.0f)
-                .scaled(1.3f));
-
-            scene.drawPyramid(shapeTexture, Loom::Transform()
-                .at(1.8f, 0.5f, 0.0f)
-                .spun(-time * 0.6f, {0.0f, 1.0f, 0.0f}));
-
-        scene.endRendering();
+int main(int argc, char** argv){
+    if(argc < 2){
+        printf("Loom - snimka u prozoru\n\n"
+               "  %s <snimka>\n\n"
+               "Sto god ffmpeg zna procitati: mp4, mov, mkv, avi...\n", argv[0]);
+        return 1;
     }
+
+    try{
+        // -- snimka prva, jer o njoj ovisi kakav prozor treba ------------------------------
+
+        Spool::VideoReader reader(argv[1]);
+        const Spool::VideoInfo& info = reader.info();
+
+        printf("%s\n", argv[1]);
+        printf("  %ux%u, %.3f slika/s, %lld frameova%s\n",
+               info.width, info.height, info.frameRate(),
+               (long long)info.frameCount,
+               info.frameCountIsExact ? "" : " (procijenjeno)");
+        printf("  %s, %s%s\n", info.codec.c_str(), info.pixelFormat.c_str(),
+               info.rotation ? (", okrenuto " + std::to_string(info.rotation) + " stupnjeva").c_str() : "");
+
+        // -- Loom --------------------------------------------------------------------------
+
+        const vk::Extent2D windowSize = windowSizeFor(info.width, info.height);
+
+        LoomConfig config;
+        config.width = windowSize.width;
+        config.height = windowSize.height;
+        config.appName = "Loom";
+        config.engineName = "Loom";
+        config.enableDepth = false;   //plate je jedan crtez preko cijelog kadra
+        config.swapchainConfig.preferredPresentMode = vk::PresentModeKHR::eMailbox;
+
+        LoomInitializer loom(config);
+
+        //Prsten slika, dubok koliko i letenje. Nista se ne alocira po frameu
+        StreamingTextureConfig plateConfig;
+        plateConfig.format = vk::Format::eR8G8B8A8Srgb;
+        plateConfig.filter = vk::Filter::eLinear;
+        StreamingTexture plate(loom.device, loom.command,
+                               vk::Extent2D{info.width, info.height}, plateConfig);
+
+        PipelineConfig showConfig;
+        showConfig.vertexBindings.clear();
+        showConfig.vertexAttributes.clear();
+        showConfig.descriptorBindings = {Texture::getLayoutBinding(), Material::getDataLayoutBinding()};
+        showConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.vert.spv";
+        showConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.frag.spv";
+        showConfig.cullMode = vk::CullModeFlagBits::eNone;
+        VulkanGraphicsPipeline showPipeline = loom.createPipeline(showConfig);
+
+        Material screen(loom.device, loom.command, loom.getDescriptorPool(),
+                        showPipeline, plate.getSampled());
+
+        // -- petlja ------------------------------------------------------------------------
+
+        const double secondsPerFrame = info.frameRate() > 0.0 ? 1.0 / info.frameRate() : 1.0 / 25.0;
+        auto nextFrameDue = std::chrono::steady_clock::now();
+
+        while(!loom.shouldClose()){
+            loom.pollEvents();
+
+            Spool::Image frame = reader.readNext();
+            if(!frame.isValid()){
+                //Kraj snimke: natrag na pocetak. Snimka koja stane na zadnjem frameu izgleda
+                //isto kao snimka koja se zaglavila
+                reader.rewind();
+                frame = reader.readNext();
+                if(!frame.isValid()) break;
+            }
+
+            if(!loom.renderer.beginFrame()) continue;
+
+            //Tek NAKON beginFrame: prsten se oslanja na to da je renderer vec pricekao frame
+            //od prije onoliko frameova koliko prsten ima slotova
+            plate.update(frame.pixels.data(), frame.pixels.size());
+
+            //Slot se promijenio, pa materijal mora saznati koji je sad na redu
+            screen.setSampledImage(plate.getSampled());
+
+            loom.renderer.beginPass();
+            loom.renderer.drawFullscreen(screen);
+            loom.renderer.endPass();
+            loom.renderer.endFrame();
+
+            //Snimku treba gledati njenom brzinom, a ne brzinom kojom je karta stigne nacrtati
+            nextFrameDue += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(secondsPerFrame));
+
+            const auto now = std::chrono::steady_clock::now();
+            if(nextFrameDue > now) std::this_thread::sleep_until(nextFrameDue);
+            else nextFrameDue = now;   //zaostali smo; ne skupljamo dug
+        }
+
+        loom.waitIdle();
+    }
+    catch(const std::exception& error){
+        printf("\n%s\n", error.what());
+        return 1;
+    }
+
+    return 0;
 }
