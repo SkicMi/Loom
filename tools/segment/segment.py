@@ -55,30 +55,54 @@ def read_pfm(path):
     return [v for row in rows for v in row], width, height
 
 
-def prompt_from_depth(path, size, percentile=90):
-    """Gdje je subjekt, po samoj karti dubine: teziste najblize desetine slike.
+def prompt_from_depth(path, size, percentile=90, bands=3):
+    """Gdje je subjekt, po samoj karti dubine - i to kao OKVIR, ne kao tocka.
 
-    Ista definicija kojom LoomApp bira udaljenost subjekta - deveti decil dispariteta. Time
-    dubina PREDLAZE, a SAM2 ODLUCUJE: dvije procjene koje grijese na razlicitim mjestima, pa
-    njihovo slaganje nije samorazumljivo."""
+    Prva verzija je vracala teziste najblizeg decila, i to je bilo krivo iz razloga koji se
+    vidi tek kad se ima s cime usporediti: jedna tocka za SAM2 znaci "ovaj DIO", a ne "cijeli
+    subjekt". Nad sintetskim portretom je tako ispao samo torzo, bez glave - IoU 0.79 protiv
+    poznate maske, i to bez ijednog viska, samo manjak.
+
+    Okvir kaze nesto drugo: "sve unutar ovoga je jedan predmet". Granica subjekta i pozadine
+    trazi se na pola puta - u disparitetu izmedu devetog i prvog decila, jer je disparitet
+    linearan po reciprocnoj udaljenosti pa je sredina izmedu njih sredina u onome sto model
+    zapravo procjenjuje.
+
+    Rub okvira se uzima kao prvi i devedeset deveti postotak koordinata, a ne kao krajnji
+    piksel: usamljena tocka suma na drugom kraju kadra inace razvuce okvir preko cijele
+    slike."""
     values, width, height = read_pfm(path)
     if (width, height) != size:
         sys.exit("karta dubine je %dx%d, a slika %dx%d - moraju biti piksel na piksel"
                  % (width, height, size[0], size[1]))
 
-    threshold = sorted(values)[len(values) * percentile // 100]
+    import numpy
+    disparity = numpy.array(values, dtype="float64").reshape(height, width)
 
-    total = sumX = sumY = 0
-    for index, value in enumerate(values):
-        if value >= threshold:
-            total += 1
-            sumX += index % width
-            sumY += index // width
+    near = float(numpy.percentile(disparity, percentile))
+    farAway = float(numpy.percentile(disparity, 100 - percentile))
+    cut = 0.5 * (near + farAway)
 
-    if total == 0:
-        sys.exit("u karti dubine nema nijedne tocke iznad praga")
+    rows, cols = numpy.nonzero(disparity >= cut)
+    if rows.size == 0:
+        sys.exit("u karti dubine nema nicega blizeg od pozadine")
 
-    return (sumX / total, sumY / total)
+    #Rub okvira je prvi i devedeset deveti postotak koordinata, a ne krajnji piksel: usamljena
+    #tocka suma na drugom kraju kadra inace razvuce okvir preko cijele slike
+    x0, x1 = (float(v) for v in numpy.percentile(cols, (1.0, 99.0)))
+    y0, y1 = (float(v) for v in numpy.percentile(rows, (1.0, 99.0)))
+
+    #Uz okvir idu i tocke, po jedna iz svakog vodoravnog pojasa bliskog podrucja. Okvir kaze
+    #dokle subjekt see, a tocke da je sve to JEDAN predmet - bez njih model rado uzme samo
+    #onaj dio na koji je pokazano
+    points = []
+    edges = numpy.linspace(rows.min(), rows.max(), bands + 1)
+    for i in range(bands):
+        chosen = (rows >= edges[i]) & (rows < edges[i + 1])
+        if int(chosen.sum()) > 50:
+            points.append([float(cols[chosen].mean()), float(rows[chosen].mean())])
+
+    return points, [x0, y0, x1, y1]
 
 
 def frames_from_video(path, into):
@@ -110,35 +134,47 @@ def write_mask(path, mask):
 
 
 def pick_best(masks, scores):
-    """SAM2 na jedan klik nudi tri odgovora - "dio", "cjelina", "sve oko toga". Uzima se onaj
-    kojem sam model daje najvecu ocjenu preklapanja; bez toga se dobije nasumicno jedan od
-    tri, pa maska skace izmedu ruke i cijele osobe."""
+    """Od tri ponudena odgovora onaj kojem model daje najvecu ocjenu.
+
+    ISPRAVAK, jer je prva verzija ovog komentara tvrdila suprotno od izmjerenog: taj izbor
+    valja SAMO za jednu golu tocku, gdje je klik stvarno dvosmislen ("dio", "cjelina", "sve
+    oko toga"). Cim se da okvir ili vise tocaka, dvosmislenosti vise nema, a model svojoj
+    vlastitoj ocjeni i dalje rado da DIO - nad sintetskim portretom je tako uzeo torzo bez
+    glave, IoU 0.79 umjesto 0.98. Zato se tada trazi jedna maska, a ne najbolja od tri."""
     import torch
     best = int(torch.argmax(scores.reshape(-1)))
     return masks.reshape(-1, masks.shape[-2], masks.shape[-1])[best]
 
 
-def segment_one(model, processor, image, point, box, device):
+def segment_one(model, processor, image, points, box, device):
     import torch
 
     kwargs = {}
     if box is not None:
         kwargs["input_boxes"] = [[list(box)]]
-    else:
-        kwargs["input_points"] = [[[[float(point[0]), float(point[1])]]]]
-        kwargs["input_labels"] = [[[1]]]
+    if points:
+        kwargs["input_points"] = [[[[float(x), float(y)] for x, y in points]]]
+        kwargs["input_labels"] = [[[1] * len(points)]]
+
+    #Tri odgovora ima smisla traziti samo od jedne gole tocke - vidi pick_best
+    multimask = box is None and len(points) == 1
 
     inputs = processor(images=image, return_tensors="pt", **kwargs).to(device)
 
     with torch.no_grad():
-        outputs = model(**inputs, multimask_output=True)
+        outputs = model(**inputs, multimask_output=multimask)
 
     masks = processor.post_process_masks(outputs.pred_masks, inputs["original_sizes"],
                                          binarize=True)[0]
-    return pick_best(masks, outputs.iou_scores).cpu().numpy().astype("uint8")
+    if multimask:
+        chosen = pick_best(masks, outputs.iou_scores)
+    else:
+        chosen = masks.reshape(-1, masks.shape[-2], masks.shape[-1])[0]
+
+    return chosen.cpu().numpy().astype("uint8")
 
 
-def segment_sequence(model, processor, paths, point, box, device, output):
+def segment_sequence(model, processor, paths, points, box, device, output):
     """Kroz snimku se maska PROPAGIRA, ne racuna iznova po kadru.
 
     Klik ide samo u prvi kadar; dalje SAM2 nosi sto je vidio. Maska racunata po kadru bi
@@ -151,13 +187,15 @@ def segment_sequence(model, processor, paths, point, box, device, output):
     frameWidth, frameHeight = frames[0].size
     session = processor.init_video_session(video=frames, inference_device=device)
 
+    prompt = {}
     if box is not None:
-        processor.add_inputs_to_inference_session(
-            inference_session=session, frame_idx=0, obj_ids=1, input_boxes=[[list(box)]])
-    else:
-        processor.add_inputs_to_inference_session(
-            inference_session=session, frame_idx=0, obj_ids=1,
-            input_points=[[[[float(point[0]), float(point[1])]]]], input_labels=[[[1]]])
+        prompt["input_boxes"] = [[list(box)]]
+    if points:
+        prompt["input_points"] = [[[[float(x), float(y)] for x, y in points]]]
+        prompt["input_labels"] = [[[1] * len(points)]]
+
+    processor.add_inputs_to_inference_session(
+        inference_session=session, frame_idx=0, obj_ids=1, **prompt)
 
     #Pocetni kadar se kaze naglas. Bez njega SAM2 odbija krenuti ("cannot determine the
     #starting frame index") jer sam prompt jos nije prosao kroz model - a prosao bi tek da
@@ -200,7 +238,7 @@ def self_check(model, processor, device):
 
     image = Image.fromarray(pixels)
     point = ((left + right) / 2.0, (top + bottom) / 2.0)
-    mask = segment_one(model, processor, image, point, None, device)
+    mask = segment_one(model, processor, image, [point], None, device)
 
     truth = numpy.zeros((height, width), dtype="uint8")
     truth[top:bottom, left:right] = 1
@@ -260,17 +298,19 @@ def main():
 
         size = Image.open(paths[0]).size
         box = None
-        point = (size[0] / 2.0, size[1] / 2.0)
+        points = [(size[0] / 2.0, size[1] / 2.0)]
 
         if args.box:
             box = [float(v) for v in args.box.split(",")]
             if len(box) != 4:
                 sys.exit("--box treba x0,y0,x1,y1")
+            points = []
         elif args.point:
-            point = tuple(float(v) for v in args.point.split(","))
+            points = [tuple(float(v) for v in args.point.split(","))]
         elif args.depth:
-            point = prompt_from_depth(args.depth, size, args.percentile)
-            print("prompt iz dubine: (%.0f, %.0f) - teziste najblizeg decila" % point)
+            points, box = prompt_from_depth(args.depth, size, args.percentile)
+            print("prompt iz dubine: okvir %.0f,%.0f..%.0f,%.0f  i %d tocke u njemu"
+                  % (box[0], box[1], box[2], box[3], len(points)))
 
         if many:
             output = args.output or "masks"
@@ -278,14 +318,14 @@ def main():
 
             processor = Sam2VideoProcessor.from_pretrained(name)
             model = Sam2VideoModel.from_pretrained(name).to(device).eval()
-            written = segment_sequence(model, processor, paths, point, box, device, output)
+            written = segment_sequence(model, processor, paths, points, box, device, output)
             print("zapisano: %s  (%d maski)" % (output, written))
         else:
             processor = Sam2Processor.from_pretrained(name)
             model = Sam2Model.from_pretrained(name).to(device).eval()
 
             mask = segment_one(model, processor, Image.open(paths[0]).convert("RGB"),
-                               point, box, device)
+                               points, box, device)
             output = args.output or (os.path.splitext(args.source)[0] + "_mask.png")
             write_mask(output, mask)
             print("zapisano: %s  (subjekt pokriva %.1f%% kadra)" % (output, 100.0 * mask.mean()))

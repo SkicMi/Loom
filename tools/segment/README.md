@@ -39,12 +39,29 @@ umjesto svjetla. Ista zamka kao normalizacija dubine po kadru.
 
 ## Prompt iz dubine
 
-`--depth` uzme **teziste najblizeg decila** karte dubine - istu definiciju subjekta kojom
-LoomApp bira udaljenost oko koje ce kruziti svjetlo. Dubina time PREDLAZE, a SAM2 ODLUCUJE.
+`--depth` izvede iz karte **okvir i tri tocke u njemu**: granica subjekta i pozadine trazi se
+na pola puta u disparitetu izmedu devetog i prvog decila (disparitet je linearan po
+reciprocnoj udaljenosti, pa je sredina izmedu njih sredina u onome sto model zapravo
+procjenjuje). Okvir kaze dokle subjekt see, tocke da je sve to jedan predmet.
 
-To je i cijela vrijednost te kombinacije: dvije procjene koje grijese na **razlicitim**
-mjestima - dubina na mekim rubovima, maska na kosi i rukama - pa njihovo slaganje nije
-samorazumljivo.
+Dubina time PREDLAZE, a SAM2 ODLUCUJE - i u tome je vrijednost te kombinacije: dvije procjene
+koje grijese na razlicitim mjestima (dubina na mekim rubovima, maska na kosi i rukama), pa
+njihovo slaganje nije samorazumljivo.
+
+**Prva verzija je davala jednu tocku - teziste najblizeg decila - i to je bilo krivo.** Nad
+sintetskim portretom (`tools/verify/`) je tako ispao samo torzo, bez glave. Mjereno protiv
+poznate maske:
+
+| prompt                          | IoU    | glave uhvaceno |
+|---------------------------------|--------|----------------|
+| okvir + `multimask_output=True` | 0.7936 | 5 %            |
+| okvir, jedna maska              | 0.9831 | 96 %           |
+| 3 tocke po pojasevima           | 0.9866 | 99 %           |
+| **okvir + 3 tocke**             | **0.9871** | 98 %       |
+
+Krivac nije bio okvir nego **`multimask_output=True` uz biranje po ocjeni modela**: kad je
+prompt jednoznacan, model svojoj vlastitoj ocjeni i dalje rado da DIO. Zato se tri odgovora
+sad traze samo od jedne gole tocke, gdje je klik stvarno dvosmislen.
 
 ## Cemu maska sluzi
 
