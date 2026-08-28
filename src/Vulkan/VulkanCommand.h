@@ -36,6 +36,20 @@ class VulkanCommand{
     void copyImageToBuffer(vk::Image src, const vk::raii::Buffer& dst, vk::Extent2D extent, vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor, uint32_t layer = 0) const;
     void copyImageToBuffer(const vk::raii::Image& src, const vk::raii::Buffer& dst, vk::Extent2D extent, vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor, uint32_t layer = 0) const;
 
+    //Prijenos koji se NE ceka.
+    //
+    //Sve gore ceka da red opusti prije nego se vrati - za jednokratni upload teksture to je
+    //tocno ono sto treba, jer se poslije nje odmah crta. Za snimku koja se prepisuje svaki
+    //frame nije: cekanje reda po frameu je zaustavljanje cijelog crtanja radi kopiranja
+    //koje bi se u meduvremenu moglo obaviti.
+    //
+    //Pozivatelj drzi bafer i ogradu i duzan je pricekati ogradu prije nego ponovno dirne
+    //ono sto je poslao. Tko to ne moze jamciti, neka koristi one gore
+    vk::raii::CommandBuffer createTransferBuffer() const;
+    void submitWithoutWaiting(const vk::raii::CommandBuffer& buffer,
+                              const vk::raii::Fence& fence,
+                              const std::function<void(const vk::raii::CommandBuffer&)>& record) const;
+
 
     private:
     const VulkanDevice& device;

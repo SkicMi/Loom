@@ -17,7 +17,11 @@ void VulkanCommand::createCommandPool(){
 
 void VulkanCommand::createTransferPool(){
     vk::CommandPoolCreateInfo poolInfo;
-    poolInfo.flags = vk::CommandPoolCreateFlagBits::eTransient;
+    //eTransient jer oneTimeSubmit alocira i baca bafer po pozivu; eResetCommandBuffer jer
+    //streaming ga drzi i prepisuje svaki frame. Bez drugog se bafer ne smije resetirati
+    //pojedinacno, nego samo cijeli pool - a to bi obrisalo i one koji su jos u letu
+    poolInfo.flags = vk::CommandPoolCreateFlagBits::eTransient
+                   | vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
     poolInfo.queueFamilyIndex = device.getQueueIndices().graphicsFamilies.value();
 
     transferPool = vk::raii::CommandPool(device.getDevice(), poolInfo);
@@ -193,4 +197,34 @@ void VulkanCommand::copyBuffer(const vk::raii::Buffer& src, const vk::raii::Buff
         });
 
         image.setCurrentLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+    }
+
+    vk::raii::CommandBuffer VulkanCommand::createTransferBuffer() const{
+        vk::CommandBufferAllocateInfo allocInfo;
+        allocInfo.commandPool = *transferPool;
+        allocInfo.level = vk::CommandBufferLevel::ePrimary;
+        allocInfo.commandBufferCount = 1;
+
+        vk::raii::CommandBuffers buffers(device.getDevice(), allocInfo);
+        return std::move(buffers[0]);
+    }
+
+    void VulkanCommand::submitWithoutWaiting(const vk::raii::CommandBuffer& buffer,
+                                             const vk::raii::Fence& fence,
+                                             const std::function<void(const vk::raii::CommandBuffer&)>& record) const{
+        buffer.reset();
+
+        vk::CommandBufferBeginInfo beginInfo;
+        beginInfo.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+        buffer.begin(beginInfo);
+
+        record(buffer);
+
+        buffer.end();
+
+        vk::CommandBufferSubmitInfo commandBufferInfo(*buffer);
+        vk::SubmitInfo2 submitInfo;
+        submitInfo.setCommandBufferInfos(commandBufferInfo);
+
+        device.getGraphicsQueue().submit2(submitInfo, *fence);
     }
