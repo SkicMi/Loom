@@ -42,6 +42,8 @@ Relight::Relight(const VulkanDevice& device,
     data.surface = {config.surface.shininess, config.surface.specularStrength, 0.0f, 0.0f};
     data.shadow = {config.shadow.enabled ? float(config.shadow.steps) : 0.0f,
                    config.shadow.maxDistance, config.shadow.thickness, config.shadow.bias};
+    data.shadowSlope = {config.shadow.slopeBias, 0.0f,
+                        config.shadow.thicknessGrowth, config.shadow.frontFade};
     data.imageSize = {float(positions.getExtent().width), float(positions.getExtent().height), 0.0f, 0.0f};
 
     //Fullscreen: nema vrhova, nema atributa, nema dubine. Trokut koji pokriva ekran dolazi
@@ -96,6 +98,8 @@ void Relight::setShadow(const ScreenShadowConfig& shadow){
 
     data.shadow = {shadow.enabled ? float(shadow.steps) : 0.0f,
                    shadow.maxDistance, shadow.thickness, shadow.bias};
+    data.shadowSlope = {shadow.slopeBias, 0.0f,
+                        shadow.thicknessGrowth, shadow.frontFade};
     material->setData(&data, sizeof(data));
 }
 

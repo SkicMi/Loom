@@ -32,6 +32,24 @@ struct ScreenShadowConfig{
 
     //Odmak od vlastite plohe, da ne baca sjenu sama na sebe
     float bias = 0.02f;
+
+    //Koliko odmak RASTE po metru puta.
+    //
+    //Ploha se moze zasjeniti samu sebe kad je svjetlo dalje od kamere nego ona: trag tada ide
+    //dublje i inFront raste sam od sebe. Jedna brojka za cijelu sliku to ne rjesava - ono sto
+    //zaustavi akne pojede kontaktnu sjenu - pa odmak raste s putem. Nula iskljucuje.
+    //
+    //Mjereno u test_shadow_slope: 0.0 pusta 16556 aknih piksela, 1.0 ih ostavlja 3396, 3.0
+    //samo 316, a prava sjena prezivi
+    float slopeBias = 0.0f;
+
+    //Koliko debljina raste po duljini dosega. Sto se dalje odhodalo, to se manje zna o tome
+    //sto je iza plohe koja se uzorkuje. Nula znaci konstantna debljina
+    float thicknessGrowth = 0.0f;
+
+    //Ploha blize kameri od samog svjetla ne moze biti zaklon - svjetlo je ispred nje. Ovo je
+    //pojas u metrima preko kojeg se takav uzorak prestaje racunati. Nula iskljucuje pravilo
+    float frontFade = 0.0f;
 };
 
 //Payload relight prolaza. Slaze se s RelightData u include/Relight.slang
@@ -42,6 +60,7 @@ struct RelightData{
     glm::vec4 surface{32.0f, 1.0f, 0.0f, 0.0f};      //shininess, specularStrength
     glm::vec4 intrinsics{0.0f, 0.0f, 0.0f, 0.0f};    //fx, fy, cx, cy
     glm::vec4 shadow{0.0f, 8.0f, 0.5f, 0.02f};       //koraka, duljina, debljina, odmak
+    glm::vec4 shadowSlope{0.0f, 0.0f, 0.0f, 0.0f};   //rast odmaka, -, rast debljine, prednji pojas
     glm::vec4 imageSize{0.0f, 0.0f, 0.0f, 0.0f};
 };
 

@@ -18,6 +18,7 @@ struct RelightData{
     float4 surface;      //x = shininess, y = specularStrength
     float4 intrinsics;   //fx, fy, cx, cy - kojima se tocka vraca u piksel
     float4 shadow;       //x = koraka (0 = bez sjene), y = duljina, z = debljina, w = odmak
+    float4 shadowSlope;  //x = rast odmaka, y = slobodno, z = rast debljine, w = prednji pojas
     float4 imageSize;    //xy
 }
 
@@ -69,6 +70,30 @@ struct ScreenTrace : IOcclusion{
 
         float stride = reach / float(steps);
 
+        //KOLIKO ODMAK MORA RASTI S PUTEM.
+        //
+        //Jedan odmak za cijelu sliku ne moze biti dobar. Trag koji ide DUBLJE od plohe na
+        //kojoj stoji - a to se dogada kad je svjetlo dalje od kamere nego ploha - vidi kako
+        //inFront raste sam od sebe, i ploha zasjeni samu sebe. Odmak koji bi to zaustavio
+        //jednom brojkom pojeo bi kontaktnu sjenu drugdje, pa odmak umjesto toga RASTE s putem.
+        //
+        //POKUSAJ KOJI JE ODBACEN, jer se dobro pamti: TypeGPU tu stopu mjeri jednom probom
+        //po smjeru svjetla, pa odmak raste bas izmjerenom brzinom. Ovdje je to izmjereno kao
+        //mrtvo slovo - proba unatrag daje TOCNO nula ucinka (16556 akni prije, 16556 poslije),
+        //a proba unaprijed s ispravnim predznakom takoder nula. Verzija koja je smanjivala
+        //akne (16556 -> 3313) radila je to s OBRNUTIM predznakom, dakle dodavala odmak tamo
+        //gdje opasnosti od akni nema - prolazila je slucajno.
+        //
+        //Razlog je sto inFront po putu nije linearan: na strmoj plohi perspektiva ga savije,
+        //pa procjena s jednog koraka ne vrijedi za ostatak traga. Ostaje ravna crta, koja ne
+        //pretpostavlja nista osim da lazni zaklon raste s udaljenoscu - i ta mjerljivo radi
+        float growth = data.shadowSlope.x;
+
+        //Ploha blize kameri od svjetla ne moze zaklanjati - svjetlo je ispred nje. Bez ovoga
+        //svaki predmet izmedu kamere i izvora baca sjenu koje u stvarnosti nema
+        float lightDepth = (light.positionOrDirection.w == 0.0) ? -1.0
+            : -mul(data.view, float4(light.positionOrDirection.xyz, 1.0)).z;
+
         //Deterministicko razbijanje pruga: bez pomaka bi se svi pikseli uzorkovali na istim
         //udaljenostima i rub sjene bi bio stepenica. Hash po pikselu, ne slucajan broj - ista
         //slika dva puta mora dati istu sjenu
@@ -97,10 +122,24 @@ struct ScreenTrace : IOcclusion{
             //gore, provjera "unutar sjene je tamno" tada prolazi iz krivog razloga
             float inFront = (-sample.z) - (-stored.z);
 
+            //Odmak raste s putem, jer lazni zaklon raste s njim
+            float bias = data.shadow.w + t * growth;
+
+            //Sto se dalje odhodalo, to se manje zna o tome sto je iza uzorkovane plohe
+            float thickness = data.shadow.z * (1.0 + (t / reach) * data.shadowSlope.z);
+
+            //Uzorak ispred svjetla se ne racuna. Rampa je napisana mekano, ali je ovdje
+            //upotrijebljena kao prag: trag je binaran, pa se meki prijelaz nema gdje vidjeti
+            //dok se ne uvede mekano zbrajanje zaklona
+            float ahead = 1.0;
+            if(data.shadowSlope.w > 0.0 && lightDepth > 0.0){
+                ahead = saturate(((-stored.z) - lightDepth) / data.shadowSlope.w);
+            }
+
             //Ploha je pred nama, ali ne predaleko. Bez gornje granice bi svaka bila
             //beskonacno duboka i zaklanjala sve iza sebe do kraja scene - a mi vidimo samo
             //njeno lice i o njenoj debljini ne znamo nista
-            if(inFront > data.shadow.w && inFront < data.shadow.z) return 0.0;
+            if(ahead > 0.5 && inFront > bias && inFront < thickness) return 0.0;
         }
 
         return 1.0;

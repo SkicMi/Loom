@@ -400,6 +400,19 @@ int main(int argc, char** argv){
                        back - front, front, back, shadowConfig.thickness);
             }
             shadowConfig.bias = 0.02f * subjectDistance;
+
+            //Odmak koji raste s putem NIJE ukljucen, i to namjerno. Akne se pojave samo kad je
+            //svjetlo dublje od plohe, a ovdje kruzi ispred subjekta; a odmak ne razlikuje lazni
+            //zaklon od pravog, pa bi se platio sjenom. Mjereno u test_shadow_slope: on mice 98%
+            //akni, ali u toj sceni odnese i cijelu pravu sjenu
+            shadowConfig.slopeBias = 0.0f;
+
+            //Sto se dalje odhodalo, to se manje zna o tome sto je iza uzorkovane plohe
+            shadowConfig.thicknessGrowth = 2.6f;
+
+            //Ploha blize kameri od svjetla ne moze zaklanjati. Ovdje to NIJE rubni slucaj:
+            //svjetlo kruzi na pola udaljenosti subjekta, dakle ispred njega
+            shadowConfig.frontFade = 0.25f * subjectDistance;
             //Rukom zadana debljina nadglasa i masku i pretpostavku. Postoji da se moze
             //IZMJERITI koliko debljina uopce mijenja - a odgovor je ispao "u ovoj postavci
             //gotovo nista", sto se drukcije ne bi ni vidjelo
