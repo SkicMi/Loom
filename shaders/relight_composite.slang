@@ -42,7 +42,7 @@ float4 fragmentMain(VSOutput input) : SV_Target{
     //Krece se OD snimke, ne zbraja na kraju: isti redoslijed zbrajanja kao da je scena
     //crtana odjednom, pa se rezultat da usporediti do zadnjeg bita
     float3 lit = accumulateLight(existing.rgb, base, surface.worldPos, surface.N, surface.V,
-                                 relight.surface.x, relight.surface.y, trace);
+                                 relight.surface.x, relight.surface.y, relight.surface.z, trace);
 
     return float4(lit, existing.a);
 }

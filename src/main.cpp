@@ -281,6 +281,10 @@ int main(int argc, char** argv){
             //procijenjenoj dubini prvo sto pretvori plohu u zrnje. Koza ionako nije zrcalo
             relightConfig.surface.specularStrength = specular;
 
+            //Lambertov terminator je ostar rub, a normale iz procijenjene dubine su pune
+            //gresaka - pa se svaka od njih na tom rubu vidi kao mrlja. Omatanje ga smeksa
+            relightConfig.surface.diffuseWrap = 0.25f;
+
             relight = std::make_unique<Relight>(loom.device, loom.command, loom.getDescriptorPool(),
                                                 *positions, *normals, plate.getSampled(), relightConfig);
             relight->setCamera(camera);

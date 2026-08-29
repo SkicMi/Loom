@@ -57,7 +57,7 @@ struct RelightData{
     glm::mat4 inverseView{1.0f};
     glm::mat4 view{1.0f};
     glm::vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};
-    glm::vec4 surface{32.0f, 1.0f, 0.0f, 0.0f};      //shininess, specularStrength
+    glm::vec4 surface{32.0f, 1.0f, 0.0f, 0.0f};      //shininess, specularStrength, omotani difuz
     glm::vec4 intrinsics{0.0f, 0.0f, 0.0f, 0.0f};    //fx, fy, cx, cy
     glm::vec4 shadow{0.0f, 8.0f, 0.5f, 0.02f};       //koraka, duljina, debljina, odmak
     glm::vec4 shadowSlope{0.0f, 0.0f, 0.0f, 0.0f};   //rast odmaka, -, rast debljine, prednji pojas

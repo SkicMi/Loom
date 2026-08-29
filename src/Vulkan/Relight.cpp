@@ -39,7 +39,8 @@ Relight::Relight(const VulkanDevice& device,
     hasPlate = plate.isValid();
 
     data.baseColor = config.surface.baseColor;
-    data.surface = {config.surface.shininess, config.surface.specularStrength, 0.0f, 0.0f};
+    data.surface = {config.surface.shininess, config.surface.specularStrength,
+                    config.surface.diffuseWrap, 0.0f};
     data.shadow = {config.shadow.enabled ? float(config.shadow.steps) : 0.0f,
                    config.shadow.maxDistance, config.shadow.thickness, config.shadow.bias};
     data.shadowSlope = {config.shadow.slopeBias, 0.0f,
@@ -105,7 +106,7 @@ void Relight::setShadow(const ScreenShadowConfig& shadow){
 
 void Relight::setSurface(const MaterialData& surface){
     data.baseColor = surface.baseColor;
-    data.surface = {surface.shininess, surface.specularStrength, 0.0f, 0.0f};
+    data.surface = {surface.shininess, surface.specularStrength, surface.diffuseWrap, 0.0f};
     material->setData(&data, sizeof(data));
 }
 

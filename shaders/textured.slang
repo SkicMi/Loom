@@ -4,7 +4,7 @@ struct MaterialData{
     float4 baseColor;
     float shininess;
     float specularStrength;
-    float padding0;
+    float diffuseWrap;
     float padding1;
 }
 
@@ -52,6 +52,7 @@ float4 fragmentMain(VSOutput input) : SV_Target{
     float3 V = normalize(frame.cameraPosition.xyz - input.worldPos);
 
     float3 base = albedo.Sample(input.texCoord).rgb * material.baseColor.rgb;
-    float3 lit = shadeSurface(base, input.worldPos, N, V, material.shininess, material.specularStrength);
+    float3 lit = shadeSurface(base, input.worldPos, N, V, material.shininess, material.specularStrength,
+                              material.diffuseWrap);
     return float4(lit,1.0);
 }

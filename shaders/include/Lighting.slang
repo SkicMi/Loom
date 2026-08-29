@@ -118,6 +118,7 @@ struct NoOcclusion : IOcclusion{
 float3 accumulateLight<T : IOcclusion>(float3 start, float3 base, float3 worldPos,
                                        float3 N, float3 V,
                                        float shininess, float specularStrength,
+                                       float diffuseWrap,
                                        T occlusion){
     float3 lit = start;
 
@@ -141,7 +142,14 @@ float3 accumulateLight<T : IOcclusion>(float3 start, float3 base, float3 worldPo
         }
 
         float3 H = normalize(L + V);
-        float diffuse = max(dot(N,L), 0.0);
+
+        //OMOTANI DIFUZ. Lambert pada u nulu tocno na dot(N,L) = 0, pa je terminator ostar rub
+        //i svaka greska u normali se na njemu vidi kao mrlja. Kad normale dolaze iz
+        //PROCIJENJENE dubine to nije rijetkost nego pravilo.
+        //
+        //Omatanje pomice tu nulu unatrag i preslikava raspon natrag u 0..1, pa svjetlo malo
+        //zade iza ruba. Nula je tocno Lambert: (dot + 0) / (1 + 0) je dot
+        float diffuse = max((dot(N,L) + diffuseWrap) / (1.0 + diffuseWrap), 0.0);
         float specular = pow(max(dot(N,H),0.0), shininess) * specularStrength;
 
         //Shadow kills the whole contribution of this light, diffuse and specular alike.
@@ -168,14 +176,14 @@ float3 accumulateLight<T : IOcclusion>(float3 start, float3 base, float3 worldPo
 }
 
 float3 accumulateLight(float3 start, float3 base, float3 worldPos, float3 N, float3 V,
-                       float shininess, float specularStrength){
+                       float shininess, float specularStrength, float diffuseWrap){
     return accumulateLight(start, base, worldPos, N, V, shininess, specularStrength,
-                           NoOcclusion());
+                           diffuseWrap, NoOcclusion());
 }
 
 //Ploha osvijetljena od nule: ambijent pa svjetla. Ono sto crtez preko mesha oduvijek radi
 float3 shadeSurface(float3 base, float3 worldPos, float3 N, float3 V,
-                    float shininess, float specularStrength){
+                    float shininess, float specularStrength, float diffuseWrap = 0.0){
     return accumulateLight(base * frame.ambientColor.rgb, base, worldPos, N, V,
-                           shininess, specularStrength, NoOcclusion());
+                           shininess, specularStrength, diffuseWrap, NoOcclusion());
 }
