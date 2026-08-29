@@ -52,6 +52,29 @@ struct ScreenShadowConfig{
     float frontFade = 0.0f;
 };
 
+//Ambijentna okluzija iz same karte dubine.
+//
+//Ono sto ubaceno svjetlo cini SJEDECIM: bez nje predmet lebdi nad pozadinom, jer nista ne
+//potamni tamo gdje se dodiruju. Ne treba joj svjetlo - racuna se iz geometrije.
+//
+//Racuna se u fragment shaderu, ne u zasebnu teksturu. TypeGPU je preracunava jer mora stati
+//u osam milisekundi; Loomu slika smije trajati, pa 32 uzorka po pikselu stede cijelu jednu
+//sliku, njen binding i njeno odrzavanje
+struct ScreenOcclusionConfig{
+    //Nula znaci iskljuceno. U KOMPOZICIJI ovo mnozi same piksele snimke - jedino mjesto na
+    //kojem Loom dira ono sto je vec bilo na slici, umjesto da samo dodaje svjetlo
+    float strength = 0.0f;
+
+    //Dva prstena, u pikselima: blizi hvata dodir, dalji sjenu udubine. Piksel je mjera koja
+    //ovisi o rezoluciji, pa ih na drugoj velicini slike treba skalirati
+    float nearRadius = 3.0f;
+    float farRadius = 9.0f;
+
+    //Koliko metara razlike u dubini vec znaci pun zaklon. Iz njega se izvode i prag suma
+    //(desetina) i domet dodira (cetiri puta), pa se namjesta jedan broj a ne tri
+    float scale = 0.05f;
+};
+
 //Payload relight prolaza. Slaze se s RelightData u include/Relight.slang
 struct RelightData{
     glm::mat4 inverseView{1.0f};
@@ -61,6 +84,7 @@ struct RelightData{
     glm::vec4 intrinsics{0.0f, 0.0f, 0.0f, 0.0f};    //fx, fy, cx, cy
     glm::vec4 shadow{0.0f, 8.0f, 0.5f, 0.02f};       //koraka, duljina, debljina, odmak
     glm::vec4 shadowSlope{0.0f, 0.0f, 0.0f, 0.0f};   //rast odmaka, -, rast debljine, prednji pojas
+    glm::vec4 occlusion{0.0f, 3.0f, 9.0f, 0.05f};    //jacina, blizi prsten, dalji prsten, mjerilo
     glm::vec4 imageSize{0.0f, 0.0f, 0.0f, 0.0f};
 };
 
@@ -76,6 +100,9 @@ struct RelightConfig{
 
     //Sjena iz kadra. Iskljucena po defaultu: trazi intrinsike, pa se ne smije samo pojaviti
     ScreenShadowConfig shadow = {};
+
+    //Ambijentna okluzija. Iskljucena po defaultu jer u kompoziciji mijenja same piksele snimke
+    ScreenOcclusionConfig occlusion = {};
 };
 
 //Svjetlo nad G-bufferom.
@@ -119,6 +146,9 @@ class Relight{
     void setIntrinsics(const CameraIntrinsics& intrinsics, vk::Extent2D imageSize);
 
     void setShadow(const ScreenShadowConfig& shadow);
+
+    //Mijenja se i nakon gradnje: koliko okluzije treba vidi se tek kad se pogleda
+    void setOcclusion(const ScreenOcclusionConfig& occlusion);
     bool castsShadows() const {return data.shadow.x > 0.0f;}
 
     //Boja i sjaj plohe. U kompoziciji baseColor MNOZI snimku, pa se albedo da prigusiti bez

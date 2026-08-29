@@ -24,6 +24,13 @@ float4 fragmentMain(VSOutput input) : SV_Target{
     float4 existing = plate.SampleLevel(input.texCoord, 0.0);
     Surface surface = surfaceAt(input.texCoord, relight.inverseView);
 
+    //Okluzija mnozi SNIMKU, jer je u njoj sve staro osvjetljenje - u kompoziciji nema
+    //zasebnog ambijenta koji bi se mogao prigusiti. To je posteno reci naglas: ovo je jedino
+    //mjesto na kojem Loom dira same piksele snimke, umjesto da im samo dodaje svjetlo.
+    //Jacina nula znaci da se ne dira nista
+    float shade = 1.0 - ambientOcclusion(input.texCoord, relight.occlusion, relight.imageSize.xy);
+    existing = float4(existing.rgb * shade, existing.a);
+
     //Nema plohe - nema sto osvijetliti. Snimka prolazi nedirnuta, pa je ovaj prolaz cijela
     //slika i ne trazi da je itko prije njega ispunio
     if(!surface.exists){

@@ -89,6 +89,7 @@ int main(int argc, char** argv){
                "  --noise <nagib>     koliko nagiba model izmislja na ravnom (default 0.30)\n"
                "  --limit <nagib>     gornja granica nagiba, 0 iskljucuje (default 6)\n"
                "  --specular <0..1>   koliko ploha odsjaji (default 0.10)\n"
+               "  --ao <0..1>         ambijentna okluzija iz dubine (default 0.6)\n"
                "  --no-shadow         bez trazenja zaklona\n", argv[0]);
         return 1;
     }
@@ -119,6 +120,11 @@ int main(int argc, char** argv){
         //Sest je oko 80 stupnjeva. Iznad toga na ovoj sceni nema prave plohe, ima siluete
         float slopeLimit = 6.0f;
 
+        //Ambijentna okluzija. U kompoziciji ona mnozi same piksele snimke - jedino mjesto na
+        //kojem se dira ono sto je vec bilo na slici - pa se moze i iskljuciti s --ao 0
+        float aoStrength = 0.6f;
+        float aoScale = 0.0f;   //0 = izvedi iz udaljenosti subjekta
+
         //Kut lece kojom je snimka nastala. Model dubine ga ne zna i ne moze znati, a o njemu
         //ovisi CIJELA geometrija: iz njega su intrinsici, iz intrinsika odprojekcija, iz nje
         //normale i mjesto sjene. Kriv kut ne izgleda kao greska nego kao scena razvucena po
@@ -141,6 +147,8 @@ int main(int argc, char** argv){
             else if(arg == "--noise" && i + 1 < argc)  noiseSlope = std::stof(argv[++i]);
             else if(arg == "--limit" && i + 1 < argc)  slopeLimit = std::stof(argv[++i]);
             else if(arg == "--specular" && i + 1 < argc) specular = std::stof(argv[++i]);
+            else if(arg == "--ao" && i + 1 < argc)     aoStrength = std::stof(argv[++i]);
+            else if(arg == "--ao-scale" && i + 1 < argc) aoScale = std::stof(argv[++i]);
             else if(arg == "--no-shadow")              wantShadow = false;
             else if(positional == 0){ depthPath = arg; ++positional; }
             else if(positional == 1){ nearDistance = std::stof(arg); ++positional; }
@@ -423,6 +431,22 @@ int main(int argc, char** argv){
             if(thicknessOverride > 0.0f) shadowConfig.thickness = thicknessOverride;
 
             relight->setShadow(shadowConfig);
+
+            //Bez nje subjekt lebdi nad pozadinom: nista ne potamni tamo gdje se dodiruju.
+            //
+            //Mjerilo je vezano uz RAZMAK subjekta i pozadine, jer je "koliko metara razlike
+            //jos znaci dodir" pitanje o velicini scene a ne o slici. Izmjereno na portretu,
+            //tamnjenje uz rub subjekta naspram daleko od njega:
+            //    0.04 m  -1.22 / -0.14      omjer 9
+            //    0.10 m  -1.18 / -0.00      dalje od ruba vise nema nista
+            //    0.25 m  -1.43 / -0.00
+            //    0.50 m  -3.81 / -0.00      silueta pocinje izgledati kao obrub
+            //Petnaest posto razmaka daje 0.22 m na ovoj sceni, dakle sredinu tog raspona
+            ScreenOcclusionConfig occlusionConfig;
+            occlusionConfig.strength = aoStrength;
+            occlusionConfig.scale = aoScale > 0.0f ? aoScale
+                : 0.15f * std::max(backdropDistance - subjectDistance, 0.1f);
+            relight->setOcclusion(occlusionConfig);
 
             printf("\nSvjetlo kruzi oko scene i baca sjene od svega sto je u kadru.\n"
                    "Zatvori prozor za izlaz.\n");

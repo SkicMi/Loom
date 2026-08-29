@@ -19,6 +19,7 @@ struct RelightData{
     float4 intrinsics;   //fx, fy, cx, cy - kojima se tocka vraca u piksel
     float4 shadow;       //x = koraka (0 = bez sjene), y = duljina, z = debljina, w = odmak
     float4 shadowSlope;  //x = rast odmaka, y = slobodno, z = rast debljine, w = prednji pojas
+    float4 occlusion;    //x = jacina, y = blizi prsten (px), z = dalji prsten (px), w = mjerilo (m)
     float4 imageSize;    //xy
 }
 
@@ -161,6 +162,60 @@ struct Surface{
     float3 N;
     float3 V;
     bool exists;
+}
+
+//AMBIJENTNA OKLUZIJA IZ SAME KARTE DUBINE.
+//
+//Ono sto ubaceno svjetlo cini SJEDECIM: bez nje predmet lebdi nad pozadinom, jer nista ne
+//potamni tamo gdje se dodiruju. Ne treba joj svjetlo - racuna se iz geometrije.
+//
+//Racuna se ovdje, u fragment shaderu, a ne u zasebnu teksturu. TypeGPU je preracunava jer
+//mora stati u osam milisekundi; nama slika smije trajati, pa 32 dodatna uzorka po pikselu
+//stedi cijelu jednu sliku, njen binding i njeno odrzavanje.
+//
+//Dva prstena: blizi hvata dodir, dalji sjenu udubine. Susjed se broji utoliko koliko je
+//BLIZE (cleared) i utoliko koliko je jos uvijek u dodiru (contact) - drugo bez prvog bi
+//svaku daleku pozadinu proglasilo zaklonom
+float ambientOcclusion(float2 texCoord, float4 settings, float2 imageSize){
+    if(settings.x <= 0.0) return 0.0;
+
+    float4 centre = positionMap.SampleLevel(texCoord, 0.0);
+    if(centre.w < 0.5) return 0.0;
+
+    float centreDistance = -centre.z;
+    float scale = max(settings.w, 1e-4);
+
+    //Prag ispod kojeg je razlika sum, i domet preko kojeg susjed vise nije u dodiru. Oboje
+    //vezano uz mjerilo, pa se namjesta jedan broj a ne tri
+    float floorDistance = 0.1 * scale;
+    float range = 4.0 * scale;
+
+    float total = 0.0;
+    float count = 0.0;
+
+    for(int ring = 0; ring < 2; ++ring){
+        float radius = (ring == 0) ? settings.y : settings.z;
+
+        for(int step = 0; step < 8; ++step){
+            float angle = float(step) * 0.7853981634;   //osmina kruga
+            float2 offset = float2(cos(angle), sin(angle)) * radius;
+
+            float4 neighbour = positionMap.SampleLevel(texCoord + offset / imageSize, 0.0);
+            if(neighbour.w < 0.5) continue;
+
+            //Pozitivno znaci da je susjed BLIZE kameri, dakle da nesto strsi prema nama
+            float difference = centreDistance - (-neighbour.z);
+
+            float contact = 1.0 - saturate(abs(difference) / range);
+            float cleared = max(difference - floorDistance, 0.0);
+
+            total += saturate(cleared / scale) * contact;
+            count += 1.0;
+        }
+    }
+
+    if(count < 0.5) return 0.0;
+    return saturate(settings.x * total / count);
 }
 
 Surface surfaceAt(float2 texCoord, float4x4 inverseView){

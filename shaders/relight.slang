@@ -32,7 +32,11 @@ float4 fragmentMain(VSOutput input) : SV_Target{
         discard;
     }
 
-    float3 lit = shadeSurface(relight.baseColor.rgb, surface.worldPos, surface.N, surface.V,
+    //Bez snimke se prigusuje albedo, jer ambijent u shadeSurface mnozi bas njega
+    float3 shaded = relight.baseColor.rgb *
+        (1.0 - ambientOcclusion(input.texCoord, relight.occlusion, relight.imageSize.xy));
+
+    float3 lit = shadeSurface(shaded, surface.worldPos, surface.N, surface.V,
                               relight.surface.x, relight.surface.y, relight.surface.z);
 
     return float4(lit, 1.0);
