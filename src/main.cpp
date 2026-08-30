@@ -92,7 +92,8 @@ int main(int argc, char** argv){
                "  --specular <0..1>   koliko ploha odsjaji (default 0.10)\n"
                "  --ao <0..1>         ambijentna okluzija iz dubine (default 0.6)\n"
                "  --light-radius <m>  velicina svjetla; 0 je tocka i tvrda sjena\n"
-               "  --rays <n>          koliko tragova po pikselu (default 1)\n"
+               "  --rays <n>          koliko tragova po pikselu (default 8)\n"
+               "  --steps <n>         koraka po tragu (default 40)\n"
                "  --no-shadow         bez trazenja zaklona\n", argv[0]);
         return 1;
     }
@@ -156,6 +157,7 @@ int main(int argc, char** argv){
         //pogodi sum - to je cijena, i zato se broj zraka ne dize bez razloga
         float lightRadius = 0.25f;
         uint32_t shadowRays = 8;
+        uint32_t shadowSteps = 40;
 
         //Kut lece kojom je snimka nastala. Model dubine ga ne zna i ne moze znati, a o njemu
         //ovisi CIJELA geometrija: iz njega su intrinsici, iz intrinsika odprojekcija, iz nje
@@ -186,6 +188,7 @@ int main(int argc, char** argv){
             else if(arg == "--slope-bias" && i + 1 < argc) slopeBias = std::stof(argv[++i]);
             else if(arg == "--light-radius" && i + 1 < argc) lightRadius = std::stof(argv[++i]);
             else if(arg == "--rays" && i + 1 < argc)   shadowRays = uint32_t(std::stoi(argv[++i]));
+            else if(arg == "--steps" && i + 1 < argc)  shadowSteps = uint32_t(std::stoi(argv[++i]));
             else if(arg == "--no-shadow")              wantShadow = false;
             else if(positional == 0){ depthPath = arg; ++positional; }
             else if(positional == 1){ nearDistance = std::stof(arg); ++positional; }
@@ -391,7 +394,7 @@ int main(int argc, char** argv){
 
             ScreenShadowConfig shadowConfig;
             shadowConfig.enabled = wantShadow;
-            shadowConfig.steps = 40;
+            shadowConfig.steps = shadowSteps;
             //Doseg mora prijeci put od pozadine do svjetla, inace trag stane prije zaklona
             shadowConfig.maxDistance = 1.5f * (backdropDistance + orbitCentre);
 

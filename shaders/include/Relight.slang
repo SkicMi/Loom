@@ -197,13 +197,18 @@ struct ScreenTrace : IOcclusion{
 
             float3 offset = axisU * (radius * cos(angle)) + axisV * (radius * sin(angle));
 
+            //Svaka zraka krece s DRUGOG mjesta unutar koraka. Bez toga svih N tragova
+            //uzorkuje na istim udaljenostima, pa im se greska kvantizacije poklapa i zbroj
+            //je jednako zrnat kao jedan trag - disk se rasprsi, a korak ne
+
             //Zraka prema pomaknutoj tocki na izvoru. Za usmjereno svjetlo je pomak kutni, pa
             //se polumjer cita kao tangens - izvor je beskonacno dalek i nema ga se gdje pomaci
             float3 rayDirection = (light.positionOrDirection.w == 0.0)
                 ? normalize(toLight + offset)
                 : normalize(toLight * distance + offset);
 
-            reached += march(rayDirection, reach, lightDepth, dither);
+            reached += march(rayDirection, reach, lightDepth,
+                             frac(dither + index / float(rays)));
         }
 
         return reached / float(rays);
