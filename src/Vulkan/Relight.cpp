@@ -47,7 +47,8 @@ Relight::Relight(const VulkanDevice& device,
                         config.shadow.thicknessGrowth, config.shadow.frontFade};
     data.occlusion = {config.occlusion.strength, config.occlusion.nearRadius,
                       config.occlusion.farRadius, config.occlusion.scale};
-    data.occluder = {config.shadow.maskOnly ? 1.0f : 0.0f, config.shadow.occluderBlur, 0.0f, 0.0f};
+    data.occluder = {config.shadow.maskOnly ? 1.0f : 0.0f, config.shadow.occluderBlur,
+                     float(config.shadow.rays), config.shadow.lightRadius};
     data.imageSize = {float(positions.getExtent().width), float(positions.getExtent().height), 0.0f, 0.0f};
 
     //Fullscreen: nema vrhova, nema atributa, nema dubine. Trokut koji pokriva ekran dolazi
@@ -114,7 +115,8 @@ void Relight::setShadow(const ScreenShadowConfig& shadow){
                    shadow.maxDistance, shadow.thickness, shadow.bias};
     data.shadowSlope = {shadow.slopeBias, 0.0f,
                         shadow.thicknessGrowth, shadow.frontFade};
-    data.occluder = {shadow.maskOnly ? 1.0f : 0.0f, shadow.occluderBlur, 0.0f, 0.0f};
+    data.occluder = {shadow.maskOnly ? 1.0f : 0.0f, shadow.occluderBlur,
+                     float(shadow.rays), shadow.lightRadius};
     material->setData(&data, sizeof(data));
 }
 

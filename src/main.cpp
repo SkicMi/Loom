@@ -91,6 +91,8 @@ int main(int argc, char** argv){
                "  --limit <nagib>     gornja granica nagiba, 0 iskljucuje (default 6)\n"
                "  --specular <0..1>   koliko ploha odsjaji (default 0.10)\n"
                "  --ao <0..1>         ambijentna okluzija iz dubine (default 0.6)\n"
+               "  --light-radius <m>  velicina svjetla; 0 je tocka i tvrda sjena\n"
+               "  --rays <n>          koliko tragova po pikselu (default 1)\n"
                "  --no-shadow         bez trazenja zaklona\n", argv[0]);
         return 1;
     }
@@ -142,6 +144,19 @@ int main(int argc, char** argv){
         float biasScale = 0.05f;
         float slopeBias = 0.0f;
 
+        //Polumjer svjetla i broj tragova. Polusjena dolazi iz VELICINE IZVORA, ne iz koraka.
+        //
+        //Izmjereno na pravoj fotki, kut 225. Dubina sjene ostaje puna 56.0 razina na svakom
+        //polumjeru - jezgra se ne gubi, sto je bila cijela mana zbrajanja po koracima:
+        //    polumjer  zraka   jezgra   polusjena(px)   mrlje
+        //      0.00      1      16237        3.7         613
+        //      0.25      8      15726        5.7         770
+        //      0.50     16      14466        9.1        1340
+        //Cetvrt metra je obican softbox. Mrlje rastu jer vise zraka znaci vise prilika da se
+        //pogodi sum - to je cijena, i zato se broj zraka ne dize bez razloga
+        float lightRadius = 0.25f;
+        uint32_t shadowRays = 8;
+
         //Kut lece kojom je snimka nastala. Model dubine ga ne zna i ne moze znati, a o njemu
         //ovisi CIJELA geometrija: iz njega su intrinsici, iz intrinsika odprojekcija, iz nje
         //normale i mjesto sjene. Kriv kut ne izgleda kao greska nego kao scena razvucena po
@@ -169,6 +184,8 @@ int main(int argc, char** argv){
             else if(arg == "--occluder-blur" && i + 1 < argc) occluderBlur = std::stof(argv[++i]);
             else if(arg == "--bias" && i + 1 < argc)   biasScale = std::stof(argv[++i]);
             else if(arg == "--slope-bias" && i + 1 < argc) slopeBias = std::stof(argv[++i]);
+            else if(arg == "--light-radius" && i + 1 < argc) lightRadius = std::stof(argv[++i]);
+            else if(arg == "--rays" && i + 1 < argc)   shadowRays = uint32_t(std::stoi(argv[++i]));
             else if(arg == "--no-shadow")              wantShadow = false;
             else if(positional == 0){ depthPath = arg; ++positional; }
             else if(positional == 1){ nearDistance = std::stof(arg); ++positional; }
@@ -456,6 +473,8 @@ int main(int argc, char** argv){
             //zaklon od pravog, pa bi se platio sjenom. Mjereno u test_shadow_slope: on mice 98%
             //akni, ali u toj sceni odnese i cijelu pravu sjenu
             shadowConfig.slopeBias = slopeBias;
+            shadowConfig.lightRadius = lightRadius;
+            shadowConfig.rays = shadowRays;
 
             //Sto se dalje odhodalo, to se manje zna o tome sto je iza uzorkovane plohe
             shadowConfig.thicknessGrowth = 2.6f;

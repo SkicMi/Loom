@@ -464,6 +464,67 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
+    // Svjetlo kao ploha: polusjena iz VELICINE izvora
+    // -------------------------------------------------------------------------------
+
+    //Tockasto svjetlo daje samo tvrdu sjenu - piksel je ili u sjeni ili nije. Polusjena
+    //postoji zato sto se s ruba dio izvora vidi a dio ne, pa se hoda vise puta prema
+    //razlicitim tockama na disku i broji koliko ih je stiglo.
+    //
+    //Dvije stvari se traze zajedno, jer svaka bez druge prolazi iz krivog razloga: rub MORA
+    //dobiti sirinu, a jezgra MORA ostati potpuno tamna. Mekoca koja pojede jezgru nije
+    //polusjena nego blijeda sjena
+    {
+        ScreenShadowConfig area = shadowConfig;
+        area.lightRadius = 0.05f;   //usmjereno svjetlo: polumjer je kutni, dakle tangens
+        area.rays = 16;
+
+        relight.setShadow(area);
+        const std::vector<uint8_t> soft = render();
+        relight.setShadow(shadowConfig);
+
+        size_t hardPartial = 0, softPartial = 0;
+        size_t coreTotal = 0, coreDark = 0;
+
+        for(uint32_t y = 0; y < sceneHeight; ++y){
+            for(uint32_t x = 0; x < sceneWidth; ++x){
+                const size_t i = size_t(y) * sceneWidth + x;
+                const float dx = (float(x) + 0.5f - intrinsics.cx) / intrinsics.fx;
+                const float dy = (float(y) + 0.5f - intrinsics.cy) / intrinsics.fy;
+
+                const float panelX = dx * (-panelZ), panelY = dy * (-panelZ);
+                if(std::abs(panelX) <= panelHalf && std::abs(panelY) <= panelHalf) continue;
+
+                const float lit = at(unshadowed, i).r - albedo;
+                if(lit < 1e-3f) continue;
+
+                //Djelomicno zasjenjeno: ni puno svjetlo ni puna sjena
+                const float hardValue = (at(shadowed, i).r - albedo) / lit;
+                const float softValue = (at(soft, i).r - albedo) / lit;
+
+                if(hardValue > 0.05f && hardValue < 0.95f) ++hardPartial;
+                if(softValue > 0.05f && softValue < 0.95f) ++softPartial;
+
+                //Jezgra: duboko unutar izracunate sjene, daleko od svakog ruba
+                const float wallX = dx * (-wallZ), wallY = dy * (-wallZ);
+                if(wallX > shadowMinX + 0.35f && wallX < shadowMaxX - 0.35f &&
+                   wallY > shadowMinY + 0.35f && wallY < shadowMaxY - 0.35f){
+                    ++coreTotal;
+                    if(softValue < 1e-5f) ++coreDark;
+                }
+            }
+        }
+
+        report.check("ploha daje polusjenu koje tocka nema",
+            softPartial > 4 * (hardPartial + 1),
+            fmt("djelomicno zasjenjeno: tocka %zu piksela, ploha %zu", hardPartial, softPartial));
+
+        report.check("a jezgra ostaje potpuno tamna",
+            coreTotal > 200 && coreDark == coreTotal,
+            fmt("%zu od %zu piksela u jezgri je bez ijednog dodanog svjetla", coreDark, coreTotal));
+    }
+
+    // -------------------------------------------------------------------------------
     // Debljina: ploha se ne pretvara u beskonacan zid
     // -------------------------------------------------------------------------------
 

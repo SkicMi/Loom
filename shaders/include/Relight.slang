@@ -20,7 +20,8 @@ struct RelightData{
     float4 shadow;       //x = koraka (0 = bez sjene), y = duljina, z = debljina, w = odmak
     float4 shadowSlope;  //x = rast odmaka, y = slobodno, z = rast debljine, w = prednji pojas
     float4 occlusion;    //x = jacina, y = blizi prsten (px), z = dalji prsten (px), w = mjerilo (m)
-    float4 occluder;     //x = samo maska zaklanja, y = polumjer glacanja zaklona (px)
+    float4 occluder;     //x = samo maska zaklanja, y = polumjer glacanja zaklona (px),
+                         //z = koliko zraka, w = polumjer svjetla (m)
     float4 imageSize;    //xy
 }
 
@@ -59,60 +60,12 @@ struct ScreenTrace : IOcclusion{
                       data.intrinsics.y * view.y / depth + data.intrinsics.w);
     }
 
-    float visibility(GpuLight light, float3 worldPos){
+    //Jedan trag prema jednoj tocki svjetla. Vraca 0 ili 1 - namjerno tvrdo, jer je tvrda
+    //odluka jedina koju se da usporediti s analitickom geometrijom do zadnjeg piksela
+    float march(float3 toLight, float reach, float lightDepth, float dither){
         int steps = int(data.shadow.x);
-        if(steps <= 0) return 1.0;
-
-        float3 toLight;
-        float reach = data.shadow.y;
-
-        if(light.positionOrDirection.w == 0.0){
-            //Usmjereno svjetlo: smjer je isti svugdje, pa se hoda zadanu duljinu
-            toLight = normalize(-mul(data.view, float4(light.positionOrDirection.xyz, 0.0)).xyz);
-        }
-        else{
-            float3 lightView = mul(data.view, float4(light.positionOrDirection.xyz, 1.0)).xyz;
-            float3 away = lightView - point;
-            float distance = length(away);
-            if(distance < 1e-4) return 1.0;
-
-            toLight = away / distance;
-
-            //Dalje od svjetla nema sto zaklanjati - hodati preko njega znaci naci zaklon
-            //koji je iza izvora
-            reach = min(reach, distance);
-        }
-
         float stride = reach / float(steps);
-
-        //KOLIKO ODMAK MORA RASTI S PUTEM.
-        //
-        //Jedan odmak za cijelu sliku ne moze biti dobar. Trag koji ide DUBLJE od plohe na
-        //kojoj stoji - a to se dogada kad je svjetlo dalje od kamere nego ploha - vidi kako
-        //inFront raste sam od sebe, i ploha zasjeni samu sebe. Odmak koji bi to zaustavio
-        //jednom brojkom pojeo bi kontaktnu sjenu drugdje, pa odmak umjesto toga RASTE s putem.
-        //
-        //POKUSAJ KOJI JE ODBACEN, jer se dobro pamti: TypeGPU tu stopu mjeri jednom probom
-        //po smjeru svjetla, pa odmak raste bas izmjerenom brzinom. Ovdje je to izmjereno kao
-        //mrtvo slovo - proba unatrag daje TOCNO nula ucinka (16556 akni prije, 16556 poslije),
-        //a proba unaprijed s ispravnim predznakom takoder nula. Verzija koja je smanjivala
-        //akne (16556 -> 3313) radila je to s OBRNUTIM predznakom, dakle dodavala odmak tamo
-        //gdje opasnosti od akni nema - prolazila je slucajno.
-        //
-        //Razlog je sto inFront po putu nije linearan: na strmoj plohi perspektiva ga savije,
-        //pa procjena s jednog koraka ne vrijedi za ostatak traga. Ostaje ravna crta, koja ne
-        //pretpostavlja nista osim da lazni zaklon raste s udaljenoscu - i ta mjerljivo radi
         float growth = data.shadowSlope.x;
-
-        //Ploha blize kameri od svjetla ne moze zaklanjati - svjetlo je ispred nje. Bez ovoga
-        //svaki predmet izmedu kamere i izvora baca sjenu koje u stvarnosti nema
-        float lightDepth = (light.positionOrDirection.w == 0.0) ? -1.0
-            : -mul(data.view, float4(light.positionOrDirection.xyz, 1.0)).z;
-
-        //Deterministicko razbijanje pruga: bez pomaka bi se svi pikseli uzorkovali na istim
-        //udaljenostima i rub sjene bi bio stepenica. Hash po pikselu, ne slucajan broj - ista
-        //slika dva puta mora dati istu sjenu
-        float dither = frac(sin(dot(pixel, float2(12.9898, 78.233))) * 43758.5453);
 
         for(int i = 0; i < steps; ++i){
             float t = (float(i) + dither) * stride + data.shadow.w;
@@ -129,21 +82,14 @@ struct ScreenTrace : IOcclusion{
 
             float2 uv = at / data.imageSize.xy;
 
-            //TKO SMIJE ZAKLANJATI.
-            //
-            //Bez maske zaklon je sve sto se vidi, pa i zid sam sebi. Kad se zna gdje je
-            //subjekt, sjenu baca samo on - i njena silueta tada dolazi od tijela, a ne od
-            //onoga sto je model dubine napravio od cigli
+            //TKO SMIJE ZAKLANJATI. Bez maske zaklon je sve sto se vidi, pa i zid sam sebi
             if(data.occluder.x > 0.5 && occluderMask.SampleLevel(uv, 0.0).r < 0.5) continue;
 
             float4 stored = positionMap.SampleLevel(uv, 0.0);
             if(stored.w < 0.5) continue;   //nebo: nema plohe koja bi zaklanjala
 
-            //GEOMETRIJA KOJA BACA SJENU NIJE ISTA KOJA SE SJENCA.
-            //
-            //Sjencanju trebaju fine normale, tragu gruba silueta. Nabor na majici je za
-            //normale detalj, a za trag samo mrlja koja baca sjenu koje nema. Zato trag cita
-            //MEDIJAN pet uzoraka: usamljeni izbocaj ispadne, tijelo ostane
+            //GEOMETRIJA KOJA BACA SJENU NIJE ISTA KOJA SE SJENCA: tragu je nabor na majici
+            //samo mrlja, pa smije citati medijan pet uzoraka umjesto same tocke
             float storedDistance = -stored.z;
 
             if(data.occluder.y > 0.0){
@@ -156,7 +102,6 @@ struct ScreenTrace : IOcclusion{
                 float4 up = positionMap.SampleLevel(uv - stepY, 0.0);
                 float4 down = positionMap.SampleLevel(uv + stepY, 0.0);
 
-                //Nebo je beskonacno daleko, pa u medijanu ne moze pobijediti prema blizem
                 float far = 1e6;
                 storedDistance = median5(storedDistance,
                     left.w  > 0.5 ? -left.z  : far,
@@ -165,11 +110,8 @@ struct ScreenTrace : IOcclusion{
                     down.w  > 0.5 ? -down.z  : far);
             }
 
-            //Koliko je zapisana ploha BLIZE kameri od tocke do koje smo dohodali. Pozitivno
-            //znaci da je nesto izmedu nas i svjetla.
-            //
-            //Predznak je ovdje jedina stvar koja odlucuje: obrnut, sve je u sjeni - i sto je
-            //gore, provjera "unutar sjene je tamno" tada prolazi iz krivog razloga
+            //Koliko je zapisana ploha BLIZE kameri od tocke do koje smo dohodali. Predznak je
+            //ovdje jedina stvar koja odlucuje: obrnut, sve je u sjeni
             float inFront = (-sample.z) - storedDistance;
 
             //Odmak raste s putem, jer lazni zaklon raste s njim
@@ -178,21 +120,93 @@ struct ScreenTrace : IOcclusion{
             //Sto se dalje odhodalo, to se manje zna o tome sto je iza uzorkovane plohe
             float thickness = data.shadow.z * (1.0 + (t / reach) * data.shadowSlope.z);
 
-            //Uzorak ispred svjetla se ne racuna. Rampa je napisana mekano, ali je ovdje
-            //upotrijebljena kao prag: trag je binaran, pa se meki prijelaz nema gdje vidjeti
-            //dok se ne uvede mekano zbrajanje zaklona
-            float ahead = 1.0;
+            //Ploha blize kameri od svjetla ne moze zaklanjati - svjetlo je ispred nje
+            bool ahead = true;
             if(data.shadowSlope.w > 0.0 && lightDepth > 0.0){
-                ahead = saturate((storedDistance - lightDepth) / data.shadowSlope.w);
+                ahead = (storedDistance - lightDepth) > 0.5 * data.shadowSlope.w;
             }
 
-            //Ploha je pred nama, ali ne predaleko. Bez gornje granice bi svaka bila
-            //beskonacno duboka i zaklanjala sve iza sebe do kraja scene - a mi vidimo samo
-            //njeno lice i o njenoj debljini ne znamo nista
-            if(ahead > 0.5 && inFront > bias && inFront < thickness) return 0.0;
+            if(ahead && inFront > bias && inFront < thickness) return 0.0;
         }
 
         return 1.0;
+    }
+
+    float visibility(GpuLight light, float3 worldPos){
+        int steps = int(data.shadow.x);
+        if(steps <= 0) return 1.0;
+
+        //Deterministicko razbijanje pruga: bez pomaka bi se svi pikseli uzorkovali na istim
+        //udaljenostima i rub sjene bi bio stepenica. Hash po pikselu, ne slucajan broj - ista
+        //slika dva puta mora dati istu sjenu
+        float dither = frac(sin(dot(pixel, float2(12.9898, 78.233))) * 43758.5453);
+
+        float lightDepth = (light.positionOrDirection.w == 0.0) ? -1.0
+            : -mul(data.view, float4(light.positionOrDirection.xyz, 1.0)).z;
+
+        //SVJETLO KAO PLOHA, NE KAO TOCKA.
+        //
+        //Tocka daje samo tvrdu sjenu; polusjena postoji zato sto se dio izvora vidi a dio ne.
+        //Zato se hoda vise puta, svaki put prema DRUGOJ tocki na disku polumjera lightRadius,
+        //i broji koliko ih je stiglo. Jezgra ostaje potpuno tamna jer nijedna zraka ne prode,
+        //a rub dobiva sirinu koja raste s velicinom svjetla - dakle iz fizike, ne iz koraka.
+        //
+        //Ovo si smijemo priustiti jer slika smije trajati: realtime bi platio N tragova po
+        //pikselu, nama je to jedina cijena
+        int rays = max(int(data.occluder.z), 1);
+        float lightRadius = data.occluder.w;
+
+        float3 toLight;
+        float reach = data.shadow.y;
+        float distance = 0.0;
+
+        if(light.positionOrDirection.w == 0.0){
+            //Usmjereno svjetlo: smjer je isti svugdje, pa se hoda zadanu duljinu
+            toLight = normalize(-mul(data.view, float4(light.positionOrDirection.xyz, 0.0)).xyz);
+        }
+        else{
+            float3 lightView = mul(data.view, float4(light.positionOrDirection.xyz, 1.0)).xyz;
+            float3 away = lightView - point;
+            distance = length(away);
+            if(distance < 1e-4) return 1.0;
+
+            toLight = away / distance;
+
+            //Dalje od svjetla nema sto zaklanjati - hodati preko njega znaci naci zaklon
+            //koji je iza izvora
+            reach = min(reach, distance);
+        }
+
+        if(rays <= 1 || lightRadius <= 0.0){
+            return march(toLight, reach, lightDepth, dither);
+        }
+
+        //Dvije osi okomite na smjer prema svjetlu, da se disk moze razapeti
+        float3 helper = abs(toLight.y) < 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+        float3 axisU = normalize(cross(helper, toLight));
+        float3 axisV = cross(toLight, axisU);
+
+        float reached = 0.0;
+
+        for(int ray = 0; ray < rays; ++ray){
+            //Vogelov spiralni raspored: tocke po disku ravnomjerno, bez slucajnih brojeva.
+            //Pomak po pikselu i dalje razbija pruge, a ista slika dva puta daje istu sjenu
+            float index = float(ray) + 0.5;
+            float radius = lightRadius * sqrt(index / float(rays));
+            float angle = index * 2.39996323 + dither * 6.28318531;
+
+            float3 offset = axisU * (radius * cos(angle)) + axisV * (radius * sin(angle));
+
+            //Zraka prema pomaknutoj tocki na izvoru. Za usmjereno svjetlo je pomak kutni, pa
+            //se polumjer cita kao tangens - izvor je beskonacno dalek i nema ga se gdje pomaci
+            float3 rayDirection = (light.positionOrDirection.w == 0.0)
+                ? normalize(toLight + offset)
+                : normalize(toLight * distance + offset);
+
+            reached += march(rayDirection, reach, lightDepth, dither);
+        }
+
+        return reached / float(rays);
     }
 }
 

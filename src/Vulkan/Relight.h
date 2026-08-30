@@ -64,6 +64,23 @@ struct ScreenShadowConfig{
     //sjenu koje nema. Medijan pet uzoraka izbaci usamljeni izbocaj a tijelo ostavi. Nula
     //iskljucuje, i tada trag cita tocno onu dubinu koju cita i sjencanje
     float occluderBlur = 0.0f;
+
+    //Polumjer svjetla, u metrima. Nula znaci tockasto, dakle tvrda sjena.
+    //
+    //Polusjena postoji zato sto se s ruba sjene dio izvora vidi a dio ne - dakle zato sto
+    //izvor IMA velicinu. Zato se ovdje ne mekSa odluka nego se hoda vise puta, prema
+    //razlicitim tockama na disku ovog polumjera.
+    //
+    //ODBACENA ALTERNATIVA, jer je izmjerena: TypeGPU umjesto toga zbraja koliko je koji korak
+    //zaklonjen i time dobiva mekocu. Preneseno i probano - jezgra sjene ostane tamna ali
+    //sitna, a ostatak se razmaze u gradijent koji se na svijetlom zidu ne vidi. Polusjena je
+    //tamo posljedica grubog uzorkovanja, a ne velicine izvora, pa joj sirina ovisi o broju
+    //koraka umjesto o sceni
+    float lightRadius = 0.0f;
+
+    //Koliko tragova po pikselu. Jedan je tocka i tvrda sjena; vise ih uzorkuje disk.
+    //Realtime bi ovo platio N puta po pikselu - offline je to jedina cijena
+    uint32_t rays = 1;
 };
 
 //Ambijentna okluzija iz same karte dubine.
