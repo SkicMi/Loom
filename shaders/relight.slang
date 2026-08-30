@@ -9,7 +9,7 @@
 
 #include "include/Relight.slang"
 
-[[vk::binding(2,1)]] ConstantBuffer<RelightData> relight;
+[[vk::binding(3,1)]] ConstantBuffer<RelightData> relight;
 
 //Jedini vertex stage cijelog relighta: trokut preko ekrana je isti trokut, pa ga
 //relight_composite koristi iz ovog filea. Stoji ovdje a ne u includeu jer CMake stageove

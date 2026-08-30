@@ -20,6 +20,7 @@ struct RelightData{
     float4 shadow;       //x = koraka (0 = bez sjene), y = duljina, z = debljina, w = odmak
     float4 shadowSlope;  //x = rast odmaka, y = slobodno, z = rast debljine, w = prednji pojas
     float4 occlusion;    //x = jacina, y = blizi prsten (px), z = dalji prsten (px), w = mjerilo (m)
+    float4 occluder;     //x = samo maska zaklanja, y = polumjer glacanja zaklona (px)
     float4 imageSize;    //xy
 }
 
@@ -33,6 +34,19 @@ struct RelightData{
 //Granica je posteno reci: sjenu baca samo ono sto je U KADRU. Predmet iza kamere ili izvan
 //ruba ne postoji ni u jednoj slici, pa ni ne moze zakloniti. To je granica postupka, ne
 //njegova greska - i to je razlog zasto se ovo zove kontaktna sjena a ne sjena.
+//Srednja od pet vrijednosti, po poznatom identitetu:
+//    median5 = median3( max(min(a,b), min(c,d)), min(max(a,b), max(c,d)), e )
+//
+//Medijan a ne prosjek: prosjek preko siluete pomijesa covjeka i zid dva metra iza njega pa
+//izmisli kosinu koje nema, dok medijan uzme onu stranu koje ima vise
+float median3(float x, float y, float z){
+    return max(min(x, y), min(max(x, y), z));
+}
+
+float median5(float a, float b, float c, float d, float e){
+    return median3(max(min(a, b), min(c, d)), min(max(a, b), max(c, d)), e);
+}
+
 struct ScreenTrace : IOcclusion{
     float3 point;        //tocka koja se sjenca, u view prostoru
     float2 pixel;        //gdje je ona na ekranu - za razbijanje pruga
@@ -113,15 +127,50 @@ struct ScreenTrace : IOcclusion{
                 break;
             }
 
-            float4 stored = positionMap.SampleLevel(at / data.imageSize.xy, 0.0);
+            float2 uv = at / data.imageSize.xy;
+
+            //TKO SMIJE ZAKLANJATI.
+            //
+            //Bez maske zaklon je sve sto se vidi, pa i zid sam sebi. Kad se zna gdje je
+            //subjekt, sjenu baca samo on - i njena silueta tada dolazi od tijela, a ne od
+            //onoga sto je model dubine napravio od cigli
+            if(data.occluder.x > 0.5 && occluderMask.SampleLevel(uv, 0.0).r < 0.5) continue;
+
+            float4 stored = positionMap.SampleLevel(uv, 0.0);
             if(stored.w < 0.5) continue;   //nebo: nema plohe koja bi zaklanjala
+
+            //GEOMETRIJA KOJA BACA SJENU NIJE ISTA KOJA SE SJENCA.
+            //
+            //Sjencanju trebaju fine normale, tragu gruba silueta. Nabor na majici je za
+            //normale detalj, a za trag samo mrlja koja baca sjenu koje nema. Zato trag cita
+            //MEDIJAN pet uzoraka: usamljeni izbocaj ispadne, tijelo ostane
+            float storedDistance = -stored.z;
+
+            if(data.occluder.y > 0.0){
+                float radius = data.occluder.y;
+                float2 stepX = float2(radius, 0.0) / data.imageSize.xy;
+                float2 stepY = float2(0.0, radius) / data.imageSize.xy;
+
+                float4 left = positionMap.SampleLevel(uv - stepX, 0.0);
+                float4 right = positionMap.SampleLevel(uv + stepX, 0.0);
+                float4 up = positionMap.SampleLevel(uv - stepY, 0.0);
+                float4 down = positionMap.SampleLevel(uv + stepY, 0.0);
+
+                //Nebo je beskonacno daleko, pa u medijanu ne moze pobijediti prema blizem
+                float far = 1e6;
+                storedDistance = median5(storedDistance,
+                    left.w  > 0.5 ? -left.z  : far,
+                    right.w > 0.5 ? -right.z : far,
+                    up.w    > 0.5 ? -up.z    : far,
+                    down.w  > 0.5 ? -down.z  : far);
+            }
 
             //Koliko je zapisana ploha BLIZE kameri od tocke do koje smo dohodali. Pozitivno
             //znaci da je nesto izmedu nas i svjetla.
             //
             //Predznak je ovdje jedina stvar koja odlucuje: obrnut, sve je u sjeni - i sto je
             //gore, provjera "unutar sjene je tamno" tada prolazi iz krivog razloga
-            float inFront = (-sample.z) - (-stored.z);
+            float inFront = (-sample.z) - storedDistance;
 
             //Odmak raste s putem, jer lazni zaklon raste s njim
             float bias = data.shadow.w + t * growth;
@@ -134,7 +183,7 @@ struct ScreenTrace : IOcclusion{
             //dok se ne uvede mekano zbrajanje zaklona
             float ahead = 1.0;
             if(data.shadowSlope.w > 0.0 && lightDepth > 0.0){
-                ahead = saturate(((-stored.z) - lightDepth) / data.shadowSlope.w);
+                ahead = saturate((storedDistance - lightDepth) / data.shadowSlope.w);
             }
 
             //Ploha je pred nama, ali ne predaleko. Bez gornje granice bi svaka bila
@@ -149,6 +198,10 @@ struct ScreenTrace : IOcclusion{
 
 [[vk::binding(0,1)]] Sampler2D positionMap;
 [[vk::binding(1,1)]] Sampler2D normalMap;
+
+//Tko smije zaklanjati. Bijelo znaci "svatko", pa je slika koja se ne postavi bijeli piksel i
+//sve ostaje kako je bilo
+[[vk::binding(2,1)]] Sampler2D occluderMask;
 
 struct VSOutput{
     float4 position : SV_Position;

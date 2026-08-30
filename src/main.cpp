@@ -83,7 +83,8 @@ int main(int argc, char** argv){
                "  --save <file.png>   jedan kadar na disk umjesto prozora\n"
                "  --angle <stupnjeva> gdje je svjetlo na kruznici (uz --save)\n"
                "  --fov <stupnjeva>   okomiti kut kamere kojom je snimljeno (default 50)\n"
-               "  --mask <maska.png>  silueta subjekta; iz nje se izvede debljina zaklona\n"
+               "  --mask <maska.png>  silueta subjekta: debljina zaklona, i sjenu baca samo ona\n"
+               "  --occluder-blur <px> polumjer medijana kojim trag cita dubinu (default 3)\n"
                "  --thickness <m>     debljina zaklona rukom, umjesto izvedene\n"
                "  --radius <n>        razmak iz kojeg se racunaju normale (default 3)\n"
                "  --noise <nagib>     koliko nagiba model izmislja na ravnom (default 0.30)\n"
@@ -125,6 +126,22 @@ int main(int argc, char** argv){
         float aoStrength = 0.6f;
         float aoScale = 0.0f;   //0 = izvedi iz udaljenosti subjekta
 
+        //Iz kolikog polumjera trag uzima medijan dubine. Ima smisla samo uz masku
+        //Medijan iz kojeg trag cita dubinu. Nula jer je izmjereno da skoro nista ne donosi:
+        //3489 mrlja na nuli, 3386 na sesnaest piksela. Mrlje nisu izolirani siljci nego
+        //subjekt koji sjenca sam sebe, a to rjesava odmak. Ostaje dostupno za bucniju dubinu
+        float occluderBlur = 0.0f;
+        //Odmak = ovo puta udaljenost subjekta. Izmjereno na pravoj fotki, pri kutu 225:
+        //    bias   sjena na zidu   mrlje na subjektu
+        //    0.02      49956             3485
+        //    0.04      42215             1265
+        //    0.05      38512              612     <- koljeno
+        //    0.07      31780              141
+        //Mrlje su subjekt koji sjenca sam sebe iz vlastite bucne dubine - nabori majice. Na
+        //0.05 ih nestane 82%, a sjena zadrzi 77% povrsine
+        float biasScale = 0.05f;
+        float slopeBias = 0.0f;
+
         //Kut lece kojom je snimka nastala. Model dubine ga ne zna i ne moze znati, a o njemu
         //ovisi CIJELA geometrija: iz njega su intrinsici, iz intrinsika odprojekcija, iz nje
         //normale i mjesto sjene. Kriv kut ne izgleda kao greska nego kao scena razvucena po
@@ -149,6 +166,9 @@ int main(int argc, char** argv){
             else if(arg == "--specular" && i + 1 < argc) specular = std::stof(argv[++i]);
             else if(arg == "--ao" && i + 1 < argc)     aoStrength = std::stof(argv[++i]);
             else if(arg == "--ao-scale" && i + 1 < argc) aoScale = std::stof(argv[++i]);
+            else if(arg == "--occluder-blur" && i + 1 < argc) occluderBlur = std::stof(argv[++i]);
+            else if(arg == "--bias" && i + 1 < argc)   biasScale = std::stof(argv[++i]);
+            else if(arg == "--slope-bias" && i + 1 < argc) slopeBias = std::stof(argv[++i]);
             else if(arg == "--no-shadow")              wantShadow = false;
             else if(positional == 0){ depthPath = arg; ++positional; }
             else if(positional == 1){ nearDistance = std::stof(arg); ++positional; }
@@ -252,6 +272,7 @@ int main(int argc, char** argv){
         std::unique_ptr<NormalMap> normals;
         std::unique_ptr<Relight> relight;
         std::unique_ptr<Light> bulb;
+        std::unique_ptr<Texture> maskTexture;
         float subjectDistance = 2.0f;
         float backdropDistance = 5.0f;
         float orbitRadius = 0.5f;
@@ -410,14 +431,31 @@ int main(int argc, char** argv){
                 printf("  maska: subjekt je vidljivo dubok %.3f m (%.2f do %.2f m) "
                        "-> debljina zaklona %.3f m\n",
                        back - front, front, back, shadowConfig.thickness);
+
+                //Sjenu tada baca SAMO subjekt. Bez toga je zaklon sve sto se vidi, pa i zid
+                //sam sebi - i silueta bacene sjene dolazi od onoga sto je model dubine
+                //napravio od cigli, a ne od tijela
+                shadowConfig.maskOnly = true;
+
+                //I trag cita medijan umjesto same tocke: nabor na majici je za normale
+                //detalj, a za trag mrlja koja baca sjenu koje nema
+                shadowConfig.occluderBlur = occluderBlur;
+
+                TextureConfig maskConfig;
+                maskConfig.format = vk::Format::eR8G8B8A8Unorm;
+                maskConfig.filter = vk::Filter::eNearest;
+                maskConfig.generateMipmaps = false;
+                maskTexture = std::make_unique<Texture>(loom.device, loom.command,
+                                                        mask.pixels.data(), plateSize, maskConfig);
+                relight->setOccluderMask(maskTexture->getSampled());
             }
-            shadowConfig.bias = 0.02f * subjectDistance;
+            shadowConfig.bias = biasScale * subjectDistance;
 
             //Odmak koji raste s putem NIJE ukljucen, i to namjerno. Akne se pojave samo kad je
             //svjetlo dublje od plohe, a ovdje kruzi ispred subjekta; a odmak ne razlikuje lazni
             //zaklon od pravog, pa bi se platio sjenom. Mjereno u test_shadow_slope: on mice 98%
             //akni, ali u toj sceni odnese i cijelu pravu sjenu
-            shadowConfig.slopeBias = 0.0f;
+            shadowConfig.slopeBias = slopeBias;
 
             //Sto se dalje odhodalo, to se manje zna o tome sto je iza uzorkovane plohe
             shadowConfig.thicknessGrowth = 2.6f;

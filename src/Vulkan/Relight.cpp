@@ -47,6 +47,7 @@ Relight::Relight(const VulkanDevice& device,
                         config.shadow.thicknessGrowth, config.shadow.frontFade};
     data.occlusion = {config.occlusion.strength, config.occlusion.nearRadius,
                       config.occlusion.farRadius, config.occlusion.scale};
+    data.occluder = {config.shadow.maskOnly ? 1.0f : 0.0f, config.shadow.occluderBlur, 0.0f, 0.0f};
     data.imageSize = {float(positions.getExtent().width), float(positions.getExtent().height), 0.0f, 0.0f};
 
     //Fullscreen: nema vrhova, nema atributa, nema dubine. Trokut koji pokriva ekran dolazi
@@ -54,7 +55,17 @@ Relight::Relight(const VulkanDevice& device,
     PipelineConfig pipelineConfig;
     pipelineConfig.vertexBindings.clear();
     pipelineConfig.vertexAttributes.clear();
-    std::vector<SampledImage> images{positions.getSampled(), normals.getSampled()};
+    //Bijeli piksel na mjestu maske. Slot postoji uvijek, pa je raspored deskriptora isti bez
+    //obzira postavi li se prava maska - inace bi ista dva shadera trebala dva pipelinea
+    const uint8_t white[4] = {255, 255, 255, 255};
+    TextureConfig maskConfig;
+    maskConfig.format = vk::Format::eR8G8B8A8Unorm;
+    maskConfig.filter = vk::Filter::eNearest;
+    maskConfig.generateMipmaps = false;
+    whiteMask.emplace(device, command, white, vk::Extent2D{1, 1}, maskConfig);
+
+    std::vector<SampledImage> images{positions.getSampled(), normals.getSampled(),
+                                     whiteMask->getSampled()};
     if(hasPlate){
         images.push_back(plate);
     }
@@ -103,6 +114,7 @@ void Relight::setShadow(const ScreenShadowConfig& shadow){
                    shadow.maxDistance, shadow.thickness, shadow.bias};
     data.shadowSlope = {shadow.slopeBias, 0.0f,
                         shadow.thicknessGrowth, shadow.frontFade};
+    data.occluder = {shadow.maskOnly ? 1.0f : 0.0f, shadow.occluderBlur, 0.0f, 0.0f};
     material->setData(&data, sizeof(data));
 }
 
@@ -118,9 +130,16 @@ void Relight::setSurface(const MaterialData& surface){
     material->setData(&data, sizeof(data));
 }
 
+void Relight::setOccluderMask(const SampledImage& mask){
+    if(!mask.isValid()){
+        throw std::runtime_error("Relight::setOccluderMask: the mask has no view or no sampler");
+    }
+    material->setSampledImage(2, mask);
+}
+
 void Relight::setPlate(const SampledImage& plate){
     if(!hasPlate){
         throw std::runtime_error("Relight: this pass was built without a plate, so there is no footage to composite over - use the constructor that takes one");
     }
-    material->setSampledImage(2, plate);
+    material->setSampledImage(3, plate);
 }

@@ -16,8 +16,8 @@
 
 #include "include/Relight.slang"
 
-[[vk::binding(2,1)]] Sampler2D plate;
-[[vk::binding(3,1)]] ConstantBuffer<RelightData> relight;
+[[vk::binding(3,1)]] Sampler2D plate;
+[[vk::binding(4,1)]] ConstantBuffer<RelightData> relight;
 
 [shader("fragment")]
 float4 fragmentMain(VSOutput input) : SV_Target{

@@ -1,5 +1,6 @@
 #pragma once
 #include "Material.h"
+#include "Texture.h"
 #include "NormalMap.h"
 #include "PositionMap.h"
 #include "VulkanGraphicsPipeline.h"
@@ -50,6 +51,19 @@ struct ScreenShadowConfig{
     //Ploha blize kameri od samog svjetla ne moze biti zaklon - svjetlo je ispred nje. Ovo je
     //pojas u metrima preko kojeg se takav uzorak prestaje racunati. Nula iskljucuje pravilo
     float frontFade = 0.0f;
+
+    //Zaklanja li SAMO ono sto je u masci. Bez toga zaklon je sve sto se vidi, pa i zid sam
+    //sebi; s njom sjenu baca samo subjekt i njena silueta dolazi od tijela. Trazi da maska
+    //bude postavljena (setOccluderMask) - bez nje je maska bijela i pravilo ne mijenja nista
+    bool maskOnly = false;
+
+    //Polumjer, u pikselima, iz kojeg trag uzima MEDIJAN dubine umjesto same tocke.
+    //
+    //Geometrija koja baca sjenu nije ista koja se sjenca: sjencanju trebaju fine normale,
+    //tragu gruba silueta. Nabor na majici je za normale detalj, a za trag mrlja koja baca
+    //sjenu koje nema. Medijan pet uzoraka izbaci usamljeni izbocaj a tijelo ostavi. Nula
+    //iskljucuje, i tada trag cita tocno onu dubinu koju cita i sjencanje
+    float occluderBlur = 0.0f;
 };
 
 //Ambijentna okluzija iz same karte dubine.
@@ -85,6 +99,7 @@ struct RelightData{
     glm::vec4 shadow{0.0f, 8.0f, 0.5f, 0.02f};       //koraka, duljina, debljina, odmak
     glm::vec4 shadowSlope{0.0f, 0.0f, 0.0f, 0.0f};   //rast odmaka, -, rast debljine, prednji pojas
     glm::vec4 occlusion{0.0f, 3.0f, 9.0f, 0.05f};    //jacina, blizi prsten, dalji prsten, mjerilo
+    glm::vec4 occluder{0.0f, 0.0f, 0.0f, 0.0f};      //samo maska, glacanje zaklona
     glm::vec4 imageSize{0.0f, 0.0f, 0.0f, 0.0f};
 };
 
@@ -149,6 +164,10 @@ class Relight{
 
     //Mijenja se i nakon gradnje: koliko okluzije treba vidi se tek kad se pogleda
     void setOcclusion(const ScreenOcclusionConfig& occlusion);
+
+    //Tko smije zaklanjati. Dok se ne postavi, maska je bijeli piksel - dakle svatko, i
+    //ponasanje je isto kao da je nema
+    void setOccluderMask(const SampledImage& mask);
     bool castsShadows() const {return data.shadow.x > 0.0f;}
 
     //Boja i sjaj plohe. U kompoziciji baseColor MNOZI snimku, pa se albedo da prigusiti bez
@@ -172,4 +191,8 @@ class Relight{
     //duze - a clanovi se rusе obrnutim redom od deklaracije
     std::optional<VulkanGraphicsPipeline> pipeline;
     std::optional<Material> material;
+
+    //Bijeli piksel: maska koja nikoga ne iskljucuje. Postoji da bi raspored deskriptora bio
+    //isti bez obzira postavi li se prava maska ili ne - inace bi trebala dva pipelinea
+    std::optional<Texture> whiteMask;
 };

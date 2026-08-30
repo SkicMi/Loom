@@ -22,6 +22,7 @@
 #include "Vulkan/Texture.h"
 
 #include <cmath>
+#include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 
@@ -385,6 +386,81 @@ int main(){
             fmt("GPU je zamracio %zu piksela, model kutije debele %.1f m predvida %zu "
                 "(razlika %.1f%%)", darkened, shadowConfig.thickness, predicted,
                 100.0 * double(larger - smaller) / double(predicted)));
+    }
+
+    // -------------------------------------------------------------------------------
+    // Tko smije zaklanjati
+    // -------------------------------------------------------------------------------
+
+    //Bez maske zaklon je sve sto se vidi. S maskom sjenu baca samo ono sto je u njoj - i to
+    //je jedini nacin da silueta bacene sjene dode od tijela, a ne od onoga sto je model
+    //dubine napravio od pozadine.
+    //
+    //Dvije krajnosti, jer se izmedu njih nema gdje sakriti: bijela maska ne smije promijeniti
+    //nista, crna mora ugasiti sjenu do zadnjeg piksela
+    //Maske zive do kraja testa, ne samo do kraja bloka: materijal drzi pokazivac na onu koja
+    //je zadnja postavljena, pa bi je nadzivio i uzorkovao sliku koje vise nema. Prva verzija
+    //ovog testa ih je imala unutar bloka i pala je sa SegFaultom u prolazu POSLIJE njega
+    std::vector<uint8_t> white(size_t(sceneWidth) * sceneHeight * 4, 255);
+    std::vector<uint8_t> black(size_t(sceneWidth) * sceneHeight * 4, 0);
+    for(size_t i = 3; i < black.size(); i += 4) black[i] = 255;
+
+    TextureConfig maskConfig;
+    maskConfig.format = vk::Format::eR8G8B8A8Unorm;
+    maskConfig.filter = vk::Filter::eNearest;
+    maskConfig.generateMipmaps = false;
+
+    Texture whiteMask(loom.device, loom.command, white.data(),
+                      vk::Extent2D{sceneWidth, sceneHeight}, maskConfig);
+    Texture blackMask(loom.device, loom.command, black.data(),
+                      vk::Extent2D{sceneWidth, sceneHeight}, maskConfig);
+
+    {
+        ScreenShadowConfig gated = shadowConfig;
+        gated.maskOnly = true;
+
+        relight.setOccluderMask(whiteMask.getSampled());
+        relight.setShadow(gated);
+        const std::vector<uint8_t> everyone = render();
+
+        size_t sameAsBefore = 0;
+        for(size_t i = 0; i < shadowed.size(); i += 4 * sizeof(float)){
+            if(std::memcmp(shadowed.data() + i, everyone.data() + i, 4 * sizeof(float)) == 0){
+                ++sameAsBefore;
+            }
+        }
+
+        report.check("bijela maska ne mijenja nista",
+            sameAsBefore == size_t(sceneWidth) * sceneHeight,
+            fmt("%zu od %u piksela bit-identicno", sameAsBefore, sceneWidth * sceneHeight));
+
+        relight.setOccluderMask(blackMask.getSampled());
+        const std::vector<uint8_t> nobody = render();
+
+        size_t stillDark = 0;
+        for(uint32_t y = 0; y < sceneHeight; ++y){
+            for(uint32_t x = 0; x < sceneWidth; ++x){
+                const size_t i = size_t(y) * sceneWidth + x;
+                const float dx = (float(x) + 0.5f - intrinsics.cx) / intrinsics.fx;
+                const float dy = (float(y) + 0.5f - intrinsics.cy) / intrinsics.fy;
+                const float panelX = dx * (-panelZ), panelY = dy * (-panelZ);
+                if(std::abs(panelX) <= panelHalf && std::abs(panelY) <= panelHalf) continue;
+
+                const float wallX = dx * (-wallZ), wallY = dy * (-wallZ);
+                const bool inside =
+                    wallX > shadowMinX + margin && wallX < shadowMaxX - margin &&
+                    wallY > shadowMinY + margin && wallY < shadowMaxY - margin;
+
+                if(inside && at(nobody, i).r - albedo < 1e-5f) ++stillDark;
+            }
+        }
+
+        report.check("crna maska gasi sjenu",
+            insideDark > 500 && stillDark == 0,
+            fmt("sjena je pokrivala %zu piksela, s praznom maskom %zu", insideDark, stillDark));
+
+        relight.setOccluderMask(whiteMask.getSampled());
+        relight.setShadow(shadowConfig);
     }
 
     // -------------------------------------------------------------------------------
