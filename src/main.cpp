@@ -153,10 +153,21 @@ int main(int argc, char** argv){
         //      0.00      1      16237        3.7         613
         //      0.25      8      15726        5.7         770
         //      0.50     16      14466        9.1        1340
-        //Cetvrt metra je obican softbox. Mrlje rastu jer vise zraka znaci vise prilika da se
-        //pogodi sum - to je cijena, i zato se broj zraka ne dize bez razloga
+        //Cetvrt metra je obican softbox.
+        //
+        //Zraka trideset dvije, jer su MJERENO besplatne: na 3200x2136 jedna zraka traje 12.22
+        //s a sezdeset cetiri 12.51 - sve je to dekodiranje i zapis, trag se u tome ne vidi.
+        //Zrnatost polusjene pritom uredno pada kao uzorkovni sum (mjereno na faktoru
+        //vidljivosti, gdje se tekstura zida pokrati):
+        //    zraka        1      4      8     16     32     64
+        //    zrnatost  0.0475 0.1030 0.0554 0.0330 0.0206 0.0140
+        //Cetiri je gore od jedne: cetiri tocke na Vogelovoj spirali daju los raspored po
+        //disku. Ispod osam se ne isplati ici.
+        //
+        //Cijena su mrlje: 801 na osam zraka, 838 na trideset dvije. Pet posto za dva i pol
+        //puta mirniju polusjenu
         float lightRadius = 0.25f;
-        uint32_t shadowRays = 8;
+        uint32_t shadowRays = 32;
         uint32_t shadowSteps = 40;
 
         //Kut lece kojom je snimka nastala. Model dubine ga ne zna i ne moze znati, a o njemu

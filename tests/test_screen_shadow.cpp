@@ -522,6 +522,58 @@ int main(){
         report.check("a jezgra ostaje potpuno tamna",
             coreTotal > 200 && coreDark == coreTotal,
             fmt("%zu od %zu piksela u jezgri je bez ijednog dodanog svjetla", coreDark, coreTotal));
+
+        // ---------------------------------------------------------------------------
+        // Zrnatost polusjene je UZORKOVNI sum, i pada s brojem zraka
+        // ---------------------------------------------------------------------------
+
+        //Polusjena od malo zraka je stepenasta: svaka zraka je odluka 0 ili 1, pa ih osam daje
+        //devet mogucih vrijednosti. Vise zraka znaci finiji prijelaz, i to se mora vidjeti u
+        //brojci - inace bi netko mogao misliti da je zrnatost svojstvo dubine i da je se ne da
+        //maknuti. Mjeri se na FAKTORU VIDLJIVOSTI, ne na slici: tako tekstura plohe otpada
+        ScreenShadowConfig few = area;
+        few.rays = 4;
+
+        relight.setShadow(few);
+        const std::vector<uint8_t> coarse = render();
+        relight.setShadow(shadowConfig);
+
+        auto graininess = [&](const std::vector<uint8_t>& image){
+            double total = 0.0;
+            size_t counted = 0;
+
+            for(uint32_t y = 1; y + 1 < sceneHeight; ++y){
+                for(uint32_t x = 1; x + 1 < sceneWidth; ++x){
+                    const size_t i = size_t(y) * sceneWidth + x;
+                    const float lit = at(unshadowed, i).r - albedo;
+                    if(lit < 1e-3f) continue;
+
+                    //Pojas polusjene odreduje ONA slika s vise zraka, pa je regija ista za obje
+                    const float reference = (at(soft, i).r - albedo) / lit;
+                    if(reference <= 0.15f || reference >= 0.85f) continue;
+
+                    //Koliko piksel odstupa od svoja cetiri susjeda
+                    const float here = (at(image, i).r - albedo) / lit;
+                    float around = 0.0f;
+                    around += (at(image, i - 1).r - albedo) / lit;
+                    around += (at(image, i + 1).r - albedo) / lit;
+                    around += (at(image, i - sceneWidth).r - albedo) / lit;
+                    around += (at(image, i + sceneWidth).r - albedo) / lit;
+
+                    total += std::abs(double(here) - double(around) * 0.25);
+                    ++counted;
+                }
+            }
+            return counted > 0 ? total / double(counted) : 0.0;
+        };
+
+        const double coarseNoise = graininess(coarse);
+        const double fineNoise = graininess(soft);
+
+        report.check("vise zraka znaci mirniju polusjenu",
+            coarseNoise > 1.5 * fineNoise,
+            fmt("zrnatost: 4 zrake %.4f, 16 zraka %.4f - %.1f puta",
+                coarseNoise, fineNoise, coarseNoise / (fineNoise > 1e-9 ? fineNoise : 1.0)));
     }
 
     // -------------------------------------------------------------------------------
