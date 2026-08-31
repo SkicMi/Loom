@@ -92,7 +92,9 @@ int main(int argc, char** argv){
                "  --specular <0..1>   koliko ploha odsjaji (default 0.10)\n"
                "  --ao <0..1>         ambijentna okluzija iz dubine (default 0.6)\n"
                "  --light-radius <m>  velicina svjetla; 0 je tocka i tvrda sjena\n"
-               "  --rays <n>          koliko tragova po pikselu (default 8)\n"
+               "  --kelvin <K>        boja svjetla kao temperatura (default 3200)\n"
+               "  --tint <r,g,b>      boja rukom, u linearnom svjetlu, umjesto Kelvina\n"
+               "  --rays <n>          koliko tragova po pikselu (default 32)\n"
                "  --steps <n>         koraka po tragu (default 40)\n"
                "  --no-shadow         bez trazenja zaklona\n", argv[0]);
         return 1;
@@ -177,6 +179,22 @@ int main(int argc, char** argv){
         float fovDegrees = 50.0f;
         float specular = 0.10f;
 
+        //BOJA SVJETLA.
+        //
+        //Dosad je ovdje stajao zakucan trojac {1, 0.82, 0.55}. Dva su mu problema, i oba su
+        //izmjerena. Prvi: nosi luminanciju 0.839, pa je "topli ton" ujedno bio i svjetlo
+        //slabije za sesnaest posto - i onda se dvije boje ne daju usporediti. Drugi: taj
+        //trojac izgleda kao topla zarulja samo dok se cita kao sRGB uzorak; kao LINEARNI
+        //mnozitelj, sto ovdje jest, njegov omjer crvenog i plavog je 1.82, a to je oko
+        //4700 K - dakle blijeda popodnevna zarulja umjesto tungstena.
+        //
+        //Kelvin oboje rjesava odjednom: boja crnog tijela se racuna uz Y = 1, pa nosi
+        //jedinicnu luminanciju po konstrukciji i mijenja iskljucivo ton. 3200 K je tungsten,
+        //klasicno filmsko glavno svjetlo
+        float lightKelvin = 3200.0f;
+        glm::vec3 lightTint{0.0f};
+        bool haveTint = false;
+
         int positional = 0;
         for(int i = 2; i < argc; ++i){
             const std::string arg = argv[i];
@@ -198,6 +216,17 @@ int main(int argc, char** argv){
             else if(arg == "--bias" && i + 1 < argc)   biasScale = std::stof(argv[++i]);
             else if(arg == "--slope-bias" && i + 1 < argc) slopeBias = std::stof(argv[++i]);
             else if(arg == "--light-radius" && i + 1 < argc) lightRadius = std::stof(argv[++i]);
+            else if(arg == "--kelvin" && i + 1 < argc) lightKelvin = std::stof(argv[++i]);
+            else if(arg == "--tint" && i + 1 < argc){
+                //Boja rukom postoji zbog gelova i zbog svega sto nije crno tijelo. Normalizacija
+                //ispod je i ovdje upaljena, pa i takav ton mijenja samo ton
+                float r = 1.0f, g = 1.0f, b = 1.0f;
+                if(std::sscanf(argv[++i], "%f,%f,%f", &r, &g, &b) == 3){
+                    lightTint = {r, g, b};
+                    haveTint = true;
+                }
+                else printf("  --tint trazi tri broja odvojena zarezom, npr. 1,0.82,0.55\n");
+            }
             else if(arg == "--rays" && i + 1 < argc)   shadowRays = uint32_t(std::stoi(argv[++i]));
             else if(arg == "--steps" && i + 1 < argc)  shadowSteps = uint32_t(std::stoi(argv[++i]));
             else if(arg == "--no-shadow")              wantShadow = false;
@@ -395,11 +424,26 @@ int main(int argc, char** argv){
 
             LightConfig bulbConfig;
             bulbConfig.type = LightType::Point;
-            bulbConfig.color = {1.0f, 0.82f, 0.55f};
+            bulbConfig.color = haveTint ? lightTint : colorFromKelvin(lightKelvin);
+
+            //Ton se normalizira na jedinicnu luminanciju, pa intensity ispod ostaje jedina
+            //stvar koja kaze koliko svjetla ima. Bez toga bi svaki pomak --kelvina tiho
+            //mijenjao i ekspoziciju kadra, i nijedno mjerenje kroz boje ne bi vrijedilo
+            bulbConfig.normalizeColor = true;
             //Jacina raste s kvadratom udaljenosti, jer svjetlo po njemu i pada - inace bi
             //ista brojka bila zasljepljujuca u portretu i nevidljiva u sobi
             bulbConfig.intensity = 0.8f * subjectDistance * subjectDistance;
             bulbConfig.range = std::max(4.0f * backdropDistance, farDistance);
+
+            //Ispisuje se i ton i njegova luminancija PRIJE normalizacije: to je broj za koji
+            //bi taj ton inace zatamnio kadar, i jedini nacin da se vidi da ga normalizacija
+            //stvarno miče
+            {
+                const glm::vec3 tint = bulbConfig.color;
+                if(haveTint) printf("  ton rukom %.3f %.3f %.3f", tint.r, tint.g, tint.b);
+                else         printf("  svjetlo %.0f K -> %.3f %.3f %.3f", lightKelvin, tint.r, tint.g, tint.b);
+                printf("; luminancija tona %.3f, normalizirana na 1\n", luminance(tint));
+            }
             bulb = std::make_unique<Light>(bulbConfig);
             loom.renderer.addLight(*bulb);
 

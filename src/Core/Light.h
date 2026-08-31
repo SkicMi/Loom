@@ -1,6 +1,7 @@
 #pragma once
 #include <glm/glm.hpp>
 #include "Camera.h"
+#include "ColorTemperature.h"
 #include <cstdint>
 
 enum class LightType{
@@ -20,6 +21,18 @@ struct LightConfig{
 
     glm::vec3 color = {1.0f, 1.0f, 1.0f};
     float intensity = 1.0f;
+
+    //TON JE TON, A NE I SVJETLINA.
+    //
+    //Boja svjetla mnozi svaki kanal, pa svaki ton koji nije bijel ujedno oduzima svjetla:
+    //{1, 0.82, 0.55} nosi luminanciju 0.839, dakle sesnaest posto manje od bijelog na istom
+    //intensityju. Dok je to tako, dvije boje se ne daju usporediti - razlika u tonu nosi i
+    //razliku u svjetlini.
+    //
+    //S ovim upaljenim se boja normalizira na jedinicnu luminanciju, pa intensity ostane
+    //jedina stvar koja kaze KOLIKO, a boja jedina koja kaze KAKO. Iskljuceno je po defaultu
+    //jer bi inace svaka postojeca scena s obojenim svjetlom promijenila svjetlinu
+    bool normalizeColor = false;
 
     //Shadow map projection. A directional light has no position - it is a direction and
     //nothing else - so the box it renders has to be said out loud: centred here, this wide,
@@ -47,7 +60,10 @@ class Light{
     glm::vec3 getDirection() const {return glm::normalize(config.direction);}
     const glm::vec3& getPosition() const {return config.position;}
     float getRange() const {return config.range;}
-    glm::vec3 getColor() const {return config.color * config.intensity;}
+    glm::vec3 getColor() const {
+        return (config.normalizeColor ? normalizeLuminance(config.color) : config.color)
+             * config.intensity;
+    }
     const LightConfig& getConfig() const {return config;}
 
     //The scene as this light sees it. Same pair a Camera gives, so a pass can be driven by
@@ -92,6 +108,11 @@ class Light{
     void setPosition(const glm::vec3& newPosition) {config.position = newPosition;}
     void setRange(float newRange) {config.range = newRange;}
     void setColor(const glm::vec3& newColor) {config.color = newColor;}
+
+    //Boja recena kao temperatura. Ne cuva se Kelvin nego boja koja iz njega izade - inace bi
+    //postojala dva izvora iste istine, pa bi setColor i setTemperature mogli ostati u sporu
+    void setTemperature(float kelvin) {config.color = colorFromKelvin(kelvin);}
+    void setNormalizeColor(bool normalize) {config.normalizeColor = normalize;}
     void setIntensity(float newIntensity) {config.intensity = newIntensity;}
 
     void setShadowCenter(const glm::vec3& newCenter) {config.shadowCenter = newCenter;}
