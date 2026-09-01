@@ -71,6 +71,8 @@ void VulkanBuffer::createBuffer(vk::BufferUsageFlags usage){
         throw std::runtime_error("VulkanBuffer: vmaCreateBuffer failed");
     }
 
+    VulkanAllocator::noteAllocation();
+
     //Ownership is split on purpose: VMA created both, but the handle goes into vk::raii::Buffer
     //so every getBuffer() caller keeps working, and the memory stays with MemoryAllocation.
     //Member order in the header guarantees the buffer dies first

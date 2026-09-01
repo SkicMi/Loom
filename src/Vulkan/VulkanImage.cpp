@@ -77,6 +77,8 @@ void VulkanImage::build(){
         throw std::runtime_error("VulkanImage: vmaCreateImage failed");
     }
 
+    VulkanAllocator::noteAllocation();
+
     allocation = MemoryAllocation(device.getAllocator().get(), rawAllocation);
     image = vk::raii::Image(device.getDevice(), rawImage);
 

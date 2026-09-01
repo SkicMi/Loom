@@ -5,6 +5,9 @@
 #include <sstream>
 #include <stdexcept>
 
+//Zivi ovdje, a raste iz VulkanBuffera i VulkanImagea - jedina dva mjesta koja stvarno zovu VMA-u
+std::atomic<uint64_t> VulkanAllocator::allocationsMade{0};
+
 VulkanAllocator::VulkanAllocator(const vk::raii::Instance& instance,
                                 const vk::raii::PhysicalDevice& physicalDevice,
                                 const vk::raii::Device& device,

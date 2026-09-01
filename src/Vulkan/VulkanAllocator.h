@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <vulkan/vulkan_raii.hpp>
 #include <cstdint>
 #include <string>
@@ -70,6 +71,16 @@ class VulkanAllocator{
     //Cheap - a summary VMA keeps up to date anyway. Safe to call every frame
     MemoryStats getStats() const;
 
+    //KOLIKO JE ALOKACIJA IKAD NAPRAVLJENO, a ne koliko ih trenutno stoji.
+    //
+    //getStats() daje trenutno stanje, pa alokacija koja se u istom kadru napravi i oslobodi
+    //kroz njega prolazi nevidljivo - a bas je to najskuplji obrazac koji se u petlji kadra
+    //moze pojaviti. Ovaj brojac se ne smanjuje, pa se test smije pitati je li se kroz sto
+    //kadrova dogodila ijedna
+    static void noteAllocation() {allocationsMade.fetch_add(1);}
+    static uint64_t getAllocationsMade() {return allocationsMade.load();}
+    static void resetAllocationsMade() {allocationsMade.store(0);}
+
     //A one line summary for a log or a test
     std::string summary() const;
 
@@ -81,6 +92,8 @@ class VulkanAllocator{
     void setCurrentFrameIndex(uint32_t frameIndex) const;
 
     private:
+    static std::atomic<uint64_t> allocationsMade;
+
     VmaAllocator allocator = nullptr;
     AllocatorConfig config;
     vk::PhysicalDeviceMemoryProperties memoryProperties;
