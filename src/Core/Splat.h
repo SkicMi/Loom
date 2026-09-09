@@ -76,4 +76,34 @@ glm::mat2 covariance2D(const glm::mat3& covariance,
                        float tangentLimitX, float tangentLimitY,
                        float blur = 0.3f);
 
+//-- na ekran -----------------------------------------------------------------------------
+//Gdje sredina gaussiana pada u pikselima. Ista konvencija koju koristi covariance2D, i to nije
+//sitnica: fy je u Vulkanu NEGATIVAN jer projekcija okrece Y (vidi CameraIntrinsics). Kad bi se
+//sredina projicirala jednom konvencijom a kovarijanca drugom, mrlja bi bila na pravom mjestu a
+//nagnuta na krivu stranu - greska koja se vidi tek na kosim mrljama, i to jedva
+glm::vec2 projectToPixels(const glm::vec3& position,
+                          const glm::mat4& view,
+                          float focalX, float focalY,
+                          float principalX, float principalY);
+
+//Ono sto rasterizator stvarno cita, i nista vise. Slozeno u tri float4 jer std430 tada nema
+//sto poravnavati - raspored u memoriji je isti na obje strane bez ijednog pravila napamet
+struct PreparedSplat{
+    glm::vec4 centerConic{0.0f};   //xy sredina u pikselima, zw prva dva clana conica
+    glm::vec4 conicOpacityDepth{0.0f}; //x treci clan conica, y neprozirnost, z dubina
+    glm::vec4 color{0.0f};         //rgb boja
+};
+
+//CONIC JE INVERZ KOVARIJANCE, i zato se racuna ovdje a ne u shaderu: rasterizator inace mora
+//invertirati matricu za svaki piksel iznova, a inverz ovisi samo o splatu.
+//
+//Vraca false kad splat nema sto crtati - iza kamere je, ili mu je elipsa toliko tanka da joj
+//je determinanta nula i inverz ne postoji
+bool prepare(const Splat& splat,
+             const glm::mat4& view,
+             float focalX, float focalY,
+             float principalX, float principalY,
+             float blur,
+             PreparedSplat& out);
+
 }

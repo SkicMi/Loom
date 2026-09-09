@@ -45,6 +45,59 @@ glm::mat3 covariance3D(const glm::vec3& scale, const glm::quat& rotation){
     return M * glm::transpose(M);
 }
 
+glm::vec2 projectToPixels(const glm::vec3& position,
+                          const glm::mat4& view,
+                          float focalX, float focalY,
+                          float principalX, float principalY){
+    const glm::vec3 viewPosition = glm::vec3(view * glm::vec4(position, 1.0f));
+    const float depth = -viewPosition.z;
+    if(depth <= 0.0f){
+        return glm::vec2(0.0f);
+    }
+    return glm::vec2(principalX + focalX * viewPosition.x / depth,
+                     principalY + focalY * viewPosition.y / depth);
+}
+
+bool prepare(const Splat& splat,
+             const glm::mat4& view,
+             float focalX, float focalY,
+             float principalX, float principalY,
+             float blur,
+             PreparedSplat& out){
+    const glm::vec3 viewPosition = glm::vec3(view * glm::vec4(splat.position, 1.0f));
+    const float depth = -viewPosition.z;
+    if(depth <= 0.0f){
+        return false;
+    }
+
+    //Ogranicenje omjera se izvodi iz same slike: dopusta se pola sirine preko ruba, sto je
+    //dovoljno da mrlja koja jos zahvaca kadar bude tocna, a dalje od toga se ionako ne vidi
+    const float limitX = 1.3f * principalX / focalX;
+    const float limitY = 1.3f * principalY / std::fabs(focalY);
+
+    const glm::mat3 covariance = covariance3D(splat.scale, splat.rotation);
+    const glm::mat2 screen = covariance2D(covariance, splat.position, view,
+                                          focalX, focalY, limitX, limitY, blur);
+
+    const float determinant = screen[0][0] * screen[1][1] - screen[0][1] * screen[1][0];
+    if(determinant <= 0.0f){
+        return false;   //elipsa bez povrsine se ne da invertirati, a ni vidjeti
+    }
+
+    const float inverse = 1.0f / determinant;
+
+    out.centerConic.x = principalX + focalX * viewPosition.x / depth;
+    out.centerConic.y = principalY + focalY * viewPosition.y / depth;
+    out.centerConic.z =  screen[1][1] * inverse;
+    out.centerConic.w = -screen[0][1] * inverse;
+    out.conicOpacityDepth.x =  screen[0][0] * inverse;
+    out.conicOpacityDepth.y = splat.opacity;
+    out.conicOpacityDepth.z = depth;
+    out.conicOpacityDepth.w = 0.0f;
+    out.color = glm::vec4(splat.color, 0.0f);
+    return true;
+}
+
 glm::mat2 covariance2D(const glm::mat3& covariance,
                        const glm::vec3& position,
                        const glm::mat4& view,
