@@ -267,6 +267,7 @@ add_library(Loom STATIC
     src/Vulkan/NormalMap.cpp
     src/Vulkan/Relight.cpp
     src/Core/Camera.cpp
+    src/Core/Splat.cpp
     src/Core/CameraIntrinsics.cpp
     src/Core/Light.cpp
     src/Core/LoomShapes.cpp
