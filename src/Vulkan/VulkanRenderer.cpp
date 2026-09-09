@@ -524,6 +524,14 @@ bool VulkanRenderer::beginFrame(){
     //identical in every other way, it simply never waits for an image and never presents one
     needsRecreate = false;
     if(swapchain){
+        //Cilj se provjerava PRIJE nego se slika trazi. Cekati da Vulkan javi da je swapchain
+        //zastario radi samo tamo gdje velicinu diktira kompozitor; gdje odlucuje aplikacija ta
+        //poruka ne dolazi nikad, pa bi kadar mirno crtao u staru velicinu
+        if(!swapchain->matchesTarget()){
+            recreateSwapchain();
+            return false;
+        }
+
         try{
             auto [acquireResult, index] = swapchain->getSwapchain().acquireNextImage(
                 UINT64_MAX, *imageAvailableSemaphores[currentFrame], nullptr);
@@ -707,6 +715,39 @@ void VulkanRenderer::endFrame(){
     if(needsRecreate){
         recreateSwapchain();
     }
+}
+
+void VulkanRenderer::resize(vk::Extent2D extent){
+    if(!swapchain){
+        throw std::runtime_error("resize: renderer bez prozora crta u velicinu koju mu je dao "
+                                 "config, pa je nema sto mijenjati");
+    }
+    if(frameActive){
+        throw std::runtime_error("resize: kadar je otvoren. Slike u koje se upravo crta ne "
+                                 "smiju nestati ispod naredbi koje su vec zapisane");
+    }
+    if(!swapchain->appDecidesExtent()){
+        throw std::runtime_error("resize: velicinu ove povrsine diktira kompozitor, pa je "
+                                 "aplikacija ne moze postaviti - vidi appDecidesExtent()");
+    }
+
+    swapchain->requestExtent(extent);
+
+    //Odmah, a ne tek na sljedecem kadru: tko je pozvao resize smije odmah nakon njega procitati
+    //novu velicinu. Isti put kojim ide i promjena koju javi kompozitor, pa nema druge grane
+    //koja bi se mogla razici s ovom
+    recreateSwapchain();
+}
+
+void VulkanRenderer::followWindow(){
+    if(!swapchain || !swapchain->appDecidesExtent()) return;
+    if(frameActive){
+        throw std::runtime_error("followWindow: kadar je otvoren. Slike u koje se upravo crta "
+                                 "ne smiju nestati ispod naredbi koje su vec zapisane");
+    }
+
+    swapchain->clearRequestedExtent();
+    recreateSwapchain();
 }
 
 void VulkanRenderer::recreateSwapchain(){

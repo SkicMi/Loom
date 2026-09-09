@@ -93,6 +93,23 @@ class VulkanRenderer{
     //The window, read back. Only valid between frames
     ImageData readLastFrame() const;
 
+    //VELICINA SLIKE, POSTAVLJENA IZ KODA.
+    //
+    //Radi samo tamo gdje povrsina prepusta odluku aplikaciji (VulkanSwapchain::appDecidesExtent),
+    //a tamo gdje odlucuje kompozitor baca - jer bi inace obecala nesto sto se nece dogoditi.
+    //
+    //Ovo NIJE isto sto i velicina prozora: ono sto Loom nacrta ide kompozitoru kakvo jest, a
+    //prozor ostaje onoliki koliki ga kompozitor drzi. Izmjereno na GNOME/Waylandu: swapchain
+    //480x360 u prozoru 320x240 stoji kroz dvadeset kadrova bez ijedne primjedbe
+    //
+    //Od ovog poziva nadalje velicinu drzi onaj tko ju je postavio, pa promjena prozora vise ne
+    //mijenja sliku. Volan se vraca s followWindow()
+    void resize(vk::Extent2D extent);
+
+    //Volan natrag prozoru: velicina opet prati ono sto prozor kaze da jest. Bez prozora ne radi
+    //nista, jer tamo nema cega pratiti
+    void followWindow();
+
     //Whether this renderer has a window to present to. Without one beginFrame still runs a
     //whole frame - passes, shadow maps, compute - it just never acquires and never presents
     bool hasSwapchain() const {return swapchain != nullptr;}

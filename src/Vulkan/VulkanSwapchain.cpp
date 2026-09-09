@@ -23,6 +23,9 @@ void VulkanSwapchain::queryCapabilities(){
     formats = physical.getSurfaceFormatsKHR(surface);
     presentModes = physical.getSurfacePresentModesKHR(surface);
 
+    //Vidi appDecidesExtent. 0xFFFFFFFF je jedina vrijednost koja znaci "nema broja"
+    appExtent = capabilities.currentExtent.width == std::numeric_limits<uint32_t>::max();
+
 }
 
 vk::SurfaceFormatKHR VulkanSwapchain::chooseSurfaceFormat(){
@@ -45,24 +48,28 @@ vk::PresentModeKHR VulkanSwapchain::choosePresentMode(){
     return vk::PresentModeKHR::eFifo; //Fallback to guaranteed one
 }
 
+vk::Extent2D VulkanSwapchain::clampToSurface(vk::Extent2D wanted) const{
+    wanted.width  = std::clamp(wanted.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+    wanted.height = std::clamp(wanted.height,capabilities.minImageExtent.height,capabilities.maxImageExtent.height);
+    return wanted;
+}
+
 vk::Extent2D VulkanSwapchain::chooseExtent(){
-    if(capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()){
+    //Kompozitor je vec odlucio, i njegov broj nije prijedlog
+    if(!appExtent){
         return capabilities.currentExtent;
     }
 
-    int width,height;
-    glfwGetFramebufferSize(window.getWindow(),&width,&height);
+    return clampToSurface(desiredExtent());
+}
 
-    vk::Extent2D actual = {
-        static_cast<uint32_t>(width),
-        static_cast<uint32_t>(height)
-    };
-
-    actual.width = std::clamp(actual.width, capabilities.minImageExtent.width,capabilities.maxImageExtent.width);
-    actual.height = std::clamp(actual.height,capabilities.minImageExtent.height,capabilities.maxImageExtent.height);
-
-
-    return actual;
+vk::Extent2D VulkanSwapchain::desiredExtent() const{
+    //Zahtjev vrijedi samo gdje se smije traziti. Inace je istina ono sto prozor kaze da jest,
+    //a to je na takvoj povrsini isti broj koji bi dao i currentExtent
+    if(appExtent && requested){
+        return clampToSurface(*requested);
+    }
+    return getWindowExtent();
 }
 
 uint32_t VulkanSwapchain::chooseImageCount(){
@@ -121,8 +128,14 @@ void VulkanSwapchain::createSwapchain(){
     createInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
     createInfo.presentMode = presentMode;
     createInfo.clipped = vk::True;
-    createInfo.oldSwapchain = nullptr;
+    //STARI SWAPCHAIN SE PREDAJE, ne baca. Dosad se prvo unistavao pa se novi gradio ni iz
+    //cega, a to na Waylandu odmapira samu povrsinu: prozor tada gubi velicinu koju je imao i
+    //kompozitor mu vrati onu s kojom je stvoren. Predajom driver zna da je ovo ista povrsina
+    //koja se samo mijenja, i smije preuzeti sto se preuzeti da
+    createInfo.oldSwapchain = (*swapchain != VK_NULL_HANDLE) ? *swapchain : vk::SwapchainKHR{};
 
+    //Novi nastaje PRIJE nego stari ode: pridruzivanje unisti prethodnog, i to je jedini
+    //ispravan redoslijed - dok createInfo drzi njegovu rucku, on mora biti ziv
     swapchain = vk::raii::SwapchainKHR(device.getDevice(),createInfo);
 
 }
@@ -158,6 +171,18 @@ void VulkanSwapchain::build(){
     createImageViews();
 }
 
+vk::Extent2D VulkanSwapchain::getWindowExtent() const{
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(window.getWindow(), &width, &height);
+    return vk::Extent2D{uint32_t(width), uint32_t(height)};
+}
+
+bool VulkanSwapchain::matchesTarget() const{
+    const vk::Extent2D target = desiredExtent();
+    if(target.width == 0 || target.height == 0) return true;
+    return target.width == extent.width && target.height == extent.height;
+}
+
 void VulkanSwapchain::recreateSwapchain(){
     //Block while minimized, vulkan doesn't allow 0x0 swapchain
     int width = 0, height = 0;
@@ -171,8 +196,7 @@ void VulkanSwapchain::recreateSwapchain(){
     device.getDevice().waitIdle();
     imageViews.clear();
     images.clear();
-    swapchain = nullptr;
 
-    //rebuild
+    //Swapchain se OVDJE ne nulira: build() ga treba zivog da bi ga predao kao oldSwapchain
     build();
 }
