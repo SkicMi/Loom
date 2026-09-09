@@ -253,6 +253,7 @@ add_library(Loom STATIC
     src/Vulkan/VulkanGraphicsPipeline.cpp
     src/Vulkan/VulkanComputePipeline.cpp
     src/Vulkan/ComputeMaterial.cpp
+    src/Vulkan/RadixSort.cpp
     src/Vulkan/VulkanAllocator.cpp
     src/Vulkan/VmaImplementation.cpp
     src/Vulkan/VulkanBuffer.cpp
