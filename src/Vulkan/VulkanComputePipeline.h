@@ -10,6 +10,18 @@ struct ComputePipelineConfig{
     std::vector<vk::DescriptorSetLayoutBinding> descriptorBindings;
 
     uint32_t pushConstantSize = 0; //size only, the library never knows what is inside
+
+    //SPECIJALIZACIJSKE KONSTANTE, po redu: mjesto u nizu je constant_id iz shadera.
+    //
+    //Vrijednost koju shader vidi kao KONSTANTU, ali koja se bira tek pri stvaranju pipelinea.
+    //Nije isto sto i push constant: push se cita u petlji kao svaka druga vrijednost, a ovo
+    //prevodilac drivera ugradi u kod - petlja se moze odmotati, grana nestati, a radna grupa
+    //dobiti velicinu koja u SPIR-V-u nije zapisana kao broj.
+    //
+    //Zbog tog zadnjeg ovo i postoji: velicina pločice u rasterizatoru splatova je velicina
+    //radne grupe, a ona se u Vulkanu ne da poslati push constantom. Jedina druga mogucnost bila
+    //bi prevesti isti shader vise puta, po jednom za svaku velicinu
+    std::vector<uint32_t> specializationConstants;
 };
 
 class VulkanComputePipeline{

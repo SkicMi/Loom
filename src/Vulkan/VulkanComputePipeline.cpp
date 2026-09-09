@@ -20,6 +20,26 @@ void VulkanComputePipeline::createPipeline(){
     stageInfo.module = *shaderModule;
     stageInfo.pName = "main";
 
+    //Sve konstante su cetiri bajta i lezu jedna za drugom, pa je mjesto u nizu ujedno i
+    //constant_id i pomak. Imenovani objekti, ne privremeni: struktura drzi samo pokazivace
+    std::vector<vk::SpecializationMapEntry> specializationEntries;
+    vk::SpecializationInfo specializationInfo;
+    if(!config.specializationConstants.empty()){
+        specializationEntries.reserve(config.specializationConstants.size());
+        for(uint32_t i = 0; i < config.specializationConstants.size(); ++i){
+            vk::SpecializationMapEntry entry;
+            entry.constantID = i;
+            entry.offset = i * sizeof(uint32_t);
+            entry.size = sizeof(uint32_t);
+            specializationEntries.push_back(entry);
+        }
+
+        specializationInfo.setMapEntries(specializationEntries);
+        specializationInfo.dataSize = config.specializationConstants.size() * sizeof(uint32_t);
+        specializationInfo.pData = config.specializationConstants.data();
+        stageInfo.pSpecializationInfo = &specializationInfo;
+    }
+
     vk::DescriptorSetLayoutCreateInfo setLayoutInfo;
     setLayoutInfo.setBindings(config.descriptorBindings);
     setLayout = vk::raii::DescriptorSetLayout(device.getDevice(), setLayoutInfo);
