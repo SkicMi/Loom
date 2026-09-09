@@ -19,7 +19,11 @@
 struct Params{
     uint2 size;
     uint count;
-    uint padding0;
+
+    //Odsijeca li se mrlja na tri sigme, kao sto to radi rasterizator s pločicama. Nula znaci
+    //cistu matematiku, i tako se mjere analiticke tvrdnje; jedan znaci "isto sto i G3b", i tako
+    //se te dvije slike uopce daju usporediti
+    uint useRadius;
 }
 
 [[vk::push_constant]] ConstantBuffer<Params> params;
@@ -49,6 +53,11 @@ void computeMain(uint3 threadId : SV_DispatchThreadID){
         const float4 splatColor = splats[i * 3 + 2];
 
         const float2 offset = centerConic.xy - point;
+
+        if(params.useRadius != 0 &&
+           dot(offset, offset) > conicOpacityDepth.w * conicOpacityDepth.w){
+            continue;
+        }
 
         //Eksponent gaussiana: -0.5 * d' * conic * d, gdje je conic inverz kovarijance
         const float power = -0.5 * (centerConic.z * offset.x * offset.x

@@ -93,7 +93,18 @@ bool prepare(const Splat& splat,
     out.conicOpacityDepth.x =  screen[0][0] * inverse;
     out.conicOpacityDepth.y = splat.opacity;
     out.conicOpacityDepth.z = depth;
-    out.conicOpacityDepth.w = 0.0f;
+
+    //POLUMJER NA KOJEM SE MRLJA ODSIJECA: tri sigme po duzoj osi elipse.
+    //
+    //Duza os je veca svojstvena vrijednost kovarijance, a za matricu 2x2 se dobije bez ikakve
+    //iteracije: sredina traga plus korijen iz razlike kvadrata. Pod korijenom stoji donja
+    //granica jer ga zaokruzivanje zna gurnuti malo ispod nule za gotovo kruzne mrlje.
+    //
+    //Tri sigme drze 98.89 % mase (1 - exp(-4.5)); ostatak je rep koji se u osam bita ionako ne
+    //vidi, a placao bi se pločicama koje splat jedva dira
+    const float mid = 0.5f * (screen[0][0] + screen[1][1]);
+    const float spread = std::sqrt(std::max(0.1f, mid * mid - determinant));
+    out.conicOpacityDepth.w = std::ceil(3.0f * std::sqrt(mid + spread));
     out.color = glm::vec4(splat.color, 0.0f);
     return true;
 }

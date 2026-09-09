@@ -37,7 +37,7 @@ struct Params{
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t count = 0;
-    uint32_t padding0 = 0;
+    uint32_t useRadius = 0;
 };
 
 struct Pixel{
