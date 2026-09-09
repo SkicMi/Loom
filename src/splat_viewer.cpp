@@ -123,6 +123,13 @@ int main(int argc, char** argv){
            splats.size(), stride, double(bounds.centre.x), double(bounds.centre.y),
            double(bounds.centre.z), double(bounds.radius));
 
+    if(stride > 1){
+        printf("  PAZI: korak %u znaci da se crta svaki %u. gaussian. Scena ce izgledati kao\n"
+               "  sum i pruge - to nije greska crtanja nego %u%% podataka koji nedostaju.\n"
+               "  Za pravu sliku pokreni bez broja.\n", stride, stride,
+               uint32_t(100.0 - 100.0 / double(stride)));
+    }
+
     // -------------------------------------------------------------------------------
     // Prozor, meta i rasterizator
     // -------------------------------------------------------------------------------
@@ -240,6 +247,13 @@ int main(int argc, char** argv){
             });
 
         prepareSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - prepareStart).count();
+
+        //ČEKA SE PRIJE PISANJA, i to nije opreznost nego nužnost. Loom drži dva kadra u letu, a
+        //SplatRenderer ima JEDAN primjerak svakog radnog polja - splatove, ključeve, poretke,
+        //raspone. Kad bi se sljedeći kadar pripremio dok prethodni još crta, GPU bi čitao pola
+        //jedne a pola druge scene: slika se raspadne u šum koji izgleda kao greška rasterizatora
+        //a nije. Ovdje to ništa ne košta jer je kadar ionako u pripremi na procesoru
+        loom.waitIdle();
 
         splatRenderer.upload(prepared);
         const uint32_t pairCount = splatRenderer.countPairs(prepared);

@@ -32,6 +32,12 @@ class VulkanRenderer;
 // racuna neovisno i test provjerava da se ta dva broja slazu. Kad priprema predje na karticu,
 // ovo postaje neizravni dispatch i to je zaseban korak.
 //
+// JEDAN PRIMJERAK RADNIH POLJA, A LOOM DRZI DVA KADRA U LETU. Splatovi, kljucevi, poreci i
+// rasponi postoje po jednom, ne po kadru. Tko pripremi sljedeci kadar dok prethodni jos crta,
+// prepisuje ono sto kartica upravo cita - i slika se raspadne u sum koji izgleda kao greska
+// rasterizatora a nije. Do dana kad ta polja postanu po kadru, pozivatelj mora cekati (waitIdle)
+// prije nego ista upise. SplatViewer to radi i tamo pise zasto.
+//
 // VELICINA PLOČICE JE PODESIVA jer je ujedno velicina radne grupe - vidi
 // ComputePipelineConfig::specializationConstants.
 //=============================================================================================
