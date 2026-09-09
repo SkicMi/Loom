@@ -171,6 +171,11 @@ int main(){
     RenderTarget outBiased(loom.device, size, readConfig);
     RenderTarget outPeterPan(loom.device, size, readConfig);
 
+    //KONTROLA ZA AMBIJENT. Svjetlo intenziteta nula daje base*ambient + 0 + 0 - isti izraz
+    //koji daje i sjencani piksel, jer vidljivost nula ubija oba clana. Iz nje se cita koliki
+    //je ambijentni bajt STVARNO, umjesto da se predvidi CPU modelom sRGB-a. Vidi nize zasto
+    RenderTarget outAmbientOnly(loom.device, size, readConfig);
+
     // -------------------------------------------------------------------------------
     // Jedan prolaz kroz scenu po konfiguraciji
     // -------------------------------------------------------------------------------
@@ -247,13 +252,39 @@ int main(){
     //Far too much bias: the shadow should let go of the cube entirely
     render(&shadowCube, shadowMaterial, true, false, 0.05f, outPeterPan, identity);
 
+    //Ista ploha bez ijednog doprinosa svjetla. Intenzitet se odmah vraca, pa nijedan broj
+    //iznad ovoga ne zna da se ovo dogodilo
+    light.setIntensity(0.0f);
+    render(nullptr, shadowMaterial, false, false, 0.0f, outAmbientOnly, identity);
+    light.setIntensity(1.0f);
+
     // -------------------------------------------------------------------------------
     // v7c: sjena postoji, i tocno je ambijent
     // -------------------------------------------------------------------------------
 
-    //A shadowed pixel loses the whole contribution of the light and keeps the ambient term
-    //untouched, so its value is computable before a single pixel is read
-    const uint8_t ambientByte = encodeByte(ambient);
+    //AMBIJENTNI BAJT SE CITA S GPU-a, NE PREDVIDJA.
+    //
+    //Prije je ovdje stajalo encodeByte(ambient), i to je bila tvrdnja finija nego sto je
+    //sRGB8 uopce moze ispuniti. Izmjereno kroz dvanaest ambijenata: kartica je sustavno
+    //niza za oko 0.13 koda, sto je unutar dopustenog odstupanja kodiranja - i ne vidi se
+    //nigdje osim kad 255*srgb padne tik IZNAD granice zaokruzivanja:
+    //
+    //   0.20 -> 123.5549   model 124, kartica 123
+    //   0.40 -> 169.6222   model 170, kartica 169
+    //   0.50 -> 187.5160   model 188, kartica 187
+    //   ostalih devet     tocno u bajt
+    //
+    //0.20 je bio najnesretniji moguci izbor: 0.055 koda od granice. Zato se referentna
+    //vrijednost sad uzima iz slike koju je nacrtala ISTA kartica istim shaderom, pa
+    //usporedba ostaje egzaktna umjesto da se popusti na toleranciju
+    const std::vector<uint8_t> ambientOnly = outAmbientOnly.readPixels(loom.command).pixels;
+    const uint8_t ambientByte = channelAt(ambientOnly, size, size.width/2, size.height/2);
+
+    //A i dalje mora biti ono sto sRGB predvidja - samo do jednog koda, koliko format nosi
+    report.check("ambijentni bajt", ambientByte >= encodeByte(ambient) - 1 &&
+                                    ambientByte <= encodeByte(ambient) + 1,
+        fmt("kartica daje %u, sRGB model %u za linearnih %.2f", ambientByte,
+            encodeByte(ambient), double(ambient)));
 
     const std::vector<uint8_t> shadowed = outShadowed.readPixels(loom.command).pixels;
     const Counts shadowedCounts = classify(shadowed, size, ambientByte);
@@ -285,7 +316,7 @@ int main(){
     const uint8_t centreValue = channelAt(shadowed, size, centreX, centreY);
 
     report.check("tocno ambijent", centreValue == ambientByte,
-        fmt("sredina sjene je %u, ambijent %.2f kodiran je %u", centreValue, double(ambient), ambientByte));
+        fmt("sredina sjene je %u, ploha bez svjetla je %u", centreValue, ambientByte));
 
     // -------------------------------------------------------------------------------
     // Kontrola: bez karte nema sjene

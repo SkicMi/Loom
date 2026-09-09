@@ -226,7 +226,7 @@ int main(){
 
     report.check("cijena je linearna u broju objekata",
         perObjectFew > 0.0 && growth < 2.0,
-        fmt("%.4f ms po objektu na %zu, %.4f na 5 -> omjer %.2f (mjereno 0.60-1.12 na dvije kartice)",
+        fmt("%.4f ms po objektu na %zu, %.4f na 5 -> omjer %.2f (mjereno 0.60-1.12 na dvije kartice, 0.90 na trecoj)",
             perObjectMany, models.size(), perObjectFew, growth));
 
     // -------------------------------------------------------------------------------
@@ -251,14 +251,27 @@ int main(){
     //na lavapipeu - pa je i ovaj strop po klasi uredjaja, na dva i pol puta iznad najgoreg. Mutacija
     //koja fragmentu doda 220 sinusa dize ovaj broj sedam puta i obara ovu provjeru, dok
     //cijeli kadar ostaje na 0.96 ms i strop od 3 ms mirno prolazi. Zato su to dva broja
-    const bool software = loom.device.getDeviceType() == vk::PhysicalDeviceType::eCpu;
-    const double ceiling = software ? 24.0 : 3.0;
+    //TRI KLASE, ne dvije. Integrirana kartica nije ni jedno ni drugo: dijeli memoriju s
+    //procesorom i usput crta cijeli desktop, pa joj je i rasap veci. Izmjereno kroz pet
+    //pokretanja na Intel UHD (CML GT2):
+    //
+    //   kadar, najbolji     3.239  3.580  4.064  4.132  4.328 ms   -> najgori 4.33
+    //   sjencanje           1.042  1.405  1.231  1.668  1.354 ns/px -> najgori 1.67
+    //
+    //Stropovi su isti faktori koje nose i druge dvije klase: oko 3.5 puta iznad najgoreg
+    //kadra i oko 2.5 puta iznad najgoreg sjencanja
+    const vk::PhysicalDeviceType deviceType = loom.device.getDeviceType();
+    const bool software = deviceType == vk::PhysicalDeviceType::eCpu;
+    const bool integrated = deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
+
+    const double ceiling = software ? 24.0 : integrated ? 15.0 : 3.0;
+    const double shadingCeiling = software ? 16.0 : integrated ? 4.0 : 0.28;
 
     report.check("sjencanje ostaje unutar stropa",
-        perPixel > 0.0 && perPixel < (software ? 16.0 : 0.28),
+        perPixel > 0.0 && perPixel < shadingCeiling,
         fmt("%.3f ns po pikselu iz %d parova (%ux%u naspram %ux%u, srednja razlika %.3f ms), strop %.2f",
             perPixel, frames, bigSize.width, bigSize.height, size.width, size.height, bestPair,
-            software ? 16.0 : 0.28));
+            shadingCeiling));
 
     report.check("kadar ostaje unutar stropa",
         best < ceiling,

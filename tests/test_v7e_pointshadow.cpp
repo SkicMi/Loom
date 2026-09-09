@@ -223,6 +223,11 @@ int main(){
     RenderTarget outShadowed(loom.device, size, readConfig);
     RenderTarget outNoCube(loom.device, size, readConfig);
 
+    //KONTROLA ZA AMBIJENT - vidi test_v7c_shadow. Svjetlo intenziteta nula daje isti izraz
+    //koji daje i sjencani piksel, pa se ambijentni bajt cita s kartice umjesto da se
+    //predvidi CPU modelom sRGB-a, koji zna promasiti za jedan kod
+    RenderTarget outAmbientOnly(loom.device, size, readConfig);
+
     //A blocker one unit up, and a floor for its shadow to fall on. The blocker is drawn only
     //into the cube map, so the camera sees a bare floor with a shadow on it
     const glm::mat4 blockerModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -268,7 +273,20 @@ int main(){
     render(true, outShadowed);
     render(false, outNoCube);
 
-    const uint8_t ambientByte = encodeByte(ambient);
+    //Ista ploha bez ijednog doprinosa svjetla. Intenzitet se odmah vraca
+    bulb.setIntensity(0.0f);
+    render(false, outAmbientOnly);
+    bulb.setIntensity(1.0f);
+
+    //Ambijentni bajt s kartice, ne iz modela. Kodiranje sRGB-a smije odstupati do jednog
+    //koda, a 0.20 pada 0.055 koda od granice zaokruzivanja - najnesretniji moguci izbor
+    const std::vector<uint8_t> ambientOnly = outAmbientOnly.readPixels(loom.command).pixels;
+    const uint8_t ambientByte = channelAt(ambientOnly, size, size.width/2, size.height/2);
+
+    report.check("ambijentni bajt", ambientByte >= encodeByte(ambient) - 1 &&
+                                    ambientByte <= encodeByte(ambient) + 1,
+        fmt("kartica daje %u, sRGB model %u za linearnih %.2f", ambientByte,
+            encodeByte(ambient), double(ambient)));
 
     const std::vector<uint8_t> shadowed = outShadowed.readPixels(loom.command).pixels;
     const std::vector<uint8_t> noCube = outNoCube.readPixels(loom.command).pixels;
