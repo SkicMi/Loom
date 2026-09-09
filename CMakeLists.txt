@@ -254,6 +254,7 @@ add_library(Loom STATIC
     src/Vulkan/VulkanComputePipeline.cpp
     src/Vulkan/ComputeMaterial.cpp
     src/Vulkan/RadixSort.cpp
+    src/Vulkan/PrefixSum.cpp
     src/Vulkan/VulkanAllocator.cpp
     src/Vulkan/VmaImplementation.cpp
     src/Vulkan/VulkanBuffer.cpp
