@@ -22,6 +22,26 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ----------------------------------------------------------------------------
+# Build type, kad ga nitko ne zada.
+#
+# CMake bez CMAKE_BUILD_TYPE ne doda NIJEDAN -O, pa se sve gradi neoptimizirano.
+# To se dugo nije vidjelo jer kadar drzi GPU, ali cim se izmjeri nesto sto je CPU
+# posao razlika je velika: isto citanje .ply-a je 2.44 s s -O0 i 0.38 s s -O2.
+#
+# RelWithDebInfo a ne Release: -O2 ali sa simbolima, pa stack trace i dalje ima
+# imena. CMake i u njega stavlja -DNDEBUG, ne samo u Release - nas kod to ne osjeti
+# jer nema nijedan assert (guardovi bacaju recenicu), ali VMA-ine interne provjere
+# time utihnu. Tko ih treba, gradi s -DCMAKE_BUILD_TYPE=Debug.
+#
+# Postavlja se samo ako korisnik nije rekao svoje, i samo za generatore s jednom
+# konfiguracijom (Ninja Multi-Config i Visual Studio biraju u trenutku gradnje)
+get_property(LOOM_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT LOOM_MULTI_CONFIG AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+    message(STATUS "Loom: CMAKE_BUILD_TYPE nije zadan, postavljen na RelWithDebInfo")
+endif()
+
+# ----------------------------------------------------------------------------
 # Dependencije (FetchContent) - pinnane na konkretne tagove radi
 # ponovljivog builda (branch "main"/"master" se mijenja svaki dan)
 # ----------------------------------------------------------------------------

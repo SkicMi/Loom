@@ -1,5 +1,6 @@
 #include "GaussianPly.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -221,32 +222,51 @@ GaussianCloud loadGaussianPly(const std::string& path){
     // I sami zapisi
     // -------------------------------------------------------------------------------
 
-    std::vector<uint8_t> record(layout.stride);
     cloud.gaussians.resize(vertexCount);
     cloud.shRest.resize(vertexCount * cloud.restStride);
 
-    for(size_t i = 0; i < vertexCount; ++i){
-        file.read(reinterpret_cast<char*>(record.data()), std::streamsize(layout.stride));
-        if(file.gcount() != std::streamsize(layout.stride)){
-            fail(path, "glava obecava " + std::to_string(vertexCount) +
-                       " gaussiana, a datoteka zavrsava na " + std::to_string(i));
+    //U KOMADIMA, ne zapis po zapis. Prava scena ima blizu milijun gaussiana i svaki zapis je
+    //oko 250 bajtova, pa je citanje po zapisu 741883 poziva. Mjereno na train/7000, 184 MB:
+    //
+    //   po zapisu          3.50 s
+    //   u komadima od 4 MB 2.46 s
+    //   cisto citanje bajtova s diska, bez ikakvog parsiranja: 0.08 s
+    //
+    //Ostatak nije I/O nego raspakiravanje polje po polje, i ono ovisi o optimizaciji: isti
+    //ovaj kod je 2.44 s preveden s -O0 i 0.38 s s -O2
+    const size_t recordsPerChunk = std::max<size_t>(1, (4u << 20) / layout.stride);
+    std::vector<uint8_t> chunk(recordsPerChunk * layout.stride);
+
+    for(size_t first = 0; first < vertexCount; first += recordsPerChunk){
+        const size_t howMany = std::min(recordsPerChunk, vertexCount - first);
+        const std::streamsize wanted = std::streamsize(howMany * layout.stride);
+
+        file.read(reinterpret_cast<char*>(chunk.data()), wanted);
+        if(file.gcount() != wanted){
+            fail(path, "glava obecava " + std::to_string(vertexCount) + " gaussiana, a datoteka "
+                       "zavrsava na " + std::to_string(first + size_t(file.gcount()) / layout.stride));
         }
+
+        for(size_t offset = 0; offset < howMany; ++offset){
+        const size_t i = first + offset;
+        const uint8_t* const recordBytes = chunk.data() + offset * layout.stride;
 
         Gaussian& gaussian = cloud.gaussians[i];
         for(int c = 0; c < 3; ++c){
-            gaussian.position[c] = readFloat(record.data(), *fixed[c]);
-            gaussian.normal[c]   = fixed[3 + c] ? readFloat(record.data(), *fixed[3 + c]) : 0.0f;
-            gaussian.dc[c]       = readFloat(record.data(), *fixed[6 + c]);
-            gaussian.scale[c]    = readFloat(record.data(), *fixed[10 + c]);
+            gaussian.position[c] = readFloat(recordBytes, *fixed[c]);
+            gaussian.normal[c]   = fixed[3 + c] ? readFloat(recordBytes, *fixed[3 + c]) : 0.0f;
+            gaussian.dc[c]       = readFloat(recordBytes, *fixed[6 + c]);
+            gaussian.scale[c]    = readFloat(recordBytes, *fixed[10 + c]);
         }
-        gaussian.opacity = readFloat(record.data(), *fixed[9]);
+        gaussian.opacity = readFloat(recordBytes, *fixed[9]);
         for(int c = 0; c < 3; ++c){
-            gaussian.rotation[c] = readFloat(record.data(), *fixed[13 + c]);
+            gaussian.rotation[c] = readFloat(recordBytes, *fixed[13 + c]);
         }
-        gaussian.rotation[3] = readFloat(record.data(), *rot3);
+        gaussian.rotation[3] = readFloat(recordBytes, *rot3);
 
         for(size_t c = 0; c < rest.size(); ++c){
-            cloud.shRest[i * cloud.restStride + c] = readFloat(record.data(), *rest[c]);
+            cloud.shRest[i * cloud.restStride + c] = readFloat(recordBytes, *rest[c]);
+        }
         }
     }
 

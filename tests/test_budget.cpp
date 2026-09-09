@@ -226,7 +226,7 @@ int main(){
 
     report.check("cijena je linearna u broju objekata",
         perObjectFew > 0.0 && growth < 2.0,
-        fmt("%.4f ms po objektu na %zu, %.4f na 5 -> omjer %.2f (mjereno 0.60-1.12 na dvije kartice, 0.90 na trecoj)",
+        fmt("%.4f ms po objektu na %zu, %.4f na 5 -> omjer %.2f (mjereno 0.60-1.12 na dvije kartice, 0.77-1.04 na trecoj)",
             perObjectMany, models.size(), perObjectFew, growth));
 
     // -------------------------------------------------------------------------------
@@ -252,19 +252,31 @@ int main(){
     //koja fragmentu doda 220 sinusa dize ovaj broj sedam puta i obara ovu provjeru, dok
     //cijeli kadar ostaje na 0.96 ms i strop od 3 ms mirno prolazi. Zato su to dva broja
     //TRI KLASE, ne dvije. Integrirana kartica nije ni jedno ni drugo: dijeli memoriju s
-    //procesorom i usput crta cijeli desktop, pa joj je i rasap veci. Izmjereno kroz pet
-    //pokretanja na Intel UHD (CML GT2):
+    //procesorom i usput crta cijeli desktop, pa joj je i rasap veci. Pet pokretanja na
+    //Intel UHD (CML GT2), i to dvaput - jer se usput otkrilo da se projekt dotad gradio
+    //bez ijedne optimizacije:
     //
-    //   kadar, najbolji     3.239  3.580  4.064  4.132  4.328 ms   -> najgori 4.33
-    //   sjencanje           1.042  1.405  1.231  1.668  1.354 ns/px -> najgori 1.67
+    //                      -O0 (najgori od pet)   -O2 (najgori od pet)
+    //   kadar                    4.33 ms                1.42 ms      3.0 puta brze
+    //   sjencanje                1.67 ns/px             1.58 ns/px   nepromijenjeno
+    //   cijena po objektu        0.116 ms               0.036 ms     3.2 puta brze
+    //
+    //TO JE MJERENJE KOJE OPRAVDAVA DVA ODVOJENA BROJA. Kadar drze draw pozivi, a slanje
+    //naredbi je posao procesora i prevodilac ga ubrzava trostruko. Sjencanje je posao
+    //kartice i prevodilac mu ne moze nista - isti broj do na sum. Da su ta dva stopa bila
+    //jedan, ova se razlika ne bi vidjela nigdje.
     //
     //Stropovi su isti faktori koje nose i druge dvije klase: oko 3.5 puta iznad najgoreg
-    //kadra i oko 2.5 puta iznad najgoreg sjencanja
+    //kadra i oko 2.5 puta iznad najgoreg sjencanja.
+    //
+    //OGRADA: stropovi za karticu i za softverski rasterizator (3.0 i 24.0 ms) izmjereni su
+    //PRIJE nego je build dobio -O2, pa su po gornjem odnosu vjerojatno oko tri puta prelabavi.
+    //Ne diram ih napamet - trebaju isto ovakvo mjerenje na svom uredjaju
     const vk::PhysicalDeviceType deviceType = loom.device.getDeviceType();
     const bool software = deviceType == vk::PhysicalDeviceType::eCpu;
     const bool integrated = deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
 
-    const double ceiling = software ? 24.0 : integrated ? 15.0 : 3.0;
+    const double ceiling = software ? 24.0 : integrated ? 5.0 : 3.0;
     const double shadingCeiling = software ? 16.0 : integrated ? 4.0 : 0.28;
 
     report.check("sjencanje ostaje unutar stropa",
