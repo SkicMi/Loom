@@ -52,7 +52,7 @@ class SplatRenderer{
     public:
     SplatRenderer(const VulkanDevice& device,
                   const vk::raii::DescriptorPool& pool,
-                  VulkanImage& target,
+                  const VulkanImage& target,
                   vk::Extent2D extent,
                   const SplatRendererConfig& config = {});
 

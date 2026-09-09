@@ -388,6 +388,12 @@ add_executable(LoomApp src/main.cpp)
 target_link_libraries(LoomApp PRIVATE Loom Spool)
 add_dependencies(LoomApp LoomShaders)   # shaderi se prevedu prije exea
 
+# SplatViewer: .ply s gaussianima u prozoru. Isto stepenica 2 i iz istog razloga -
+# oblak od tri cetvrt milijuna gaussiana nije oblik koji Scene zna staviti u svoj red.
+add_executable(SplatViewer src/splat_viewer.cpp)
+target_link_libraries(SplatViewer PRIVATE Loom Spool)
+add_dependencies(SplatViewer LoomShaders)
+
 # ----------------------------------------------------------------------------
 # Testovi
 #   Svaki tests/test_*.cpp je zaseban executable koji vraca 0 samo ako sve

@@ -41,7 +41,7 @@ uint32_t groupsOf(uint32_t count, uint32_t size){
 
 SplatRenderer::SplatRenderer(const VulkanDevice& device,
                              const vk::raii::DescriptorPool& pool,
-                             VulkanImage& target,
+                             const VulkanImage& target,
                              vk::Extent2D extent,
                              const SplatRendererConfig& config)
 : device(device),

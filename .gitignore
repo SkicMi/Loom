@@ -10,3 +10,4 @@ CMakeCache.txt
 .idea/
 tools/depth/.venv/
 __pycache__/
+splatview.png
