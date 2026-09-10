@@ -83,6 +83,13 @@ int main(int argc, char** argv){
     //slika moze pogledati bez gledanja, jer "vrti se" i "tocno je" nisu ista tvrdnja
     const uint32_t framesThenShot = argc > 4 ? uint32_t(std::atoi(argv[4])) : 0;
 
+    //Pocetni kut, u stupnjevima. Postoji da se ista scena moze snimiti iz dva smjera i
+    //usporediti - parallaksa i zaklon su jedini dokaz da je ovo prostor a ne slika
+    const float startAngle = argc > 5 ? float(std::atof(argv[5])) * 3.14159265f / 180.0f : 0.0f;
+
+    //Ime snimke, da se dvije usporedbe ne prepisu
+    const std::string shotName = argc > 6 ? std::string(argv[6]) : std::string("splatview.png");
+
     // -------------------------------------------------------------------------------
     // S diska u splatove
     // -------------------------------------------------------------------------------
@@ -188,7 +195,7 @@ int main(int argc, char** argv){
     cameraConfig.up = glm::vec3(0.0f, -1.0f, 0.0f);   //3DGS scene dolaze s Y prema dolje
     Camera camera(cameraConfig);
 
-    float angle = 0.0f;
+    float angle = startAngle;
     float distance = 1.3f * bounds.radius;
     float height = 0.2f * bounds.radius;
 
@@ -214,8 +221,9 @@ int main(int argc, char** argv){
         if(glfwGetKey(window, GLFW_KEY_W)     == GLFW_PRESS) distance *= 0.97f;
         if(glfwGetKey(window, GLFW_KEY_S)     == GLFW_PRESS) distance *= 1.03f;
 
-        //Bez tipke se i dalje polako okrece, da se odmah vidi da je scena prostorna
-        angle += 0.002f;
+        //Bez tipke se polako okrece, da se odmah vidi da je scena prostorna. Kad se snima iz
+        //zadanog kuta to bi pomaknulo bas ono sto se htjelo usporediti, pa tada miruje
+        if(framesThenShot == 0) angle += 0.002f;
 
         cameraConfig.position = bounds.centre + glm::vec3(distance * std::sin(angle), height,
                                                           distance * std::cos(angle));
@@ -278,9 +286,9 @@ int main(int argc, char** argv){
             //readLastFrame vraca RGBA; imageFromPixels to samo omota
             const Spool::Image image = Spool::imageFromPixels(shot.pixels.data(),
                 shot.extent.width, shot.extent.height, Spool::ChannelOrder::RGBA);
-            Spool::saveImage("splatview.png", image);
+            Spool::saveImage(shotName, image);
 
-            printf("\nSnimljeno splatview.png (%ux%u)\n", image.width, image.height);
+            printf("\nSnimljeno %s (%ux%u)\n", shotName.c_str(), image.width, image.height);
             break;
         }
 
