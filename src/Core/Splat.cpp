@@ -32,6 +32,71 @@ glm::vec3 colorFromSH0(const glm::vec3& dc){
     return glm::vec3(0.5f) + sh0 * dc;
 }
 
+glm::vec3 colorFromSH(const glm::vec3& dc,
+                      const float* rest,
+                      uint32_t coeffsPerChannel,
+                      uint32_t degree,
+                      const glm::vec3& direction){
+    //Stupanj 0 je jedini koji ne treba smjer, pa se i ne racuna kroz njega
+    glm::vec3 result = colorFromSH0(dc);
+    if(degree == 0 || rest == nullptr || coeffsPerChannel == 0){
+        return result;
+    }
+
+    const float length = glm::length(direction);
+    if(length <= 0.0f){
+        return result;   //kamera tocno u gaussianu: smjera nema, ostaje ravna boja
+    }
+    const glm::vec3 d = direction / length;
+    const float x = d.x, y = d.y, z = d.z;
+
+    //Koeficijent k kanala c. Ovdje i nigdje drugdje zivi raspored po kanalima
+    const auto sh = [&](uint32_t k){
+        return glm::vec3(rest[0 * coeffsPerChannel + k],
+                         rest[1 * coeffsPerChannel + k],
+                         rest[2 * coeffsPerChannel + k]);
+    };
+
+    //Konstante su vrijednosti realnih sfernih harmonika, iste koje koristi i trening. Predznaci
+    //su dio bazisa (Condon-Shortley), pa se ne smiju "pojednostaviti"
+    constexpr float c1 = 0.4886025119029199f;
+
+    result += -c1 * y * sh(0) + c1 * z * sh(1) - c1 * x * sh(2);
+
+    if(degree > 1){
+        const float xx = x*x, yy = y*y, zz = z*z;
+        const float xy = x*y, yz = y*z, xz = x*z;
+
+        constexpr float c20 =  1.0925484305920792f;
+        constexpr float c22 =  0.31539156525252005f;
+        constexpr float c24 =  0.5462742152960396f;
+
+        result += c20 * xy * sh(3)
+                - c20 * yz * sh(4)
+                + c22 * (2.0f*zz - xx - yy) * sh(5)
+                - c20 * xz * sh(6)
+                + c24 * (xx - yy) * sh(7);
+
+        if(degree > 2){
+            constexpr float c30 = -0.5900435899266435f;
+            constexpr float c31 =  2.890611442640554f;
+            constexpr float c32 = -0.4570457994644658f;
+            constexpr float c33 =  0.3731763325901154f;
+            constexpr float c35 =  1.445305721320277f;
+
+            result += c30 * y * (3.0f*xx - yy) * sh(8)
+                    + c31 * xy * z * sh(9)
+                    + c32 * y * (4.0f*zz - xx - yy) * sh(10)
+                    + c33 * z * (2.0f*zz - 3.0f*xx - 3.0f*yy) * sh(11)
+                    + c32 * x * (4.0f*zz - xx - yy) * sh(12)
+                    + c35 * z * (xx - yy) * sh(13)
+                    + c30 * x * (xx - 3.0f*yy) * sh(14);
+        }
+    }
+
+    return result;
+}
+
 glm::mat3 covariance3D(const glm::vec3& scale, const glm::quat& rotation){
     const glm::mat3 R = glm::mat3_cast(rotation);
 

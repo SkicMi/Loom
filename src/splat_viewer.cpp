@@ -9,9 +9,8 @@
 //   ./SplatViewer scena.ply 1 32       <- i velicina pločice
 //   ./SplatViewer scena.ply 8 16 60    <- odvrti 60 kadrova, spremi splatview.png i izadji
 //
-// STO OVDJE JOS NIJE: boja ovisi samo o stupnju 0 sfernih harmonika, dakle ista je iz svih
-// smjerova. Scena ce izgledati ispravno ali plosnato - bez odsjaja i bez toga da se povrsina
-// mijenja dok kruzis oko nje. To je G4, i namjerno dolazi poslije ovoga.
+// BOJA OVISI O SMJERU POGLEDA (G4): odsjaj na metalu i nebo koje se mijenja dok kamera kruzi.
+// Racuna se svaki kadar, jer smjer od kamere do gaussiana je jedino sto se mijenja.
 //
 // I PRIPREMA JE NA PROCESORU. Svaki kadar racuna kovarijancu i conic za svaki splat iznova, jer
 // oboje ovisi o kameri. Za tri cetvrt milijuna splatova to je vecina vremena kadra; mjeri se i
@@ -90,6 +89,10 @@ int main(int argc, char** argv){
     //Ime snimke, da se dvije usporedbe ne prepisu
     const std::string shotName = argc > 6 ? std::string(argv[6]) : std::string("splatview.png");
 
+    //Boja iz smjera pogleda se da ugasiti, i to nije udobnost nego mjerenje: razlika izmedju
+    //upaljenog i ugasenog je jedini nacin da se vidi koliko G4 stvarno radi
+    const bool useSH = argc > 7 ? (std::atoi(argv[7]) != 0) : true;
+
     // -------------------------------------------------------------------------------
     // S diska u splatove
     // -------------------------------------------------------------------------------
@@ -112,6 +115,13 @@ int main(int argc, char** argv){
     std::vector<Splat> splats;
     splats.reserve(cloud.count() / stride + 1);
 
+    //Koji je gaussian u oblaku dao koji splat. Treba jer se boja racuna svaki kadar iz njegovih
+    //koeficijenata, a korak preskace - pa redni broj u splats vise nije redni broj u oblaku
+    std::vector<uint32_t> sourceIndex;
+    sourceIndex.reserve(splats.capacity());
+
+    const uint32_t coeffsPerChannel = cloud.restStride / 3;
+
     for(size_t i = 0; i < cloud.count(); i += stride){
         const Spool::Gaussian& source = cloud.gaussians[i];
 
@@ -123,6 +133,7 @@ int main(int argc, char** argv){
         splat.opacity  = SplatMath::activateOpacity(source.opacity);
         splat.color    = SplatMath::colorFromSH0(glm::vec3(source.dc[0], source.dc[1], source.dc[2]));
         splats.push_back(splat);
+        sourceIndex.push_back(uint32_t(i));
     }
 
     const Bounds bounds = robustBounds(splats);
@@ -239,12 +250,26 @@ int main(int argc, char** argv){
         const auto prepareStart = std::chrono::steady_clock::now();
 
         prepared.clear();
-        for(const Splat& splat : splats){
+        for(size_t i = 0; i < splats.size(); ++i){
             SplatMath::PreparedSplat one;
-            if(SplatMath::prepare(splat, view, intrinsics.fx, intrinsics.fy,
-                                  intrinsics.cx, intrinsics.cy, 0.3f, one)){
-                prepared.push_back(one);
+            if(!SplatMath::prepare(splats[i], view, intrinsics.fx, intrinsics.fy,
+                                   intrinsics.cx, intrinsics.cy, 0.3f, one)){
+                continue;
             }
+
+            //Boja iz smjera pogleda. Smjer je od kamere PREMA gaussianu, i mijenja se za svaki
+            //gaussian posebno - zato se ovo ne da izracunati jednom pa spremiti
+            const glm::vec3 colour = !useSH ? splats[i].color : SplatMath::colorFromSH(
+                glm::vec3(cloud.gaussians[sourceIndex[i]].dc[0],
+                          cloud.gaussians[sourceIndex[i]].dc[1],
+                          cloud.gaussians[sourceIndex[i]].dc[2]),
+                cloud.restFor(sourceIndex[i]), coeffsPerChannel, cloud.shDegree,
+                splats[i].position - cameraConfig.position);
+
+            //Negativna boja je legitiman medjurezultat sfernih harmonika, ali slika je nema gdje
+            //prikazati - odsijeca se tek ovdje, na samom rubu
+            one.color = glm::vec4(glm::max(colour, glm::vec3(0.0f)), 0.0f);
+            prepared.push_back(one);
         }
 
         //Sprijeda natrag. Sort na kartici to radi po pločici, ali pomaci u polju parova moraju

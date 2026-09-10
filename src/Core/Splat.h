@@ -45,6 +45,28 @@ glm::quat activateRotation(const glm::vec4& stored);
 //nultog SH bazisa; polovica je pomak jer koeficijent smije biti negativan
 glm::vec3 colorFromSH0(const glm::vec3& dc);
 
+//BOJA KOJA OVISI O SMJERU POGLEDA. Ono sto stupanj 0 ne moze: odsjaj na metalu, nebo koje se
+//mijenja, mokri asfalt koji je svijetao samo iz jednog kuta. Trening to sprema u vise stupnjeve
+//sfernih harmonika - funkcije na sferi, gdje svaki stupanj opisuje sve finiju promjenu.
+//
+//RASPORED KOEFICIJENATA JE PO KANALIMA, i to nije stvar ukusa nego onoga sto u fileu pise:
+//prvih 15 su crveni, pa 15 zelenih, pa 15 plavih. Izmjereno na pravoj sceni korelacijom izmedju
+//kanala (efekt pogleda je najcesce akromatski, pa isti koeficijent razlicitih kanala ide
+//zajedno): po kanalima 0.84, po koeficijentima 0.00. Tko to procita naopako dobije boje koje se
+//s kutom mijenjaju krivo - a to se NE VIDI NA JEDNOM KADRU, nego tek kad se kamera pomakne.
+//
+//   rest              koeficijenti jednog gaussiana, onako kako ih Spool vraca
+//   coeffsPerChannel  3 za stupanj 1, 8 za stupanj 2, 15 za stupanj 3
+//   direction         od kamere PREMA gaussianu, ne mora biti jedinicna
+//
+//Rezultat se ne odsijeca: negativna boja je legitiman medjurezultat i odsijeca se tek kad se
+//pise u sliku
+glm::vec3 colorFromSH(const glm::vec3& dc,
+                      const float* rest,
+                      uint32_t coeffsPerChannel,
+                      uint32_t degree,
+                      const glm::vec3& direction);
+
 //-- kovarijanca ------------------------------------------------------------------------------
 //Sto gaussian JEST: elipsoid opisan matricom 3x3. Iz polumjera i rotacije, kao R*S*S'*R'.
 //
