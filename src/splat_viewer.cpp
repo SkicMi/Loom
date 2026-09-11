@@ -161,6 +161,8 @@ int main(int argc, char** argv){
     //Jedan SplatRenderer trazi 21 set i 73 storage buffera, a default od 64 po tipu to ne
     //daje - tolerantan driver precuti, strog ne
     config.maxDescriptorSets = 128;
+    //Vrijeme po koraku s karticinog sata. SplatRenderer stavlja 11 oznaka po kadru
+    config.rendererConfig.maxTimestamps = 32;
 
     //Fullscreen prolaz koji sliku prenosi na ekran nema vertex buffer ni dubinu
     config.pipelineConfig.vertexBindings.clear();
@@ -256,6 +258,11 @@ int main(int argc, char** argv){
     uint32_t totalFrames = 0;
     uint32_t pairsAsked = 0;
 
+    //Zbroj vremena po koraku kroz sekundu, pa se ispise prosjek. Poredak je onaj kojim su
+    //oznake zapisane, i ime koraka je ime oznake kojom zavrsava
+    std::vector<std::pair<std::string, double>> stageSums;
+    uint32_t timedFrames = 0;
+
     while(!loom.shouldClose()){
         loom.pollEvents();
 
@@ -290,6 +297,18 @@ int main(int argc, char** argv){
 
         //Prosli kadar je gotov, pa je broj koji je trazio sad tocan
         pairsAsked = splatRenderer.requestedPairs();
+
+        const std::vector<GpuTimestamp> marks = loom.renderer.readFrameTimes();
+        if(marks.size() > 1){
+            if(stageSums.size() != marks.size() - 1){
+                stageSums.clear();
+                for(size_t i = 1; i < marks.size(); ++i) stageSums.push_back({marks[i].label, 0.0});
+            }
+            for(size_t i = 1; i < marks.size(); ++i){
+                stageSums[i - 1].second += marks[i].milliseconds - marks[i - 1].milliseconds;
+            }
+            ++timedFrames;
+        }
 
         splatRenderer.setCamera(view, cameraConfig.position, intrinsics.fx, intrinsics.fy,
                                 intrinsics.cx, intrinsics.cy);
@@ -326,6 +345,17 @@ int main(int argc, char** argv){
             printf("  %.1f kadrova/s   %u splatova, %u parova%s\n",
                    framesSinceReport / (now - lastReport), splatCount, pairsAsked,
                    pairsAsked > rendererConfig.maxPairs ? "   PREMALO MJESTA - dio slike nedostaje (maxPairs)" : "");
+            if(timedFrames > 0){
+                double total = 0.0;
+                for(const auto& stage : stageSums) total += stage.second;
+                printf("    kartica %.0f ms:", total / timedFrames);
+                for(const auto& stage : stageSums){
+                    printf("  %s %.1f", stage.first.c_str(), stage.second / timedFrames);
+                }
+                printf("\n");
+                for(auto& stage : stageSums) stage.second = 0.0;
+                timedFrames = 0;
+            }
             fflush(stdout);
             lastReport = now;
             framesSinceReport = 0;

@@ -19,6 +19,7 @@ VulkanRenderer::VulkanRenderer(
     descriptorPool(descriptorPool){
 
         createSyncObjects();
+        createTimestampPools();
         createShadowPlaceholder();
         createFrameResources();
 }
@@ -254,6 +255,92 @@ void VulkanRenderer::createSyncObjects(){
     for(size_t i = 0; i < imageCount; i++){
         renderFinishedSemaphores.emplace_back(device.getDevice(),semaphoreInfo);
     }
+}
+
+void VulkanRenderer::createTimestampPools(){
+    if(rendererConfig.maxTimestamps == 0){
+        return;
+    }
+
+    const auto& physical = device.getPhysicalDevice();
+    const vk::PhysicalDeviceProperties properties = physical.getProperties();
+    const uint32_t family = device.getQueueIndices().graphicsFamilies.value();
+    const uint32_t validBits = physical.getQueueFamilyProperties()[family].timestampValidBits;
+
+    //A device that keeps no time still draws the same picture - it just cannot say how long
+    //it took, and measuresTime() says so
+    if(validBits == 0 || properties.limits.timestampPeriod <= 0.0f){
+        return;
+    }
+
+    timestampPeriodNs = properties.limits.timestampPeriod;
+    timestampMask = validBits >= 64 ? ~uint64_t(0) : ((uint64_t(1) << validBits) - 1);
+
+    vk::QueryPoolCreateInfo info;
+    info.queryType = vk::QueryType::eTimestamp;
+    info.queryCount = rendererConfig.maxTimestamps;
+
+    const size_t framesInFlight = command.getCommandBuffers().size();
+    timestampPools.reserve(framesInFlight);
+    for(size_t i = 0; i < framesInFlight; ++i){
+        timestampPools.emplace_back(device.getDevice(), info);
+    }
+    timestampLabels.resize(framesInFlight);
+}
+
+void VulkanRenderer::timestamp(const char* label){
+    if(timestampPools.empty()){
+        return;
+    }
+    if(!frameActive){
+        throw std::runtime_error("timestamp: frame not started (missing beginFrame)");
+    }
+
+    std::vector<std::string>& labels = timestampLabels[currentFrame];
+    if(labels.size() >= rendererConfig.maxTimestamps){
+        throw std::runtime_error("timestamp: more than maxTimestamps (" +
+                                 std::to_string(rendererConfig.maxTimestamps) + ") marks in one frame");
+    }
+
+    const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
+    commandBuffer.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands,
+                                  *timestampPools[currentFrame], uint32_t(labels.size()));
+    labels.emplace_back(label);
+}
+
+std::vector<GpuTimestamp> VulkanRenderer::readFrameTimes(){
+    std::vector<GpuTimestamp> marks;
+    if(timestampPools.empty()){
+        return marks;
+    }
+    if(frameActive){
+        throw std::runtime_error("readFrameTimes: a frame is still being recorded (missing endFrame)");
+    }
+
+    const std::vector<std::string>& labels = timestampLabels[lastEndedFrame];
+    if(labels.empty()){
+        return marks;
+    }
+
+    //That frame's own fence, not waitIdle: a frame submitted after it keeps running
+    const auto& dev = device.getDevice();
+    while(vk::Result::eTimeout == dev.waitForFences(*inFlightFences[lastEndedFrame], VK_TRUE, UINT64_MAX));
+
+    const uint32_t count = uint32_t(labels.size());
+    auto [result, ticks] = timestampPools[lastEndedFrame].getResults<uint64_t>(
+        0, count, count * sizeof(uint64_t), sizeof(uint64_t), vk::QueryResultFlagBits::e64);
+    if(result != vk::Result::eSuccess){
+        throw std::runtime_error("readFrameTimes: the frame has finished but its timestamps are not ready");
+    }
+
+    marks.reserve(count);
+    for(uint32_t i = 0; i < count; ++i){
+        //Ticks, not nanoseconds, and only the valid bits: a counter that wrapped between two
+        //marks still gives the right difference under the mask
+        const uint64_t elapsed = (ticks[i] - ticks[0]) & timestampMask;
+        marks.push_back({labels[i], double(elapsed) * timestampPeriodNs * 1e-6});
+    }
+    return marks;
 }
 
 void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, const VulkanImage* depth, vk::Extent2D extent, uint32_t depthFace){
@@ -638,6 +725,13 @@ bool VulkanRenderer::beginFrame(){
     vk::CommandBufferBeginInfo beginInfo;
     commandBuffer.begin(beginInfo);
 
+    //Reset inside this frame's own command buffer, so the other frame in flight keeps its
+    //marks. The fence waited on above means nobody still needs this slot's old ones
+    if(!timestampPools.empty()){
+        commandBuffer.resetQueryPool(*timestampPools[currentFrame], 0, rendererConfig.maxTimestamps);
+        timestampLabels[currentFrame].clear();
+    }
+
     frameActive = true;
     boundPipeline = nullptr;
     return true;
@@ -709,6 +803,7 @@ void VulkanRenderer::endFrame(){
     
 
     //Advance to the next frame
+    lastEndedFrame = currentFrame;
     currentFrame = (currentFrame + 1) % command.getCommandBuffers().size();
     frameActive = false;
 

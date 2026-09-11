@@ -235,7 +235,11 @@ void SplatRenderer::setCamera(const glm::mat4& view, const glm::vec3& cameraPosi
 void SplatRenderer::prepare(VulkanRenderer& renderer, uint32_t splatCount){
     pendingParams.counts.x = splatCount;
     prepareParams.upload(&pendingParams, sizeof(pendingParams));
+
+    //Oznake ne koste nista kad renderer ne mjeri - vidi RendererConfig::maxTimestamps
+    renderer.timestamp("pocetak pripreme");
     renderer.dispatch(prepareMaterial, groupsOf(splatCount, 256), 1, 1);
+    renderer.timestamp("priprema");
 }
 
 uint32_t SplatRenderer::countPairs(const std::vector<SplatMath::PreparedSplat>& prepared) const{
@@ -287,27 +291,39 @@ void SplatRenderer::draw(VulkanRenderer& renderer, uint32_t splatCount){
 
     //Rasponi se ciste uvijek, i kad nema nijednog para - inace bi pločica zadrzala ono sto je
     //u njoj pisalo prosli kadar
+    //Svaka oznaka imenuje korak koji je upravo zavrsio. Ova je samo pocetak: s pripremom prije
+    //nje razmak je prazan hod, a bez nje (upload) od nje se tek pocinje brojati
+    renderer.timestamp("pocetak crtanja");
+
     PairParams clearParams;
     clearParams.pairCount = getTileCount();
     renderer.dispatch(clearMaterial, groupsOf(getTileCount(), 256), 1, 1, &clearParams, sizeof(clearParams));
 
     if(splatCount > 0){
         renderer.dispatch(countMaterial, groupsOf(splatCount, 256), 1, 1, &tileParams, sizeof(tileParams));
+        renderer.timestamp("brojanje");
         prefixSum.scan(renderer, splatCount);
+        renderer.timestamp("zbroj");
 
         //Od ovdje broj parova zna samo kartica. Ovaj dispatch ga ogranici i upise velicine svega
         //sto slijedi, pa procesor nista ne ceka i nista ne cita
         renderer.dispatch(pairSizesMaterial, 1, 1, 1, &sizeParams, sizeof(sizeParams));
         renderer.dispatch(expandMaterial, groupsOf(splatCount, 256), 1, 1, &tileParams, sizeof(tileParams));
+        renderer.timestamp("sirenje");
 
         const vk::DeviceSize pairGroups = vk::DeviceSize(pairGroupsSlot) * sizeof(uint32_t);
 
         sortByDepth.sortIndirect(renderer, sortSlot);
+        renderer.timestamp("sort po dubini");
         renderer.dispatchIndirect(gatherMaterial, pairSizes, pairGroups);
+        renderer.timestamp("skupljanje");
         sortByTile.sortIndirect(renderer, sortSlot);
+        renderer.timestamp("sort po plocici");
 
         renderer.dispatchIndirect(rangesMaterial, pairSizes, pairGroups);
+        renderer.timestamp("rasponi");
     }
 
     renderer.dispatch(rasterMaterial, grid.width, grid.height, 1, &rasterParams, sizeof(rasterParams));
+    renderer.timestamp("crtanje");
 }

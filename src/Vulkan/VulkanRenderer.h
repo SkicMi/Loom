@@ -15,6 +15,7 @@
 #include "Core/Light.h"
 #include "Core/FrameData.h"
 #include "Core/Environment.h"
+#include "Core/GpuTiming.h"
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -24,6 +25,10 @@ struct RendererConfig{
     float clearDepth = 1.0f; //Maximum 1, with eLess compare and range 0,1 every first fragement passes, if it was 0.0, nothing would be drawn with zero errors in log
     uint32_t maxLights = 16; //storage buffer capacity, not a shader limit!
     uint32_t maxPassesPerFrame = 8; //how many FrameData blocks fir in one frame's buffer
+
+    //GPU timestamps per frame (see timestamp()). Zero turns measuring off, and then a mark
+    //costs nothing - which is why code like SplatRenderer can place marks unconditionally
+    uint32_t maxTimestamps = 0;
 
 };
 
@@ -95,6 +100,17 @@ class VulkanRenderer{
                           const void* pushData = nullptr, uint32_t pushSize = 0);
     void endFrame();
 
+    //MARK THIS MOMENT ON THE GPU'S CLOCK. The label names what has just finished. Does nothing
+    //when maxTimestamps is 0 or the device keeps no time, and throws past maxTimestamps marks
+    //in one frame - a silently dropped mark would shift every later span onto the wrong name
+    void timestamp(const char* label);
+
+    //The marks of the frame that ended last, in the order they were written. Waits for that
+    //frame only, not the whole device. Empty when nothing is measured
+    std::vector<GpuTimestamp> readFrameTimes();
+
+    bool measuresTime() const {return !timestampPools.empty();}
+
     //The window, read back. Only valid between frames
     ImageData readLastFrame() const;
 
@@ -163,6 +179,7 @@ class VulkanRenderer{
     void recordDispatch(const ComputeMaterial& material, const void* pushData, uint32_t pushSize,
                         const VulkanBuffer* indirect, vk::DeviceSize offset,
                         uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ);
+    void createTimestampPools();
 
     const VulkanDevice& device;
     VulkanSwapchain* swapchain = nullptr;
@@ -173,6 +190,14 @@ class VulkanRenderer{
     std::vector<vk::raii::Semaphore> imageAvailableSemaphores;
     std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
     std::vector<vk::raii::Fence> inFlightFences;
+
+    //One pool per frame in flight: resetting a pool the other frame is still writing into
+    //would lose its marks. The labels live on the CPU, the ticks on the GPU
+    std::vector<vk::raii::QueryPool> timestampPools;
+    std::vector<std::vector<std::string>> timestampLabels;
+    double timestampPeriodNs = 1.0;          //83.33 on Intel UHD - a tick is not a nanosecond
+    uint64_t timestampMask = ~uint64_t(0);   //only timestampValidBits of a tick mean anything
+    size_t lastEndedFrame = 0;
     size_t currentFrame = 0;
     uint32_t frameCounter = 0; //never wraps back to a frame in flight, unlike currentFrame - VMA wants the running count
     const Camera* camera = nullptr;
