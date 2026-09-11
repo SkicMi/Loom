@@ -32,7 +32,8 @@ class RadixSort{
               const vk::raii::DescriptorPool& pool,
               VulkanBuffer& keys,
               VulkanBuffer& values,
-              uint32_t capacity);
+              uint32_t capacity,
+              const VulkanBuffer* countSource = nullptr);   //treba ga samo sortIndirect
 
     RadixSort(const RadixSort&) = delete;
     RadixSort& operator = (const RadixSort&) = delete;
@@ -40,6 +41,16 @@ class RadixSort{
     //Osam prolaza po cetiri bita. Paran broj prolaza, pa rezultat zavrsava u buffere koje je
     //pozivatelj dao, a ne u radnima. Mora se zvati unutar kadra, izmedju prolaza crtanja
     void sort(VulkanRenderer& renderer, uint32_t count);
+
+    //ISTO, ALI BROJ ELEMENATA ZNA SAMO KARTICA. Cita se iz countSource danog pri gradnji, od
+    //elementa base, ovim rasporedom:
+    //
+    //   [base]       koliko elemenata      [base+1]  koliko blokova (blocksFor)
+    //   [base+2..4]  velicina dispatcha:   blokovi, 1, 1
+    //
+    //Tko pise buffer jamci da broj nije veci od kapaciteta. Sort to ne moze provjeriti bez
+    //citanja natrag - a bas citanje natrag je ono sto se ovdje izbjegava
+    void sortIndirect(VulkanRenderer& renderer, uint32_t base);
 
     //FLOAT PRETVOREN U CJELOBROJNI KLJUC KOJI SE SORTIRA ISTIM REDOM.
     //
@@ -70,22 +81,27 @@ class RadixSort{
     static constexpr uint32_t passes = 8;          //32 bita / 4
 
     private:
+    //countBase koji kaze "broj je u push konstanti, ne u bufferu"
+    static constexpr uint32_t direct = 0xFFFFFFFFu;
+
     struct Params{
         uint32_t count = 0;
         uint32_t shift = 0;
         uint32_t blockCount = 0;
-        uint32_t padding0 = 0;
+        uint32_t countBase = direct;
     };
 
     const VulkanDevice& device;
 
     VulkanBuffer* keys;
     VulkanBuffer* values;
+    const VulkanBuffer* countSource;
 
     //Radni par, jer se svaki prolaz cita iz jednog a pise u drugi
     VulkanBuffer scratchKeys;
     VulkanBuffer scratchValues;
     VulkanBuffer blockHistogram;
+    VulkanBuffer ownCountSource;   //stoji na mjestu countSource kad ga nema
 
     VulkanComputePipeline histogramPipeline;
     VulkanComputePipeline scanPipeline;

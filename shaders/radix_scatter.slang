@@ -16,7 +16,7 @@ struct Params{
     uint count;
     uint shift;
     uint blockCount;
-    uint padding0;
+    uint countBase;   //DIRECT: broj je u ovoj konstanti; inace indeks u countSource
 }
 
 [[vk::push_constant]] ConstantBuffer<Params> params;
@@ -25,6 +25,20 @@ struct Params{
 [[vk::binding(2,0)]] RWStructuredBuffer<uint> keysOut;
 [[vk::binding(3,0)]] RWStructuredBuffer<uint> valuesOut;
 [[vk::binding(4,0)]] RWStructuredBuffer<uint> blockOffsets;
+[[vk::binding(5,0)]] RWStructuredBuffer<uint> countSource;   //vidi RadixSort::sortIndirect
+
+static const uint DIRECT = 0xFFFFFFFF;
+
+//Broj elemenata i blokova: iz push konstante, ili iz buffera kad ga zna samo kartica. If a ne
+//ternarni operator - shader smije izracunati obje grane, a DIRECT kao indeks cita izvan polja
+uint elementCount(){
+    if(params.countBase != DIRECT) return countSource[params.countBase];
+    return params.count;
+}
+uint blockTotal(){
+    if(params.countBase != DIRECT) return countSource[params.countBase + 1];
+    return params.blockCount;
+}
 
 static const uint THREADS = 128;
 static const uint PER_THREAD = 8;
@@ -36,6 +50,8 @@ groupshared uint counts[DIGITS * THREADS];
 [numthreads(128,1,1)]
 void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
     const uint thread = threadId.x;
+    const uint count = elementCount();
+    const uint blockCount = blockTotal();
     const uint block = groupId.x;
 
     for(uint d = 0; d < DIGITS; ++d){
@@ -47,7 +63,7 @@ void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
 
     for(uint e = 0; e < PER_THREAD; ++e){
         const uint index = blockStart + thread * PER_THREAD + e;
-        if(index < params.count){
+        if(index < count){
             const uint digit = (keysIn[index] >> params.shift) & (DIGITS - 1);
             counts[digit * THREADS + thread] += 1;
         }
@@ -74,11 +90,11 @@ void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
 
     for(uint e = 0; e < PER_THREAD; ++e){
         const uint index = blockStart + thread * PER_THREAD + e;
-        if(index < params.count){
+        if(index < count){
             const uint key = keysIn[index];
             const uint digit = (key >> params.shift) & (DIGITS - 1);
 
-            const uint destination = blockOffsets[digit * params.blockCount + block]
+            const uint destination = blockOffsets[digit * blockCount + block]
                                    + counts[digit * THREADS + thread]
                                    + written[digit];
 

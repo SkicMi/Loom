@@ -58,6 +58,10 @@ SplatRenderer::SplatRenderer(const VulkanDevice& device,
          vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::CPU_TO_GPU),
   prepareParams(device, sizeof(SplatMath::PrepareParams),
                 vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::CPU_TO_GPU),
+  //Pise ga kartica, cita dispatchIndirect - i procesor poslije kadra, kad pita je li sve stalo
+  pairSizes(device, vk::DeviceSize(pairSizeSlots) * sizeof(uint32_t),
+            vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer,
+            MemoryUsage::GPU_TO_CPU),
   counts(device, vk::DeviceSize(config.maxSplats) * sizeof(uint32_t),
          vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc,
          MemoryUsage::GPU_ONLY),
@@ -75,20 +79,22 @@ SplatRenderer::SplatRenderer(const VulkanDevice& device,
          vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc,
          MemoryUsage::GPU_ONLY),
   prefixSum(device, pool, counts, config.maxSplats),
-  sortByDepth(device, pool, depthKeys, sortValues, config.maxPairs),
-  sortByTile(device, pool, gatheredTiles, sortValues, config.maxPairs),
+  sortByDepth(device, pool, depthKeys, sortValues, config.maxPairs, &pairSizes),
+  sortByTile(device, pool, gatheredTiles, sortValues, config.maxPairs, &pairSizes),
   preparePipeline(device, configFor("splat_prepare.comp.spv", 4, 0)),
+  pairSizesPipeline(device, configFor("splat_pair_sizes.comp.spv", 2, sizeof(PairSizeParams))),
   countPipeline(device, configFor("splat_count.comp.spv", 2, sizeof(TileParams))),
   expandPipeline(device, configFor("splat_expand.comp.spv", 6, sizeof(TileParams))),
-  gatherPipeline(device, configFor("splat_gather_tiles.comp.spv", 3, sizeof(PairParams))),
+  gatherPipeline(device, configFor("splat_gather_tiles.comp.spv", 4, 0)),
   clearPipeline(device, configFor("splat_clear_ranges.comp.spv", 1, sizeof(PairParams))),
-  rangesPipeline(device, configFor("splat_ranges.comp.spv", 2, sizeof(PairParams))),
+  rangesPipeline(device, configFor("splat_ranges.comp.spv", 3, 0)),
   rasterPipeline(device, [&]{
       ComputePipelineConfig raster = configFor("splat_raster.comp.spv", 4, sizeof(RasterParams), true);
       raster.specializationConstants = {config.tileSize};   //velicina pločice JE velicina grupe
       return raster;
   }()),
   prepareMaterial(device, pool, preparePipeline),
+  pairSizesMaterial(device, pool, pairSizesPipeline),
   countMaterial(device, pool, countPipeline),
   expandMaterial(device, pool, expandPipeline),
   gatherMaterial(device, pool, gatherPipeline),
@@ -104,6 +110,25 @@ SplatRenderer::SplatRenderer(const VulkanDevice& device,
                                  "x" + std::to_string(config.tileSize) + " trazi vise dretvi po "
                                  "grupi nego sto uredjaj dopusta");
     }
+
+    //Velicine dispatcha racuna kartica, pa ih procesor nema kad provjeriti - zato se granica
+    //uredjaja provjerava ovdje, za najveci broj koji ikad moze doci. Nije teoretski: 16<<20
+    //parova je 65536 grupa po 256, jedna vise od najmanje granice koju Vulkan jamci
+    const uint32_t maxGroups = device.getPhysicalDevice().getProperties().limits.maxComputeWorkGroupCount[0];
+    if(groupsOf(config.maxPairs, pairGroupSize) > maxGroups || groupsOf(config.maxSplats, 256) > maxGroups){
+        throw std::runtime_error("SplatRenderer: maxPairs " + std::to_string(config.maxPairs) +
+                                 " ili maxSplats " + std::to_string(config.maxSplats) +
+                                 " trazi vise od " + std::to_string(maxGroups) +
+                                 " grupa po 256, koliko uredjaj dopusta");
+    }
+
+    //Prije prvog kadra nije se trazio nijedan par - i to mora pisati, a ne ono sto je zateceno
+    //u memoriji
+    const uint32_t zeros[pairSizeSlots] = {};
+    pairSizes.upload(zeros, sizeof(zeros));
+
+    pairSizesMaterial.setStorageBuffer(0, prefixSum.getTotal());
+    pairSizesMaterial.setStorageBuffer(1, pairSizes);
 
     prepareMaterial.setStorageBuffer(0, rawSplats);
     prepareMaterial.setStorageBuffer(1, shRest);
@@ -123,11 +148,13 @@ SplatRenderer::SplatRenderer(const VulkanDevice& device,
     gatherMaterial.setStorageBuffer(0, tileKeys);
     gatherMaterial.setStorageBuffer(1, sortValues);
     gatherMaterial.setStorageBuffer(2, gatheredTiles);
+    gatherMaterial.setStorageBuffer(3, pairSizes);
 
     clearMaterial.setStorageBuffer(0, ranges);
 
     rangesMaterial.setStorageBuffer(0, gatheredTiles);
     rangesMaterial.setStorageBuffer(1, ranges);
+    rangesMaterial.setStorageBuffer(2, pairSizes);
 
     rasterMaterial.setStorageBuffer(0, splats);
     rasterMaterial.setStorageBuffer(1, ranges);
@@ -222,22 +249,41 @@ uint32_t SplatRenderer::countPairs(const std::vector<SplatMath::PreparedSplat>& 
     return uint32_t(total);
 }
 
-void SplatRenderer::draw(VulkanRenderer& renderer, uint32_t splatCount, uint32_t pairCount){
+uint32_t SplatRenderer::requestedPairs() const{
+    uint32_t value = 0;
+    pairSizes.download(&value, sizeof(value), vk::DeviceSize(requestedSlot) * sizeof(uint32_t));
+    return value;
+}
+
+uint32_t SplatRenderer::lastPairCount() const{
+    uint32_t value = 0;
+    pairSizes.download(&value, sizeof(value), vk::DeviceSize(sortSlot) * sizeof(uint32_t));
+    return value;
+}
+
+void SplatRenderer::draw(VulkanRenderer& renderer, uint32_t splatCount){
+    if(splatCount > config.maxSplats){
+        throw std::runtime_error("SplatRenderer: vise splatova nego sto je receno u maxSplats");
+    }
+
     TileParams tileParams;
     tileParams.gridX = grid.width;
     tileParams.gridY = grid.height;
     tileParams.tileSize = config.tileSize;
     tileParams.splatCount = splatCount;
+    tileParams.maxPairs = config.maxPairs;
 
-    PairParams pairParams;
-    pairParams.pairCount = pairCount;
+    PairSizeParams sizeParams;
+    sizeParams.maxPairs = config.maxPairs;
+    sizeParams.groupSize = pairGroupSize;
+    sizeParams.radixBlockSize = RadixSort::elementsPerBlock;
 
+    //Raster broj parova ne cita (on gleda raspone), pa polje ostaje nula
     RasterParams rasterParams;
     rasterParams.imageX = extent.width;
     rasterParams.imageY = extent.height;
     rasterParams.gridX = grid.width;
     rasterParams.gridY = grid.height;
-    rasterParams.pairCount = pairCount;
 
     //Rasponi se ciste uvijek, i kad nema nijednog para - inace bi pločica zadrzala ono sto je
     //u njoj pisalo prosli kadar
@@ -245,16 +291,22 @@ void SplatRenderer::draw(VulkanRenderer& renderer, uint32_t splatCount, uint32_t
     clearParams.pairCount = getTileCount();
     renderer.dispatch(clearMaterial, groupsOf(getTileCount(), 256), 1, 1, &clearParams, sizeof(clearParams));
 
-    if(splatCount > 0 && pairCount > 0){
+    if(splatCount > 0){
         renderer.dispatch(countMaterial, groupsOf(splatCount, 256), 1, 1, &tileParams, sizeof(tileParams));
         prefixSum.scan(renderer, splatCount);
+
+        //Od ovdje broj parova zna samo kartica. Ovaj dispatch ga ogranici i upise velicine svega
+        //sto slijedi, pa procesor nista ne ceka i nista ne cita
+        renderer.dispatch(pairSizesMaterial, 1, 1, 1, &sizeParams, sizeof(sizeParams));
         renderer.dispatch(expandMaterial, groupsOf(splatCount, 256), 1, 1, &tileParams, sizeof(tileParams));
 
-        sortByDepth.sort(renderer, pairCount);
-        renderer.dispatch(gatherMaterial, groupsOf(pairCount, 256), 1, 1, &pairParams, sizeof(pairParams));
-        sortByTile.sort(renderer, pairCount);
+        const vk::DeviceSize pairGroups = vk::DeviceSize(pairGroupsSlot) * sizeof(uint32_t);
 
-        renderer.dispatch(rangesMaterial, groupsOf(pairCount, 256), 1, 1, &pairParams, sizeof(pairParams));
+        sortByDepth.sortIndirect(renderer, sortSlot);
+        renderer.dispatchIndirect(gatherMaterial, pairSizes, pairGroups);
+        sortByTile.sortIndirect(renderer, sortSlot);
+
+        renderer.dispatchIndirect(rangesMaterial, pairSizes, pairGroups);
     }
 
     renderer.dispatch(rasterMaterial, grid.width, grid.height, 1, &rasterParams, sizeof(rasterParams));

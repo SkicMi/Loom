@@ -10,12 +10,26 @@ struct Params{
     uint count;       //koliko elemenata stvarno ima
     uint shift;       //koja cetvorka bitova se gleda: 0, 4, 8, ... 28
     uint blockCount;  //koliko blokova, jer izlaz je [znamenka][blok]
-    uint padding0;
+    uint countBase;   //DIRECT: broj je u ovoj konstanti; inace indeks u countSource
 }
 
 [[vk::push_constant]] ConstantBuffer<Params> params;
 [[vk::binding(0,0)]] RWStructuredBuffer<uint> keys;
 [[vk::binding(1,0)]] RWStructuredBuffer<uint> blockHistogram;
+[[vk::binding(2,0)]] RWStructuredBuffer<uint> countSource;   //vidi RadixSort::sortIndirect
+
+static const uint DIRECT = 0xFFFFFFFF;
+
+//Broj elemenata i blokova: iz push konstante, ili iz buffera kad ga zna samo kartica. If a ne
+//ternarni operator - shader smije izracunati obje grane, a DIRECT kao indeks cita izvan polja
+uint elementCount(){
+    if(params.countBase != DIRECT) return countSource[params.countBase];
+    return params.count;
+}
+uint blockTotal(){
+    if(params.countBase != DIRECT) return countSource[params.countBase + 1];
+    return params.blockCount;
+}
 
 static const uint THREADS = 128;
 static const uint PER_THREAD = 8;
@@ -34,6 +48,8 @@ groupshared uint counts[DIGITS * THREADS];
 [numthreads(128,1,1)]
 void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
     const uint thread = threadId.x;
+    const uint count = elementCount();
+    const uint blockCount = blockTotal();
     const uint block = groupId.x;
 
     for(uint d = 0; d < DIGITS; ++d){
@@ -44,7 +60,7 @@ void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
     const uint blockStart = block * THREADS * PER_THREAD;
     for(uint e = 0; e < PER_THREAD; ++e){
         const uint index = blockStart + thread * PER_THREAD + e;
-        if(index < params.count){
+        if(index < count){
             const uint digit = (keys[index] >> params.shift) & (DIGITS - 1);
             counts[digit * THREADS + thread] += 1;
         }
@@ -58,6 +74,6 @@ void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
         for(uint t = 0; t < THREADS; ++t){
             total += counts[thread * THREADS + t];
         }
-        blockHistogram[thread * params.blockCount + block] = total;
+        blockHistogram[thread * blockCount + block] = total;
     }
 }

@@ -22,11 +22,20 @@ struct Params{
     uint count;
     uint shift;
     uint blockCount;
-    uint padding0;
+    uint countBase;   //DIRECT: broj je u ovoj konstanti; inace indeks u countSource
 }
 
 [[vk::push_constant]] ConstantBuffer<Params> params;
 [[vk::binding(0,0)]] RWStructuredBuffer<uint> blockHistogram;
+[[vk::binding(1,0)]] RWStructuredBuffer<uint> countSource;   //vidi RadixSort::sortIndirect
+
+static const uint DIRECT = 0xFFFFFFFF;
+
+//Broj blokova: iz push konstante, ili iz buffera kad ga zna samo kartica. Vidi radix_histogram
+uint blockTotal(){
+    if(params.countBase != DIRECT) return countSource[params.countBase + 1];
+    return params.blockCount;
+}
 
 static const uint THREADS = 256;
 static const uint DIGITS = 16;
@@ -38,7 +47,8 @@ groupshared uint carry;
 [numthreads(256,1,1)]
 void computeMain(uint3 threadId : SV_GroupThreadID){
     const uint thread = threadId.x;
-    const uint total = DIGITS * params.blockCount;
+    const uint blockCount = blockTotal();
+    const uint total = DIGITS * blockCount;
 
     if(thread == 0){
         carry = 0;

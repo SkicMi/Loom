@@ -18,6 +18,7 @@ class VulkanRenderer;
 //
 //   1 brojanje      koliko pločica zahvaca koji splat
 //   2 zbroj         gdje ciji dio pocinje (PrefixSum, tri prolaza)
+//   2b velicine     broj parova i velicine dispatcha, na kartici (splat_pair_sizes)
 //   3 sirenje       jedan par (pločica, splat) po zahvacenoj pločici
 //   4 sort dubine   parovi poredani sprijeda natrag
 //   5 skupljanje    kljucevi pločica preslozeni u taj novi poredak
@@ -25,12 +26,11 @@ class VulkanRenderer;
 //   7 rasponi       gdje u sortiranom polju pocinje koja pločica
 //   8 crtanje       jedna grupa po pločici, jedna dretva po pikselu
 //
-// GDJE JE OVO SPORIJE NEGO STO MORA BITI, i neka stoji zapisano prije nego se izmjeri: broj
-// parova zna se tek nakon zbroja, a to je broj NA KARTICI. Velicine dispatcha ga trebaju na
-// procesoru. Rjesenja su dva - procitati ga natrag (stanka usred kadra) ili neizravni dispatch
-// (kojeg Loom jos nema). Zasad ga procesor racuna SAM, jer on ionako priprema splatove; GPU ga
-// racuna neovisno i test provjerava da se ta dva broja slazu. Kad priprema predje na karticu,
-// ovo postaje neizravni dispatch i to je zaseban korak.
+// BROJ PAROVA ZNA SAMO KARTICA. Zna se tek nakon zbroja, a velicine svega sto slijedi ovise o
+// njemu. Procitati ga natrag znacilo bi stanku usred kadra - na diskretnoj kartici preko PCIe,
+// svaki kadar. Umjesto toga splat_pair_sizes ga ogranici na maxPairs i upise velicine
+// dispatcha, a sortovi, skupljanje i rasponi idu kroz dispatchIndirect. Procesor po kadru ne
+// cita nista; broj koji je scena trazila moze procitati poslije kadra (requestedPairs).
 //
 // JEDAN PRIMJERAK RADNIH POLJA, A LOOM DRZI DVA KADRA U LETU. Splatovi, kljucevi, poreci i
 // rasponi postoje po jednom, ne po kadru. Tko pripremi sljedeci kadar dok prethodni jos crta,
@@ -100,8 +100,15 @@ class SplatRenderer{
     //izracunala kartica - dva neovisna racuna istog broja
     std::vector<uint32_t> tileCounts(const std::vector<SplatMath::PreparedSplat>& splats) const;
 
-    //Mora se zvati unutar kadra. pairCount je ono sto je vratio countPairs
-    void draw(VulkanRenderer& renderer, uint32_t splatCount, uint32_t pairCount);
+    //Mora se zvati unutar kadra, poslije prepare() ili upload(). Broj parova ne dolazi s
+    //procesora: kartica ga racuna iz zbroja i sama podesi velicine dispatcha
+    void draw(VulkanRenderer& renderer, uint32_t splatCount);
+
+    //Koliko je parova scena trazila u zadnjem kadru sa splatovima, i koliko ih je nacrtano. Kad
+    //se razlikuju, maxPairs je premalen i dijela slike nema. Tocno je tek kad je kadar gotov
+    //(waitIdle) - dok kadar leti, tu pise prosli
+    uint32_t requestedPairs() const;
+    uint32_t lastPairCount() const;
 
     vk::Extent2D getGrid() const {return grid;}
     uint32_t getTileCount() const {return grid.width * grid.height;}
@@ -115,7 +122,21 @@ class SplatRenderer{
         uint32_t gridY = 0;
         uint32_t tileSize = 0;
         uint32_t splatCount = 0;
+        uint32_t maxPairs = 0;    //cita ga samo sirenje: iza te granice ne pise
     };
+    struct PairSizeParams{
+        uint32_t maxPairs = 0;
+        uint32_t groupSize = 0;
+        uint32_t radixBlockSize = 0;
+        uint32_t padding0 = 0;
+    };
+
+    //Raspored buffera pairSizes. Ugovor sa splat_pair_sizes.slang i s RadixSort::sortIndirect
+    static constexpr uint32_t sortSlot = 0;         //broj parova, blokovi, trojka za radix
+    static constexpr uint32_t pairGroupsSlot = 5;   //trojka za skupljanje i raspone
+    static constexpr uint32_t requestedSlot = 8;    //neograniceni broj
+    static constexpr uint32_t pairSizeSlots = 9;
+    static constexpr uint32_t pairGroupSize = 256;
     struct PairParams{
         uint32_t pairCount = 0;
         uint32_t padding0 = 0, padding1 = 0, padding2 = 0;
@@ -140,6 +161,7 @@ class SplatRenderer{
     VulkanBuffer rawSplats;
     VulkanBuffer shRest;
     VulkanBuffer prepareParams;
+    VulkanBuffer pairSizes;     //pise ga kartica, cita dispatchIndirect
     VulkanBuffer counts;        //postane pomaci nakon zbroja
     VulkanBuffer tileKeys;
     VulkanBuffer depthKeys;
@@ -153,6 +175,7 @@ class SplatRenderer{
     RadixSort sortByTile;
 
     VulkanComputePipeline preparePipeline;
+    VulkanComputePipeline pairSizesPipeline;
     VulkanComputePipeline countPipeline;
     VulkanComputePipeline expandPipeline;
     VulkanComputePipeline gatherPipeline;
@@ -161,6 +184,7 @@ class SplatRenderer{
     VulkanComputePipeline rasterPipeline;
 
     ComputeMaterial prepareMaterial;
+    ComputeMaterial pairSizesMaterial;
     ComputeMaterial countMaterial;
     ComputeMaterial expandMaterial;
     ComputeMaterial gatherMaterial;

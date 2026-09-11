@@ -1079,6 +1079,23 @@ void VulkanRenderer::drawFullscreen(const Material& material){
 void VulkanRenderer::dispatch(const ComputeMaterial& material,
                               uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ,
                               const void* pushData, uint32_t pushSize){
+    recordDispatch(material, pushData, pushSize, nullptr, 0, groupsX, groupsY, groupsZ);
+}
+
+void VulkanRenderer::dispatchIndirect(const ComputeMaterial& material,
+                                      const VulkanBuffer& sizes, vk::DeviceSize offset,
+                                      const void* pushData, uint32_t pushSize){
+    //the GPU would read past the buffer, and validation only says so once it is recorded
+    if(offset + 3 * sizeof(uint32_t) > sizes.getSize()){
+        throw std::runtime_error("dispatchIndirect: offset + 12 bytes runs past the end of the buffer");
+    }
+    recordDispatch(material, pushData, pushSize, &sizes, offset, 0, 0, 0);
+}
+
+void VulkanRenderer::recordDispatch(const ComputeMaterial& material,
+                                    const void* pushData, uint32_t pushSize,
+                                    const VulkanBuffer* indirect, vk::DeviceSize offset,
+                                    uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ){
 
     if(!frameActive){
         throw std::runtime_error("dispatch: frame not started (missing beginFrame)");
@@ -1122,7 +1139,11 @@ void VulkanRenderer::dispatch(const ComputeMaterial& material,
         commandBuffer.pipelineBarrier2(dep);
     }
 
-    commandBuffer.dispatch(groupsX, groupsY, groupsZ);
+    if(indirect){
+        commandBuffer.dispatchIndirect(*indirect->getBuffer(), offset);
+    }else{
+        commandBuffer.dispatch(groupsX, groupsY, groupsZ);
+    }
 
     if(!images.empty()){
         std::vector<vk::ImageMemoryBarrier2> toFinal;

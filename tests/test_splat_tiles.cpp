@@ -61,6 +61,9 @@ int main(){
     config.width = size.width; config.height = size.height;
     config.appName = "tiles"; config.engineName = "Loom tests";
     config.headless = true;
+    //Jedan SplatRenderer trazi 21 set i 73 storage buffera, a default od 64 po tipu to ne
+    //daje - tolerantan driver precuti, strog ne
+    config.maxDescriptorSets = 128;
     LoomInitializer loom(config);
 
     ImageConfig imageConfig;
@@ -214,7 +217,7 @@ int main(){
         const uint32_t pairCount = splatRenderer.countPairs(prepared);
 
         loom.renderer.beginFrame();
-        splatRenderer.draw(loom.renderer, uint32_t(prepared.size()), pairCount);
+        splatRenderer.draw(loom.renderer, uint32_t(prepared.size()));
         loom.renderer.endFrame();
         loom.waitIdle();
 
@@ -247,8 +250,11 @@ int main(){
             if(offsets[i] != running) ++mismatched;
             running += cpuCounts[i];
         }
-        if(mismatched != 0 || running != pairCount) allCountsAgree = false;
-        countsTrace += fmt("%u:%zu ", tileSize, mismatched);
+        //I broj parova koji je kartica sama izracunala i po kojem je podesila dispatch
+        const uint32_t cardPairs = splatRenderer.requestedPairs();
+        if(mismatched != 0 || running != pairCount || cardPairs != pairCount ||
+           splatRenderer.lastPairCount() != pairCount) allCountsAgree = false;
+        countsTrace += fmt("%u:%zu (parova %u/%u) ", tileSize, mismatched, pairCount, cardPairs);
 
         if(tileSize == 8) firstTiled = tiled;
         else if(different == 0 && firstTiled.size() == tiled.size()){

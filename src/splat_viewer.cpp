@@ -12,9 +12,10 @@
 // BOJA OVISI O SMJERU POGLEDA (G4): odsjaj na metalu i nebo koje se mijenja dok kamera kruzi.
 // Racuna se svaki kadar, jer smjer od kamere do gaussiana je jedino sto se mijenja.
 //
-// I PRIPREMA JE NA PROCESORU. Svaki kadar racuna kovarijancu i conic za svaki splat iznova, jer
-// oboje ovisi o kameri. Za tri cetvrt milijuna splatova to je vecina vremena kadra; mjeri se i
-// ispisuje, pa se vidi tocno koliko. Kad predje na karticu, i broj parova prelazi s njom.
+// PRIPREMA JE NA KARTICI, i broj parova s njom. Sirovi splatovi odu na karticu jednom; svaki
+// kadar procesor posalje samo kameru. Kovarijancu, conic, boju iz smjera i broj parova racuna
+// kartica, a velicine dispatcha iz tog broja izvodi sama - procesor po kadru ne cita nista.
+// Ispisuje se koliko je parova scena trazila, i vice kad ih je vise nego sto ima mjesta.
 #include "Core/Camera.h"
 #include "Core/CameraIntrinsics.h"
 #include "Core/LoomConfig.h"
@@ -157,6 +158,9 @@ int main(int argc, char** argv){
     config.appName = "Loom splat viewer"; config.engineName = "Loom";
     config.headless = false;
     config.enableDepth = false;
+    //Jedan SplatRenderer trazi 21 set i 73 storage buffera, a default od 64 po tipu to ne
+    //daje - tolerantan driver precuti, strog ne
+    config.maxDescriptorSets = 128;
 
     //Fullscreen prolaz koji sliku prenosi na ekran nema vertex buffer ni dubinu
     config.pipelineConfig.vertexBindings.clear();
@@ -186,10 +190,44 @@ int main(int argc, char** argv){
     SplatRendererConfig rendererConfig;
     rendererConfig.tileSize = tileSize;
     rendererConfig.maxSplats = uint32_t(splats.size());
-    rendererConfig.maxPairs = 16u << 20;
+    //Najvise sto stane u najmanju granicu grupa koju Vulkan jamci: 65535 grupa po 256
+    rendererConfig.maxPairs = 65535u * 256u;
+    rendererConfig.maxShCoefficients = useSH ? coeffsPerChannel * 3 : 0;
 
     SplatRenderer splatRenderer(loom.device, loom.getDescriptorPool(),
                                 splatTarget.getColorImage(), size, rendererConfig);
+
+    //SIROVI SPLATOVI, JEDNOM. Aktivacija je vec napravljena jer ne ovisi o kameri; sve sto ovisi
+    //racuna kartica svaki kadar. Koeficijenti se uzimaju preko sourceIndex, jer korak preskace
+    const uint32_t splatCount = uint32_t(splats.size());
+    {
+        std::vector<SplatMath::RawSplat> raw;
+        raw.reserve(splats.size());
+        std::vector<float> rest;
+        if(useSH) rest.reserve(splats.size() * coeffsPerChannel * 3);
+
+        for(size_t i = 0; i < splats.size(); ++i){
+            const Splat& splat = splats[i];
+            const Spool::Gaussian& source = cloud.gaussians[sourceIndex[i]];
+
+            SplatMath::RawSplat one;
+            one.positionOpacity = glm::vec4(splat.position, splat.opacity);
+            one.scale = glm::vec4(splat.scale, 0.0f);
+            one.rotation = glm::vec4(splat.rotation.w, splat.rotation.x, splat.rotation.y, splat.rotation.z);
+            one.dc = glm::vec4(source.dc[0], source.dc[1], source.dc[2], 0.0f);
+            raw.push_back(one);
+
+            if(useSH && coeffsPerChannel > 0){
+                const float* coefficients = cloud.restFor(sourceIndex[i]);
+                rest.insert(rest.end(), coefficients, coefficients + coeffsPerChannel * 3);
+            }
+        }
+
+        splatRenderer.uploadRaw(raw, rest, useSH ? cloud.shDegree : 0, useSH ? coeffsPerChannel : 0);
+        printf("  na karticu: %.0f MB splatova, %.0f MB koeficijenata\n",
+               double(raw.size() * sizeof(SplatMath::RawSplat)) / 1048576.0,
+               double(rest.size() * sizeof(float)) / 1048576.0);
+    }
 
     printf("  pločica %ux%u, mreza %ux%u\n", tileSize, tileSize,
            splatRenderer.getGrid().width, splatRenderer.getGrid().height);
@@ -210,16 +248,13 @@ int main(int argc, char** argv){
     float distance = 1.3f * bounds.radius;
     float height = 0.2f * bounds.radius;
 
-    std::vector<SplatMath::PreparedSplat> prepared;
-    prepared.reserve(splats.size());
-
     printf("\nStrelice: kruzenje i visina.  W/S: blize i dalje.  ESC: kraj.\n\n");
 
     GLFWwindow* window = loom.window->getWindow();
     double lastReport = loom.getTime();
     int framesSinceReport = 0;
     uint32_t totalFrames = 0;
-    double prepareSeconds = 0.0;
+    uint32_t pairsAsked = 0;
 
     while(!loom.shouldClose()){
         loom.pollEvents();
@@ -245,55 +280,24 @@ int main(int argc, char** argv){
         const glm::mat4 projection = camera.getProjection(size.width, size.height);
         const CameraIntrinsics intrinsics = CameraIntrinsics::fromProjection(projection, size.width, size.height);
 
-        //PRIPREMA, i ovo je vecina kadra. Kovarijanca i conic ovise o kameri, pa se racunaju
-        //iznova cim se ona pomakne
-        const auto prepareStart = std::chrono::steady_clock::now();
-
-        prepared.clear();
-        for(size_t i = 0; i < splats.size(); ++i){
-            SplatMath::PreparedSplat one;
-            if(!SplatMath::prepare(splats[i], view, intrinsics.fx, intrinsics.fy,
-                                   intrinsics.cx, intrinsics.cy, 0.3f, one)){
-                continue;
-            }
-
-            //Boja iz smjera pogleda. Smjer je od kamere PREMA gaussianu, i mijenja se za svaki
-            //gaussian posebno - zato se ovo ne da izracunati jednom pa spremiti
-            const glm::vec3 colour = !useSH ? splats[i].color : SplatMath::colorFromSH(
-                glm::vec3(cloud.gaussians[sourceIndex[i]].dc[0],
-                          cloud.gaussians[sourceIndex[i]].dc[1],
-                          cloud.gaussians[sourceIndex[i]].dc[2]),
-                cloud.restFor(sourceIndex[i]), coeffsPerChannel, cloud.shDegree,
-                splats[i].position - cameraConfig.position);
-
-            //Negativna boja je legitiman medjurezultat sfernih harmonika, ali slika je nema gdje
-            //prikazati - odsijeca se tek ovdje, na samom rubu
-            one.color = glm::vec4(glm::max(colour, glm::vec3(0.0f)), 0.0f);
-            prepared.push_back(one);
-        }
-
-        //Sprijeda natrag. Sort na kartici to radi po pločici, ali pomaci u polju parova moraju
-        //postojati prije nego se ista sortira - a broj parova racuna procesor
-        std::sort(prepared.begin(), prepared.end(),
-            [](const SplatMath::PreparedSplat& a, const SplatMath::PreparedSplat& b){
-                return a.conicOpacityDepth.z < b.conicOpacityDepth.z;
-            });
-
-        prepareSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - prepareStart).count();
-
         //ČEKA SE PRIJE PISANJA, i to nije opreznost nego nužnost. Loom drži dva kadra u letu, a
-        //SplatRenderer ima JEDAN primjerak svakog radnog polja - splatove, ključeve, poretke,
-        //raspone. Kad bi se sljedeći kadar pripremio dok prethodni još crta, GPU bi čitao pola
-        //jedne a pola druge scene: slika se raspadne u šum koji izgleda kao greška rasterizatora
-        //a nije. Ovdje to ništa ne košta jer je kadar ionako u pripremi na procesoru
+        //SplatRenderer ima JEDAN primjerak svakog radnog polja - kameru, splatove, ključeve,
+        //poretke, raspone. Kad bi se sljedeći kadar poslao dok prethodni još crta, GPU bi čitao
+        //pola jedne a pola druge scene: slika se raspadne u šum koji izgleda kao greška
+        //rasterizatora a nije. Dok polja ne postanu po kadru, ovo košta paralelizam kartice i
+        //procesora - i to je sad, kad je priprema na kartici, prava cijena
         loom.waitIdle();
 
-        splatRenderer.upload(prepared);
-        const uint32_t pairCount = splatRenderer.countPairs(prepared);
+        //Prosli kadar je gotov, pa je broj koji je trazio sad tocan
+        pairsAsked = splatRenderer.requestedPairs();
+
+        splatRenderer.setCamera(view, cameraConfig.position, intrinsics.fx, intrinsics.fy,
+                                intrinsics.cx, intrinsics.cy);
 
         if(!loom.renderer.beginFrame()) continue;
 
-        splatRenderer.draw(loom.renderer, uint32_t(prepared.size()), pairCount);
+        splatRenderer.prepare(loom.renderer, splatCount);
+        splatRenderer.draw(loom.renderer, splatCount);
 
         loom.renderer.beginPass();
         loom.renderer.drawFullscreen(present);
@@ -319,13 +323,12 @@ int main(int argc, char** argv){
 
         const double now = loom.getTime();
         if(now - lastReport > 1.0){
-            printf("  %.1f kadrova/s   %zu splatova vidljivo, %u parova   priprema %.0f %% kadra\n",
-                   framesSinceReport / (now - lastReport), prepared.size(), pairCount,
-                   100.0 * prepareSeconds / (now - lastReport));
+            printf("  %.1f kadrova/s   %u splatova, %u parova%s\n",
+                   framesSinceReport / (now - lastReport), splatCount, pairsAsked,
+                   pairsAsked > rendererConfig.maxPairs ? "   PREMALO MJESTA - dio slike nedostaje (maxPairs)" : "");
             fflush(stdout);
             lastReport = now;
             framesSinceReport = 0;
-            prepareSeconds = 0.0;
         }
     }
 

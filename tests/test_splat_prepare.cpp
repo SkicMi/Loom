@@ -53,6 +53,9 @@ int main(){
     config.width = size.width; config.height = size.height;
     config.appName = "prepare"; config.engineName = "Loom tests";
     config.headless = true;
+    //Jedan SplatRenderer trazi 21 set i 73 storage buffera, a default od 64 po tipu to ne
+    //daje - tolerantan driver precuti, strog ne
+    config.maxDescriptorSets = 128;
     LoomInitializer loom(config);
 
     ImageConfig imageConfig;

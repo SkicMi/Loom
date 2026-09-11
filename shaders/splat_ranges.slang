@@ -6,22 +6,15 @@
 //
 // Pločice koje nijedan splat ne dira ostaju na nuli, pa im je raspon prazan - zato se polje
 // mora ocistiti prije ovoga.
-struct Params{
-    uint pairCount;
-    uint padding0;
-    uint padding1;
-    uint padding2;
-}
-
-[[vk::push_constant]] ConstantBuffer<Params> params;
 [[vk::binding(0,0)]] RWStructuredBuffer<uint> sortedTiles;
 [[vk::binding(1,0)]] RWStructuredBuffer<uint> ranges;   //dva uinta po pločici: pocetak, kraj
+[[vk::binding(2,0)]] RWStructuredBuffer<uint> pairSizes;   //[0] broj parova, upisala ga je kartica - vidi splat_pair_sizes.slang
 
 [shader("compute")]
 [numthreads(256,1,1)]
 void computeMain(uint3 threadId : SV_DispatchThreadID){
     const uint index = threadId.x;
-    if(index >= params.pairCount){
+    if(index >= pairSizes[0]){
         return;
     }
 
@@ -30,7 +23,7 @@ void computeMain(uint3 threadId : SV_DispatchThreadID){
     if(index == 0 || sortedTiles[index - 1] != tile){
         ranges[tile * 2 + 0] = index;
     }
-    if(index + 1 == params.pairCount || sortedTiles[index + 1] != tile){
+    if(index + 1 == pairSizes[0] || sortedTiles[index + 1] != tile){
         ranges[tile * 2 + 1] = index + 1;
     }
 }

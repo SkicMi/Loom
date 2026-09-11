@@ -45,10 +45,12 @@ RadixSort::RadixSort(const VulkanDevice& device,
                      const vk::raii::DescriptorPool& pool,
                      VulkanBuffer& keys,
                      VulkanBuffer& values,
-                     uint32_t capacity)
+                     uint32_t capacity,
+                     const VulkanBuffer* countSource)
 : device(device),
   keys(&keys),
   values(&values),
+  countSource(countSource),
   scratchKeys(device, vk::DeviceSize(capacity) * sizeof(uint32_t),
               vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::GPU_ONLY),
   scratchValues(device, vk::DeviceSize(capacity) * sizeof(uint32_t),
@@ -56,9 +58,13 @@ RadixSort::RadixSort(const VulkanDevice& device,
   //Tablica je [znamenka][blok] i mora stati za najveci broj elemenata koji ce doci
   blockHistogram(device, vk::DeviceSize(digits) * blocksFor(capacity) * sizeof(uint32_t),
                  vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::GPU_ONLY),
-  histogramPipeline(device, configFor("radix_histogram.comp.spv", 2, sizeof(Params))),
-  scanPipeline(device, configFor("radix_scan.comp.spv", 1, sizeof(Params))),
-  scatterPipeline(device, configFor("radix_scatter.comp.spv", 5, sizeof(Params))),
+  //Pet uinta, koliko ugovor iz sortIndirect trazi. Nitko ga ne pise ni ne cita - postoji jer
+  //descriptor koji shader spominje mora biti vezan i kad shader u tom slucaju ne gleda u njega
+  ownCountSource(device, 5 * sizeof(uint32_t),
+                 vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::GPU_ONLY),
+  histogramPipeline(device, configFor("radix_histogram.comp.spv", 3, sizeof(Params))),
+  scanPipeline(device, configFor("radix_scan.comp.spv", 2, sizeof(Params))),
+  scatterPipeline(device, configFor("radix_scatter.comp.spv", 6, sizeof(Params))),
   histogramForward(device, pool, histogramPipeline),
   histogramBackward(device, pool, histogramPipeline),
   scan(device, pool, scanPipeline),
@@ -88,6 +94,13 @@ RadixSort::RadixSort(const VulkanDevice& device,
     scatterBackward.setStorageBuffer(2, keys);
     scatterBackward.setStorageBuffer(3, values);
     scatterBackward.setStorageBuffer(4, blockHistogram);
+
+    const VulkanBuffer& source = countSource ? *countSource : ownCountSource;
+    histogramForward.setStorageBuffer(2, source);
+    histogramBackward.setStorageBuffer(2, source);
+    scan.setStorageBuffer(1, source);
+    scatterForward.setStorageBuffer(5, source);
+    scatterBackward.setStorageBuffer(5, source);
 }
 
 void RadixSort::sort(VulkanRenderer& renderer, uint32_t count){
@@ -115,5 +128,30 @@ void RadixSort::sort(VulkanRenderer& renderer, uint32_t count){
 
         renderer.dispatch(forward ? scatterForward : scatterBackward,
                           blocks, 1, 1, &params, sizeof(params));
+    }
+}
+
+void RadixSort::sortIndirect(VulkanRenderer& renderer, uint32_t base){
+    if(!countSource){
+        throw std::runtime_error("RadixSort: sortIndirect bez countSource - broj nema odakle doci");
+    }
+
+    //Trojka za dispatch stoji dva mjesta iza broja elemenata
+    const vk::DeviceSize dispatchOffset = vk::DeviceSize(base + 2) * sizeof(uint32_t);
+
+    for(uint32_t pass = 0; pass < passes; ++pass){
+        Params params;
+        params.shift = pass * 4;
+        params.countBase = base;
+
+        const bool forward = (pass % 2) == 0;
+
+        renderer.dispatchIndirect(forward ? histogramForward : histogramBackward,
+                                  *countSource, dispatchOffset, &params, sizeof(params));
+
+        renderer.dispatch(scan, 1, 1, 1, &params, sizeof(params));
+
+        renderer.dispatchIndirect(forward ? scatterForward : scatterBackward,
+                                  *countSource, dispatchOffset, &params, sizeof(params));
     }
 }

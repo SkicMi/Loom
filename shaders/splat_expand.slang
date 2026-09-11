@@ -12,6 +12,7 @@ struct Params{
     uint2 grid;
     uint tileSize;
     uint splatCount;
+    uint maxPairs;    //iza ove granice nema mjesta - vidi splat_pair_sizes.slang
 }
 
 [[vk::push_constant]] ConstantBuffer<Params> params;
@@ -50,6 +51,11 @@ void computeMain(uint3 threadId : SV_DispatchThreadID){
 
     for(int ty = bounds.y; ty < bounds.w; ++ty){
         for(int tx = bounds.x; tx < bounds.z; ++tx){
+            //Iza granice nema mjesta. Broj parova se ogranici na kartici, a slika kojoj dio
+            //parova nedostaje manja je steta od pisanja po tudjoj memoriji
+            if(write >= params.maxPairs){
+                return;
+            }
             tileKeys[write] = uint(ty) * params.grid.x + uint(tx);
             depthKeys[write] = depthKey;
             splatIndices[write] = index;

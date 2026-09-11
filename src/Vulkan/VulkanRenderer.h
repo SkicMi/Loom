@@ -88,6 +88,11 @@ class VulkanRenderer{
     void dispatch(const ComputeMaterial& material,
                   uint32_t groupsX, uint32_t groupsY = 1, uint32_t groupsZ = 1,
                   const void* pushData = nullptr, uint32_t pushSize = 0);
+    //Group counts read from a buffer (three uint32 at offset), so a number only the GPU knows
+    //can size the next dispatch without the CPU stopping to read it back
+    void dispatchIndirect(const ComputeMaterial& material,
+                          const VulkanBuffer& sizes, vk::DeviceSize offset,
+                          const void* pushData = nullptr, uint32_t pushSize = 0);
     void endFrame();
 
     //The window, read back. Only valid between frames
@@ -154,6 +159,11 @@ class VulkanRenderer{
 
 
     private:
+    //dispatch and dispatchIndirect share everything but the last command
+    void recordDispatch(const ComputeMaterial& material, const void* pushData, uint32_t pushSize,
+                        const VulkanBuffer* indirect, vk::DeviceSize offset,
+                        uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ);
+
     const VulkanDevice& device;
     VulkanSwapchain* swapchain = nullptr;
     const VulkanCommand& command;
