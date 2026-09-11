@@ -240,6 +240,10 @@ endif()
 # ----------------------------------------------------------------------------
 add_subdirectory(spool)
 
+# Engine - sto se crta: camera solve i sinteticka referenca za njega. Vlastiti folder i
+# vlastiti CMakeLists, iz istog razloga kao Spool: ne zna ni za Loom ni za Spool
+add_subdirectory(engine)
+
 # ----------------------------------------------------------------------------
 # Loom biblioteka
 # ----------------------------------------------------------------------------
@@ -454,7 +458,7 @@ if(LOOM_BUILD_TESTS)
         add_executable(${TEST_NAME} ${TEST_SOURCE})
         # Testovi linkaju obje biblioteke. To je dozvoljeno i tu prestaje: same
         # biblioteke jedna o drugoj ne znaju nista.
-        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool LoomPreset)
+        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool Engine LoomPreset)
         target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         add_dependencies(${TEST_NAME} LoomShaders)
         add_dependencies(LoomTests ${TEST_NAME})
