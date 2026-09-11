@@ -47,6 +47,10 @@ void computeMain(uint3 threadId : SV_DispatchThreadID){
 
     for(int ty = bounds.y; ty < bounds.w; ++ty){
         for(int tx = bounds.x; tx < bounds.z; ++tx){
+            //Ista odluka koju je donijelo brojanje - inace pomaci ne bi odgovarali zapisanom
+            if(!splatTouchesTile(splat, tx, ty, params.tileSize)){
+                continue;
+            }
             //Iza granice nema mjesta. Broj parova se ogranici na kartici, a slika kojoj dio
             //parova nedostaje manja je steta od pisanja po tudjoj memoriji
             if(write >= params.maxPairs){

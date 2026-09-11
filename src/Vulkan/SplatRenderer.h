@@ -18,7 +18,8 @@ class VulkanRenderer;
 //
 //   1 dubine        kljuc dubine po splatu (splat_depth_keys)
 //   2 sort dubine   SPLATOVI poredani sprijeda natrag - ne parovi
-//   3 brojanje      koliko pločica zahvaca koji splat, tim poretkom
+//   3 brojanje      u koliko pločica splat stvarno moze nesto nacrtati, tim poretkom - ne
+//                   koliko ih dira kvadrat oko kruga (vidi splatTouchesTile)
 //   4 zbroj         gdje ciji dio pocinje (PrefixSum, tri prolaza)
 //   4b velicine     broj parova i velicine dispatcha, na kartici (splat_pair_sizes)
 //   5 sirenje       jedan par (pločica, splat) po zahvacenoj pločici - vec poredan po dubini

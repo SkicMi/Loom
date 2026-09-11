@@ -191,7 +191,13 @@ std::vector<uint32_t> SplatRenderer::tileCounts(const std::vector<SplatMath::Pre
         const int lastX  = std::clamp(int(std::floor((prepared[i].centerConic.x + radius) / tile)) + 1, 0, int(grid.width));
         const int lastY  = std::clamp(int(std::floor((prepared[i].centerConic.y + radius) / tile)) + 1, 0, int(grid.height));
 
-        counts[i] = uint32_t(std::max(0, lastX - firstX)) * uint32_t(std::max(0, lastY - firstY));
+        uint32_t touched = 0;
+        for(int ty = firstY; ty < lastY; ++ty){
+            for(int tx = firstX; tx < lastX; ++tx){
+                if(SplatMath::touchesTile(prepared[i], tx, ty, config.tileSize)) ++touched;
+            }
+        }
+        counts[i] = touched;
     }
     return counts;
 }

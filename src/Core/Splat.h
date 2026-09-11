@@ -147,4 +147,11 @@ bool prepare(const Splat& splat,
              float blur,
              PreparedSplat& out);
 
+//MOZE LI PRIPREMLJENI SPLAT NACRTATI IJEDAN PIKSEL PLOČICE (tx, ty). False samo kad sigurno ne.
+//
+//Blizanac splatTouchesTile iz SplatTiles.slang, istim redoslijedom operacija - vidi tamo zasto
+//je dovoljno pogledati najblizu tocku pločice. Postoji da procesor moze neovisno izbrojati
+//parove, i da test drzi obje strane jednu uz drugu
+bool touchesTile(const PreparedSplat& splat, int tileX, int tileY, uint32_t tileSize);
+
 }

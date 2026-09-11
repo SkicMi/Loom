@@ -219,4 +219,47 @@ glm::mat2 covariance2D(const glm::mat3& covariance,
     return result;
 }
 
+namespace{
+
+float conicForm(float a, float b, float c, float x, float y){
+    return a * x * x + 2.0f * b * x * y + c * y * y;
+}
+
+}
+
+bool touchesTile(const PreparedSplat& splat, int tileX, int tileY, uint32_t tileSize){
+    const float opacity = splat.conicOpacityDepth.y;
+    if(opacity < 1.0f / 255.0f){
+        return false;
+    }
+
+    const float size = float(tileSize);
+    const float xLo = splat.centerConic.x - (float(tileX) * size + size - 0.5f);
+    const float xHi = splat.centerConic.x - (float(tileX) * size + 0.5f);
+    const float yLo = splat.centerConic.y - (float(tileY) * size + size - 0.5f);
+    const float yHi = splat.centerConic.y - (float(tileY) * size + 0.5f);
+
+    const float nearX = std::max(0.0f, std::max(xLo, -xHi));
+    const float nearY = std::max(0.0f, std::max(yLo, -yHi));
+    const float radius = splat.conicOpacityDepth.w;
+    if(nearX * nearX + nearY * nearY > radius * radius){
+        return false;
+    }
+
+    if(xLo <= 0.0f && xHi >= 0.0f && yLo <= 0.0f && yHi >= 0.0f){
+        return true;
+    }
+
+    const float a = splat.centerConic.z;
+    const float b = splat.centerConic.w;
+    const float c = splat.conicOpacityDepth.x;
+    float best = conicForm(a, b, c, xLo, std::clamp(-b * xLo / c, yLo, yHi));
+    best = std::min(best, conicForm(a, b, c, xHi, std::clamp(-b * xHi / c, yLo, yHi)));
+    best = std::min(best, conicForm(a, b, c, std::clamp(-b * yLo / a, xLo, xHi), yLo));
+    best = std::min(best, conicForm(a, b, c, std::clamp(-b * yHi / a, xLo, xHi), yHi));
+
+    const float threshold = 2.0f * std::log(255.0f * opacity);
+    return best <= threshold * 1.001f + 1e-3f;
+}
+
 }

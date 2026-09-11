@@ -35,5 +35,15 @@ void computeMain(uint3 threadId : SV_DispatchThreadID){
         return;
     }
 
-    counts[index] = tilesTouched(tileBounds(splat.centerConic.xy, radius, params.grid, params.tileSize));
+    //Okvir je kvadrat oko kruga; broje se samo pločice u kojima splat stvarno moze nesto nacrtati
+    const int4 bounds = tileBounds(splat.centerConic.xy, radius, params.grid, params.tileSize);
+    uint touched = 0;
+    for(int ty = bounds.y; ty < bounds.w; ++ty){
+        for(int tx = bounds.x; tx < bounds.z; ++tx){
+            if(splatTouchesTile(splat, tx, ty, params.tileSize)){
+                ++touched;
+            }
+        }
+    }
+    counts[index] = touched;
 }

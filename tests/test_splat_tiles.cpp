@@ -214,6 +214,8 @@ int main(){
     // -------------------------------------------------------------------------------
 
     std::string sizesTrace;
+    std::string pruneTrace;
+    bool pruneRemovesPairs = true;
     std::string countsTrace;
     bool allIdentical = true;
     bool allCountsAgree = true;
@@ -229,6 +231,22 @@ int main(){
         splatRenderer.upload(prepared);
 
         const uint32_t pairCount = splatRenderer.countPairs(prepared);
+
+        //Koliko bi parova bilo samo s kvadratom oko kruga. Mora ih biti vise: da odbacivanje ne
+        //odbacuje nista, "ista slika" ne bi dokazivala da ga uopce ima
+        uint64_t boxPairs = 0;
+        for(const SplatMath::PreparedSplat& p : prepared){
+            const float r = p.conicOpacityDepth.w;
+            const float tile = float(tileSize);
+            const int gx = int(splatRenderer.getGrid().width), gy = int(splatRenderer.getGrid().height);
+            const int x0 = std::clamp(int(std::floor((p.centerConic.x - r) / tile)), 0, gx);
+            const int y0 = std::clamp(int(std::floor((p.centerConic.y - r) / tile)), 0, gy);
+            const int x1 = std::clamp(int(std::floor((p.centerConic.x + r) / tile)) + 1, 0, gx);
+            const int y1 = std::clamp(int(std::floor((p.centerConic.y + r) / tile)) + 1, 0, gy);
+            boxPairs += uint64_t(std::max(0, x1 - x0)) * uint64_t(std::max(0, y1 - y0));
+        }
+        if(!(pairCount < boxPairs)) pruneRemovesPairs = false;
+        pruneTrace += fmt("%ux%u:%llu->%u ", tileSize, tileSize, (unsigned long long)boxPairs, pairCount);
 
         loom.renderer.beginFrame();
         splatRenderer.draw(loom.renderer, uint32_t(prepared.size()));
@@ -286,6 +304,9 @@ int main(){
 
     report.check("ista slika kao gruba sila", allIdentical,
         fmt("piksela razlike po velicini pločice: %s", sizesTrace.c_str()));
+
+    report.check("odbacivanje parova koji ne crtaju nesto odbacuje", pruneRemovesPairs,
+        fmt("parova iz kvadrata -> parova koji mogu crtati: %s", pruneTrace.c_str()));
 
     report.check("procesor i kartica broje isto", allCountsAgree,
         fmt("pomaka koji se razlikuju, po velicini pločice: %s", countsTrace.c_str()));
