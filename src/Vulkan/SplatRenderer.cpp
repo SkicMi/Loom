@@ -49,7 +49,15 @@ SplatRenderer::SplatRenderer(const VulkanDevice& device,
   extent(extent),
   grid{groupsOf(extent.width, config.tileSize), groupsOf(extent.height, config.tileSize)},
   splats(device, vk::DeviceSize(config.maxSplats) * sizeof(SplatMath::PreparedSplat),
+         vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc,
+         MemoryUsage::CPU_TO_GPU),
+  rawSplats(device, vk::DeviceSize(config.maxSplats) * sizeof(SplatMath::RawSplat),
+            vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::CPU_TO_GPU),
+  //Koeficijenti visih stupnjeva. Najmanje jedan float, jer buffer velicine nula ne postoji
+  shRest(device, vk::DeviceSize(std::max<uint64_t>(1, uint64_t(config.maxSplats) * config.maxShCoefficients)) * sizeof(float),
          vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::CPU_TO_GPU),
+  prepareParams(device, sizeof(SplatMath::PrepareParams),
+                vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::CPU_TO_GPU),
   counts(device, vk::DeviceSize(config.maxSplats) * sizeof(uint32_t),
          vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc,
          MemoryUsage::GPU_ONLY),
@@ -69,6 +77,7 @@ SplatRenderer::SplatRenderer(const VulkanDevice& device,
   prefixSum(device, pool, counts, config.maxSplats),
   sortByDepth(device, pool, depthKeys, sortValues, config.maxPairs),
   sortByTile(device, pool, gatheredTiles, sortValues, config.maxPairs),
+  preparePipeline(device, configFor("splat_prepare.comp.spv", 4, 0)),
   countPipeline(device, configFor("splat_count.comp.spv", 2, sizeof(TileParams))),
   expandPipeline(device, configFor("splat_expand.comp.spv", 6, sizeof(TileParams))),
   gatherPipeline(device, configFor("splat_gather_tiles.comp.spv", 3, sizeof(PairParams))),
@@ -79,6 +88,7 @@ SplatRenderer::SplatRenderer(const VulkanDevice& device,
       raster.specializationConstants = {config.tileSize};   //velicina pločice JE velicina grupe
       return raster;
   }()),
+  prepareMaterial(device, pool, preparePipeline),
   countMaterial(device, pool, countPipeline),
   expandMaterial(device, pool, expandPipeline),
   gatherMaterial(device, pool, gatherPipeline),
@@ -94,6 +104,11 @@ SplatRenderer::SplatRenderer(const VulkanDevice& device,
                                  "x" + std::to_string(config.tileSize) + " trazi vise dretvi po "
                                  "grupi nego sto uredjaj dopusta");
     }
+
+    prepareMaterial.setStorageBuffer(0, rawSplats);
+    prepareMaterial.setStorageBuffer(1, shRest);
+    prepareMaterial.setStorageBuffer(2, prepareParams);
+    prepareMaterial.setStorageBuffer(3, splats);
 
     countMaterial.setStorageBuffer(0, splats);
     countMaterial.setStorageBuffer(1, counts);
@@ -146,6 +161,54 @@ std::vector<uint32_t> SplatRenderer::tileCounts(const std::vector<SplatMath::Pre
         counts[i] = uint32_t(std::max(0, lastX - firstX)) * uint32_t(std::max(0, lastY - firstY));
     }
     return counts;
+}
+
+void SplatRenderer::uploadRaw(const std::vector<SplatMath::RawSplat>& raw,
+                              const std::vector<float>& rest,
+                              uint32_t shDegree,
+                              uint32_t coeffsPerChannel){
+    if(raw.size() > config.maxSplats){
+        throw std::runtime_error("SplatRenderer: vise splatova nego sto je receno u maxSplats");
+    }
+    if(coeffsPerChannel * 3 > config.maxShCoefficients){
+        throw std::runtime_error("SplatRenderer: " + std::to_string(coeffsPerChannel * 3) +
+                                 " koeficijenata po splatu, a maxShCoefficients je " +
+                                 std::to_string(config.maxShCoefficients));
+    }
+    if(!rest.empty() && rest.size() != raw.size() * coeffsPerChannel * 3){
+        throw std::runtime_error("SplatRenderer: broj koeficijenata ne odgovara broju splatova");
+    }
+
+    rawSplats.upload(raw.data(), raw.size() * sizeof(SplatMath::RawSplat));
+    if(!rest.empty()){
+        shRest.upload(rest.data(), rest.size() * sizeof(float));
+    }
+
+    storedDegree = shDegree;
+    storedCoeffs = coeffsPerChannel;
+}
+
+void SplatRenderer::setCamera(const glm::mat4& view, const glm::vec3& cameraPosition,
+                              float focalX, float focalY, float principalX, float principalY,
+                              float blur){
+    SplatMath::PrepareParams params;
+    params.view = view;
+    params.cameraPosition = glm::vec4(cameraPosition, 0.0f);
+    params.focalPrincipal = glm::vec4(focalX, focalY, principalX, principalY);
+
+    //Ogranicenje omjera se izvodi iz same slike, isto kao u SplatMath::prepare
+    params.limitsBlur = glm::vec4(1.3f * principalX / focalX,
+                                  1.3f * principalY / std::fabs(focalY),
+                                  blur, 0.0f);
+    params.counts = glm::uvec4(0, storedDegree, storedCoeffs, 0);
+
+    pendingParams = params;
+}
+
+void SplatRenderer::prepare(VulkanRenderer& renderer, uint32_t splatCount){
+    pendingParams.counts.x = splatCount;
+    prepareParams.upload(&pendingParams, sizeof(pendingParams));
+    renderer.dispatch(prepareMaterial, groupsOf(splatCount, 256), 1, 1);
 }
 
 uint32_t SplatRenderer::countPairs(const std::vector<SplatMath::PreparedSplat>& prepared) const{

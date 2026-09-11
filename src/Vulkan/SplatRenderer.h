@@ -52,6 +52,10 @@ struct SplatRendererConfig{
     //napravi stotine parova, pa ovo nije maxSplats nego visekratnik - a kad se prekoraci, bolje
     //je da se cuje nego da se tiho pise izvan polja
     uint32_t maxPairs = 4u << 20;
+
+    //Koliko koeficijenata sfernih harmonika po splatu treba mjesta. 45 je stupanj 3, sto je
+    //ono sto pravi 3DGS file nosi; nula znaci da se boja ne mijenja sa smjerom
+    uint32_t maxShCoefficients = 45;
 };
 
 class SplatRenderer{
@@ -66,8 +70,26 @@ class SplatRenderer{
     SplatRenderer& operator = (const SplatRenderer&) = delete;
 
     //Splatovi vec pripremljeni: sredina u pikselima, conic, neprozirnost, dubina, polumjer.
-    //Priprema je zasad posao procesora (vidi SplatMath::prepare)
+    //Postoji za testove i za usporedbu s pripremom na kartici
     void upload(const std::vector<SplatMath::PreparedSplat>& splats);
+
+    //SIROVI SPLATOVI, jednom. Sve je vec aktivirano jer aktivacija ne ovisi o kameri; ono sto
+    //ovisi (kovarijanca, conic, polumjer, dubina, boja iz smjera) racuna kartica svaki kadar
+    void uploadRaw(const std::vector<SplatMath::RawSplat>& splats,
+                   const std::vector<float>& shRest,
+                   uint32_t shDegree,
+                   uint32_t coeffsPerChannel);
+
+    //Kamera ovog kadra. Mora se pozvati prije prepare()
+    void setCamera(const glm::mat4& view, const glm::vec3& cameraPosition,
+                   float focalX, float focalY, float principalX, float principalY,
+                   float blur = 0.3f);
+
+    //Priprema na kartici. Unutar kadra, prije draw()
+    void prepare(VulkanRenderer& renderer, uint32_t splatCount);
+
+    //Za test: ono sto je priprema napisala
+    const VulkanBuffer& getPrepared() const {return splats;}
 
     //Koliko parova ce nastati za te splatove. Racuna se istom matematikom koju racuna i shader,
     //i test provjerava da se slazu - jer dvije strane koje broje razlicito znace ili splatove
@@ -110,7 +132,14 @@ class SplatRenderer{
     vk::Extent2D extent;
     vk::Extent2D grid;
 
+    uint32_t storedDegree = 0;
+    uint32_t storedCoeffs = 0;
+    SplatMath::PrepareParams pendingParams;
+
     VulkanBuffer splats;
+    VulkanBuffer rawSplats;
+    VulkanBuffer shRest;
+    VulkanBuffer prepareParams;
     VulkanBuffer counts;        //postane pomaci nakon zbroja
     VulkanBuffer tileKeys;
     VulkanBuffer depthKeys;
@@ -123,6 +152,7 @@ class SplatRenderer{
     RadixSort sortByDepth;
     RadixSort sortByTile;
 
+    VulkanComputePipeline preparePipeline;
     VulkanComputePipeline countPipeline;
     VulkanComputePipeline expandPipeline;
     VulkanComputePipeline gatherPipeline;
@@ -130,6 +160,7 @@ class SplatRenderer{
     VulkanComputePipeline rangesPipeline;
     VulkanComputePipeline rasterPipeline;
 
+    ComputeMaterial prepareMaterial;
     ComputeMaterial countMaterial;
     ComputeMaterial expandMaterial;
     ComputeMaterial gatherMaterial;

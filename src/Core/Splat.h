@@ -108,6 +108,25 @@ glm::vec2 projectToPixels(const glm::vec3& position,
                           float focalX, float focalY,
                           float principalX, float principalY);
 
+//Splat onakav kakav stoji na kartici izmedju kadrova: sve vec aktivirano, jer aktivacija ne
+//ovisi o kameri pa se radi jednom pri ucitavanju. Cetiri float4 da std430 nema sto poravnavati
+struct RawSplat{
+    glm::vec4 positionOpacity{0.0f};   //xyz polozaj, w neprozirnost
+    glm::vec4 scale{0.0f};             //xyz polumjeri, w nekoristeno
+    glm::vec4 rotation{1,0,0,0};       //w,x,y,z kvaterniona - tim redom, kako ga shader cita
+    glm::vec4 dc{0.0f};                //xyz koeficijenti stupnja 0, sirovi
+};
+
+//Sve sto priprema treba a ne mijenja se unutar kadra. U bufferu a ne u push konstanti, jer
+//matrica pogleda sama pojede polovicu zajamcenih 128 bajtova
+struct PrepareParams{
+    glm::mat4 view{1.0f};
+    glm::vec4 cameraPosition{0.0f};
+    glm::vec4 focalPrincipal{0.0f};   //fx, fy, cx, cy
+    glm::vec4 limitsBlur{0.0f};       //x, y ogranicenje omjera; z blur
+    glm::uvec4 counts{0};             //splatCount, shDegree, coeffsPerChannel
+};
+
 //Ono sto rasterizator stvarno cita, i nista vise. Slozeno u tri float4 jer std430 tada nema
 //sto poravnavati - raspored u memoriji je isti na obje strane bez ijednog pravila napamet
 struct PreparedSplat{
