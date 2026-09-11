@@ -109,7 +109,7 @@ int main(){
     RadixSort sorter(loom.device, loom.getDescriptorPool(), keys, values, capacity);
 
     //Jedan sort: podaci gore, dispatch, podaci dolje
-    auto runSort = [&](const std::vector<Pair>& input){
+    auto runSortWith = [&](RadixSort& which, const std::vector<Pair>& input){
         const uint32_t count = uint32_t(input.size());
 
         std::vector<uint32_t> flat(count);
@@ -122,7 +122,7 @@ int main(){
         loom.command.copyBuffer(upload.getBuffer(), values.getBuffer(), count * sizeof(uint32_t));
 
         loom.renderer.beginFrame();
-        sorter.sort(loom.renderer, count);
+        which.sort(loom.renderer, count);
         loom.renderer.endFrame();
         loom.waitIdle();
 
@@ -138,6 +138,10 @@ int main(){
         for(uint32_t i = 0; i < count; ++i) output[i].value = back[i];
 
         return output;
+    };
+
+    auto runSort = [&](const std::vector<Pair>& input){
+        return runSortWith(sorter, input);
     };
 
     //Koliko se mjesta razlikuje od onoga sto je dao procesor
@@ -287,6 +291,45 @@ int main(){
 
         report.check("isti ulaz daje isti izlaz", differences == 0,
             fmt("%zu od %zu mjesta razlike izmedju dva pokretanja", differences, first.size()));
+    }
+
+    // -- uzi kljuc, manje prolaza --------------------------------------------------------
+    //
+    // Kljuc pločice ima 12 bita, pa sortirati ga kroz svih 32 znaci cetiri prolaza koja samo
+    // premjestaju nule. Sort sa 16 bita mora dati isto sto i puni za kljuceve koji stanu - i MORA
+    // POGRIJESITI za one koji ne stanu. Da i to prode, ne bi bilo dokazano da je prolaza manje.
+
+    {
+        RadixSort narrow(loom.device, loom.getDescriptorPool(), keys, values, capacity, nullptr, 16);
+
+        std::mt19937 narrowRandom(20260911);
+        std::vector<Pair> fits(300000), spills(300000);
+        for(uint32_t i = 0; i < fits.size(); ++i){
+            fits[i].key = narrowRandom() & 0xFFFFu;
+            fits[i].value = i;
+            spills[i].key = narrowRandom();
+            spills[i].value = i;
+        }
+
+        const auto fitWrong = compare(runSortWith(narrow, fits), sortedOnCpu(fits));
+        const auto spillWrong = compare(runSortWith(narrow, spills), sortedOnCpu(spills));
+
+        report.check("16 bita, kljucevi koji stanu",
+            fitWrong.first == 0 && fitWrong.second == 0 && narrow.getPasses() == 4 && sorter.getPasses() == 8,
+            fmt("%zu kljuceva i %zu vrijednosti odstupa; prolaza %u (puni sort %u)",
+                fitWrong.first, fitWrong.second, narrow.getPasses(), sorter.getPasses()));
+
+        report.check("16 bita, kljucevi koji ne stanu ostanu neporedani", spillWrong.first > 0,
+            fmt("%zu od %zu kljuceva nije na mjestu", spillWrong.first, spills.size()));
+
+        std::string bitsTrace;
+        bool allEven = true;
+        for(uint32_t bits : {1u, 4u, 5u, 12u, 13u, 16u, 17u, 32u}){
+            const uint32_t passes = RadixSort::passesFor(bits);
+            if(passes % 2 != 0 || passes * 4 < bits) allEven = false;
+            bitsTrace += fmt("%u:%u ", bits, passes);
+        }
+        report.check("prolaza je uvijek paran broj i pokriva kljuc", allEven, bitsTrace);
     }
 
     report.checkNoValidationMessages();

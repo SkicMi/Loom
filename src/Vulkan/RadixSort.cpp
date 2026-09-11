@@ -41,16 +41,26 @@ uint32_t RadixSort::blocksFor(uint32_t count){
     return (count + elementsPerBlock - 1) / elementsPerBlock;
 }
 
+uint32_t RadixSort::passesFor(uint32_t keyBits){
+    if(keyBits == 0 || keyBits > 32){
+        throw std::runtime_error("RadixSort: kljuc od " + std::to_string(keyBits) + " bita - smije biti od 1 do 32");
+    }
+    const uint32_t needed = (keyBits + 3) / 4;
+    return needed + (needed % 2);
+}
+
 RadixSort::RadixSort(const VulkanDevice& device,
                      const vk::raii::DescriptorPool& pool,
                      VulkanBuffer& keys,
                      VulkanBuffer& values,
                      uint32_t capacity,
-                     const VulkanBuffer* countSource)
+                     const VulkanBuffer* countSource,
+                     uint32_t keyBits)
 : device(device),
   keys(&keys),
   values(&values),
   countSource(countSource),
+  passes(passesFor(keyBits)),
   scratchKeys(device, vk::DeviceSize(capacity) * sizeof(uint32_t),
               vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::GPU_ONLY),
   scratchValues(device, vk::DeviceSize(capacity) * sizeof(uint32_t),

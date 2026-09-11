@@ -14,22 +14,28 @@ class VulkanRenderer;
 //=============================================================================================
 // Rasterizator 3D gaussiana: pločice, rasponi i alfa kompozicija.
 //
-// Sedam dispatcha po kadru, plus dva sortiranja:
+// Po kadru, redom:
 //
-//   1 brojanje      koliko pločica zahvaca koji splat
-//   2 zbroj         gdje ciji dio pocinje (PrefixSum, tri prolaza)
-//   2b velicine     broj parova i velicine dispatcha, na kartici (splat_pair_sizes)
-//   3 sirenje       jedan par (pločica, splat) po zahvacenoj pločici
-//   4 sort dubine   parovi poredani sprijeda natrag
-//   5 skupljanje    kljucevi pločica preslozeni u taj novi poredak
-//   6 sort pločica  stabilan, pa unutar pločice ostaje poredak po dubini
+//   1 dubine        kljuc dubine po splatu (splat_depth_keys)
+//   2 sort dubine   SPLATOVI poredani sprijeda natrag - ne parovi
+//   3 brojanje      koliko pločica zahvaca koji splat, tim poretkom
+//   4 zbroj         gdje ciji dio pocinje (PrefixSum, tri prolaza)
+//   4b velicine     broj parova i velicine dispatcha, na kartici (splat_pair_sizes)
+//   5 sirenje       jedan par (pločica, splat) po zahvacenoj pločici - vec poredan po dubini
+//   6 sort pločica  stabilan, pa unutar pločice ostaje poredak po dubini; samo onoliko bita
+//                   koliko broj pločica treba
 //   7 rasponi       gdje u sortiranom polju pocinje koja pločica
 //   8 crtanje       jedna grupa po pločici, jedna dretva po pikselu
+//
+// SORT PO DUBINI JE NAD SPLATOVIMA, i to je izmjereno a ne ukus. Dok su se sortirali parovi, dva
+// sorta nad njima bila su pola kadra (G5, train_7000: 176.7 + 170.4 od 721 ms) i rasla su
+// linearno s brojem parova. Splatova je sedam puta manje, a kad se brojanje i sirenje obave
+// njihovim poretkom, parovi nastanu vec poredani - pa ostaje samo stabilni sort po pločici.
 //
 // BROJ PAROVA ZNA SAMO KARTICA. Zna se tek nakon zbroja, a velicine svega sto slijedi ovise o
 // njemu. Procitati ga natrag znacilo bi stanku usred kadra - na diskretnoj kartici preko PCIe,
 // svaki kadar. Umjesto toga splat_pair_sizes ga ogranici na maxPairs i upise velicine
-// dispatcha, a sortovi, skupljanje i rasponi idu kroz dispatchIndirect. Procesor po kadru ne
+// dispatcha, a sort po pločici i rasponi idu kroz dispatchIndirect. Procesor po kadru ne
 // cita nista; broj koji je scena trazila moze procitati poslije kadra (requestedPairs).
 //
 // JEDAN PRIMJERAK RADNIH POLJA, A LOOM DRZI DVA KADRA U LETU. Splatovi, kljucevi, poreci i
@@ -113,7 +119,7 @@ class SplatRenderer{
     vk::Extent2D getGrid() const {return grid;}
     uint32_t getTileCount() const {return grid.width * grid.height;}
 
-    //Za test: pomaci koje je izracunala kartica
+    //Za test: pomaci koje je izracunala kartica - po mjestu U PORETKU PO DUBINI, ne po indeksu
     const VulkanBuffer& getOffsets() const {return counts;}
 
     private:
@@ -163,11 +169,10 @@ class SplatRenderer{
     VulkanBuffer prepareParams;
     VulkanBuffer pairSizes;     //pise ga kartica, cita dispatchIndirect
     VulkanBuffer counts;        //postane pomaci nakon zbroja
-    VulkanBuffer tileKeys;
-    VulkanBuffer depthKeys;
-    VulkanBuffer splatIndices;
-    VulkanBuffer sortValues;
-    VulkanBuffer gatheredTiles;
+    VulkanBuffer depthKeys;     //po splatu
+    VulkanBuffer splatOrder;    //po splatu: indeksi, poredani po dubini
+    VulkanBuffer tileKeys;      //po paru
+    VulkanBuffer pairSplats;    //po paru: koji splat - vrijednost koju sort po pločici nosi
     VulkanBuffer ranges;
 
     PrefixSum prefixSum;
@@ -178,7 +183,7 @@ class SplatRenderer{
     VulkanComputePipeline pairSizesPipeline;
     VulkanComputePipeline countPipeline;
     VulkanComputePipeline expandPipeline;
-    VulkanComputePipeline gatherPipeline;
+    VulkanComputePipeline depthKeysPipeline;
     VulkanComputePipeline clearPipeline;
     VulkanComputePipeline rangesPipeline;
     VulkanComputePipeline rasterPipeline;
@@ -187,7 +192,7 @@ class SplatRenderer{
     ComputeMaterial pairSizesMaterial;
     ComputeMaterial countMaterial;
     ComputeMaterial expandMaterial;
-    ComputeMaterial gatherMaterial;
+    ComputeMaterial depthKeysMaterial;
     ComputeMaterial clearMaterial;
     ComputeMaterial rangesMaterial;
     ComputeMaterial rasterMaterial;

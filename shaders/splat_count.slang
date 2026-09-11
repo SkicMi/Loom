@@ -1,7 +1,10 @@
-// Binning, prolaz 1: koliko pločica zahvaca svaki splat.
+// Binning, prolaz 1: koliko pločica zahvaca svaki splat - REDOM PO DUBINI.
 //
 // Rezultat ide u polje koje prefiksni zbroj pretvori u pomake. Isti okvir racuna i prolaz
 // sirenja, iz istog includea - vidi SplatTiles.slang zasto to nije prepisano dvaput.
+//
+// Mjesto k u polju nije splat k nego k-ti splat po dubini (order[k]). Zato pomaci, a s njima i
+// parovi, nastaju vec poredani sprijeda natrag - vidi splat_depth_keys.slang.
 #include "include/SplatTiles.slang"
 
 struct Params{
@@ -13,6 +16,7 @@ struct Params{
 [[vk::push_constant]] ConstantBuffer<Params> params;
 [[vk::binding(0,0)]] RWStructuredBuffer<float4> splats;
 [[vk::binding(1,0)]] RWStructuredBuffer<uint> counts;
+[[vk::binding(2,0)]] RWStructuredBuffer<uint> order;   //indeksi splatova, poredani po dubini
 
 [shader("compute")]
 [numthreads(256,1,1)]
@@ -22,7 +26,7 @@ void computeMain(uint3 threadId : SV_DispatchThreadID){
         return;
     }
 
-    const SplatData splat = readSplat(splats, index);
+    const SplatData splat = readSplat(splats, order[index]);
     const float radius = splat.conicOpacityDepth.w;
 
     //Polumjer nula znaci splat koji se ne crta: prepare() ga je odbacio, ili je iza kamere

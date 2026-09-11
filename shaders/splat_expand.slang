@@ -4,8 +4,12 @@
 // prefiksni zbroj je rekao gdje ciji dio pocinje - pa svaka dretva pise samo u svoj komad i
 // nijedna ne treba atomik.
 //
-// Kljucevi su dva odvojena polja, a ne jedan 64-bitni: sort je stabilan, pa se prvo sortira po
-// dubini a onda po pločici, i drugi sort ne pokvari prvi. Vidi RadixSort.h.
+// SPLATOVI SE OBILAZE PO DUBINI (order), pa parovi nastaju vec poredani sprijeda natrag. Sort po
+// pločici je stabilan i taj poredak ne dira - zato sort po dubini ide nad splatovima, a ne nad
+// sedam puta brojnijim parovima.
+//
+// Vrijednost uz kljuc pločice je SAM INDEKS SPLATA. Rasterizator ga cita izravno, bez skoka kroz
+// jos jedno polje - a taj skok placa svaki splat svakog piksela.
 #include "include/SplatTiles.slang"
 
 struct Params{
@@ -19,16 +23,8 @@ struct Params{
 [[vk::binding(0,0)]] RWStructuredBuffer<float4> splats;
 [[vk::binding(1,0)]] RWStructuredBuffer<uint> offsets;
 [[vk::binding(2,0)]] RWStructuredBuffer<uint> tileKeys;
-[[vk::binding(3,0)]] RWStructuredBuffer<uint> depthKeys;
-[[vk::binding(4,0)]] RWStructuredBuffer<uint> splatIndices;
-[[vk::binding(5,0)]] RWStructuredBuffer<uint> sortValues;
-
-//Isti pretvarac koji radi RadixSort::keyFromFloat na procesoru: pozitivnima se okrene bit
-//predznaka, negativnima svi. Dubina je pozitivna, ali funkcija koja radi za pola ulaza je mina
-uint keyFromFloat(float value){
-    const uint bits = asuint(value);
-    return (bits & 0x80000000u) != 0 ? ~bits : (bits | 0x80000000u);
-}
+[[vk::binding(3,0)]] RWStructuredBuffer<uint> pairSplats;
+[[vk::binding(4,0)]] RWStructuredBuffer<uint> order;   //indeksi splatova, poredani po dubini
 
 [shader("compute")]
 [numthreads(256,1,1)]
@@ -38,14 +34,14 @@ void computeMain(uint3 threadId : SV_DispatchThreadID){
         return;
     }
 
-    const SplatData splat = readSplat(splats, index);
+    const uint splatIndex = order[index];
+    const SplatData splat = readSplat(splats, splatIndex);
     const float radius = splat.conicOpacityDepth.w;
     if(radius <= 0.0){
         return;
     }
 
     const int4 bounds = tileBounds(splat.centerConic.xy, radius, params.grid, params.tileSize);
-    const uint depthKey = keyFromFloat(splat.conicOpacityDepth.z);
 
     uint write = offsets[index];
 
@@ -57,9 +53,7 @@ void computeMain(uint3 threadId : SV_DispatchThreadID){
                 return;
             }
             tileKeys[write] = uint(ty) * params.grid.x + uint(tx);
-            depthKeys[write] = depthKey;
-            splatIndices[write] = index;
-            sortValues[write] = write;   //sort premjesta ovo, pa se preko njega nadje par
+            pairSplats[write] = splatIndex;
             ++write;
         }
     }

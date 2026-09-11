@@ -33,7 +33,8 @@ class RadixSort{
               VulkanBuffer& keys,
               VulkanBuffer& values,
               uint32_t capacity,
-              const VulkanBuffer* countSource = nullptr);   //treba ga samo sortIndirect
+              const VulkanBuffer* countSource = nullptr,   //treba ga samo sortIndirect
+              uint32_t keyBits = 32);                      //sortira se samo toliko nizih bita
 
     RadixSort(const RadixSort&) = delete;
     RadixSort& operator = (const RadixSort&) = delete;
@@ -78,7 +79,12 @@ class RadixSort{
     //(50k i 200k su gotovo jednako brzi, a 741k je cetiri puta sporiji: tu podaci prestanu
     //stati u cache)
     static constexpr uint32_t digits = 16;         //cetiri bita po prolazu
-    static constexpr uint32_t passes = 8;          //32 bita / 4
+
+    //Koliko prolaza treba kljuc od toliko bita: po cetiri bita, zaokruzeno na PARAN broj - jer
+    //neparan bi rezultat ostavio u radnim bufferima umjesto u pozivateljevim. 32 bita je osam
+    //prolaza, kljuc pločice od 12 bita cetiri
+    static uint32_t passesFor(uint32_t keyBits);
+    uint32_t getPasses() const {return passes;}
 
     private:
     //countBase koji kaze "broj je u push konstanti, ne u bufferu"
@@ -96,6 +102,7 @@ class RadixSort{
     VulkanBuffer* keys;
     VulkanBuffer* values;
     const VulkanBuffer* countSource;
+    uint32_t passes;
 
     //Radni par, jer se svaki prolaz cita iz jednog a pise u drugi
     VulkanBuffer scratchKeys;

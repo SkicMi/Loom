@@ -61,7 +61,7 @@ int main(){
     config.width = size.width; config.height = size.height;
     config.appName = "tiles"; config.engineName = "Loom tests";
     config.headless = true;
-    //Jedan SplatRenderer trazi 21 set i 73 storage buffera, a default od 64 po tipu to ne
+    //Jedan SplatRenderer trazi 21 set i 71 storage buffer, a default od 64 po tipu to ne
     //daje - tolerantan driver precuti, strog ne
     config.maxDescriptorSets = 128;
     LoomInitializer loom(config);
@@ -115,10 +115,24 @@ int main(){
     //REFERENCA MORA BITI SORTIRANA. Gruba sila slaze splatove redom kojim su predani, a
     //pločice ih slazu po dubini - dvije slike se ne daju usporediti dok taj red nije isti.
     //Prva verzija ovog testa to nije radila i svih 30000 piksela se razlikovalo
-    std::stable_sort(prepared.begin(), prepared.end(),
+    //
+    //ALI RASTERIZATOR DOBIVA NEPOREDANE. Dok je sort po dubini isao nad parovima, svejedno je
+    //bilo kojim redom stizu splatovi. Sad ide nad splatovima - i da dobije vec poredane, sort
+    //ne bi imao sto popraviti pa ovaj test ne bi vidio da li ga uopce ima
+    std::vector<SplatMath::PreparedSplat> depthOrdered = prepared;
+    std::stable_sort(depthOrdered.begin(), depthOrdered.end(),
         [](const SplatMath::PreparedSplat& a, const SplatMath::PreparedSplat& b){
             return a.conicOpacityDepth.z < b.conicOpacityDepth.z;
         });
+
+    {
+        size_t outOfOrder = 0;
+        for(size_t i = 1; i < prepared.size(); ++i){
+            if(prepared[i].conicOpacityDepth.z < prepared[i - 1].conicOpacityDepth.z) ++outOfOrder;
+        }
+        report.check("rasterizator dobiva neporedane splatove", outOfOrder > prepared.size() / 4,
+            fmt("%zu od %zu susjeda je obrnutim redom", outOfOrder, prepared.size()));
+    }
 
     report.check("scena je scena",
         prepared.size() > uint32_t(0.8f * splatCount),
@@ -130,7 +144,7 @@ int main(){
 
     VulkanBuffer bruteBuffer(loom.device, prepared.size() * sizeof(SplatMath::PreparedSplat),
                              vk::BufferUsageFlagBits::eStorageBuffer, MemoryUsage::CPU_TO_GPU);
-    bruteBuffer.upload(prepared.data(), prepared.size() * sizeof(SplatMath::PreparedSplat));
+    bruteBuffer.upload(depthOrdered.data(), depthOrdered.size() * sizeof(SplatMath::PreparedSplat));
 
     vk::DescriptorSetLayoutBinding bufferBinding;
     bufferBinding.binding = 0;
@@ -243,7 +257,8 @@ int main(){
 
         //Procesorovi pomaci, slozeni iz njegovih vlastitih brojeva. Kartica nije nikad vidjela
         //nijedan od njih - dva neovisna racuna istog broja, mjesto po mjesto
-        const std::vector<uint32_t> cpuCounts = splatRenderer.tileCounts(prepared);
+        //Pomaci na kartici idu poretkom po dubini, pa ih procesor slaze istim poretkom
+        const std::vector<uint32_t> cpuCounts = splatRenderer.tileCounts(depthOrdered);
         uint32_t running = 0;
         size_t mismatched = 0;
         for(size_t i = 0; i < cpuCounts.size(); ++i){

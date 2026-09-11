@@ -23,9 +23,8 @@ struct Params{
 [[vk::push_constant]] ConstantBuffer<Params> params;
 [[vk::binding(0,0)]] RWStructuredBuffer<float4> splats;
 [[vk::binding(1,0)]] RWStructuredBuffer<uint> ranges;
-[[vk::binding(2,0)]] RWStructuredBuffer<uint> sortValues;
-[[vk::binding(3,0)]] RWStructuredBuffer<uint> splatIndices;
-[[vk::image_format("rgba32f")]] [[vk::binding(4,0)]] RWTexture2D<float4> destination;
+[[vk::binding(2,0)]] RWStructuredBuffer<uint> pairSplats;   //koji splat, po parovima - vec poredano
+[[vk::image_format("rgba32f")]] [[vk::binding(3,0)]] RWTexture2D<float4> destination;
 
 [shader("compute")]
 [numthreads(TILE, TILE, 1)]
@@ -46,8 +45,8 @@ void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
     float transmittance = 1.0;
 
     for(uint j = first; j < last; ++j){
-        const uint pair = sortValues[j];
-        const SplatData splat = readSplat(splats, splatIndices[pair]);
+        //Sort je nosio sam indeks splata - nema skoka kroz polje parova
+        const SplatData splat = readSplat(splats, pairSplats[j]);
 
         const float2 offset = splat.centerConic.xy - point;
 

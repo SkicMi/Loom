@@ -61,7 +61,7 @@ int main(){
     config.width = size.width; config.height = size.height;
     config.appName = "indirect"; config.engineName = "Loom tests";
     config.headless = true;
-    //Jedan SplatRenderer trazi 21 set i 73 storage buffera - vise nego sto default od 64 po tipu
+    //Jedan SplatRenderer trazi 21 set i 71 storage buffer - vise nego sto default od 64 po tipu
     //daje. Test ih zato i gasi cim ne trebaju: u jednom trenutku zivi najvise jedan
     config.maxDescriptorSets = 128;
     LoomInitializer loom(config);

@@ -158,10 +158,10 @@ int main(int argc, char** argv){
     config.appName = "Loom splat viewer"; config.engineName = "Loom";
     config.headless = false;
     config.enableDepth = false;
-    //Jedan SplatRenderer trazi 21 set i 73 storage buffera, a default od 64 po tipu to ne
+    //Jedan SplatRenderer trazi 21 set i 71 storage buffer, a default od 64 po tipu to ne
     //daje - tolerantan driver precuti, strog ne
     config.maxDescriptorSets = 128;
-    //Vrijeme po koraku s karticinog sata. SplatRenderer stavlja 11 oznaka po kadru
+    //Vrijeme po koraku s karticinog sata. SplatRenderer stavlja 10 oznaka po kadru
     config.rendererConfig.maxTimestamps = 32;
 
     //Fullscreen prolaz koji sliku prenosi na ekran nema vertex buffer ni dubinu
