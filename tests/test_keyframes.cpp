@@ -260,11 +260,17 @@ int main(){
                 sparseMiss.posed, sparseMiss.rotation, sparseMiss.position);
 
     //Ovo je provjera koja brani postojanje kljucnih kadrova - ali tek uz drugi dio nize.
-    //Izmjereno: uz gust izbor kljucnih kadrova (2.7 st medju njima) stari nacin je samo 1.6x
-    //gori, jer LK takav korak jos podnosi. Razlika postaje razlika u vrsti tek kad su kljucni
-    //kadrovi rijetki - a bas to se dogadja na dugoj snimci
+    //Uz gust izbor kljucnih kadrova (2.7 st medju njima) stari nacin je samo malo gori, jer LK
+    //takav korak jos podnosi. Razlika postaje razlika u vrsti tek kad su kljucni kadrovi rijetki -
+    //a bas to se dogadja na dugoj snimci.
+    //
+    //ZASTO SAMO 1.05 A NE VISE. Ovaj test kadrove CRTA, pa mjeri i rasterizator pod sobom.
+    //Izmjereno: llvmpipe 1.1852/0.7508 = 1.58x, RTX 5070 0.9209/0.8287 = 1.11x. Prijasnjih 1.3x
+    //je stajalo usred tog raspona, pa je prolaz ovisio o kartici a ne o racunu. Ovdje se zato
+    //brani SMJER - da je stari nacin mjerljivo gori - dok tvrdnju o VELICINI nosi provjera s
+    //rijetkim kljucnim kadrovima nize, gdje je razlika deseterostruka na oba rasterizatora
     report.check("pracenje samo kljucnih kadrova je gore i uz gust izbor",
-        sparseMiss.rotation > 1.3 * keyMiss.rotation || sparseMiss.posed < keyMiss.posed,
+        sparseMiss.rotation > 1.05 * keyMiss.rotation || sparseMiss.posed < keyMiss.posed,
         fmt("rotacija %.4f naspram %.4f st, %u naspram %u kamera",
             sparseMiss.rotation, keyMiss.rotation, sparseMiss.posed, keyMiss.posed));
 

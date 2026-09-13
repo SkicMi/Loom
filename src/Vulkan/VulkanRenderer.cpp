@@ -1262,7 +1262,12 @@ void VulkanRenderer::recordDispatch(const ComputeMaterial& material,
         barrier.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
         barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
         barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands | vk::PipelineStageFlagBits2::eHost;
-        barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eHostRead;
+        //eIndirectCommandRead je tu jer dispatchIndirect NE cita buffer kao shader nego kao
+        //argumente naredbe - to je zaseban pristup i mora stajati izrijekom. Bez njega upis
+        //prethodnog dispatcha ne postane vidljiv dohvatu grupa: llvmpipe to prezivi jer je
+        //serijski, a NVIDIA procita staro i dispatcha smece
+        barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead
+                              | vk::AccessFlagBits2::eHostRead | vk::AccessFlagBits2::eIndirectCommandRead;
 
         vk::DependencyInfo dep;
         dep.memoryBarrierCount = 1;
