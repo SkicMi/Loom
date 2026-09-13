@@ -57,9 +57,36 @@ struct TrackConfig{
 //Uglovi koje se isplati pratiti, najjaci prvi
 std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& config = {});
 
+//Piramida jedne slike. Postoji kao vlastiti tip iz jednog razloga: gradi se JEDNOM PO KADRU, a ne
+//po tragu. Prva verzija ju je gradila unutar trackPoint, pa se za 800 tragova ista slika smanjivala
+//1600 puta u svakom kadru - izmjereno 934 ms po kadru, od cega je dekodiranje bilo 4 ms
+class Pyramid{
+    public:
+    Pyramid() = default;
+    Pyramid(const GrayImage& image, uint32_t levels);
+
+    uint32_t levels() const;
+    GrayImage level(uint32_t index) const;
+    bool empty() const;
+
+    private:
+    struct Level{
+        std::vector<uint8_t> pixels;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+    std::vector<Level> steps;
+};
+
 //Isti ugao u sljedecem kadru. False kad ga nije nasao: izasao je iz slike, prozor je bez teksture
-//ili se okolina previse promijenila
+//ili se okolina previse promijenila.
+//
+//Dva oblika, i drugi mora davati BIT-IDENTICAN rezultat prvome - to test i provjerava. Prvi je
+//zgodan kad se prati jedna tocka, drugi je onaj koji se koristi u nizu kadrova
 bool trackPoint(const GrayImage& from, const GrayImage& to,
+                const glm::vec2& start, glm::vec2& end, const TrackConfig& config = {});
+
+bool trackPoint(const Pyramid& from, const Pyramid& to,
                 const glm::vec2& start, glm::vec2& end, const TrackConfig& config = {});
 
 //Tragovi kroz niz kadrova. Izlaz je tocno ono sto reconstruct trazi: opazanje nosi redni broj
@@ -86,6 +113,7 @@ class Tracker{
     std::vector<uint8_t> previous;   //vlastita kopija: pozivateljev buffer ne mora zivjeti dalje
     uint32_t previousWidth = 0;
     uint32_t previousHeight = 0;
+    Pyramid previousPyramid;         //gradjena jednom, kad je kadar stigao - ne po tragu
 
     std::vector<Active> active;
     std::vector<Observation> collected;

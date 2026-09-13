@@ -38,6 +38,7 @@
 #include <Spool/VideoFile.h>
 
 #include <Engine/CameraHints.h>
+#include <Engine/Keyframes.h>
 #include <Engine/Reconstruct.h>
 #include <Engine/Triangulate.h>
 #include <Engine/Track.h>
@@ -45,6 +46,7 @@
 #include <glm/gtx/quaternion.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -107,7 +109,9 @@ int main(int argc, char** argv){
 
     const uint32_t footageCount = virtualMode ? (argc > 2 ? uint32_t(std::atoi(argv[2])) : 48u) : 0u;
     const float arc = virtualMode ? (argc > 3 ? float(std::atof(argv[3])) : 26.0f) : 0.0f;
-    const uint32_t step = virtualMode ? 1u : (argc > 2 ? uint32_t(std::atoi(argv[2])) : 2u);
+    //Korak je sad 1 po defaultu: prati se SVAKI kadar, a koji ulaze u rekonstrukciju bira
+    //chooseKeyframes. Preskakanje kadrova pri citanju je ostalo samo za brzo probavanje
+    const uint32_t step = virtualMode ? 1u : (argc > 2 ? uint32_t(std::atoi(argv[2])) : 1u);
     const uint32_t wanted = virtualMode ? footageCount : (argc > 3 ? uint32_t(std::atoi(argv[3])) : 24u);
     const double givenFov = virtualMode ? 0.0 : (argc > 4 ? std::atof(argv[4]) : 0.0);
     const std::string outputDirectory = virtualMode ? (argc > 4 ? std::string(argv[4]) : std::string("."))
@@ -232,17 +236,23 @@ int main(int argc, char** argv){
                     fieldOfView, givenFov > 0.0 ? "zadano rukom" : Engine::sourceName(hints.focalSource));
 
         uint32_t index = 0;
+        double decodeSeconds = 0.0, trackSeconds = 0.0;
         while(!reader.atEnd() && used < wanted){
+            const auto beforeDecode = std::chrono::steady_clock::now();
             const Spool::Image frame = reader.readNext();
+            const auto afterDecode = std::chrono::steady_clock::now();
+            decodeSeconds += std::chrono::duration<double>(afterDecode - beforeDecode).count();
             if(frame.pixels.empty()) break;
             if(index++ % step != 0) continue;
             const std::vector<uint8_t> gray = toGray(frame);
             tracker.addFrame(Engine::GrayImage{gray.data(), frame.width, frame.height, frame.width});
+            trackSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - afterDecode).count();
             ++used;
             std::printf("\r  kadar %u, tragova zivo %u  ", used, tracker.activeTracks());
             std::fflush(stdout);
         }
-        std::printf("\n");
+        std::printf("\n  dekodiranje %.2f s, pracenje %.2f s (%.0f ms po kadru)\n",
+                    decodeSeconds, trackSeconds, 1000.0 * trackSeconds / double(std::max(1u, used)));
 
         intrinsics.width = info.width;
         intrinsics.height = info.height;
@@ -264,11 +274,27 @@ int main(int argc, char** argv){
     Engine::ReconstructConfig reconstructConfig;
     if(parallaxArgument >= 0.0) reconstructConfig.maxRelativeDepthError = parallaxArgument;
 
-    const Engine::Reconstruction state = Engine::reconstruct(tracker.observations(), used,
+    //Kljucni kadrovi: prati se sve, rekonstruira se podskup. Vidi Engine/Keyframes.h
+    const Engine::KeyframeSelection keys = Engine::chooseKeyframes(tracker.observations(), used,
+                                                                   intrinsics.width);
+    std::printf("  kljucnih kadrova %zu od %u (medijan paralakse %.1f px)\n",
+                keys.frames.size(), used, keys.medianParallaxPixels);
+
+    if(keys.frames.size() < 3){ std::printf("Premalo kljucnih kadrova.\n"); return 1; }
+
+    //Istina se svede na iste kadrove, inace bi se usporedjivalo s krivim pozama
+    if(virtualMode){
+        std::vector<Engine::Pose> atKeys;
+        for(uint32_t frame : keys.frames) atKeys.push_back(truth[frame]);
+        truth = atKeys;
+    }
+    const uint32_t cameraCount = uint32_t(keys.frames.size());
+
+    const Engine::Reconstruction state = Engine::reconstruct(keys.observations, cameraCount,
                                                              tracker.trackCount(), intrinsics,
                                                              reconstructConfig);
     std::printf("  rijeseno %u od %u kamera, %u tocaka, reprojekcija %.3f px (prag paralakse %.3f st)\n",
-                state.posedCameras, used, state.solvedPoints, state.medianReprojection,
+                state.posedCameras, cameraCount, state.solvedPoints, state.medianReprojection,
                 state.parallaxLimitDegrees);
     if(state.posedCameras < 3){ std::printf("Premalo rijesenih kamera.\n"); return 1; }
 
@@ -282,7 +308,7 @@ int main(int argc, char** argv){
 
     {
         std::vector<std::vector<Engine::View>> perPoint(tracker.trackCount());
-        for(const Engine::Observation& observation : tracker.observations()){
+        for(const Engine::Observation& observation : keys.observations){
             if(state.posed[observation.camera]){
                 perPoint[observation.point].push_back(Engine::View{observation.camera, observation.pixel});
             }

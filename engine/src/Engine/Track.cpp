@@ -220,24 +220,43 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     return corners;
 }
 
+Pyramid::Pyramid(const GrayImage& image, uint32_t levels){
+    //buildPyramid vraca svoj Level iz anonimnog imenika; ovdje se prepisuje u nas
+    for(const auto& source : buildPyramid(image, levels)){
+        steps.push_back(Pyramid::Level{source.pixels, source.width, source.height});
+    }
+}
+
+uint32_t Pyramid::levels() const {return uint32_t(steps.size());}
+bool Pyramid::empty() const {return steps.empty();}
+
+GrayImage Pyramid::level(uint32_t index) const {
+    if(index >= steps.size()) return GrayImage{};
+    const Level& step = steps[index];
+    return GrayImage{step.pixels.data(), step.width, step.height, step.width};
+}
+
 bool trackPoint(const GrayImage& from, const GrayImage& to,
                 const glm::vec2& start, glm::vec2& end, const TrackConfig& config){
     if(!from.pixels || !to.pixels) return false;
+    return trackPoint(Pyramid(from, config.levels), Pyramid(to, config.levels), start, end, config);
+}
 
-    const std::vector<Level> fromPyramid = buildPyramid(from, config.levels);
-    const std::vector<Level> toPyramid = buildPyramid(to, config.levels);
-    if(fromPyramid.size() != toPyramid.size()) return false;
+bool trackPoint(const Pyramid& fromPyramid, const Pyramid& toPyramid,
+                const glm::vec2& start, glm::vec2& end, const TrackConfig& config){
+    if(fromPyramid.empty() || toPyramid.empty()) return false;
+    if(fromPyramid.levels() != toPyramid.levels()) return false;
 
     glm::vec2 shift(0.0f);
     float residual = 0.0f;
 
     //Od najgrubljeg nivoa prema najfinijem: pomak nadjen gore je pretpostavka dolje
-    for(int level = int(fromPyramid.size()) - 1; level >= 0; --level){
+    for(int level = int(fromPyramid.levels()) - 1; level >= 0; --level){
         const float factor = float(1u << uint32_t(level));
         const glm::vec2 point = start / factor;
 
-        const GrayImage levelFrom = fromPyramid[size_t(level)].view();
-        const GrayImage levelTo = toPyramid[size_t(level)].view();
+        const GrayImage levelFrom = fromPyramid.level(uint32_t(level));
+        const GrayImage levelTo = toPyramid.level(uint32_t(level));
 
         if(!insideWithMargin(levelFrom, point, float(config.window) + 2.0f)) return false;
         if(!refine(levelFrom, levelTo, point, shift, config, residual)) return false;
@@ -246,7 +265,7 @@ bool trackPoint(const GrayImage& from, const GrayImage& to,
     }
 
     end = start + shift;
-    if(!insideWithMargin(to, end, float(config.window) + 2.0f)) return false;
+    if(!insideWithMargin(toPyramid.level(0), end, float(config.window) + 2.0f)) return false;
     return residual <= config.maxResidual;
 }
 
@@ -266,13 +285,15 @@ void Tracker::addFrame(const GrayImage& image){
             ++nextTrack;
         }
     }else{
-        const GrayImage before{previous.data(), previousWidth, previousHeight, previousWidth};
+        //Obje piramide jednom po kadru, pa ih svi tragovi dijele. Prije se gradila po tragu i to
+        //je bio cijeli trosak: 934 ms po kadru naspram 4 ms za dekodiranje
+        const Pyramid current(image, config.levels);
 
         std::vector<Active> survived;
         survived.reserve(active.size());
         for(const Active& track : active){
             glm::vec2 moved;
-            if(!trackPoint(before, image, track.position, moved, config)) continue;
+            if(!trackPoint(previousPyramid, current, track.position, moved, config)) continue;
             survived.push_back(Active{moved, track.track});
             collected.push_back(Observation{frame, track.track, moved});
         }
@@ -300,6 +321,8 @@ void Tracker::addFrame(const GrayImage& image){
         }
     }
 
+    //Piramida sljedeceg kadra ce trebati ovu; gradi se ovdje da se u petlji vise ne dira
+    previousPyramid = Pyramid(image, config.levels);
     previousWidth = image.width;
     previousHeight = image.height;
     previous.resize(size_t(image.width) * image.height);

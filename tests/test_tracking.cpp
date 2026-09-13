@@ -210,5 +210,45 @@ int main(){
                 tracker.frameCount(), tracker.trackCount(), tracker.activeTracks(), medianOf(errors), errors.size()));
     }
 
+    // -------------------------------------------------------------------------------
+    // Piramida se gradi jednom po kadru, a ne po tragu
+    //
+    // Prva verzija ju je gradila unutar trackPoint, pa se za 800 tragova ista slika smanjivala
+    // 1600 puta u svakom kadru: izmjereno 934 ms po kadru naspram 4 ms za dekodiranje. Na
+    // trominutnoj snimci to je 70 minuta samo pracenja.
+    //
+    // Brzina se ovdje ne mjeri - stoperica u testu je nepouzdana i ovisi o stroju. Mjeri se ono
+    // sto se MORA drzati: da novi oblik daje BIT-IDENTICAN rezultat starome. Ako se razlikuju,
+    // ubrzanje nije ubrzanje nego promjena rezultata
+    // -------------------------------------------------------------------------------
+
+    {
+        const std::vector<uint8_t> before = render(pattern, 0.0f, 0.0f);
+        const std::vector<uint8_t> after = render(pattern, 1.7f, -1.1f);
+
+        const Engine::TrackConfig config;
+        const Engine::Pyramid fromPyramid(view(before), config.levels);
+        const Engine::Pyramid toPyramid(view(after), config.levels);
+
+        size_t compared = 0, different = 0, agreedOnFailure = 0;
+        for(const glm::vec2& corner : Engine::detectCorners(view(before), config)){
+            glm::vec2 fromImages, fromPyramids;
+            const bool a = Engine::trackPoint(view(before), view(after), corner, fromImages, config);
+            const bool b = Engine::trackPoint(fromPyramid, toPyramid, corner, fromPyramids, config);
+
+            if(a != b){ ++different; continue; }
+            if(!a){ ++agreedOnFailure; continue; }
+
+            ++compared;
+            //Bit po bit, ne "dovoljno blizu": isti racun mora dati isti broj
+            if(fromImages.x != fromPyramids.x || fromImages.y != fromPyramids.y) ++different;
+        }
+
+        report.check("gotova piramida daje bit-identican rezultat",
+            compared > 0 && different == 0,
+            fmt("%zu uglova isto do zadnjeg bita, %zu odbijeno s obje strane, %zu razlika",
+                compared, agreedOnFailure, different));
+    }
+
     return report.result();
 }

@@ -36,6 +36,7 @@ add_library(Engine STATIC
     src/Engine/ColmapExport.cpp
     src/Engine/Track.cpp
     src/Engine/CameraHints.cpp
+    src/Engine/Keyframes.cpp
 )
 
 target_include_directories(Engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
