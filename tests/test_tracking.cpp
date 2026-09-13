@@ -16,6 +16,8 @@
 //   afino            prozor koji je i zaokrenut i rastegnut: pomak sam ga promasi, afini ga vrati
 //   sidro            kroz niz kadrova ulancano pracenje ZBRAJA gresku, sidreno je mjeri iznova
 //   izrodjenje       warp preko dopustenog rastezanja mora reci da je trag izgubljen
+//   determinizam     pracenje se dijeli po dretvama, pa dva pokretanja moraju dati ISTI niz
+//                    opazanja do zadnjeg bita - inace bi svaki gornji test mjerio raspored dretvi
 #include "TestHarness.h"
 
 #include <Engine/Track.h>
@@ -424,6 +426,51 @@ int main(){
         report.check("rastezanje preko granice se prijavi kao gubitak",
             rejected > 0 && accepted < rejected / 4,
             fmt("%zu odbijeno, %zu prihvaceno", rejected, accepted));
+    }
+
+
+    // -------------------------------------------------------------------------------
+    // Dva pokretanja daju isti niz opazanja
+    // -------------------------------------------------------------------------------
+    //
+    // Trazenje uglova i pracenje su podijeljeni po dretvama. To se isplati samo ako rezultat
+    // ostane isti: cim bi ovisio o tome koja je dretva prva zavrsila, svaki gornji test bi mjerio
+    // raspored dretvi umjesto racuna, a pad bi se javljao svaki treci put i nikad na istom mjestu.
+    //
+    // Zato se ovdje ne usporedjuje "dovoljno blizu" nego BIT PO BIT, i ne samo polozaji nego i
+    // redoslijed: opazanje nosi redni broj kadra i redni broj traga, a oboje nastaje iz redoslijeda
+
+    {
+        const glm::vec2 centre{float(width) / 2.0f, float(height) / 2.0f};
+        const uint32_t steps = 8;
+
+        auto run = [&](){
+            Engine::TrackConfig config;
+            Engine::Tracker tracker(config);
+            std::vector<std::vector<uint8_t>> frames;
+            for(uint32_t frame = 0; frame < steps; ++frame){
+                const float angle = glm::radians(0.4f * float(frame));
+                const glm::mat2 turn{std::cos(angle), std::sin(angle), -std::sin(angle), std::cos(angle)};
+                frames.push_back(renderWarped(pattern, turn,
+                                              glm::vec2{0.9f * float(frame), -0.5f * float(frame)}, centre));
+                tracker.addFrame(view(frames.back()));
+            }
+            return tracker.observations();
+        };
+
+        const std::vector<Engine::Observation> first = run();
+        const std::vector<Engine::Observation> second = run();
+
+        size_t different = 0;
+        const size_t common = std::min(first.size(), second.size());
+        for(size_t i = 0; i < common; ++i){
+            if(first[i].camera != second[i].camera || first[i].point != second[i].point ||
+               first[i].pixel.x != second[i].pixel.x || first[i].pixel.y != second[i].pixel.y) ++different;
+        }
+
+        report.check("dva pokretanja daju isti niz opazanja",
+            !first.empty() && first.size() == second.size() && different == 0,
+            fmt("%zu naspram %zu opazanja, %zu razlika", first.size(), second.size(), different));
     }
 
     return report.result();

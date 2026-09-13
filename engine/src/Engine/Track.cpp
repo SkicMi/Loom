@@ -2,11 +2,52 @@
 
 #include "Engine/Dense.h"
 
+#include <thread>
+
 #include <algorithm>
 #include <cmath>
 
 namespace Engine{
 namespace{
+
+//=============================================================================================
+// Posao podijeljen po dretvama.
+//
+// Dva najskuplja dijela pracenja su nezavisna: svaki piksel u detektoru uglova i svaki trag u
+// pracenju racunaju se ne gledajuci nijedan drugi. Zato se dijele po pojasevima, a ne po nekakvom
+// redu koji bi trebalo cuvati.
+//
+// REZULTAT MORA OSTATI ISTI DO ZADNJEG BITA. Nigdje se ne zbraja preko pojaseva: svaka dretva pise
+// u svoj dio izlaza, a spajaju se redom. Zato se ne moze dogoditi da dvije pokrenutosti dadu dva
+// rezultata - a to je jedina vrsta ubrzanja koja ovdje ima smisla, jer bi inace testovi mjerili
+// raspored dretvi umjesto racuna
+uint32_t bandCount(int items, int minimumPerBand = 16){
+    const uint32_t cores = std::max(1u, std::thread::hardware_concurrency());
+    //Ispod ovoga pokretanje dretve stoji vise nego posao koji bi dobila
+    return std::max(1u, std::min(cores, uint32_t(std::max(1, items / minimumPerBand))));
+}
+
+//Tijelo dobiva REDNI BROJ pojasa, ne samo retke. Prva verzija ga je racunala natrag iz prvog
+//retka, pa su se dva pojasa mogla preslikati na isti broj i dvije dretve pisati u isti vektor -
+//greska koja se ne vidi u kodu nego tek kao srusen program. Ovako je broj zadan, a ne pogodjen
+template<typename Body>
+void inBands(int from, int to, const Body& body){
+    const int rows = to - from;
+    if(rows <= 0) return;
+
+    const uint32_t bands = bandCount(rows);
+    if(bands == 1){ body(0u, from, to); return; }
+
+    std::vector<std::thread> workers;
+    workers.reserve(bands);
+    for(uint32_t band = 0; band < bands; ++band){
+        const int start = from + int(uint64_t(rows) * band / bands);
+        const int stop  = from + int(uint64_t(rows) * (band + 1) / bands);
+        if(start >= stop) continue;
+        workers.emplace_back([&body, band, start, stop]{ body(band, start, stop); });
+    }
+    for(std::thread& worker : workers) worker.join();
+}
 
 uint32_t strideOf(const GrayImage& image){
     return image.stride > 0 ? image.stride : image.width;
@@ -155,6 +196,8 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
 
     const int window = int(config.window);
     const int margin = window + 2;
+    const int width = int(image.width);
+    const int height = int(image.height);
 
     struct Candidate{
         float score = 0.0f;
@@ -166,35 +209,108 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     //kod sahovnice gradijent postoji samo na bridovima, pa prozor pomaknut uzduz brida sadrzi isti
     //krizni uzorak i daje isti odziv. Izmjereno: detektor je nalazio tocno 88 uglova (koliko ima
     //krizista) ali pomaknutih za polumjer prozora - 6 px pri prozoru 6, 11 px pri prozoru 10.
-    //S tezinama sredina prozora nosi najvise i plato postaje siljak
-    std::vector<double> weights;
-    weights.reserve(size_t((2 * window + 1) * (2 * window + 1)));
+    //S tezinama sredina prozora nosi najvise i plato postaje siljak.
+    //
+    //SEPARABILNO, a ne prozor po pikselu. Prva verzija je za SVAKI piksel obilazila cijeli prozor
+    //i racunala gradijente iznova - na 4K uz prozor 12 to je 8.3 M piksela puta 625 uzoraka, dakle
+    //5.2 milijarde operacija, od kojih su gotovo sve ponovljene jer susjedni pikseli dijele 96
+    //posto prozora. Izmjereno: 16.8 s po pozivu, i time 91 posto cijelog vremena praćenja.
+    //
+    //Gaussova jezgra je separabilna: exp(-(dx^2+dy^2)/2s^2) = exp(-dx^2/2s^2) * exp(-dy^2/2s^2).
+    //Zato se gradijenti racunaju JEDNOM po pikselu, slozi se tri umnoska, i svaki se filtrira
+    //vodoravno pa okomito. O(piksela * prozor^2) postaje O(piksela * prozor), uz isti rezultat
     const double sigma = std::max(1.0, double(window) / 2.0);
-    for(int dy = -window; dy <= window; ++dy){
-        for(int dx = -window; dx <= window; ++dx){
-            weights.push_back(std::exp(-(double(dx) * dx + double(dy) * dy) / (2.0 * sigma * sigma)));
-        }
+    std::vector<float> kernel(size_t(2 * window + 1));
+    for(int d = -window; d <= window; ++d){
+        kernel[size_t(d + window)] = float(std::exp(-(double(d) * d) / (2.0 * sigma * sigma)));
     }
 
-    for(int y = margin; y < int(image.height) - margin; ++y){
-        for(int x = margin; x < int(image.width) - margin; ++x){
-            double gxx = 0.0, gxy = 0.0, gyy = 0.0;
-            size_t index = 0;
-            for(int dy = -window; dy <= window; ++dy){
-                for(int dx = -window; dx <= window; ++dx, ++index){
-                    const float ix = 0.5f * (at(image, x + dx + 1, y + dy) - at(image, x + dx - 1, y + dy));
-                    const float iy = 0.5f * (at(image, x + dx, y + dy + 1) - at(image, x + dx, y + dy - 1));
-                    const double weight = weights[index];
-                    gxx += weight * double(ix) * ix;
-                    gxy += weight * double(ix) * iy;
-                    gyy += weight * double(iy) * iy;
+    const size_t count = size_t(width) * size_t(height);
+    std::vector<float> xx(count), xy(count), yy(count);
+
+    //Gradijenti i njihovi umnosci, jednom po pikselu
+    inBands(0, height, [&](uint32_t, int firstRow, int lastRow){
+        for(int y = firstRow; y < lastRow; ++y){
+            for(int x = 0; x < width; ++x){
+                const float ix = 0.5f * (at(image, x + 1, y) - at(image, x - 1, y));
+                const float iy = 0.5f * (at(image, x, y + 1) - at(image, x, y - 1));
+                const size_t index = size_t(y) * size_t(width) + size_t(x);
+                xx[index] = ix * ix;
+                xy[index] = ix * iy;
+                yy[index] = iy * iy;
+            }
+        }
+    });
+
+    //Vodoravni pa okomiti prolaz. Rub se ponavlja, isto kao sto at() stezne koordinatu - inace bi
+    //se rubni prozori tezinili drukcije nego unutarnji, a kandidati se ionako uzimaju od margine
+    std::vector<float> scratch(count);
+    auto blurHorizontal = [&](std::vector<float>& plane){
+        inBands(0, height, [&](uint32_t, int firstRow, int lastRow){
+            for(int y = firstRow; y < lastRow; ++y){
+                const size_t row = size_t(y) * size_t(width);
+                for(int x = 0; x < width; ++x){
+                    float sum = 0.0f;
+                    for(int d = -window; d <= window; ++d){
+                        const int sx = std::max(0, std::min(width - 1, x + d));
+                        sum += kernel[size_t(d + window)] * plane[row + size_t(sx)];
+                    }
+                    scratch[row + size_t(x)] = sum;
                 }
             }
-            //Shi-Tomasi: manja svojstvena vrijednost. Ugao je jak samo ako su OBA smjera jaka
-            const double trace = gxx + gyy;
-            const double determinant = gxx * gyy - gxy * gxy;
-            const double smaller = 0.5 * (trace - std::sqrt(std::max(0.0, trace * trace - 4.0 * determinant)));
-            candidates.push_back(Candidate{float(smaller), uint32_t(x), uint32_t(y)});
+        });
+        plane.swap(scratch);
+    };
+    auto blurVertical = [&](std::vector<float>& plane){
+        inBands(0, height, [&](uint32_t, int firstRow, int lastRow){
+            for(int y = firstRow; y < lastRow; ++y){
+                const size_t row = size_t(y) * size_t(width);
+                for(int x = 0; x < width; ++x){
+                    float sum = 0.0f;
+                    for(int d = -window; d <= window; ++d){
+                        const int sy = std::max(0, std::min(height - 1, y + d));
+                        sum += kernel[size_t(d + window)] * plane[size_t(sy) * size_t(width) + size_t(x)];
+                    }
+                    scratch[row + size_t(x)] = sum;
+                }
+            }
+        });
+        plane.swap(scratch);
+    };
+
+    for(std::vector<float>* plane : {&xx, &xy, &yy}){
+        blurHorizontal(*plane);
+        blurVertical(*plane);
+    }
+
+    {
+        const int firstY = margin, lastY = height - margin;
+        const uint32_t bands = bandCount(std::max(0, lastY - firstY));
+        std::vector<std::vector<Candidate>> perBand(bands);
+
+        inBands(firstY, lastY, [&](uint32_t band, int firstRow, int lastRow){
+            std::vector<Candidate>& mineList = perBand[std::min(band, bands - 1)];
+            mineList.reserve(size_t(lastRow - firstRow) * size_t(std::max(0, width - 2 * margin)));
+
+            for(int y = firstRow; y < lastRow; ++y){
+                for(int x = margin; x < width - margin; ++x){
+                    const size_t index = size_t(y) * size_t(width) + size_t(x);
+                    const double gxx = double(xx[index]), gxy = double(xy[index]), gyy = double(yy[index]);
+
+                    //Shi-Tomasi: manja svojstvena vrijednost. Ugao je jak samo ako su OBA smjera jaka
+                    const double trace = gxx + gyy;
+                    const double determinant = gxx * gyy - gxy * gxy;
+                    const double smaller = 0.5 * (trace - std::sqrt(std::max(0.0, trace * trace - 4.0 * determinant)));
+                    mineList.push_back(Candidate{float(smaller), uint32_t(x), uint32_t(y)});
+                }
+            }
+        });
+
+        size_t total = 0;
+        for(const std::vector<Candidate>& one : perBand) total += one.size();
+        candidates.reserve(total);
+        for(const std::vector<Candidate>& one : perBand){
+            candidates.insert(candidates.end(), one.begin(), one.end());
         }
     }
 
@@ -452,23 +568,40 @@ void Tracker::addFrame(const GrayImage& image){
     if(frames == 0){
         for(const glm::vec2& corner : detectCorners(image, config)) startTrack(corner);
     }else{
-        std::vector<Active> survived;
-        survived.reserve(active.size());
-        for(Active& track : active){
-            glm::vec2 moved;
+        //Svaki trag se racuna ne gledajuci nijedan drugi, pa se posao dijeli po dretvama. Izlaz
+        //se NE pise iz dretvi nego u vlastite pretince, a red se slaze poslije - opazanja time
+        //izlaze istim redom kao da je racunato jednom dretvom, i testovi mjere racun a ne raspored
+        const size_t liveCount = active.size();
+        std::vector<char> kept(liveCount, 0);
+        std::vector<glm::vec2> places(liveCount);
 
-            if(config.affine){
-                //Pretpostavka je warp iz proslog kadra, pa je za popraviti ostao jedan kadar
-                //gibanja - ali se MJERI od sidra, ne od proslog kadra
-                if(!trackAffine(track.anchor, current, track.warp, config)) continue;
-                moved = track.anchor.origin() + track.warp.shift;
-            }else{
-                if(!trackPoint(previousPyramid, current, track.position, moved, config)) continue;
+        inBands(0, int(liveCount), [&](uint32_t, int firstTrack, int lastTrack){
+            for(int i = firstTrack; i < lastTrack; ++i){
+                Active& track = active[size_t(i)];
+                glm::vec2 moved;
+
+                if(config.affine){
+                    //Pretpostavka je warp iz proslog kadra, pa je za popraviti ostao jedan kadar
+                    //gibanja - ali se MJERI od sidra, ne od proslog kadra
+                    if(!trackAffine(track.anchor, current, track.warp, config)) continue;
+                    moved = track.anchor.origin() + track.warp.shift;
+                }else{
+                    if(!trackPoint(previousPyramid, current, track.position, moved, config)) continue;
+                }
+
+                kept[size_t(i)] = 1;
+                places[size_t(i)] = moved;
             }
+        });
 
-            track.position = moved;
+        std::vector<Active> survived;
+        survived.reserve(liveCount);
+        for(size_t i = 0; i < liveCount; ++i){
+            if(!kept[i]) continue;
+            Active& track = active[i];
+            track.position = places[i];
+            collected.push_back(Observation{frame, track.track, places[i]});
             survived.push_back(std::move(track));
-            collected.push_back(Observation{frame, track.track, moved});
         }
         active = std::move(survived);
 

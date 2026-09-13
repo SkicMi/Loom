@@ -41,6 +41,11 @@ add_library(Engine STATIC
 
 target_include_directories(Engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Dretve: trazenje uglova i pracenje su po prirodi nezavisni po pikselu odnosno po tragu.
+# PRIVATE jer se nijedna dretva ne vidi u Engineovim headerima - paralelnost je detalj izvedbe
+find_package(Threads REQUIRED)
+target_link_libraries(Engine PRIVATE Threads::Threads)
+
 # glm je PUBLIC jer ga Engineovi headeri koriste u potpisima (vec3, quat)
 target_link_libraries(Engine PUBLIC glm::glm)
 
