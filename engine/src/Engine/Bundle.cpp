@@ -1,4 +1,5 @@
 #include "Engine/Bundle.h"
+#include "Engine/Dense.h"
 
 #include <algorithm>
 #include <array>
@@ -6,59 +7,6 @@
 
 namespace Engine{
 namespace{
-
-//Inverz 3x3 preko adjunkte. Blok po tocki je tako malen da mu inverz ima zatvorenu formu, i to je
-//upravo ono sto Schur iskoristava
-bool invert3(const double m[3][3], double out[3][3]){
-    const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-                     - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-                     + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-    if(std::fabs(det) < 1e-18){
-        return false;   //tocka koju nitko ne vidi, ili je vide sve iz istog smjera
-    }
-    const double inverse = 1.0 / det;
-    out[0][0] =  (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inverse;
-    out[0][1] = -(m[0][1] * m[2][2] - m[0][2] * m[2][1]) * inverse;
-    out[0][2] =  (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inverse;
-    out[1][0] = -(m[1][0] * m[2][2] - m[1][2] * m[2][0]) * inverse;
-    out[1][1] =  (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inverse;
-    out[1][2] = -(m[0][0] * m[1][2] - m[0][2] * m[1][0]) * inverse;
-    out[2][0] =  (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * inverse;
-    out[2][1] = -(m[0][0] * m[2][1] - m[0][1] * m[2][0]) * inverse;
-    out[2][2] =  (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inverse;
-    return true;
-}
-
-//Gusti sustav n x n, Gaussova eliminacija s biranjem stozera. Nakon Schura je n samo 6 po
-//slobodnoj kameri - za osam kamera 42x42, sto je sitno
-bool solveDense(std::vector<double> A, std::vector<double> b, int n, std::vector<double>& x){
-    x.assign(size_t(n), 0.0);
-    for(int column = 0; column < n; ++column){
-        int pivot = column;
-        for(int row = column + 1; row < n; ++row){
-            if(std::fabs(A[size_t(row * n + column)]) > std::fabs(A[size_t(pivot * n + column)])) pivot = row;
-        }
-        if(std::fabs(A[size_t(pivot * n + column)]) < 1e-14){
-            return false;
-        }
-        if(pivot != column){
-            for(int k = 0; k < n; ++k) std::swap(A[size_t(column * n + k)], A[size_t(pivot * n + k)]);
-            std::swap(b[size_t(column)], b[size_t(pivot)]);
-        }
-        for(int row = column + 1; row < n; ++row){
-            const double factor = A[size_t(row * n + column)] / A[size_t(column * n + column)];
-            if(factor == 0.0) continue;
-            for(int k = column; k < n; ++k) A[size_t(row * n + k)] -= factor * A[size_t(column * n + k)];
-            b[size_t(row)] -= factor * b[size_t(column)];
-        }
-    }
-    for(int row = n - 1; row >= 0; --row){
-        double sum = b[size_t(row)];
-        for(int k = row + 1; k < n; ++k) sum -= A[size_t(row * n + k)] * x[size_t(k)];
-        x[size_t(row)] = sum / A[size_t(row * n + row)];
-    }
-    return true;
-}
 
 double medianOf(std::vector<double> values){
     if(values.empty()) return 0.0;
