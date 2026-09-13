@@ -14,8 +14,20 @@ double medianOf(std::vector<double> values){
     return values[values.size() / 2];
 }
 
+//Iste dvije funkcije kao u SolvePose: tezina i kazna pod Huberom
+double huberWeight(double length, double delta){
+    if(delta <= 0.0 || length <= delta) return 1.0;
+    return std::sqrt(delta / length);
+}
+
+double huberCost(double length, double delta){
+    if(delta <= 0.0 || length <= delta) return length * length;
+    return 2.0 * delta * length - delta * delta;
+}
+
 double costOf(const std::vector<Pose>& poses, const std::vector<glm::vec3>& points,
               const Intrinsics& intrinsics, const std::vector<Observation>& observations,
+              double delta,
               double& median){
     double cost = 0.0;
     std::vector<double> lengths;
@@ -29,8 +41,9 @@ double costOf(const std::vector<Pose>& poses, const std::vector<glm::vec3>& poin
             lengths.push_back(double(intrinsics.width));
             continue;
         }
-        cost += residual[0] * residual[0] + residual[1] * residual[1];
-        lengths.push_back(std::sqrt(residual[0] * residual[0] + residual[1] * residual[1]));
+        const double length = std::sqrt(residual[0] * residual[0] + residual[1] * residual[1]);
+        cost += huberCost(length, delta);
+        lengths.push_back(length);
     }
     median = medianOf(lengths);
     return cost;
@@ -106,7 +119,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
     const int n = 6 * freeCameras;
 
     double median = 0.0;
-    double cost = costOf(result.poses, result.points, intrinsics, observations, median);
+    double cost = costOf(result.poses, result.points, intrinsics, observations, config.huberPixels, median);
     result.startMedian = median;
     result.endMedian = median;
     result.solved = true;
@@ -131,10 +144,15 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
             if(!pointJacobian(pose, intrinsics, point, observation.pixel, residual, pointPart)) continue;
             ++used;
 
+            //Tezina pod Huberom mnozi i rezidual i jakobijan, pa ulazi u sve tri strane odjednom
+            const double weight = huberWeight(std::sqrt(residual[0] * residual[0] + residual[1] * residual[1]),
+                                              config.huberPixels);
+            const double weightSquared = weight * weight;
+
             for(int i = 0; i < 3; ++i){
-                for(int row = 0; row < 2; ++row) gPoint[observation.point * 3 + size_t(i)] += pointPart[row][i] * residual[row];
+                for(int row = 0; row < 2; ++row) gPoint[observation.point * 3 + size_t(i)] += weightSquared * pointPart[row][i] * residual[row];
                 for(int j = 0; j < 3; ++j){
-                    for(int row = 0; row < 2; ++row) C[observation.point * 9 + size_t(i * 3 + j)] += pointPart[row][i] * pointPart[row][j];
+                    for(int row = 0; row < 2; ++row) C[observation.point * 9 + size_t(i * 3 + j)] += weightSquared * pointPart[row][i] * pointPart[row][j];
                 }
             }
 
@@ -146,9 +164,9 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
 
             const size_t camera = size_t(freeIndex[observation.camera]);
             for(int i = 0; i < 6; ++i){
-                for(int row = 0; row < 2; ++row) gCamera[camera * 6 + size_t(i)] += cameraPart[row][i] * residual[row];
+                for(int row = 0; row < 2; ++row) gCamera[camera * 6 + size_t(i)] += weightSquared * cameraPart[row][i] * residual[row];
                 for(int j = 0; j < 6; ++j){
-                    for(int row = 0; row < 2; ++row) B[camera * 36 + size_t(i * 6 + j)] += cameraPart[row][i] * cameraPart[row][j];
+                    for(int row = 0; row < 2; ++row) B[camera * 36 + size_t(i * 6 + j)] += weightSquared * cameraPart[row][i] * cameraPart[row][j];
                 }
             }
 
@@ -156,7 +174,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
             block.camera = int(camera);
             for(int i = 0; i < 6; ++i){
                 for(int j = 0; j < 3; ++j){
-                    for(int row = 0; row < 2; ++row) block.e[size_t(i * 3 + j)] += cameraPart[row][i] * pointPart[row][j];
+                    for(int row = 0; row < 2; ++row) block.e[size_t(i * 3 + j)] += weightSquared * cameraPart[row][i] * pointPart[row][j];
                 }
             }
             E[observation.point].push_back(block);
@@ -275,7 +293,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
         for(size_t p = 0; p < pointCount; ++p) candidate.points[p] += pointStep[p];
 
         double candidateMedian = 0.0;
-        const double candidateCost = costOf(candidate.poses, candidate.points, intrinsics, observations, candidateMedian);
+        const double candidateCost = costOf(candidate.poses, candidate.points, intrinsics, observations, config.huberPixels, candidateMedian);
 
         if(candidateCost < cost){
             result.poses = candidate.poses;

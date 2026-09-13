@@ -25,6 +25,10 @@ struct BundleConfig{
     double lambda = 1e-4;
     double minStep = 1e-12;
 
+    //HUBEROVA KAZNA, u pikselima; nula znaci iskljuceno. Isto kao u PoseSolveConfig - na pravoj
+    //snimci jedno krivo poklapanje inace savije cijelu rekonstrukciju oko sebe
+    double huberPixels = 0.0;
+
     //Sidro za gauge. Bez njega bi rjesenje klizilo, a s njim su ostale kamere i tocke izrazene
     //prema prvoj - sto je i ono sto se poslije predaje Loomu
     bool fixFirstCamera = true;

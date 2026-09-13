@@ -37,6 +37,11 @@ struct PoseSolveConfig{
 
     //Kad korak postane manji od ovoga, dalje se nema kamo
     double minStep = 1e-12;
+
+    //HUBEROVA KAZNA, u pikselima. Nula znaci iskljuceno - cisti najmanji kvadrati, kao dosad.
+    //Iznad praga kazna raste samo linearno umjesto kvadratno, pa jedno promaseno poklapanje
+    //prestane povlaciti cijelo rjesenje. Na pravoj snimci su promasaji pravilo, ne iznimka
+    double huberPixels = 0.0;
 };
 
 struct PoseSolveResult{

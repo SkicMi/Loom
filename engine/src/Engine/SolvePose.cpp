@@ -47,10 +47,25 @@ double medianOf(std::vector<double> values){
     return values[values.size() / 2];
 }
 
-//Zbroj kvadrata reziduala i medijan promasaja, za danu pozu
+//Tezina jednog opazanja pod Huberom: 1 dok je promasaj ispod praga, pa opada kao koriejen omjera.
+//Mnozi se i rezidual i jakobijan, sto je standardni nacin da se Huber dobije iz obicnih najmanjih
+//kvadrata (iterativno preuzimanje tezina)
+double huberWeight(double length, double delta){
+    if(delta <= 0.0 || length <= delta) return 1.0;
+    return std::sqrt(delta / length);
+}
+
+//Kazna jednog opazanja: kvadratna ispod praga, linearna iznad njega
+double huberCost(double length, double delta){
+    if(delta <= 0.0 || length <= delta) return length * length;
+    return 2.0 * delta * length - delta * delta;
+}
+
+//Zbroj kazni i medijan promasaja, za danu pozu
 double costOf(const Pose& pose, const Intrinsics& intrinsics,
               const std::vector<glm::vec3>& points,
               const std::vector<PointObservation>& observations,
+              double delta,
               double& median){
     double cost = 0.0;
     std::vector<double> lengths;
@@ -66,8 +81,9 @@ double costOf(const Pose& pose, const Intrinsics& intrinsics,
             lengths.push_back(double(intrinsics.width));
             continue;
         }
-        cost += residual[0] * residual[0] + residual[1] * residual[1];
-        lengths.push_back(std::sqrt(residual[0] * residual[0] + residual[1] * residual[1]));
+        const double length = std::sqrt(residual[0] * residual[0] + residual[1] * residual[1]);
+        cost += huberCost(length, delta);
+        lengths.push_back(length);
     }
     median = medianOf(lengths);
     return cost;
@@ -137,7 +153,7 @@ PoseSolveResult solvePose(const std::vector<glm::vec3>& points,
     }
 
     double median = 0.0;
-    double cost = costOf(result.pose, intrinsics, points, observations, median);
+    double cost = costOf(result.pose, intrinsics, points, observations, config.huberPixels, median);
     result.startMedian = median;
     result.endMedian = median;
     result.solved = true;
@@ -157,11 +173,15 @@ PoseSolveResult solvePose(const std::vector<glm::vec3>& points,
                 continue;
             }
             ++used;
+            const double weight = huberWeight(std::sqrt(residual[0] * residual[0] + residual[1] * residual[1]),
+                                              config.huberPixels);
             for(int row = 0; row < 2; ++row){
+                const double weighted = weight * residual[row];
                 for(int i = 0; i < 6; ++i){
-                    g[size_t(i)] += jacobian[row][i] * residual[row];
+                    const double ji = weight * jacobian[row][i];
+                    g[size_t(i)] += ji * weighted;
                     for(int j = 0; j < 6; ++j){
-                        H[size_t(i)][size_t(j)] += jacobian[row][i] * jacobian[row][j];
+                        H[size_t(i)][size_t(j)] += ji * weight * jacobian[row][j];
                     }
                 }
             }
@@ -201,7 +221,7 @@ PoseSolveResult solvePose(const std::vector<glm::vec3>& points,
             glm::quat(1.0f, 0.5f * deltaRotation.x, 0.5f * deltaRotation.y, 0.5f * deltaRotation.z));
 
         double candidateMedian = 0.0;
-        const double candidateCost = costOf(candidate, intrinsics, points, observations, candidateMedian);
+        const double candidateCost = costOf(candidate, intrinsics, points, observations, config.huberPixels, candidateMedian);
 
         if(candidateCost < cost){
             result.pose = candidate;

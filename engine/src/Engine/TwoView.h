@@ -31,11 +31,38 @@ struct TwoViewResult{
     uint32_t used = 0;      //koliko je parova uslo u racun
     uint32_t inFront = 0;   //koliko ih je ispred obje kamere za izabrano rjesenje
     bool solved = false;
+
+    //Za robusnu inacicu: 1 za par koji se slaze s rjesenjem, 0 za promasen. Prazno kad se racunalo
+    //nad svim parovima bez provjere
+    std::vector<uint8_t> inliers;
+    uint32_t inlierCount = 0;
 };
 
-//Relativna poza iz parova opazanja. pixelsA[i] i pixelsB[i] su ista tocka u dva kadra
+//RANSAC: osam nasumicnih parova, procjena, pa se prebroje oni koji se s njom slazu. Ponovi se
+//dovoljno puta da barem jedan uzorak bude bez ijednog promasaja, i na kraju se racuna jos jednom -
+//samo nad onima koji se slazu
+struct RansacConfig{
+    uint32_t iterations = 300;
+
+    //Koliko piksela smije promasiti par da bi se jos smatrao ispravnim. Sampsonova udaljenost, u
+    //pikselima - ne u normaliziranim jedinicama, jer prag u pikselima je ono sto se da procijeniti
+    double thresholdPixels = 1.5;
+
+    uint32_t seed = 1;
+};
+
+//Relativna poza iz parova opazanja. pixelsA[i] i pixelsB[i] su ista tocka u dva kadra.
+//SVI parovi ulaze u racun - jedan promasen par povlaci rjesenje, pa je ovo za cist ulaz
 TwoViewResult relativePose(const std::vector<glm::vec2>& pixelsA,
                            const std::vector<glm::vec2>& pixelsB,
                            const Intrinsics& intrinsics);
+
+//Isto, ali s RANSAC-om: krivo poklapanje je na pravoj snimci pravilo a ne iznimka, i najmanji
+//kvadrati ga ne mogu prezivjeti - jedan par koji promasuje za pola slike vuce jednako jako kao
+//stotinu ispravnih
+TwoViewResult relativePoseRobust(const std::vector<glm::vec2>& pixelsA,
+                                 const std::vector<glm::vec2>& pixelsB,
+                                 const Intrinsics& intrinsics,
+                                 const RansacConfig& config = {});
 
 }
