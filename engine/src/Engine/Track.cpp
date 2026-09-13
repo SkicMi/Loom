@@ -3,6 +3,8 @@
 #include "Engine/Dense.h"
 
 #include <thread>
+#include <cstdio>
+#include <cstdlib>
 
 #include <algorithm>
 #include <cmath>
@@ -190,6 +192,37 @@ bool insideWithMargin(const GrayImage& image, const glm::vec2& point, float marg
 
 }
 
+float estimateNoise(const GrayImage& image){
+    if(!image.pixels || image.width < 4 || image.height < 4) return 0.0f;
+
+    //Jezgra koja ponistava sve do drugog reda: na ravnoj plohi i na nagibu daje nulu, pa ostane
+    //samo ono sto se mijenja od piksela do piksela. Faktor sqrt(pi/2)/6 pretvara srednje
+    //apsolutno odstupanje te jezgre natrag u standardnu devijaciju piksela
+    std::vector<float> response;
+    response.reserve(size_t(image.width - 2) * size_t(image.height - 2));
+
+    for(int y = 1; y < int(image.height) - 1; ++y){
+        for(int x = 1; x < int(image.width) - 1; ++x){
+            const float value =
+                  1.0f * at(image, x - 1, y - 1) - 2.0f * at(image, x, y - 1) + 1.0f * at(image, x + 1, y - 1)
+                - 2.0f * at(image, x - 1, y)     + 4.0f * at(image, x, y)     - 2.0f * at(image, x + 1, y)
+                + 1.0f * at(image, x - 1, y + 1) - 2.0f * at(image, x, y + 1) + 1.0f * at(image, x + 1, y + 1);
+            response.push_back(std::fabs(value));
+        }
+    }
+    if(response.empty()) return 0.0f;
+
+    //MEDIJAN, ne prosjek. Rubovi i uglovi kroz ovu jezgru daju velike vrijednosti i prosjek bi
+    //napuhali - onda bi kontrastna slika izgledala sumnije od mutne, a mjeri se suprotno
+    const size_t middle = response.size() / 2;
+    std::nth_element(response.begin(), response.begin() + long(middle), response.end());
+    const double median = double(response[middle]);
+
+    //Medijan poluvrijednosti prema standardnoj devijaciji: |N(0,s)| ima medijan 0.6745*s
+    const double kernelNorm = 6.0;          //sqrt(sum kvadrata koeficijenata) = sqrt(36)
+    return float(median / (0.6745 * kernelNorm));
+}
+
 std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& config){
     std::vector<glm::vec2> corners;
     if(!image.pixels || image.width < 8 || image.height < 8) return corners;
@@ -198,6 +231,12 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     const int margin = window + 2;
     const int width = int(image.width);
     const int height = int(image.height);
+
+    const int scoreX0 = margin, scoreY0 = margin;
+    const int scoreX1 = width - margin, scoreY1 = height - margin;
+    if(scoreX0 >= scoreX1 || scoreY0 >= scoreY1) return corners;
+
+    const int workX0 = 0, workY0 = 0, workX1 = width, workY1 = height;
 
     struct Candidate{
         float score = 0.0f;
@@ -229,9 +268,9 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     std::vector<float> xx(count), xy(count), yy(count);
 
     //Gradijenti i njihovi umnosci, jednom po pikselu
-    inBands(0, height, [&](uint32_t, int firstRow, int lastRow){
+    inBands(workY0, workY1, [&](uint32_t, int firstRow, int lastRow){
         for(int y = firstRow; y < lastRow; ++y){
-            for(int x = 0; x < width; ++x){
+            for(int x = workX0; x < workX1; ++x){
                 const float ix = 0.5f * (at(image, x + 1, y) - at(image, x - 1, y));
                 const float iy = 0.5f * (at(image, x, y + 1) - at(image, x, y - 1));
                 const size_t index = size_t(y) * size_t(width) + size_t(x);
@@ -246,13 +285,13 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     //se rubni prozori tezinili drukcije nego unutarnji, a kandidati se ionako uzimaju od margine
     std::vector<float> scratch(count);
     auto blurHorizontal = [&](std::vector<float>& plane){
-        inBands(0, height, [&](uint32_t, int firstRow, int lastRow){
+        inBands(workY0, workY1, [&](uint32_t, int firstRow, int lastRow){
             for(int y = firstRow; y < lastRow; ++y){
                 const size_t row = size_t(y) * size_t(width);
-                for(int x = 0; x < width; ++x){
+                for(int x = workX0; x < workX1; ++x){
                     float sum = 0.0f;
                     for(int d = -window; d <= window; ++d){
-                        const int sx = std::max(0, std::min(width - 1, x + d));
+                        const int sx = std::max(workX0, std::min(workX1 - 1, x + d));
                         sum += kernel[size_t(d + window)] * plane[row + size_t(sx)];
                     }
                     scratch[row + size_t(x)] = sum;
@@ -262,7 +301,7 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
         plane.swap(scratch);
     };
     auto blurVertical = [&](std::vector<float>& plane){
-        inBands(0, height, [&](uint32_t, int firstRow, int lastRow){
+        inBands(workY0, workY1, [&](uint32_t, int firstRow, int lastRow){
             for(int y = firstRow; y < lastRow; ++y){
                 const size_t row = size_t(y) * size_t(width);
                 for(int x = 0; x < width; ++x){
@@ -284,16 +323,16 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     }
 
     {
-        const int firstY = margin, lastY = height - margin;
+        const int firstY = scoreY0, lastY = scoreY1;
         const uint32_t bands = bandCount(std::max(0, lastY - firstY));
         std::vector<std::vector<Candidate>> perBand(bands);
 
         inBands(firstY, lastY, [&](uint32_t band, int firstRow, int lastRow){
             std::vector<Candidate>& mineList = perBand[std::min(band, bands - 1)];
-            mineList.reserve(size_t(lastRow - firstRow) * size_t(std::max(0, width - 2 * margin)));
+            mineList.reserve(size_t(lastRow - firstRow) * size_t(std::max(0, scoreX1 - scoreX0)));
 
             for(int y = firstRow; y < lastRow; ++y){
-                for(int x = margin; x < width - margin; ++x){
+                for(int x = scoreX0; x < scoreX1; ++x){
                     const size_t index = size_t(y) * size_t(width) + size_t(x);
                     const double gxx = double(xx[index]), gxy = double(xy[index]), gyy = double(yy[index]);
 
@@ -442,7 +481,7 @@ TrackTemplate::TrackTemplate(const Pyramid& pyramid, const glm::vec2& point, con
 }
 
 bool trackAffine(const TrackTemplate& templ, const Pyramid& to, AffineWarp& warp,
-                 const TrackConfig& config){
+                 const TrackConfig& config, float noise){
     if(templ.empty() || to.empty()) return false;
 
     const int window = int(config.window);
@@ -507,7 +546,28 @@ bool trackAffine(const TrackTemplate& templ, const Pyramid& to, AffineWarp& warp
                 if(!solveDense(pair, {b[4], b[5]}, 2, shiftOnly)) return false;
                 delta = {0.0, 0.0, 0.0, 0.0, shiftOnly[0], shiftOnly[1]};
             }else{
-                if(!solveDense(step.hessian, b, 6, delta)) return false;
+                //REGULARIZACIJA IZ SUMA, ne iz konstante. Kod bijelog suma s standardnom
+                //devijacijom sigma kovarijanca desne strane je sigma^2 * H, pa je kovarijanca
+                //parametara sigma^2 * H^-1. Tihonovljev clan lambda odgovara apriornoj razdiobi
+                //sirine sigma/sqrt(lambda), pa je lambda = sigma^2 / s^2 gdje je s koliko se
+                //linearni dio SMIJE pomaknuti - a to vec stoji zapisano kao maxStretch.
+                //
+                //Time nema nijednog novog broja: na slici bez suma lambda ispadne nula i racuna se
+                //tocno ono sto bi se racunalo bez ovoga, a na snimci sa senzorskim sumom raste sam
+                //od sebe. Pomak se NE prigusuje - njega zakrpa uvijek odredjuje
+                std::vector<double> normal = step.hessian;
+                const double room = std::max(1e-3, double(config.maxStretch) - 1.0);
+                const double fromNoise = double(noise) * double(noise) / (room * room);
+
+                static const double eps = std::getenv("LOOM_EPS") ? std::atof(std::getenv("LOOM_EPS")) : 0.0;
+                double strongest = 0.0;
+                for(int i = 0; i < 4; ++i) strongest = std::max(strongest, normal[size_t(i) * 6 + size_t(i)]);
+                const double fromRank = eps * strongest;
+
+                const double lambda = std::max(fromNoise, fromRank);
+                for(int i = 0; i < 4; ++i) normal[size_t(i) * 6 + size_t(i)] += lambda;
+
+                if(!solveDense(normal, b, 6, delta)) return false;
             }
 
             const glm::mat2 taken(1.0f + float(delta[0]), float(delta[1]),
@@ -567,6 +627,10 @@ void Tracker::addFrame(const GrayImage& image){
     //sljedeci kadar
     Pyramid current(image, config.levels);
 
+    //Jednom po kadru, ne po tragu - isto pravilo kao za piramidu
+    const float noise = config.affine ? estimateNoise(image) : 0.0f;
+    if(std::getenv("LOOM_SHOWNOISE") && frames == 0) std::fprintf(stderr, "[SUM] %.3f\n", noise);
+
     //Novi trag: sidro se uzima iz kadra u kojem je ugao nadjen, i to je jedini kadar s kojim ce
     //se taj trag ikad usporedjivati
     auto startTrack = [&](const glm::vec2& corner){
@@ -601,7 +665,7 @@ void Tracker::addFrame(const GrayImage& image){
                 if(config.affine){
                     //Pretpostavka je warp iz proslog kadra, pa je za popraviti ostao jedan kadar
                     //gibanja - ali se MJERI od sidra, ne od proslog kadra
-                    if(!trackAffine(track.anchor, current, track.warp, config)) continue;
+                    if(!trackAffine(track.anchor, current, track.warp, config, noise)) continue;
                     moved = track.anchor.origin() + track.warp.shift;
                 }else{
                     if(!trackPoint(previousPyramid, current, track.position, moved, config)) continue;
@@ -623,10 +687,26 @@ void Tracker::addFrame(const GrayImage& image){
         }
         active = std::move(survived);
 
-        //Dopuna: tragovi se gube, a rekonstrukciji trebaju tocke razasute po slici
+        //Dopuna: tragovi se gube, a rekonstrukciji trebaju tocke razasute po slici.
+        //
+        //TRAZI SE PO CIJELOJ SLICI, i to je mjereno a ne lijenost. Ocito je bilo traziti samo u
+        //celijama koje su ostale prazne - na 4K se inace pretrazuje 8.3 milijuna piksela da bi se
+        //uzelo pedeset tocaka. Izmjereno na pravoj snimci, 200 kadrova, uz celije po strani:
+        //
+        //   celija    tragova   opazanja   medijan duljine   vrijeme
+        //     1        2871      114055        40 kadrova     18.8 s
+        //     2        3680      123313        23 kadrova     20.2 s
+        //     4        4161      117538        18 kadrova     26.2 s
+        //     8        5081      108109        10 kadrova     52.9 s
+        //
+        //Gore na svakoj osi. Svaka celija mora izracunati i rubni pojas sirok prozor, pa se taj
+        //posao ponavlja, a vlastiti prag po celiji propusta slabije uglove koji onda brze umru -
+        //vise tragova, kraci tragovi, vise posla. Cijela slika odjednom je i najbrza i najbolja
         if(active.size() < config.minTracks){
             const float minDistanceSquared = config.minDistance * config.minDistance;
+
             for(const glm::vec2& corner : detectCorners(image, config)){
+
                 if(active.size() >= config.maxCorners) break;
                 bool farEnough = true;
                 for(const Active& track : active){

@@ -18,6 +18,8 @@
 //   izrodjenje       warp preko dopustenog rastezanja mora reci da je trag izgubljen
 //   determinizam     pracenje se dijeli po dretvama, pa dva pokretanja moraju dati ISTI niz
 //                    opazanja do zadnjeg bita - inace bi svaki gornji test mjerio raspored dretvi
+//   sum              procjena suma mora vratiti sum koji je DODAN, i mora razlikovati mirnu sliku
+//                    od sumne - o njoj ovisi koliko se afini dio smije micati
 #include "TestHarness.h"
 
 #include <Engine/Track.h>
@@ -471,6 +473,46 @@ int main(){
         report.check("dva pokretanja daju isti niz opazanja",
             !first.empty() && first.size() == second.size() && different == 0,
             fmt("%zu naspram %zu opazanja, %zu razlika", first.size(), second.size(), different));
+    }
+
+
+    // -------------------------------------------------------------------------------
+    // Procjena suma vraca sum koji je dodan
+    // -------------------------------------------------------------------------------
+    //
+    // O ovome ovisi koliko se afini dio smije micati, pa mora mjeriti sum a ne teksturu. Zadaje se
+    // poznata kolicina i gleda se sto se vrati
+
+    {
+        const std::vector<uint8_t> clean = render(pattern, 0.0f, 0.0f);
+        const float quiet = Engine::estimateNoise(view(clean));
+
+        auto withNoise = [&](float sigma, uint32_t seed){
+            std::vector<uint8_t> noisy = clean;
+            uint32_t state = seed;
+            auto next = [&]{ state = state * 1664525u + 1013904223u; return state; };
+            for(size_t i = 0; i < noisy.size(); ++i){
+                //Zbroj dvanaest jednolikih daje priblizno normalnu, srednja vrijednost 0
+                double sum = 0.0;
+                for(int k = 0; k < 12; ++k) sum += double(next() >> 8) / double(1u << 24);
+                const double gauss = (sum - 6.0) * double(sigma);
+                noisy[i] = uint8_t(std::max(0.0, std::min(255.0, double(clean[i]) + gauss)));
+            }
+            return noisy;
+        };
+
+        const std::vector<uint8_t> five = withNoise(5.0f, 20260913u);
+        const std::vector<uint8_t> fifteen = withNoise(15.0f, 20260914u);
+        const float gotFive = Engine::estimateNoise(view(five));
+        const float gotFifteen = Engine::estimateNoise(view(fifteen));
+
+        report.check("dodani sum se izmjeri",
+            std::fabs(double(gotFive) - 5.0) < 1.5 && std::fabs(double(gotFifteen) - 15.0) < 4.0,
+            fmt("dodano 5 -> izmjereno %.2f, dodano 15 -> izmjereno %.2f", gotFive, gotFifteen));
+
+        report.check("mirna slika se razlikuje od sumne",
+            quiet < gotFive && gotFive < gotFifteen,
+            fmt("bez suma %.2f, uz 5 %.2f, uz 15 %.2f", quiet, gotFive, gotFifteen));
     }
 
     return report.result();

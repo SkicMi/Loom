@@ -62,6 +62,10 @@ struct TrackConfig{
     //Iskljucivo za usporedbu: s false se dobije stari, samo-pomak tracker
     bool affine = true;
 
+    //Na koliko se celija po strani dijeli slika kad se dopunjavaju tragovi. Trazi se samo u
+    //celijama koje su ostale prazne - vidi komentar uz dopunu u addFrame
+    uint32_t detectGrid = 8;
+
     //Koliko se prozor smije rastegnuti prije nego se trag proglasi izgubljenim. Afini warp bez
     //ogranicenja rado pobjegne u degeneraciju - prozor se stanji u crtu i "savrseno" poklopi s
     //bilo cime.
@@ -86,6 +90,23 @@ struct TrackConfig{
 
 //Uglovi koje se isplati pratiti, najjaci prvi
 std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& config = {});
+
+//=============================================================================================
+// Koliko slika ima suma, u istim jedinicama u kojima su pikseli.
+//
+// ZASTO OVO TREBA PRACENJU. Afini warp ima sest parametara, a zakrpa ih ne odredjuje jednako
+// dobro: pomak se vidi uvijek, a rastezanje samo ako u zakrpi ima strukture u oba smjera. Kad je
+// nema, razliku popunjava sum - i linearni dio odluta iako se u slici nista nije izoblicilo.
+// Izmjereno na pravoj snimci: 78 posto tragova je umiralo tako, nakon JEDNOG kadra, gdje stvarno
+// izoblicenje ne moze biti ni postotak.
+//
+// Renderirana slika sum nema, pa se na njoj to nikad nije vidjelo. Zato mjera mora doci IZ SLIKE,
+// a ne iz konstante: ista konstanta bi na sintetici bila prevelika, a na snimci premala.
+//
+// KAKO. Immerkaerov ocjenitelj: slika se prevuce jezgrom koja ponistava sve sto je ravno ili
+// linearno, pa ostane samo ono sto se mijenja od piksela do piksela - a to je sum. Medijan
+// apsolutne vrijednosti je otporan na rubove, koji bi prosjek napuhali
+float estimateNoise(const GrayImage& image);
 
 //Piramida jedne slike. Postoji kao vlastiti tip iz jednog razloga: gradi se JEDNOM PO KADRU, a ne
 //po tragu. Prva verzija ju je gradila unutar trackPoint, pa se za 800 tragova ista slika smanjivala
@@ -156,7 +177,7 @@ class TrackTemplate{
     const glm::vec2& origin() const {return birth;}
 
     private:
-    friend bool trackAffine(const TrackTemplate&, const Pyramid&, AffineWarp&, const TrackConfig&);
+    friend bool trackAffine(const TrackTemplate&, const Pyramid&, AffineWarp&, const TrackConfig&, float);
 
     struct Level{
         std::vector<float> values;
@@ -172,8 +193,10 @@ class TrackTemplate{
 //Gdje se predlozak nasao u ovom kadru. warp ulazi kao pretpostavka (obicno onaj iz proslog kadra)
 //i izlazi popravljen. False kad je trag izgubljen: izasao je iz slike, prozor se izrodio ili se
 //okolina previse promijenila
+//noise je procjena suma ciljne slike iz estimateNoise. Nula znaci "nema suma" i tada se racuna
+//tocno ono sto bi se racunalo bez regularizacije
 bool trackAffine(const TrackTemplate& templ, const Pyramid& to, AffineWarp& warp,
-                 const TrackConfig& config = {});
+                 const TrackConfig& config = {}, float noise = 0.0f);
 
 //Tragovi kroz niz kadrova. Izlaz je tocno ono sto reconstruct trazi: opazanje nosi redni broj
 //kadra kao kameru i redni broj TRAGA kao tocku
