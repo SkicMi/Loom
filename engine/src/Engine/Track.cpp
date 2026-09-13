@@ -489,8 +489,26 @@ bool trackAffine(const TrackTemplate& templ, const Pyramid& to, AffineWarp& warp
             }
             if(outside) return false;
 
+            //SAMO POMAK NA GRUBIM NIVOIMA, svih sest tek na najfinijem. Na grubom nivou je zakrpa
+            //mala a pomak jos velik, pa linearni dio ode u divljinu prije nego se pomak slegne - i
+            //onda ga ograda na rastezanje ubije, iako stvarnog izoblicenja jos nema. Isto stoji i
+            //u izvornom Shi-Tomasi radu: afino je presumno za usporedbu susjednih kadrova, a na
+            //mjestu je za usporedbu preko duge baze.
+            //
+            //Izmjereno na pravoj snimci, 40 kadrova iz dijela gdje se kamera giba: uspjesnih
+            //pracenja 3488 -> 10200, odbijenih rastezanjem 24203 -> 19629. Na sintetici rotacija
+            //0.0196 -> 0.0143 st. Dakle bolje na oba, sto je jedini razlog zasto je ovdje
             std::vector<double> delta;
-            if(!solveDense(step.hessian, b, 6, delta)) return false;
+            if(level > 0){
+                const std::vector<double> pair = {
+                    step.hessian[4 * 6 + 4], step.hessian[4 * 6 + 5],
+                    step.hessian[5 * 6 + 4], step.hessian[5 * 6 + 5]};
+                std::vector<double> shiftOnly;
+                if(!solveDense(pair, {b[4], b[5]}, 2, shiftOnly)) return false;
+                delta = {0.0, 0.0, 0.0, 0.0, shiftOnly[0], shiftOnly[1]};
+            }else{
+                if(!solveDense(step.hessian, b, 6, delta)) return false;
+            }
 
             const glm::mat2 taken(1.0f + float(delta[0]), float(delta[1]),
                                   float(delta[2]),        1.0f + float(delta[3]));
