@@ -49,6 +49,20 @@ bool parseLocation(const std::string& text, double& latitude, double& longitude,
     return true;
 }
 
+//Ime zapisa koje ne govori nista o kameri. Kontejner ga uvijek nekako popuni, pa prazno polje
+//izgleda isto kao popunjeno - a razlika je bas ono sto citatelja zanima
+bool isGenericHandler(const std::string& handler){
+    static const char* generic[] = {
+        "videohandler", "soundhandler", "sound", "video media handler", "sound media handler",
+        "timed metadata media handler", "core media video", "core media audio", "core media data",
+        "subtitle", "alias data handler", "gpac", "isomedia", "bento4", "mainconcept", "l-smash"
+    };
+    for(const char* one : generic){
+        if(contains(handler, one)) return true;
+    }
+    return false;
+}
+
 //Tvornicka vodoravna vidna polja, po modelu. Priblizna i to je tako i receno u biljesci - GoPro
 //mijenja kadar s nacinom snimanja (Wide/Linear/SuperView) i sa stabilizacijom, a dron ima svoje
 double fieldOfViewFor(const std::string& make, const std::string& model, std::string& note){
@@ -99,10 +113,14 @@ CameraHints hintsFrom(const SourceFacts& facts){
     hints.model = valueOf(facts, "model");
     if(hints.model.empty()) hints.model = valueContaining(facts, "quicktime.model");
 
-    //Kad nema izravnog kljuca, ime handlera zna odati proizvodjaca: "DJI.AVC", "GoPro AVC encoder"
+    //Kad nema izravnog kljuca, ime handlera zna odati proizvodjaca: "DJI.AVC", "GoPro AVC encoder".
+    //Ali vecina kamera tu pise generican naziv koji ne znaci nista - "Video Media Handler",
+    //"Core Media Video", "VideoHandler". Takvo ime nije podatak nego popuna, i upisati ga kao
+    //proizvodjaca je gore nego ne upisati nista: Sony ZV-E10 II je tako izlazio kao kamera
+    //imena "Video Media Handler", a citatelj nema kako znati da to nije procitano nego izmisljeno
     if(hints.make.empty()){
         const std::string handler = valueContaining(facts, "handler_name");
-        if(!handler.empty() && !contains(handler, "videohandler") && !contains(handler, "sound")){
+        if(!handler.empty() && !isGenericHandler(handler)){
             hints.make = handler;
             hints.notes.push_back("proizvodjac procitan iz imena zapisa (handler): \"" + handler + "\"");
         }
@@ -112,6 +130,17 @@ CameraHints hintsFrom(const SourceFacts& facts){
             hints.hasTelemetry = true;
             hints.telemetryNote = stream;
         }
+
+        //Svaki zapis s vremenskim oznakama koji nije ni slika ni zvuk je telemetrija - GoPro je
+        //samo jedan od njih. Sony ga zove "Timed Metadata Media Handler" i u njemu su zirokop,
+        //akcelerometar i podaci o objektivu; prije se prijavljivalo da telemetrije nema, dok je
+        //na ovoj snimci bilo 66 MB
+        if(!hints.hasTelemetry && contains(stream, "data") &&
+           (contains(stream, "metadata") || contains(stream, "rtmd") || contains(stream, "timed"))){
+            hints.hasTelemetry = true;
+            hints.telemetryNote = stream;
+        }
+
         if(hints.make.empty() && contains(stream, "dji")) hints.make = "DJI";
     }
 
