@@ -32,6 +32,7 @@ add_library(Engine STATIC
     src/Engine/SolvePose.cpp
     src/Engine/Bundle.cpp
     src/Engine/TwoView.cpp
+    src/Engine/Reconstruct.cpp
 )
 
 target_include_directories(Engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
