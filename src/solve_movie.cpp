@@ -39,6 +39,7 @@
 
 #include <Engine/CameraHints.h>
 #include <Engine/Reconstruct.h>
+#include <Engine/Triangulate.h>
 #include <Engine/Track.h>
 
 #include <glm/gtx/quaternion.hpp>
@@ -111,6 +112,13 @@ int main(int argc, char** argv){
     const double givenFov = virtualMode ? 0.0 : (argc > 4 ? std::atof(argv[4]) : 0.0);
     const std::string outputDirectory = virtualMode ? (argc > 4 ? std::string(argv[4]) : std::string("."))
                                                     : (argc > 5 ? std::string(argv[5]) : std::string("."));
+    //Dopustena relativna greska dubine. -1 znaci "ostavi ono sto Engine drzi razumnim"
+    const double parallaxArgument = virtualMode ? (argc > 5 ? std::atof(argv[5]) : -1.0)
+                                                : (argc > 6 ? std::atof(argv[6]) : -1.0);
+
+    //Izlazna mapa "-" znaci: rijesi i izmjeri, ali ne crtaj. Za sweepove po pragovima, gdje je
+    //snimka cist trosak
+    const bool render = outputDirectory != "-";
 
     const uint32_t width = 1280, height = 720;
 
@@ -187,8 +195,10 @@ int main(int argc, char** argv){
             ++used;
 
             //Svaki kadar dvaput: snimka ide na 30 kad/s, a prizor se mora stici vidjeti
-            sequence.write(scene);
-            sequence.write(scene);
+            if(render){
+                sequence.write(scene);
+                sequence.write(scene);
+            }
         }
 
         const CameraIntrinsics fromLoom = CameraIntrinsics::fromProjection(
@@ -251,14 +261,66 @@ int main(int argc, char** argv){
     // Rekonstrukcija - solver o sceni ne zna nista osim tragova
     // -------------------------------------------------------------------------------
 
+    Engine::ReconstructConfig reconstructConfig;
+    if(parallaxArgument >= 0.0) reconstructConfig.maxRelativeDepthError = parallaxArgument;
+
     const Engine::Reconstruction state = Engine::reconstruct(tracker.observations(), used,
-                                                             tracker.trackCount(), intrinsics);
-    std::printf("  rijeseno %u od %u kamera, %u tocaka, reprojekcija %.3f px\n",
-                state.posedCameras, used, state.solvedPoints, state.medianReprojection);
+                                                             tracker.trackCount(), intrinsics,
+                                                             reconstructConfig);
+    std::printf("  rijeseno %u od %u kamera, %u tocaka, reprojekcija %.3f px (prag paralakse %.3f st)\n",
+                state.posedCameras, used, state.solvedPoints, state.medianReprojection,
+                state.parallaxLimitDegrees);
     if(state.posedCameras < 3){ std::printf("Premalo rijesenih kamera.\n"); return 1; }
 
     std::vector<size_t> cameras;
     for(size_t i = 0; i < state.poses.size(); ++i) if(state.posed[i]) cameras.push_back(i);
+
+    // -------------------------------------------------------------------------------
+    // Odakle rep. Pretpostavio sam da su daleke tocke one s uskom paralaksom - to se ne smije
+    // pretpostaviti nego izmjeriti, pa se ovdje gleda paralaksa bas tih tocaka
+    // -------------------------------------------------------------------------------
+
+    {
+        std::vector<std::vector<Engine::View>> perPoint(tracker.trackCount());
+        for(const Engine::Observation& observation : tracker.observations()){
+            if(state.posed[observation.camera]){
+                perPoint[observation.point].push_back(Engine::View{observation.camera, observation.pixel});
+            }
+        }
+
+        glm::vec3 middle(0.0f);
+        {
+            std::vector<float> axis[3];
+            for(size_t i = 0; i < state.points.size(); ++i){
+                if(!state.solved[i]) continue;
+                for(int a = 0; a < 3; ++a) axis[a].push_back(state.points[i][a]);
+            }
+            for(int a = 0; a < 3; ++a){
+                if(axis[a].empty()) continue;
+                std::sort(axis[a].begin(), axis[a].end());
+                middle[a] = axis[a][axis[a].size() / 2];
+            }
+        }
+
+        std::vector<std::pair<double, double>> byDistance;   //udaljenost od sredista, paralaksa
+        for(size_t i = 0; i < state.points.size(); ++i){
+            if(!state.solved[i]) continue;
+            byDistance.emplace_back(double(glm::length(state.points[i] - middle)),
+                                    Engine::parallaxDegrees(state.poses, intrinsics, perPoint[i]));
+        }
+        std::sort(byDistance.begin(), byDistance.end());
+
+        auto parallaxMedian = [&](size_t from, size_t to){
+            std::vector<double> angles;
+            for(size_t i = from; i < to && i < byDistance.size(); ++i) angles.push_back(byDistance[i].second);
+            if(angles.empty()) return 0.0;
+            std::sort(angles.begin(), angles.end());
+            return angles[angles.size() / 2];
+        };
+        const size_t tenth = std::max<size_t>(1, byDistance.size() / 10);
+        std::printf("  paralaksa: bliskih 10%% %.3f st, dalekih 10%% %.3f st\n",
+                    parallaxMedian(0, tenth), parallaxMedian(byDistance.size() - tenth, byDistance.size()));
+    }
 
     // -------------------------------------------------------------------------------
     // Iz rjesenja u kadar. Sve u ovom odjeljku je PRIKAZ, ne rezultat
@@ -316,12 +378,16 @@ int main(int argc, char** argv){
         auto percentile = [&](double q){
             return radius.empty() ? 1.0f : radius[size_t(q * double(radius.size() - 1))];
         };
-        std::printf("  udaljenost tocaka od sredista: p25 %.2f  p50 %.2f  p75 %.2f  p90 %.2f  p99 %.2f\n",
-                    double(percentile(0.25)), double(percentile(0.50)), double(percentile(0.75)),
-                    double(percentile(0.90)), double(percentile(0.99)));
-
         float pathReach = 0.0f;
         for(size_t i : cameras) pathReach = std::max(pathReach, glm::length(state.poses[i].position - centre));
+
+        //U jedinicama dosega putanje, ne u sirovim brojevima: mjerilo rekonstrukcije je slobodno
+        //pa se sirove udaljenosti ne daju usporedjivati izmedju dva pokretanja
+        const float unit = std::max(pathReach, 1e-6f);
+        std::printf("  udaljenost tocaka (u dosezima putanje): p25 %.2f  p50 %.2f  p75 %.2f  p90 %.2f  p99 %.2f\n",
+                    double(percentile(0.25) / unit), double(percentile(0.50) / unit),
+                    double(percentile(0.75) / unit), double(percentile(0.90) / unit),
+                    double(percentile(0.99) / unit));
         //p75, ne najveca vrijednost: na dronskoj snimci je p50 = 0.11 a p90 = 107 - cetvrtini tocaka
         //su zrake gotovo paralelne pa su odletjele u beskonacnost. One JESU u rezultatu i
         //reprojekcija ih ne kaznjava (daleka tocka dobro reprojicira ma gdje po zraki bila), ali
@@ -379,7 +445,7 @@ int main(int argc, char** argv){
     const uint32_t total = orbitFrames + topFrames + rideFrames;
     const uint32_t already = sequence.frameCount();
 
-    for(uint32_t frame = 0; frame < total && scene.isRunning(); ++frame){
+    for(uint32_t frame = 0; render && frame < total && scene.isRunning(); ++frame){
         scene.setFrame(already + frame, 30.0f);
 
         size_t revealed = track.size();
@@ -444,6 +510,6 @@ int main(int argc, char** argv){
         sequence.write(scene);
     }
 
-    std::printf("Zapisano %u kadrova u %s\n", sequence.frameCount(), outputDirectory.c_str());
+    if(render) std::printf("Zapisano %u kadrova u %s\n", sequence.frameCount(), outputDirectory.c_str());
     return 0;
 }

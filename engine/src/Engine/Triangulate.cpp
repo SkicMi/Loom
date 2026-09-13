@@ -1,5 +1,6 @@
 #include "Engine/Triangulate.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace Engine{
@@ -14,10 +15,40 @@ glm::vec3 rayDirection(const Pose& pose, const Intrinsics& intrinsics, const glm
     return glm::normalize(pose.orientation * inCamera);
 }
 
+namespace{
+
+//Kut izmedju dva jedinicna smjera, u stupnjevima. atan2 a ne acos - vidi zaglavlje headera
+double angleBetween(const glm::vec3& first, const glm::vec3& second){
+    const glm::dvec3 a(first), b(second);
+    return glm::degrees(std::atan2(glm::length(glm::cross(a, b)), glm::dot(a, b)));
+}
+
+}
+
+double parallaxDegrees(const std::vector<Pose>& poses,
+                       const Intrinsics& intrinsics,
+                       const std::vector<View>& views){
+    std::vector<glm::vec3> rays;
+    rays.reserve(views.size());
+    for(const View& view : views){
+        if(view.camera >= poses.size()) return 0.0;
+        rays.push_back(rayDirection(poses[view.camera], intrinsics, view.pixel));
+    }
+
+    double widest = 0.0;
+    for(size_t i = 0; i < rays.size(); ++i){
+        for(size_t j = i + 1; j < rays.size(); ++j){
+            widest = std::max(widest, angleBetween(rays[i], rays[j]));
+        }
+    }
+    return widest;
+}
+
 bool triangulate(const std::vector<Pose>& poses,
                  const Intrinsics& intrinsics,
                  const std::vector<View>& views,
-                 glm::vec3& point){
+                 glm::vec3& point,
+                 double minParallaxDegrees){
     if(views.size() < 2){
         return false;   //jedno vidjenje je zraka, ne tocka
     }
@@ -28,12 +59,17 @@ bool triangulate(const std::vector<Pose>& poses,
     glm::mat3 A(0.0f);
     glm::vec3 b(0.0f);
 
+    //Zrake se ionako racunaju za sustav, pa se usput skupljaju i za provjeru paralakse
+    std::vector<glm::vec3> rays;
+    rays.reserve(views.size());
+
     for(const View& view : views){
         if(view.camera >= poses.size()){
             return false;
         }
         const Pose& pose = poses[view.camera];
         const glm::vec3 d = rayDirection(pose, intrinsics, view.pixel);
+        rays.push_back(d);
 
         glm::mat3 P(1.0f);
         for(int row = 0; row < 3; ++row){
@@ -44,6 +80,18 @@ bool triangulate(const std::vector<Pose>& poses,
 
         A += P;
         b += P * pose.position;
+    }
+
+    //Paralaksa ispod praga: rjesenje bi postojalo, ali dubina u njemu nije odredjena. Rani izlaz
+    //cim se nadje dovoljno sirok par - kod dobrih tocaka to je obicno prvi ili drugi pokusaj
+    if(minParallaxDegrees > 0.0){
+        bool wide = false;
+        for(size_t i = 0; i < rays.size() && !wide; ++i){
+            for(size_t j = i + 1; j < rays.size(); ++j){
+                if(angleBetween(rays[i], rays[j]) >= minParallaxDegrees){ wide = true; break; }
+            }
+        }
+        if(!wide) return false;
     }
 
     //Gotovo paralelne zrake: determinanta pada prema nuli i rjesenje odleti. Prag je na skali

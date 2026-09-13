@@ -25,15 +25,31 @@ struct View{
     glm::vec2 pixel{0.0f};
 };
 
+//Najveci kut izmedju bilo koje dvije zrake istog vidjenja, u stupnjevima - PARALAKSA.
+//
+//Ovo je mjera koja kaze koliko se dubini smije vjerovati. Tocka koju dvije kamere vide pod kutom
+//od pola stupnja lezi negdje na dugackom komadu zrake i nijedna druga mjera to ne prijavljuje:
+//reprojekcija je uredna ma gdje po toj zraki tocka bila. Izmjereno na dronskoj snimci gdje je
+//cetvrtina tocaka odletjela u beskonacnost uz reprojekciju od 0.191 px.
+//
+//Racuna se preko atan2 u double aritmetici, ne preko acos: acos malog kuta iz float skalarnog
+//produkta ocita nulu vec ispod 0.04 st, a nas zanima bas to podrucje
+double parallaxDegrees(const std::vector<Pose>& poses,
+                       const Intrinsics& intrinsics,
+                       const std::vector<View>& views);
+
 //Piksel -> smjer zrake u SVIJETU, jedinicne duljine. Obrnuto od project(), i to je jedina
 //formula kojom se piksel vraca u prostor
 glm::vec3 rayDirection(const Pose& pose, const Intrinsics& intrinsics, const glm::vec2& pixel);
 
-//Tocka najbliza svim zrakama. False kad vidjenja nema dovoljno ili su zrake gotovo paralelne
+//Tocka najbliza svim zrakama. False kad vidjenja nema dovoljno, kad su zrake gotovo paralelne,
+//ili kad je paralaksa ispod zadanog praga. Prag 0 znaci da se ne trazi nista osim da sustav ne
+//bude singularan - tako se ponasala prva verzija i tako se test moze vratiti u to stanje
 bool triangulate(const std::vector<Pose>& poses,
                  const Intrinsics& intrinsics,
                  const std::vector<View>& views,
-                 glm::vec3& point);
+                 glm::vec3& point,
+                 double minParallaxDegrees = 0.0);
 
 //Sve tocke scene odjednom, iz njezinih opazanja i DANIH poza. Tocka koja se ne da triangulirati
 //dobiva false u seen - pozivatelj mora znati koja, jer ta tocka poslije ne smije ulaziti u mjeru

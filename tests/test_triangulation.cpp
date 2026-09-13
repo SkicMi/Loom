@@ -174,5 +174,85 @@ int main(){
                 withWrong.median, withNoise.median, withWrong.median / withNoise.median));
     }
 
+    // -------------------------------------------------------------------------------
+    // S10: paralaksa - mjera koja kaze smije li se dubini vjerovati
+    //
+    // Dronska snimka je pokazala da cetvrtina tocaka odleti u beskonacnost, a reprojekcija
+    // ostane 0.191 px. Znaci da postoji promasaj koji nijedna dosadasnja mjera ne kaznjava, i
+    // paralaksa je mjera koja ga vidi
+    // -------------------------------------------------------------------------------
+
+    {
+        //Prvo: mjeri li uopce ono sto tvrdi. Kut se zna izracunati i bez piksela - iz samih
+        //polozaja - pa se ta dva racuna moraju sresti
+        const glm::vec3 target = clean.points[0];
+        double worstAgainstGeometry = 0.0;
+        for(size_t a = 0; a < clean.poses.size(); ++a){
+            for(size_t b = a + 1; b < clean.poses.size(); ++b){
+                glm::vec2 first, second;
+                if(!Engine::project(clean.poses[a], clean.intrinsics, target, first)) continue;
+                if(!Engine::project(clean.poses[b], clean.intrinsics, target, second)) continue;
+
+                const std::vector<Engine::View> pair{Engine::View{uint32_t(a), first},
+                                                     Engine::View{uint32_t(b), second}};
+                const double measured = Engine::parallaxDegrees(clean.poses, clean.intrinsics, pair);
+
+                const glm::dvec3 toFirst = glm::normalize(glm::dvec3(target - clean.poses[a].position));
+                const glm::dvec3 toSecond = glm::normalize(glm::dvec3(target - clean.poses[b].position));
+                const double geometric = glm::degrees(std::atan2(glm::length(glm::cross(toFirst, toSecond)),
+                                                                 glm::dot(toFirst, toSecond)));
+                worstAgainstGeometry = std::max(worstAgainstGeometry, std::fabs(measured - geometric));
+            }
+        }
+        report.check("paralaksa je pravi kut medju zrakama", worstAgainstGeometry < 1e-3,
+            fmt("najveca razlika prema geometriji %.2e st", worstAgainstGeometry));
+    }
+
+    {
+        //Drugo, i ovo je cijeli razlog: predvidja li paralaksa gresku. Scena sa sumom, pa se
+        //tocke razvrstaju po paralaksi i usporede medijani greske
+        //UZAK luk, i to namjerno: sirokoj sceni je i najuza paralaksa 24 st, sto je vec podrucje
+        //u kojem sum odlucuje umjesto geometrije. Dronska snimka radi na djelicima stupnja, pa se
+        //odnos mora pokazati TAMO - luk od 0.06 rad daje raspon koji ga pokrije
+        Engine::SyntheticConfig noisyConfig = config;
+        noisyConfig.noisePixels = 0.5f;
+        noisyConfig.arc = 0.06f;
+        const Engine::SyntheticScene noisy = Engine::makeSyntheticScene(noisyConfig);
+
+        std::vector<std::vector<Engine::View>> perPoint(noisy.points.size());
+        for(const Engine::Observation& observation : noisy.observations){
+            perPoint[observation.point].push_back(Engine::View{observation.camera, observation.pixel});
+        }
+
+        std::vector<std::pair<double, double>> byParallax;   //kut, greska u metrima
+        for(size_t i = 0; i < noisy.points.size(); ++i){
+            glm::vec3 position;
+            if(!Engine::triangulate(noisy.poses, noisy.intrinsics, perPoint[i], position)) continue;
+            byParallax.emplace_back(Engine::parallaxDegrees(noisy.poses, noisy.intrinsics, perPoint[i]),
+                                    double(glm::length(position - noisy.points[i])));
+        }
+        std::sort(byParallax.begin(), byParallax.end());
+
+        auto medianOfRange = [&](size_t from, size_t to){
+            std::vector<double> errors;
+            for(size_t i = from; i < to && i < byParallax.size(); ++i) errors.push_back(byParallax[i].second);
+            if(errors.empty()) return 0.0;
+            std::sort(errors.begin(), errors.end());
+            return errors[errors.size() / 2];
+        };
+
+        const size_t quarter = byParallax.size() / 4;
+        const double narrow = medianOfRange(0, quarter);
+        const double wide = medianOfRange(byParallax.size() - quarter, byParallax.size());
+
+        std::printf("      paralaksa: najuza %.2f st, najsira %.2f st; greska %.4f m naspram %.4f m\n",
+                    byParallax.empty() ? 0.0 : byParallax.front().first,
+                    byParallax.empty() ? 0.0 : byParallax.back().first, narrow, wide);
+
+        report.check("uska paralaksa znaci vecu gresku", narrow > 2.0 * wide,
+            fmt("cetvrtina s najuzim kutom ima medijan %.4f m, s najsirim %.4f m (omjer %.2f)",
+                narrow, wide, wide > 0.0 ? narrow / wide : 0.0));
+    }
+
     return report.result();
 }

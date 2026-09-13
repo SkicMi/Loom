@@ -197,5 +197,98 @@ int main(){
             fmt("%u kamera, %u tocaka, reprojekcija %.2f px", state.posedCameras, state.solvedPoints, state.medianReprojection));
     }
 
+    // -------------------------------------------------------------------------------
+    // S10: paralaksa odlucuje sto ulazi u rezultat
+    //
+    // Dronska snimka je pokazala promasaj koji nijedna dosadasnja mjera ne kaznjava: cetvrtina
+    // tocaka odleti u beskonacnost, a reprojekcija ostane 0.191 px - jer daleka tocka lezi na
+    // obje zrake i uredno se reprojicira ma gdje po njima bila.
+    //
+    // Ovdje se isto radi na sintetickoj sceni s UZAKIM lukom, jer se problem vidi samo tamo gdje
+    // su kutovi mali. Mjeri se bez mjerila: udaljenost tocaka u dosezima putanje kamere, jer
+    // mjerilo rekonstrukcije je slobodno pa se sirovi metri ne daju usporedjivati.
+    //
+    // Uz svaku provjeru ide i mutacija: gasenjem provjere (maxRelativeDepthError = 0) rep se MORA
+    // vratiti, inace test ne mjeri provjeru nego nesto drugo
+    // -------------------------------------------------------------------------------
+
+    {
+        //Uvjeti su IZMJERENI, ne odabrani po osjecaju. Luk od 0.05 rad ne stvara rep uopce (sve
+        //tocke su na slicnoj dubini pa im je paralaksa 2.9 st, daleko iznad praga); rep se rodi
+        //tek ispod 0.02 rad. Uzet je 0.01 rad uz tocke razvucene u dubinu, gdje je razlika
+        //najcisca: 178 tocaka i rep 604 bez provjere, 55 tocaka i rep 0.75 s njom.
+        //
+        //IZMJERENA GRANICA, da se ne prodaje kao lijek za sve: uz luk 0.02 i dubinu 60 provjera
+        //NE pomaze (rep 14441 s njom, 11380 bez nje). Tamo prezivi tocka koja ima siroku
+        //paralaksu a lose je odredjena iz drugog razloga. Paralaksa je dakle nuzan uvjet, ne
+        //dovoljan
+        Engine::SyntheticConfig narrowConfig = config;
+        narrowConfig.arc = 0.01f;
+        narrowConfig.extent = glm::vec3(3.0f, 2.0f, 20.0f);
+        narrowConfig.noisePixels = 0.5f;
+        const Engine::SyntheticScene narrow = Engine::makeSyntheticScene(narrowConfig);
+
+        //Rep se mjeri u dosezima putanje: sredina oblaka po medijanu, doseg po najdaljoj kameri
+        auto tailOf = [](const Engine::Reconstruction& result){
+            std::vector<float> axis[3];
+            for(size_t i = 0; i < result.points.size(); ++i){
+                if(!result.solved[i]) continue;
+                for(int a = 0; a < 3; ++a) axis[a].push_back(result.points[i][a]);
+            }
+            glm::vec3 middle(0.0f);
+            for(int a = 0; a < 3; ++a){
+                if(axis[a].empty()) continue;
+                std::sort(axis[a].begin(), axis[a].end());
+                middle[a] = axis[a][axis[a].size() / 2];
+            }
+
+            float extent = 0.0f;
+            for(size_t i = 0; i < result.poses.size(); ++i){
+                if(result.posed[i]) extent = std::max(extent, glm::length(result.poses[i].position - middle));
+            }
+
+            std::vector<double> distance;
+            for(size_t i = 0; i < result.points.size(); ++i){
+                if(result.solved[i]) distance.push_back(double(glm::length(result.points[i] - middle)));
+            }
+            std::sort(distance.begin(), distance.end());
+            if(distance.empty() || extent <= 0.0f) return 0.0;
+            return distance[size_t(0.99 * double(distance.size() - 1))] / double(extent);
+        };
+
+        Engine::ReconstructConfig without;
+        without.maxRelativeDepthError = 0.0;     //mutacija: provjera ugasena
+
+        const Engine::Reconstruction guarded = Engine::reconstruct(narrow.observations, narrow.poses.size(),
+                                                                   narrow.points.size(), narrow.intrinsics);
+        const Engine::Reconstruction bare = Engine::reconstruct(narrow.observations, narrow.poses.size(),
+                                                                narrow.points.size(), narrow.intrinsics, without);
+
+        std::printf("      uzak luk: s provjerom %u tocaka rep %.2f, bez provjere %u tocaka rep %.2f\n",
+                    guarded.solvedPoints, tailOf(guarded), bare.solvedPoints, tailOf(bare));
+
+        report.check("prag se izvodi iz zarista, a ne zadaje",
+            guarded.parallaxLimitDegrees > 0.2 && guarded.parallaxLimitDegrees < 0.5,
+            fmt("f = %.0f px, sum 0.5 px, dopusteno 15%% dubine -> %.3f st",
+                double(narrow.intrinsics.fx), guarded.parallaxLimitDegrees));
+
+        report.check("bez provjere rep odleti", tailOf(bare) > 50.0,
+            fmt("p99 udaljenosti %.1f dosega putanje", tailOf(bare)));
+
+        report.check("s provjerom repa nema", tailOf(guarded) < 3.0,
+            fmt("p99 udaljenosti %.2f dosega putanje", tailOf(guarded)));
+
+        //Provjera ne smije platiti kamerama: tocka slabe dubine i dalje dobro vodi rotaciju, pa
+        //je prag tijekom gradnje blazi. Da nije, ostali bismo bez kamera - izmjereno na dronskoj
+        //snimci, gdje puni prag tijekom gradnje rijesi 2 od 24
+        report.check("kamere ostaju sve", guarded.posedCameras == bare.posedCameras,
+            fmt("%u naspram %u kamera", guarded.posedCameras, bare.posedCameras));
+
+        report.check("reprojekcija se ne pokvari",
+            guarded.medianReprojection < 1.5 * bare.medianReprojection,
+            fmt("%.3f px s provjerom naspram %.3f px bez nje",
+                guarded.medianReprojection, bare.medianReprojection));
+    }
+
     return report.result();
 }

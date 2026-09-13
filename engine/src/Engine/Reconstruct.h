@@ -54,6 +54,27 @@ struct ReconstructConfig{
     //Najmanje vec rijesenih tocaka koje nova kamera mora vidjeti
     uint32_t minPointsForPose = 12;
 
+    //PARALAKSA. Koliko se dubini smije vjerovati ne odlucuje kut sam po sebi nego kut zajedno sa
+    //zaristem i sumom, pa se prag ne zadaje nego IZVODI:
+    //
+    //    sum od s piksela na zaristu f daje relativnu gresku dubine  s / (f * kut u radijanima)
+    //    pa je najmanji smisleni kut                                 s / (f * dopustena greska)
+    //
+    //Zato ovdje stoji ono sto se stvarno trazi - kolika se greska dubine prihvaca - a ne kut.
+    //Isti broj onda vrijedi i za mobitel i za dron i za GoPro, jer se zariste razlikuje a
+    //zahtjev ne. Nula gasi provjeru i vraca ponasanje otprije S10.
+    //
+    //Izmjereno na dronskoj snimci (f = 649 px, 24 kadra): bez provjere p90 udaljenosti tocaka je
+    //362304 dosega putanje - cisto smece koje reprojekcija ne kaznjava jer daleka tocka uredno
+    //reprojicira ma gdje po svojoj zraki bila. Uz 0.15 rep nestane (p99 = 0.87), 218 tocaka
+    //ostane, svih 24 kamera ostane, a reprojekcija se ne pomakne (0.191 px)
+    double maxRelativeDepthError = 0.15;
+
+    //Sum u pikselima koji se pripisuje pracenju uglova. Nije mjerenje nego pretpostavka, i zato
+    //stoji ovdje gdje se vidi. Mjerena reprojekcija bi bila kriva zamjena: bundle je namjesti na
+    //podatke pa ispadne manja od pravog suma, i prag bi izasao prenizak
+    double assumedPixelNoise = 0.5;
+
     uint32_t bundleIterations = 15;
 };
 
@@ -67,6 +88,7 @@ struct Reconstruction{
     uint32_t posedCameras = 0;
     uint32_t solvedPoints = 0;
     double medianReprojection = 0.0;     //po opazanjima koja su usla u rekonstrukciju
+    double parallaxLimitDegrees = 0.0;   //kut izveden iz zarista i suma, onaj koji je stvarno vrijedio
     bool ok = false;
 };
 

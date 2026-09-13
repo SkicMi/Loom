@@ -39,6 +39,16 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     Reconstruction state;
     state.poses.assign(cameraCount, Pose{});
     state.posed.assign(cameraCount, 0);
+    //Prag se izvodi iz zarista i suma - vidi ReconstructConfig. Tijekom gradnje je TROSTRUKO
+    //blazi: ondje postoji samo da sustav ne bude singularan, jer slaba tocka i dalje dobro vodi
+    //rotaciju sljedece kamere. Izmjereno: uz puni prag tijekom gradnje dronska snimka rijesi 2 od
+    //24 kamere, uz blazi svih 24. Sto se VJERUJE odlucuje se na kraju, nad konacnim pozama
+    const double finalParallax = config.maxRelativeDepthError > 0.0
+        ? glm::degrees(config.assumedPixelNoise / (double(intrinsics.fx) * config.maxRelativeDepthError))
+        : 0.0;
+    const double workingParallax = finalParallax / 3.0;
+    state.parallaxLimitDegrees = finalParallax;
+
     state.points.assign(pointCount, glm::vec3(0.0f));
     state.solved.assign(pointCount, 0);
 
@@ -119,7 +129,7 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             if(views.size() < 2) continue;
 
             glm::vec3 position;
-            if(!triangulate(state.poses, intrinsics, views, position)) continue;
+            if(!triangulate(state.poses, intrinsics, views, position, workingParallax)) continue;
 
             //Tocka iza neke od kamera koje je vide nije rjesenje nego smetnja
             bool inFront = true;
@@ -202,6 +212,33 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
 
         triangulateVisible();
         runBundle();
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Zadnja rijec o tockama: paralaksa nad KONACNIM pozama
+    //
+    // Provjera pri triangulaciji nije dovoljna, i to je mjerenje pokazalo: bundle poslije pomakne
+    // poze, a na desetinkama stupnja i mali pomak mijenja kut medju zrakama za pola. Na dronskoj
+    // snimci su uz prag od 0.2 st u rezultatu ostajale tocke cija je konacna paralaksa 0.142 st.
+    //
+    // Tocka koja ovdje padne nije izgubljena nego POSTENO oznacena: njezin smjer znamo, dubinu ne.
+    // Reprojekcija je takvu nikad ne bi prijavila - daleka tocka lezi na obje zrake i uredno se
+    // reprojicira ma gdje po njima bila
+    // ---------------------------------------------------------------------------------
+
+    if(finalParallax > 0.0){
+        for(size_t point = 0; point < pointCount; ++point){
+            if(!state.solved[point]) continue;
+
+            std::vector<View> views;
+            for(const Observation* observation : byPoint[point]){
+                if(state.posed[observation->camera]) views.push_back(View{observation->camera, observation->pixel});
+            }
+            if(parallaxDegrees(state.poses, intrinsics, views) >= finalParallax) continue;
+
+            state.solved[point] = 0;
+            --state.solvedPoints;
+        }
     }
 
     state.medianReprojection = medianOver(observations, state, intrinsics);
