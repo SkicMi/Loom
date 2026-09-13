@@ -68,7 +68,27 @@ int main(int argc, char** argv){
     // -------------------------------------------------------------------------------
 
     Engine::TrackConfig trackConfig;
-    trackConfig.window = 6;
+
+    //PROZOR MORA PRATITI RAZLUCIVOST. Fiksnih 6 je bilo podeseno na 480x360, gdje prozor od 13 px
+    //pokriva 2.7 posto sirine slike i u njemu ima strukture. Na 4K isti prozor pokriva 0.34 posto
+    //i gotovo ravnu mrlju - iz koje se dva parametra jos i daju odrediti, ali sest ne. Afini warp
+    //tada vodi sum, probije ogradu na rastezanje i trag umre u kadru u kojem je rodjen.
+    //
+    //Izmjereno na snimci 3840x2160, 12 kadrova, afino pracenje:
+    //
+    //   window   tragova   opazanja   medijan duljine traga   vrijeme
+    //      6       3738       7816             1 kadar         34.0 s
+    //     12        800       7000            12 kadrova       18.9 s
+    //     24        800       8658            12 kadrova       66.1 s
+    //     32        800       8835            12 kadrova      112.9 s
+    //
+    //Prozor 12 je i NAJBRZI, jer uz njega tragovi zive pa nema lavine ponovnog trazenja uglova -
+    //ista ta lavina je ono sto prozor 6 cini sporijim unatoc manjem prozoru. Veci od 12 kupi vise
+    //opazanja, ali cijena raste s kvadratom: 24 je 3.5x sporiji za 24 posto vise opazanja.
+    //
+    //Mjereno je samo na 4K; omjer je odatle prenesen, a donja granica je stara vrijednost koja se
+    //na malim slikama pokazala dobrom
+    trackConfig.window = std::max(6u, uint32_t(info.width) / 320u);
     trackConfig.minDistance = 14.0f;
     trackConfig.maxCorners = 800;
     trackConfig.minTracks = 400;
