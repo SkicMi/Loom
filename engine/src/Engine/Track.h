@@ -52,6 +52,36 @@ struct TrackConfig{
     //Kad aktivnih tragova padne ispod ovoga, trazi se nove. Tragovi se gube - izadju iz kadra,
     //zaklone se, promijene izgled
     uint32_t minTracks = 250;
+
+    //AFINO PRACENJE. Pomak sam pretpostavlja da okolina ugla izgleda isto iz kadra u kadar - a kad
+    //se kamera pomakne u stranu, ta se okolina i rastegne i zakosi. LK to ne moze opisati, pa
+    //razliku upise u jedino sto ima: u pomak. Vrh sustavno otklizne, i to u istom smjeru svaki
+    //kadar, pa se greska ZBRAJA. S afinim warpom prozor smije promijeniti oblik, i pomak ostaje
+    //pomak.
+    //
+    //Iskljucivo za usporedbu: s false se dobije stari, samo-pomak tracker
+    bool affine = true;
+
+    //Koliko se prozor smije rastegnuti prije nego se trag proglasi izgubljenim. Afini warp bez
+    //ogranicenja rado pobjegne u degeneraciju - prozor se stanji u crtu i "savrseno" poklopi s
+    //bilo cime.
+    //
+    //TIJESNO JE BOLJE, i to je bilo suprotno od ocekivanog. Labava ograda pusti izrodjene tragove
+    //da zive, pa aktivnih nikad ne padne ispod minTracks i dopune nema; tijesna ih pobije rano i
+    //zamijeni svjezima. Izmjereno, rotacija kao medijan:
+    //
+    //   maxStretch    fina 0.9 st/kadar   gruba 5.5 st/kadar   duga snimka 180 kadrova
+    //     1.05            0.0178 st            0.0294 st            0.1747 st
+    //     1.1             0.0196 st            0.3490 st            0.0537 st
+    //     1.15            0.0314 st            0.7404 st            0.0651 st
+    //     1.2             0.0347 st            0.8281 st            0.1054 st
+    //     1.8             0.1145 st            2.1017 st            0.8287 st
+    //
+    //1.05 je prividno najbolji na finoj snimci, ali tamo gruba ispadne jednako dobra kao fina - a
+    //to je bas ono na sto kontrola u test_end_to_end upozorava: ne znaci da je tracker bolji nego
+    //da fina vise ne mjeri. Uz to na dugoj snimci daje najgori rezultat od svih. 1.1 je najbolji
+    //na dugoj snimci, a duga snimka je ono za sto ovo postoji
+    float maxStretch = 1.1f;
 };
 
 //Uglovi koje se isplati pratiti, najjaci prvi
@@ -89,6 +119,62 @@ bool trackPoint(const GrayImage& from, const GrayImage& to,
 bool trackPoint(const Pyramid& from, const Pyramid& to,
                 const glm::vec2& start, glm::vec2& end, const TrackConfig& config = {});
 
+//=============================================================================================
+// Afini warp prozora: gdje se i KAKO okolina ugla nasla u ovom kadru.
+//
+// Prozor iz kadra rodjenja se preslika u trenutni kadar kao  slika = rodjen + linear*x + shift,
+// gdje je x pomak unutar prozora. Cisti pomak je poseban slucaj s linear = jedinicna matrica.
+// Sam vrh je x = 0, dakle rodjen + shift - zato pracena tocka i dalje izlazi iz jednog zbroja.
+//=============================================================================================
+struct AffineWarp{
+    glm::mat2 linear = glm::mat2(1.0f);
+    glm::vec2 shift = glm::vec2(0.0f);
+};
+
+//=============================================================================================
+// Sto se o tragu zapamti u kadru u kojem je rodjen.
+//
+// SIDRO, a ne lanac. Stari tracker je usporedjivao kadar N s kadrom N-1, pa je svaka mala greska
+// ulazila u polaznu tocku sljedece usporedbe i ostajala tamo zauvijek. Ovdje se svaki kadar
+// usporedjuje s kadrom RODJENJA traga: greska u kadru N vise ne truje kadar N+1, nego se svaki
+// put mjeri iznova od istog sidra. Drift se time ne smanjuje nego nema odakle nastati.
+//
+// Cijena je da se izgled izmedju rodjenja i sada moze jako razlikovati - a bas to afini warp i
+// opisuje. Zato ove dvije stvari idu zajedno: sidrenje trazi afino, afino omogucuje sidrenje.
+//
+// ZASTO SE PAMTE GRADIJENTI A NE GOTOVE SD SLIKE. Inverzno-kompozicijski LK racuna gradijente i
+// Hessian JEDNOM, na predlosku, umjesto u svakoj iteraciji na slici. Sest SD slika bi bilo sest
+// polja po nivou; iz gradijenta i poznatog (x,y) se dobiju s po sest mnozenja, pa se pamte dva
+// polja umjesto sest - uz 600 tragova to je razlika izmedju 19 i 9 MB
+//=============================================================================================
+class TrackTemplate{
+    public:
+    TrackTemplate() = default;
+    TrackTemplate(const Pyramid& pyramid, const glm::vec2& point, const TrackConfig& config);
+
+    bool empty() const {return steps.empty();}
+    const glm::vec2& origin() const {return birth;}
+
+    private:
+    friend bool trackAffine(const TrackTemplate&, const Pyramid&, AffineWarp&, const TrackConfig&);
+
+    struct Level{
+        std::vector<float> values;
+        std::vector<float> gradientX;
+        std::vector<float> gradientY;
+        std::vector<double> hessian;   //6x6, po recima
+        glm::vec2 centre{0.0f};
+    };
+    std::vector<Level> steps;
+    glm::vec2 birth{0.0f};
+};
+
+//Gdje se predlozak nasao u ovom kadru. warp ulazi kao pretpostavka (obicno onaj iz proslog kadra)
+//i izlazi popravljen. False kad je trag izgubljen: izasao je iz slike, prozor se izrodio ili se
+//okolina previse promijenila
+bool trackAffine(const TrackTemplate& templ, const Pyramid& to, AffineWarp& warp,
+                 const TrackConfig& config = {});
+
 //Tragovi kroz niz kadrova. Izlaz je tocno ono sto reconstruct trazi: opazanje nosi redni broj
 //kadra kao kameru i redni broj TRAGA kao tocku
 class Tracker{
@@ -107,13 +193,14 @@ class Tracker{
     struct Active{
         glm::vec2 position{0.0f};
         uint32_t track = 0;
+
+        //Sidro i warp postoje samo kad je config.affine; inace se nosi samo position, kao prije
+        TrackTemplate anchor;
+        AffineWarp warp;
     };
 
     TrackConfig config;
-    std::vector<uint8_t> previous;   //vlastita kopija: pozivateljev buffer ne mora zivjeti dalje
-    uint32_t previousWidth = 0;
-    uint32_t previousHeight = 0;
-    Pyramid previousPyramid;         //gradjena jednom, kad je kadar stigao - ne po tragu
+    Pyramid previousPyramid;         //samo za stari, ulancani nacin; sidrenom pracenju ne treba
 
     std::vector<Active> active;
     std::vector<Observation> collected;
