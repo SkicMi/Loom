@@ -94,6 +94,10 @@ int main(int argc, char** argv){
     //upaljenog i ugasenog je jedini nacin da se vidi koliko G4 stvarno radi
     const bool useSH = argc > 7 ? (std::atoi(argv[7]) != 0) : true;
 
+    //Ubacena kocka: velicina kao udio polumjera scene. Nula znaci bez nje. Ovo je mjerni predmet -
+    //ako poze i mjerilo valjaju, stoji gdje treba, prave je velicine i zaklanja ono iza sebe
+    const float boxSize = argc > 8 ? float(std::atof(argv[8])) : 0.0f;
+
     // -------------------------------------------------------------------------------
     // S diska u splatove
     // -------------------------------------------------------------------------------
@@ -250,6 +254,21 @@ int main(int argc, char** argv){
     float distance = 1.3f * bounds.radius;
     float height = 0.2f * bounds.radius;
 
+    if(boxSize > 0.0f){
+        SplatRenderer::Box box;
+        box.visible = true;
+        //Ne u sredistu scene - ondje je obicno sam predmet, pa bi kocka zavrsila zakopana u
+        //njemu. Mjesto je FIKSNO U SVIJETU, vezano na kut zadan argumentom a ne na kameru: kocka
+        //koja se seli s kamerom ne bi dokazivala nista o prostoru
+        box.center = bounds.centre + 0.55f * bounds.radius *
+                     glm::vec3(std::sin(0.436f), 0.15f, std::cos(0.436f));   //25 st, fiksno
+        box.halfExtent = glm::vec3(boxSize * bounds.radius);
+        box.orientation = glm::angleAxis(0.4f, glm::normalize(glm::vec3(0.2f, 1.0f, 0.1f)));
+        splatRenderer.setBox(box);
+        printf("Kocka u sredistu scene, poluosovina %.3f (%.2f polumjera scene)\n",
+               box.halfExtent.x, boxSize);
+    }
+
     printf("\nStrelice: kruzenje i visina.  W/S: blize i dalje.  ESC: kraj.\n\n");
 
     GLFWwindow* window = loom.window->getWindow();
@@ -331,9 +350,13 @@ int main(int argc, char** argv){
             loom.waitIdle();
             const ImageData shot = loom.renderer.readLastFrame();
 
-            //readLastFrame vraca RGBA; imageFromPixels to samo omota
+            //Poredak se PITA FORMATU. Ovdje je dugo pisalo da readLastFrame vraca RGBA i to je
+            //bilo krivo: swapchain je pregovorio eB8G8R8A8Srgb, pa je svaka spremljena slika
+            //imala zamijenjeno crveno i plavo. U prozoru se to ne vidi jer prozor cita isti
+            //format kojim je pisano - greska je postojala samo u datoteci
             const Spool::Image image = Spool::imageFromPixels(shot.pixels.data(),
-                shot.extent.width, shot.extent.height, Spool::ChannelOrder::RGBA);
+                shot.extent.width, shot.extent.height,
+                isBgraFormat(shot.format) ? Spool::ChannelOrder::BGRA : Spool::ChannelOrder::RGBA);
             Spool::saveImage(shotName, image);
 
             printf("\nSnimljeno %s (%ux%u)\n", shotName.c_str(), image.width, image.height);

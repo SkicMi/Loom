@@ -12,10 +12,12 @@
 // polje ne zada, proba nekoliko vrijednosti i uzme ona s najmanjom reprojekcijom. To je gruba
 // samokalibracija: mjerljiva, ali ne i dokaz - ravna scena zna dati nisku reprojekciju uz krivu
 // zarisnu.
+#include <Spool/ImageFile.h>
 #include <Spool/VideoFile.h>
 
 #include <Engine/CameraHints.h>
 #include <Engine/ColmapExport.h>
+#include <Engine/Keyframes.h>
 #include <Engine/Reconstruct.h>
 #include <Engine/Track.h>
 
@@ -49,8 +51,10 @@ int main(int argc, char** argv){
     }
 
     const std::string path = argv[1];
-    const uint32_t step = argc > 2 ? uint32_t(std::atoi(argv[2])) : 5;
-    const uint32_t wanted = argc > 3 ? uint32_t(std::atoi(argv[3])) : 24;
+    //Svaki kadar se prati; koji ulaze u rekonstrukciju bira chooseKeyframes. Preskakanje pri
+    //citanju je ostalo samo za brzo probavanje na dugackim snimkama
+    const uint32_t step = argc > 2 ? uint32_t(std::atoi(argv[2])) : 1;
+    const uint32_t wanted = argc > 3 ? uint32_t(std::atoi(argv[3])) : 100000;
     const double fieldOfView = argc > 4 ? std::atof(argv[4]) : 0.0;
     const std::string outputDirectory = argc > 5 ? std::string(argv[5]) : std::string();
 
@@ -106,6 +110,16 @@ int main(int argc, char** argv){
     // Rekonstrukcija, uz probanje vidnog polja kad nije zadano
     // -------------------------------------------------------------------------------
 
+    //Kljucni kadrovi - vidi Engine/Keyframes.h. Izbor ne ovisi o zarisnoj pa se radi jednom
+    const Engine::KeyframeSelection keys = Engine::chooseKeyframes(tracker.observations(), used, info.width);
+    std::printf("  kljucnih kadrova %zu od %u (medijan paralakse %.1f px)\n",
+                keys.frames.size(), used, keys.medianParallaxPixels);
+    if(keys.frames.size() < 3){
+        std::printf("Premalo kljucnih kadrova.\n");
+        return 1;
+    }
+    const uint32_t cameraCount = uint32_t(keys.frames.size());
+
     auto solveWith = [&](double fov){
         Engine::Intrinsics intrinsics;
         intrinsics.width = info.width;
@@ -121,7 +135,7 @@ int main(int argc, char** argv){
         config.huberPixels = 2.0;
         config.acceptPixels = 6.0;
         config.minPointsForPose = 20;
-        return std::make_pair(Engine::reconstruct(tracker.observations(), used, tracker.trackCount(),
+        return std::make_pair(Engine::reconstruct(keys.observations, cameraCount, tracker.trackCount(),
                                                   intrinsics, config), intrinsics);
     };
 
@@ -164,7 +178,7 @@ int main(int argc, char** argv){
         const auto result = solveWith(fov);
         const Engine::Reconstruction& state = result.first;
         std::printf("  vidno polje %5.1f st (f = %6.1f px): %2u/%u kamera, %4u tocaka, reprojekcija %6.3f px\n",
-                    fov, double(result.second.fx), state.posedCameras, used, state.solvedPoints, state.medianReprojection);
+                    fov, double(result.second.fx), state.posedCameras, cameraCount, state.solvedPoints, state.medianReprojection);
 
         const bool better = state.posedCameras > best.posedCameras ||
                             (state.posedCameras == best.posedCameras && state.medianReprojection < best.medianReprojection);
@@ -176,7 +190,7 @@ int main(int argc, char** argv){
     }
 
     std::printf("\nNajbolje: vidno polje %.1f st, %u od %u kamera, %u tocaka, reprojekcija %.3f px\n",
-                bestFov, best.posedCameras, used, best.solvedPoints, best.medianReprojection);
+                bestFov, best.posedCameras, cameraCount, best.solvedPoints, best.medianReprojection);
 
     //DVIJE PROVJERE KOJE RADE BEZ POZNATE ISTINE.
     //
@@ -217,11 +231,50 @@ int main(int argc, char** argv){
                     factor, other.first.posedCameras, other.first.medianReprojection, otherShape.first);
     }
 
+    // -------------------------------------------------------------------------------
+    // Izvoz: COLMAP i SLIKE
+    //
+    // Trener splatova treba oboje - poze bez piksela nemaju sto optimizirati. Slike se pisu iz
+    // drugog prolaza kroz snimku, a ne iz memorije: stotinu kadrova u 4K je gigabajt i pol, a
+    // ponovno dekodiranje traje sekunde. Imena moraju biti tocno ona koja je ColmapExport upisao
+    // u images.txt, inace trener trazi datoteke kojih nema
+    // -------------------------------------------------------------------------------
+
     if(!outputDirectory.empty() && best.ok){
         std::filesystem::create_directories(outputDirectory);
-        if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, tracker.observations())){
+        if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, keys.observations)){
             std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
         }
+
+        const std::filesystem::path imageDirectory = std::filesystem::path(outputDirectory) / "images";
+        std::filesystem::create_directories(imageDirectory);
+
+        //Koji kadar snimke odgovara kojoj kameri. Ime mora biti ono koje je ColmapExport upisao u
+        //images.txt, a on numerira po INDEKSU KAMERE - ne po redu rijesenih. Kad jedna kamera
+        //padne, ta se dva reda raziđu i trener bi ucio krive slike uz prave poze
+        std::vector<uint32_t> placeOfFrame(used, uint32_t(-1));
+        for(uint32_t place = 0; place < cameraCount; ++place){
+            if(best.posed[place]) placeOfFrame[keys.frames[place]] = place;
+        }
+
+        Spool::VideoReader again(path);
+        uint32_t fileIndex = 0, trackedIndex = 0, written = 0;
+        while(!again.atEnd() && trackedIndex < used){
+            const Spool::Image frame = again.readNext();
+            if(frame.pixels.empty()) break;
+            if(fileIndex++ % step != 0) continue;
+            const uint32_t tracked = trackedIndex++;
+
+            const uint32_t place = placeOfFrame[tracked];
+            if(place == uint32_t(-1)) continue;
+
+            char name[64];
+            std::snprintf(name, sizeof(name), "frame_%04u.png", place);
+            Spool::savePng((imageDirectory / name).string(),
+                           Spool::imageFromPixels(frame.pixels.data(), frame.width, frame.height));
+            ++written;
+        }
+        std::printf("Zapisano %u slika u %s\n", written, imageDirectory.string().c_str());
     }
     return 0;
 }

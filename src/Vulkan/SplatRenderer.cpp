@@ -300,6 +300,21 @@ void SplatRenderer::draw(VulkanRenderer& renderer, uint32_t splatCount){
     rasterParams.imageY = extent.height;
     rasterParams.gridX = grid.width;
     rasterParams.gridY = grid.height;
+    rasterParams.focalPrincipal = pendingParams.focalPrincipal;
+
+    //Kutija iz svijeta u pogled. Osi nose i rotaciju i nista vise - polumjeri su zasebno, pa
+    //shader radi obican slab test u sustavu kutije
+    if(insertedBox.visible){
+        const glm::mat3 rotation = glm::mat3_cast(glm::normalize(insertedBox.orientation));
+        const glm::mat3 viewRotation = glm::mat3(pendingParams.view);
+
+        rasterParams.boxVisible = 1;
+        rasterParams.boxCenter = pendingParams.view * glm::vec4(insertedBox.center, 1.0f);
+        rasterParams.boxHalfExtent = glm::vec4(insertedBox.halfExtent, 0.0f);
+        rasterParams.boxAxisX = glm::vec4(viewRotation * rotation[0], 0.0f);
+        rasterParams.boxAxisY = glm::vec4(viewRotation * rotation[1], 0.0f);
+        rasterParams.boxColor = glm::vec4(insertedBox.color, 0.0f);
+    }
 
     //Rasponi se ciste uvijek, i kad nema nijednog para - inace bi pločica zadrzala ono sto je
     //u njoj pisalo prosli kadar

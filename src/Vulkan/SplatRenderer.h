@@ -92,6 +92,28 @@ class SplatRenderer{
                    float focalX, float focalY, float principalX, float principalY,
                    float blur = 0.3f);
 
+    //=========================================================================================
+    // UBACENI PREDMET. Kocka postavljena u splat scenu, da se vidi KAKO JE SOLVALO: ako se poze i
+    // mjerilo slazu, kocka stoji na podu i iza nje se splatovi zaklone kako treba.
+    //
+    // Ne crta se Loomom nego se PRESIJECA ZRAKOM u samom rasterizatoru. Razlog je dubina: splat
+    // se stapa sprijeda natrag i nema jednu dubinu po pikselu, pa bi spajanje s tudjim depth
+    // bufferom trazilo citanje natrag i pretvorbu jedinica. Presjek zrake i kutije daje dubinu u
+    // ISTIM jedinicama koje splat vec nosi (-viewZ), pa se usporedba svede na jedan if.
+    //
+    // Kutija se zadaje u SVIJETU; u pogled je prebacuje draw(), jer tek on zna kameru
+    //=========================================================================================
+    struct Box{
+        bool visible = false;
+        glm::vec3 center{0.0f};
+        glm::vec3 halfExtent{0.5f};
+        glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+        glm::vec3 color{0.85f, 0.35f, 0.15f};
+    };
+
+    void setBox(const Box& box){insertedBox = box;}
+    const Box& getBox() const {return insertedBox;}
+
     //Priprema na kartici. Unutar kadra, prije draw()
     void prepare(VulkanRenderer& renderer, uint32_t splatCount);
 
@@ -148,11 +170,20 @@ class SplatRenderer{
         uint32_t pairCount = 0;
         uint32_t padding0 = 0, padding1 = 0, padding2 = 0;
     };
+    //Push constant rasterizatora: tocno 128 bajtova, koliko Vulkan jamci. Zato os Z kutije nije
+    //ovdje nego se u shaderu racuna kao vektorski produkt prve dvije - stala bi, ali bez rezerve
     struct RasterParams{
         uint32_t imageX = 0, imageY = 0;
         uint32_t gridX = 0, gridY = 0;
         uint32_t pairCount = 0;
-        uint32_t padding0 = 0, padding1 = 0, padding2 = 0;
+        uint32_t boxVisible = 0;
+        uint32_t padding1 = 0, padding2 = 0;
+        glm::vec4 focalPrincipal{0.0f};   //fx, fy, cx, cy
+        glm::vec4 boxCenter{0.0f};        //u POGLEDU
+        glm::vec4 boxHalfExtent{0.0f};
+        glm::vec4 boxAxisX{0.0f};
+        glm::vec4 boxAxisY{0.0f};
+        glm::vec4 boxColor{0.0f};
     };
 
     const VulkanDevice& device;
@@ -163,6 +194,7 @@ class SplatRenderer{
     uint32_t storedDegree = 0;
     uint32_t storedCoeffs = 0;
     SplatMath::PrepareParams pendingParams;
+    Box insertedBox;
 
     VulkanBuffer splats;
     VulkanBuffer rawSplats;

@@ -12,6 +12,22 @@ struct ImageData{
     size_t pixelCount() const{return size_t(extent.width) * extent.height;}
 };
 
+//Jesu li bajtovi u redu B,G,R,A. Swapchain gotovo uvijek pregovori bas eB8G8R8A8Srgb, pa slika
+//spremljena kao da je RGBA ima zamijenjeno crveno i plavo - a to je greska koja se u prozoru NE
+//vidi, jer prozor cita isti format kojim je pisano. Zato se poredak pita formatu, ne pamti napamet
+inline bool isBgraFormat(vk::Format format){
+    switch(format){
+        case vk::Format::eB8G8R8A8Unorm:
+        case vk::Format::eB8G8R8A8Srgb:
+        case vk::Format::eB8G8R8A8Snorm:
+        case vk::Format::eB8G8R8A8Uint:
+        case vk::Format::eB8G8R8A8Sint:
+            return true;
+        default:
+            return false;
+    }
+}
+
 inline bool isDepthFormat(vk::Format format){
     switch(format){
         case vk::Format::eD16Unorm:
