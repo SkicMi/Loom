@@ -1,0 +1,175 @@
+#include "Engine/CameraHints.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+
+namespace Engine{
+namespace{
+
+std::string lowercase(std::string text){
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c){return char(std::tolower(c));});
+    return text;
+}
+
+bool contains(const std::string& haystack, const std::string& needle){
+    return lowercase(haystack).find(lowercase(needle)) != std::string::npos;
+}
+
+std::string valueOf(const SourceFacts& facts, const std::string& key){
+    for(const MetadataEntry& entry : facts.metadata){
+        if(lowercase(entry.key) == lowercase(key)) return entry.value;
+    }
+    return {};
+}
+
+//Bilo koji kljuc koji sadrzi ovaj niz - kontejneri ista imena pisu na pet nacina
+std::string valueContaining(const SourceFacts& facts, const std::string& part){
+    for(const MetadataEntry& entry : facts.metadata){
+        if(contains(entry.key, part)) return entry.value;
+    }
+    return {};
+}
+
+//ISO 6709: "+58.6539+25.9721/" ili "+58.6539+25.9721+123.456/"
+bool parseLocation(const std::string& text, double& latitude, double& longitude, double& altitude){
+    std::vector<double> numbers;
+    size_t i = 0;
+    while(i < text.size()){
+        if(text[i] != '+' && text[i] != '-'){ ++i; continue; }
+        size_t end = i + 1;
+        while(end < text.size() && (std::isdigit(static_cast<unsigned char>(text[end])) || text[end] == '.')) ++end;
+        if(end > i + 1) numbers.push_back(std::atof(text.substr(i, end - i).c_str()));
+        i = end;
+    }
+    if(numbers.size() < 2) return false;
+    latitude = numbers[0];
+    longitude = numbers[1];
+    altitude = numbers.size() > 2 ? numbers[2] : 0.0;
+    return true;
+}
+
+//Tvornicka vodoravna vidna polja, po modelu. Priblizna i to je tako i receno u biljesci - GoPro
+//mijenja kadar s nacinom snimanja (Wide/Linear/SuperView) i sa stabilizacijom, a dron ima svoje
+double fieldOfViewFor(const std::string& make, const std::string& model, std::string& note){
+    const std::string both = make + " " + model;
+
+    if(contains(both, "gopro")){
+        note = "GoPro, tvornicki Wide: oko 92 st vodoravno. Linear je oko 75, SuperView preko 100 "
+               "i jako izoblicen. Nacin snimanja se iz metapodataka obicno ne vidi";
+        return 92.0;
+    }
+    if(contains(both, "dji") || contains(both, "mavic") || contains(both, "mini") || contains(both, "phantom")){
+        note = "DJI, tipicno 84 st dijagonalno = oko 73 st vodoravno na 16:9";
+        return 73.0;
+    }
+    if(contains(both, "apple") || contains(both, "iphone")){
+        note = "iPhone, glavna kamera je oko 69 st vodoravno; ultrasiroka oko 106";
+        return 69.0;
+    }
+    if(contains(both, "insta360")){
+        note = "Insta360: vidno polje ovisi o izrezu, 90 st je samo gruba sredina";
+        return 90.0;
+    }
+    if(contains(both, "sony") || contains(both, "canon") || contains(both, "nikon") || contains(both, "panasonic")){
+        note = "Fotoaparat: vidno polje ovisi o objektivu i nije u snimci. 60 st je puka sredina";
+        return 60.0;
+    }
+    return 0.0;
+}
+
+}
+
+const char* sourceName(HintSource source){
+    switch(source){
+        case HintSource::Metadata:   return "procitano iz datoteke";
+        case HintSource::ModelTable: return "iz tablice modela";
+        case HintSource::Assumed:    return "pretpostavka";
+        default:                     return "nepoznato";
+    }
+}
+
+CameraHints hintsFrom(const SourceFacts& facts){
+    CameraHints hints;
+    hints.rotation = facts.rotation;
+
+    //Proizvodjac i model: svaki kontejner ih pise drugdje
+    hints.make = valueOf(facts, "make");
+    if(hints.make.empty()) hints.make = valueContaining(facts, "quicktime.make");
+    hints.model = valueOf(facts, "model");
+    if(hints.model.empty()) hints.model = valueContaining(facts, "quicktime.model");
+
+    //Kad nema izravnog kljuca, ime handlera zna odati proizvodjaca: "DJI.AVC", "GoPro AVC encoder"
+    if(hints.make.empty()){
+        const std::string handler = valueContaining(facts, "handler_name");
+        if(!handler.empty() && !contains(handler, "videohandler") && !contains(handler, "sound")){
+            hints.make = handler;
+            hints.notes.push_back("proizvodjac procitan iz imena zapisa (handler): \"" + handler + "\"");
+        }
+    }
+    for(const std::string& stream : facts.streams){
+        if(contains(stream, "gopro") || contains(stream, "gpmd")){
+            hints.hasTelemetry = true;
+            hints.telemetryNote = stream;
+        }
+        if(hints.make.empty() && contains(stream, "dji")) hints.make = "DJI";
+    }
+
+    //DJI serijski broj stoji u komentaru: "DE=None,SN=1SFLH1M0AB0NV5, Type=Normal..."
+    const std::string comment = valueOf(facts, "comment");
+    const size_t serialAt = comment.find("SN=");
+    if(serialAt != std::string::npos){
+        const size_t end = comment.find_first_of(", ", serialAt + 3);
+        hints.serial = comment.substr(serialAt + 3, end == std::string::npos ? std::string::npos : end - serialAt - 3);
+    }
+
+    //Polozaj
+    std::string location = valueOf(facts, "location");
+    if(location.empty()) location = valueContaining(facts, "location");
+    if(!location.empty() && parseLocation(location, hints.latitude, hints.longitude, hints.altitude)){
+        hints.hasPosition = true;
+        hints.notes.push_back("snimka nosi polozaj; jedna tocka daje mjesto, a cijeli zapis bi dao i MJERILO");
+    }
+
+    //Zarisna duljina: iz modela, ili opca pretpostavka
+    std::string modelNote;
+    double fov = fieldOfViewFor(hints.make, hints.model, modelNote);
+    if(fov > 0.0){
+        hints.focalSource = HintSource::ModelTable;
+        hints.notes.push_back(modelNote);
+    }else{
+        fov = 70.0;
+        hints.focalSource = HintSource::Assumed;
+        hints.notes.push_back("kamera nije prepoznata; uzeto 70 st vodoravno kao opca pretpostavka");
+    }
+
+    hints.horizontalFieldOfView = fov;
+    hints.intrinsics.width = facts.width;
+    hints.intrinsics.height = facts.height;
+    hints.intrinsics.cx = 0.5f * float(facts.width);
+    hints.intrinsics.cy = 0.5f * float(facts.height);
+
+    const double focal = (0.5 * double(facts.width)) / std::tan(0.5 * fov * 3.14159265358979 / 180.0);
+    hints.intrinsics.fx = float(focal);
+    hints.intrinsics.fy = float(focal * facts.pixelAspect);
+
+    if(std::fabs(facts.pixelAspect - 1.0) > 1e-3){
+        hints.notes.push_back("piksel nije kvadratan (omjer " + std::to_string(facts.pixelAspect) +
+                              "), zarisna po okomici je prilagodjena");
+    }
+    if(facts.rotation != 0){
+        hints.notes.push_back("snimka je zapisana zakrenuto za " + std::to_string(facts.rotation) +
+                              " st; Spool je vec okrece, pa su sirina i visina one koje se vide");
+    }
+    if(hints.hasTelemetry){
+        hints.notes.push_back("postoji telemetrijski zapis (" + hints.telemetryNote +
+                              "): u njemu su zirokop i GPS, dakle pocetne rotacije i mjerilo. Jos ga ne citamo");
+    }
+
+    hints.notes.push_back("glavna tocka je pretpostavljena u sredini, distorzija se ne modelira - "
+                          "oboje se vidi kao reprojekcija koja ne ide ispod otprilike jednog piksela");
+
+    return hints;
+}
+
+}

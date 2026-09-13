@@ -399,9 +399,24 @@ target_link_libraries(SplatViewer PRIVATE Loom Spool)
 
 # SolveViewer - camera solve nacrtan: prave kamere protiv onih koje je solver nasao.
 # Jedini program koji linka i preset i Engine, jer je usporedba njegov cijeli posao
+# VideoSolve - camera solve na pravoj snimci. Linka Spool (cita video) i Engine (rjesava);
+# Looma ovdje nema, jer se nista ne crta
+# VideoInfo - sto snimka o sebi govori. Spool cita, Engine tumaci
+add_executable(VideoInfo src/video_info.cpp)
+target_link_libraries(VideoInfo PRIVATE Spool Engine)
+
+add_executable(VideoSolve src/video_solve.cpp)
+target_link_libraries(VideoSolve PRIVATE Spool Engine)
+
 add_executable(SolveViewer src/solve_viewer.cpp)
 target_link_libraries(SolveViewer PRIVATE LoomPreset Engine)
 add_dependencies(SolveViewer LoomShaders)
+
+# SolveMovie - solve prave snimke kao let kroz rezultat. Jedini program koji linka sva tri
+# modula: Spool cita snimku, Engine je rjesava, Loom crta ono sto je naslo
+add_executable(SolveMovie src/solve_movie.cpp)
+target_link_libraries(SolveMovie PRIVATE LoomPreset Spool Engine)
+add_dependencies(SolveMovie LoomShaders)
 add_dependencies(SplatViewer LoomShaders)
 
 # ----------------------------------------------------------------------------

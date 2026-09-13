@@ -50,6 +50,18 @@ struct VideoInfo{
     //Appleovi com.apple.quicktime.* i Sonyjevi vlasnicki kljucevi - sto god da ih ima
     std::vector<std::pair<std::string, std::string>> metadata;
 
+    //Sto jos u datoteci postoji osim slike. GoPro svoju telemetriju (zirokop, GPS, orijentacija)
+    //nosi kao ZASEBAN zapis tipa data, a DJI svoje podatke zna staviti u zaseban zapis ili u
+    //metapodatke. Spool ih ne tumaci - ali mora reci da postoje, inace sloj iznad ne zna ni da
+    //ima sto traziti
+    struct StreamNote{
+        int index = 0;
+        std::string kind;      //"video", "audio", "data", "subtitle", "attachment", "nepoznato"
+        std::string codec;
+        std::string handler;   //HANDLER_NAME zapisa: "GoPro MET", "DJI.AVC", "VideoHandler"...
+    };
+    std::vector<StreamNote> streams;
+
     //Prazan string kad kljuca nema. Usporedba imena ne razlikuje velika i mala slova, jer
     //se kontejneri o tome ne slazu
     std::string find(const std::string& key) const;

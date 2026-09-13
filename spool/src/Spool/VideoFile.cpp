@@ -311,6 +311,29 @@ VideoReader::VideoReader(const std::string& path) : state(std::make_unique<State
     //Kontejner prvi, pa zapis - tim redom se i citaju kad ista dva kljuca postoje na oba
     collect(state->format->metadata, info.metadata);
     collect(stream->metadata, info.metadata);
+
+    //I popis svega sto u datoteci jos stoji. Telemetrija je zaseban zapis i bez ovoga se o njoj
+    //ne bi znalo nista
+    for(unsigned i = 0; i < state->format->nb_streams; ++i){
+        const AVStream* other = state->format->streams[i];
+        VideoInfo::StreamNote note;
+        note.index = int(i);
+
+        switch(other->codecpar->codec_type){
+            case AVMEDIA_TYPE_VIDEO:      note.kind = "video"; break;
+            case AVMEDIA_TYPE_AUDIO:      note.kind = "audio"; break;
+            case AVMEDIA_TYPE_DATA:       note.kind = "data"; break;
+            case AVMEDIA_TYPE_SUBTITLE:   note.kind = "subtitle"; break;
+            case AVMEDIA_TYPE_ATTACHMENT: note.kind = "attachment"; break;
+            default:                      note.kind = "nepoznato"; break;
+        }
+
+        note.codec = nameOr(avcodec_get_name(other->codecpar->codec_id));
+        const AVDictionaryEntry* handler = av_dict_get(other->metadata, "handler_name", nullptr, 0);
+        if(handler) note.handler = handler->value;
+
+        info.streams.push_back(note);
+    }
 }
 
 VideoReader::~VideoReader() = default;
