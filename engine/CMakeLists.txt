@@ -33,6 +33,7 @@ add_library(Engine STATIC
     src/Engine/Bundle.cpp
     src/Engine/TwoView.cpp
     src/Engine/Reconstruct.cpp
+    src/Engine/ColmapExport.cpp
 )
 
 target_include_directories(Engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
