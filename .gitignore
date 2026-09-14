@@ -13,3 +13,4 @@ splatview.png
 tools/depth/.venv/
 view*.png
 .vscode/
+.venv/
