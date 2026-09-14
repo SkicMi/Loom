@@ -78,4 +78,19 @@ std::vector<Match> matchDescriptors(const std::vector<Descriptor>& from,
                                     const std::vector<Descriptor>& to,
                                     const DescribeConfig& config = {});
 
+//Isto, ali se gledaju samo kandidati unutar zadanog polumjera u slici.
+//
+//ZASTO. Svaki sa svakim je kvadratno: 4000 znacajki po kadru puta 930 parova kljucnih kadrova je
+//petnaest milijardi usporedbi. Na snimci to nije ni potrebno - kamera se izmedju dva bliska kadra
+//pomakne ograniceno, pa poklapanje na drugom kraju slike nije kandidat nego greska. Polumjer je
+//time i ubrzanje i jos jedno sito.
+//
+//Na fotografijama snimljenim odvojeno ovo ne vrijedi i tada se koristi gornja inacica
+std::vector<Match> matchDescriptorsNear(const std::vector<Descriptor>& from,
+                                        const std::vector<glm::vec2>& fromPixels,
+                                        const std::vector<Descriptor>& to,
+                                        const std::vector<glm::vec2>& toPixels,
+                                        float radius,
+                                        const DescribeConfig& config = {});
+
 }

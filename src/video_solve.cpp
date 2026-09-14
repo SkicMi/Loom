@@ -18,6 +18,7 @@
 #include <Engine/CameraHints.h>
 #include <Engine/ColmapExport.h>
 #include <Engine/ColmapImport.h>
+#include <Engine/MatchGraph.h>
 #include <Engine/MergeTracks.h>
 #include <Engine/Keyframes.h>
 #include <Engine/Reconstruct.h>
@@ -48,7 +49,7 @@ std::vector<uint8_t> toGray(const Spool::Image& image){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [bez-spajanja]\n");
+        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [bez-spajanja|graf]\n");
         std::printf("  cameras.txt: COLMAP-ova kalibracija. Kad je zadana, zarista i distorzija se\n");
         std::printf("               NE pogadjaju nego citaju, a opazanja se isprave prije solvea\n");
         return 1;
@@ -64,7 +65,11 @@ int main(int argc, char** argv){
     const std::string calibrationFile = argc > 6 ? std::string(argv[6]) : std::string();
 
     //Spajanje tragova se da iskljuciti, jer je jedini nacin da se izmjeri koliko donosi
-    const bool mergeTracks = !(argc > 7 && std::string(argv[7]) == "bez-spajanja");
+    //Sedmi argument bira kako nastaju korespondencije. Postoji da se razlika DA IZMJERITI:
+    //"bez-spajanja" je golo pracenje, zadano je spajanje pracenih tragova, "graf" ih trazi iznova
+    const std::string how = argc > 7 ? std::string(argv[7]) : std::string();
+    const bool mergeTracks = how != "bez-spajanja" && how != "graf";
+    const bool matchGraph = how == "graf";
 
     Spool::VideoReader reader(path);
     const Spool::VideoInfo& info = reader.info();
@@ -176,7 +181,10 @@ int main(int argc, char** argv){
     std::vector<Engine::Observation> observations = keys.observations;
     uint32_t pointCount = tracker.trackCount();
 
-    if(mergeTracks){
+    //GRAF POKLAPANJA umjesto spajanja vec pracenih tragova. Spajanje popravlja tocke, ovo stvara
+    //nove veze - znacajke se u svakom kljucnom kadru nadju NEOVISNO pa se povezu. Vidi
+    //Engine/MatchGraph.h
+    if(matchGraph || mergeTracks){
         std::vector<std::vector<uint8_t>> keyframeGray(cameraCount);
         std::vector<Engine::GrayImage> keyframeImages(cameraCount);
 
@@ -199,15 +207,47 @@ int main(int argc, char** argv){
         }
 
         if(taken == cameraCount){
-            Engine::MergeConfig mergeConfig;
-            const Engine::MergeResult merged = Engine::mergeTracks(
-                observations, keyframeImages, pointCount, Engine::Intrinsics{}, mergeConfig);
+            Engine::Intrinsics guess;
+            guess.width = info.width; guess.height = info.height;
+            guess.cx = 0.5f * float(info.width); guess.cy = 0.5f * float(info.height);
+            //Priblizna zarisna je ovdje dovoljna: dvoprizorna poza sluzi samo kao SITO, a sito ne
+            //mora biti kalibrirano da bi odbacilo poklapanje koje se ni s jednim rjesenjem ne slaze
+            const double assumed = fieldOfView > 0.0 ? fieldOfView : 60.0;
+            guess.fx = guess.fy = float((0.5 * double(info.width)) / std::tan(0.5 * assumed * 3.14159265358979 / 180.0));
 
-            std::printf("  spajanje: %u -> %u tocaka, %u spajanja, %u od %u parova kadrova proslo geometriju\n",
-                        pointCount, merged.pointCount, merged.mergedPairs,
-                        merged.acceptedFrames, merged.comparedFrames);
-            observations = merged.observations;
-            pointCount = merged.pointCount;
+            if(matchGraph){
+                Engine::MatchGraphConfig graphConfig;
+                graphConfig.detect = trackConfig;
+                graphConfig.detect.maxCorners = 4000;      //neovisno trazenje, pa ih smije biti puno vise
+                graphConfig.detect.minDistance = 8.0f;
+                graphConfig.describe.ratio = 0.9f;        //vidi mjerenje u MatchGraph.cpp
+                graphConfig.describe.maxDistance = 96;
+
+                const auto started = std::chrono::steady_clock::now();
+                const Engine::MatchGraphResult graph = Engine::buildMatchGraph(keyframeImages, guess, graphConfig);
+                const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+                std::printf("  graf poklapanja: %u znacajki, %u tocaka, %zu opazanja (%.0f po kadru), "
+                            "%u od %u parova proslo geometriju, medijan %.0f parova, %.1f s\n",
+                            graph.featuresTotal, graph.pointCount, graph.observations.size(),
+                            double(graph.observations.size()) / double(cameraCount),
+                            graph.acceptedFrames, graph.comparedFrames, graph.medianMatchesPerPair, seconds);
+
+                if(graph.pointCount > 0){
+                    observations = graph.observations;
+                    pointCount = graph.pointCount;
+                }
+            }else{
+                Engine::MergeConfig mergeConfig;
+                const Engine::MergeResult merged = Engine::mergeTracks(
+                    observations, keyframeImages, pointCount, guess, mergeConfig);
+
+                std::printf("  spajanje: %u -> %u tocaka, %u spajanja, %u od %u parova kadrova proslo geometriju\n",
+                            pointCount, merged.pointCount, merged.mergedPairs,
+                            merged.acceptedFrames, merged.comparedFrames);
+                observations = merged.observations;
+                pointCount = merged.pointCount;
+            }
         }else{
             std::printf("  spajanje preskoceno: naslo se %u od %u kljucnih kadrova\n", taken, cameraCount);
         }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <unordered_map>
 
 namespace Engine{
 namespace{
@@ -209,6 +210,97 @@ std::vector<Match> matchDescriptors(const std::vector<Descriptor>& from,
         const uint32_t j = bestTo[i];
         if(bestFrom[j] != uint32_t(i)) continue;
         matches.push_back(Match{uint32_t(i), j, bestDistance[i]});
+    }
+    return matches;
+}
+
+
+std::vector<Match> matchDescriptorsNear(const std::vector<Descriptor>& from,
+                                        const std::vector<glm::vec2>& fromPixels,
+                                        const std::vector<Descriptor>& to,
+                                        const std::vector<glm::vec2>& toPixels,
+                                        float radius,
+                                        const DescribeConfig& config){
+    std::vector<Match> matches;
+    if(from.empty() || to.empty()) return matches;
+    if(from.size() != fromPixels.size() || to.size() != toPixels.size()) return matches;
+
+    //Mreza celija velicine polumjera: kandidat je u istoj ili susjednoj celiji, pa se pretraga
+    //svede na devet celija umjesto na cijeli drugi skup
+    const float cell = std::max(1.0f, radius);
+    auto cellKey = [&](const glm::vec2& at){
+        const int64_t cx = int64_t(std::floor(double(at.x) / double(cell)));
+        const int64_t cy = int64_t(std::floor(double(at.y) / double(cell)));
+        return (uint64_t(uint32_t(int32_t(cx))) << 32) | uint64_t(uint32_t(int32_t(cy)));
+    };
+
+    auto buildBuckets = [&](const std::vector<Descriptor>& set, const std::vector<glm::vec2>& pixels){
+        std::unordered_map<uint64_t, std::vector<uint32_t>> buckets;
+        for(uint32_t i = 0; i < uint32_t(set.size()); ++i){
+            if(!set[i].valid) continue;
+            buckets[cellKey(pixels[i])].push_back(i);
+        }
+        return buckets;
+    };
+
+    const auto toBuckets = buildBuckets(to, toPixels);
+    const auto fromBuckets = buildBuckets(from, fromPixels);
+    const float radiusSquared = radius * radius;
+
+    auto gather = [&](const std::unordered_map<uint64_t, std::vector<uint32_t>>& buckets,
+                      const glm::vec2& around, std::vector<uint32_t>& into){
+        into.clear();
+        const int64_t cx = int64_t(std::floor(double(around.x) / double(cell)));
+        const int64_t cy = int64_t(std::floor(double(around.y) / double(cell)));
+        for(int64_t dy = -1; dy <= 1; ++dy){
+            for(int64_t dx = -1; dx <= 1; ++dx){
+                const uint64_t k = (uint64_t(uint32_t(int32_t(cx + dx))) << 32) | uint64_t(uint32_t(int32_t(cy + dy)));
+                const auto found = buckets.find(k);
+                if(found == buckets.end()) continue;
+                into.insert(into.end(), found->second.begin(), found->second.end());
+            }
+        }
+    };
+
+    std::vector<uint32_t> bestTo(from.size(), 0), bestDistance(from.size(), 257);
+    std::vector<uint32_t> candidates;
+
+    for(uint32_t i = 0; i < uint32_t(from.size()); ++i){
+        if(!from[i].valid) continue;
+        gather(toBuckets, fromPixels[i], candidates);
+
+        uint32_t second = 257;
+        for(uint32_t j : candidates){
+            const glm::vec2 apart = toPixels[j] - fromPixels[i];
+            if(glm::dot(apart, apart) > radiusSquared) continue;
+            const uint32_t d = distance(from[i], to[j]);
+            if(d < bestDistance[i]){ second = bestDistance[i]; bestDistance[i] = d; bestTo[i] = j; }
+            else if(d < second){ second = d; }
+        }
+
+        if(bestDistance[i] > config.maxDistance) bestDistance[i] = 257;
+        else if(second < 257 && float(bestDistance[i]) > config.ratio * float(second)) bestDistance[i] = 257;
+    }
+
+    //Uzajamnost: isti racun u suprotnom smjeru. Bez njega se deset znacajki preslika na istu jednu,
+    //i triangulacija dobije deset imena za istu tocku
+    std::vector<uint32_t> bestFrom(to.size(), UINT32_MAX), backDistance(to.size(), 257);
+    for(uint32_t j = 0; j < uint32_t(to.size()); ++j){
+        if(!to[j].valid) continue;
+        gather(fromBuckets, toPixels[j], candidates);
+        for(uint32_t i : candidates){
+            const glm::vec2 apart = toPixels[j] - fromPixels[i];
+            if(glm::dot(apart, apart) > radiusSquared) continue;
+            const uint32_t d = distance(from[i], to[j]);
+            if(d < backDistance[j]){ backDistance[j] = d; bestFrom[j] = i; }
+        }
+    }
+
+    for(uint32_t i = 0; i < uint32_t(from.size()); ++i){
+        if(bestDistance[i] > 256) continue;
+        const uint32_t j = bestTo[i];
+        if(bestFrom[j] != i) continue;
+        matches.push_back(Match{i, j, bestDistance[i]});
     }
     return matches;
 }
