@@ -410,6 +410,11 @@ target_link_libraries(VideoInfo PRIVATE Spool Engine)
 add_executable(ModelInfo src/model_info.cpp)
 target_link_libraries(ModelInfo PRIVATE Engine)
 
+# OverlayBox - kocka na fiksnom mjestu u svijetu, nacrtana preko pravih kadrova. Provjera koju
+# brojke ne mogu dati: stoji li rjesenje mirno kroz snimku
+add_executable(OverlayBox src/overlay_box.cpp)
+target_link_libraries(OverlayBox PRIVATE Engine Spool)
+
 add_executable(VideoSolve src/video_solve.cpp)
 target_link_libraries(VideoSolve PRIVATE Spool Engine)
 
