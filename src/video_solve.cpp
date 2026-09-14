@@ -17,6 +17,7 @@
 
 #include <Engine/CameraHints.h>
 #include <Engine/ColmapExport.h>
+#include <Engine/ColmapImport.h>
 #include <Engine/Keyframes.h>
 #include <Engine/Reconstruct.h>
 #include <Engine/Track.h>
@@ -46,7 +47,9 @@ std::vector<uint8_t> toGray(const Spool::Image& image){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa]\n");
+        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt]\n");
+        std::printf("  cameras.txt: COLMAP-ova kalibracija. Kad je zadana, zarista i distorzija se\n");
+        std::printf("               NE pogadjaju nego citaju, a opazanja se isprave prije solvea\n");
         return 1;
     }
 
@@ -57,6 +60,7 @@ int main(int argc, char** argv){
     const uint32_t wanted = argc > 3 ? uint32_t(std::atoi(argv[3])) : 100000;
     const double fieldOfView = argc > 4 ? std::atof(argv[4]) : 0.0;
     const std::string outputDirectory = argc > 5 ? std::string(argv[5]) : std::string();
+    const std::string calibrationFile = argc > 6 ? std::string(argv[6]) : std::string();
 
     Spool::VideoReader reader(path);
     const Spool::VideoInfo& info = reader.info();
@@ -154,22 +158,55 @@ int main(int argc, char** argv){
     }
     const uint32_t cameraCount = uint32_t(keys.frames.size());
 
+    //KALIBRACIJA, kad je zadana. Jednom izmjerena za tijelo i objektiv vrijedi za svaku sljedecu
+    //snimku istom kamerom, pa je nema smisla pogadjati iz vidnog polja u svakoj
+    Engine::Intrinsics measured;
+    std::string measuredModel;
+    const bool calibrated = !calibrationFile.empty() &&
+                            Engine::readColmapCamera(calibrationFile, measured, measuredModel);
+    if(!calibrationFile.empty() && !calibrated){
+        std::printf("Ne mogu procitati kalibraciju iz %s\n", calibrationFile.c_str());
+        return 1;
+    }
+
+    //OPAZANJA SE ISPRAVE JEDNOM, na ulazu. Solver racuna s ravnom lecom - triangulacija, PnP i
+    //bundle svi pretpostavljaju ravnu zraku - pa je jedino mjesto gdje distorzija smije postojati
+    //ovdje, izmedju mjerenja i racuna. Da se nosi kroz svaki korak, svaki bi ju morao znati
+    std::vector<Engine::Observation> solveObservations = keys.observations;
+    if(calibrated && (measured.k1 != 0.0f || measured.k2 != 0.0f)){
+        double worst = 0.0;
+        for(Engine::Observation& one : solveObservations){
+            const glm::vec2 fixed = Engine::undistort(measured, one.pixel);
+            worst = std::max(worst, double(glm::length(fixed - one.pixel)));
+            one.pixel = fixed;
+        }
+        std::printf("  ispravljena distorzija k1 %.5f k2 %.5f - najveci pomak %.2f px\n",
+                    double(measured.k1), double(measured.k2), worst);
+    }
+
     auto solveWith = [&](double fov){
         Engine::Intrinsics intrinsics;
-        intrinsics.width = info.width;
-        intrinsics.height = info.height;
-        intrinsics.cx = 0.5f * float(info.width);
-        intrinsics.cy = 0.5f * float(info.height);
-        //Vodoravno vidno polje: fx = (sirina/2) / tan(fov/2)
-        const double focal = (0.5 * double(info.width)) / std::tan(0.5 * fov * 3.14159265358979 / 180.0);
-        intrinsics.fx = float(focal);
-        intrinsics.fy = float(focal);
+        if(calibrated){
+            intrinsics = measured;
+            //Distorzija je vec izvadjena iz opazanja; solver od sada gleda ravnu lecu
+            intrinsics.k1 = 0.0f;
+            intrinsics.k2 = 0.0f;
+        }else{
+            intrinsics.width = info.width;
+            intrinsics.height = info.height;
+            intrinsics.cx = 0.5f * float(info.width);
+            intrinsics.cy = 0.5f * float(info.height);
+            //Vodoravno vidno polje: fx = (sirina/2) / tan(fov/2)
+            const double focal = (0.5 * double(info.width)) / std::tan(0.5 * fov * 3.14159265358979 / 180.0);
+            intrinsics.fx = float(focal);
+            intrinsics.fy = float(focal);
+        }
 
         Engine::ReconstructConfig config;
         config.huberPixels = 2.0;
         config.acceptPixels = 6.0;
         config.minPointsForPose = 20;
-        return std::make_pair(Engine::reconstruct(keys.observations, cameraCount, tracker.trackCount(),
+        return std::make_pair(Engine::reconstruct(solveObservations, cameraCount, tracker.trackCount(),
                                                   intrinsics, config), intrinsics);
     };
 

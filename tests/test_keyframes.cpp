@@ -80,10 +80,23 @@ struct Miss{
 
 Miss compare(const Engine::Reconstruction& state, const std::vector<Engine::Pose>& truth){
     const size_t count = truth.size();
+
+    //ISHODISTE JE PRVA RIJESENA KAMERA, ne kamera 0. Rekonstrukcija je tocna do jednog okvira -
+    //to je gauge - i reconstruct ju svodi na prvu koju je uspio rijesiti. Prije je to uvijek bila
+    //kamera 0, jer je pocetni par uvijek kretao od nje; otkad par bira racun, ne mora biti.
+    //
+    //Kad se istina svede na kameru 0 a rjesenje stoji u okviru neke druge, razlika izadje kao
+    //rotacija od dvadesetak stupnjeva iako je rjesenje ispravno - i tako je ovaj test pao. Nije
+    //mjerio rekonstrukciju nego to iz kojeg se mjesta gleda
+    size_t reference = 0;
+    for(size_t i = 0; i < count; ++i){
+        if(state.posed[i]){ reference = i; break; }
+    }
+
     std::vector<Engine::Pose> expected(count);
     for(size_t i = 0; i < count; ++i){
-        expected[i].orientation = glm::normalize(glm::conjugate(truth[0].orientation) * truth[i].orientation);
-        expected[i].position = glm::conjugate(truth[0].orientation) * (truth[i].position - truth[0].position);
+        expected[i].orientation = glm::normalize(glm::conjugate(truth[reference].orientation) * truth[i].orientation);
+        expected[i].position = glm::conjugate(truth[reference].orientation) * (truth[i].position - truth[reference].position);
     }
 
     size_t farthest = 0;

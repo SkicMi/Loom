@@ -22,6 +22,63 @@ bool nextLine(std::ifstream& file, std::string& line){
 
 }
 
+bool readColmapCamera(const std::string& camerasFile, Intrinsics& intrinsics, std::string& modelName){
+    std::ifstream file(camerasFile);
+    if(!file) return false;
+
+    std::string line;
+    if(!nextLine(file, line)) return false;   //jedna kamera je dovoljna; COLMAP ih moze imati vise
+
+    std::istringstream in(line);
+    uint32_t id = 0, width = 0, height = 0;
+    std::string name;
+    in >> id >> name >> width >> height;
+    if(!in) return false;
+
+    std::vector<double> params;
+    double value = 0.0;
+    while(in >> value) params.push_back(value);
+
+    modelName = name;
+    intrinsics.width = width;
+    intrinsics.height = height;
+
+    //Svaki model slaze parametre drukcije. Ono sto nam treba je uvijek prvo: zarista pa glavna
+    //tocka; distorzija dolazi iza.
+    //
+    //fy SE NE OKRECE. Loomov renderer vodi fy negativan jer kamera gleda niz -Z, i to sam prvo
+    //prenio ovamo - ali Engineova Intrinsics je pozitivna u oba zarista, a ColmapExport ju
+    //zapisuje takvu kakva jest. Krug je to odmah pokazao: fy je izasao -600 umjesto 600, a
+    //reprojekcija procitanog modela 133 px umjesto nule
+    if(name == "SIMPLE_PINHOLE" && params.size() >= 3){
+        intrinsics.fx = float(params[0]);
+        intrinsics.fy = float(params[0]);
+        intrinsics.cx = float(params[1]);
+        intrinsics.cy = float(params[2]);
+    }else if(name == "PINHOLE" && params.size() >= 4){
+        intrinsics.fx = float(params[0]);
+        intrinsics.fy = float(params[1]);
+        intrinsics.cx = float(params[2]);
+        intrinsics.cy = float(params[3]);
+    }else if(name == "SIMPLE_RADIAL" && params.size() >= 4){
+        intrinsics.fx = float(params[0]);
+        intrinsics.fy = float(params[0]);
+        intrinsics.cx = float(params[1]);
+        intrinsics.cy = float(params[2]);
+        intrinsics.k1 = float(params[3]);
+    }else if(name == "RADIAL" && params.size() >= 5){
+        intrinsics.fx = float(params[0]);
+        intrinsics.fy = float(params[0]);
+        intrinsics.cx = float(params[1]);
+        intrinsics.cy = float(params[2]);
+        intrinsics.k1 = float(params[3]);
+        intrinsics.k2 = float(params[4]);
+    }else{
+        return false;   //nepoznat model je bolje odbiti nego procitati nasumicne brojeve
+    }
+    return true;
+}
+
 bool readColmapText(const std::string& directory, ColmapModel& model){
     model = ColmapModel{};
 
@@ -30,60 +87,9 @@ bool readColmapText(const std::string& directory, ColmapModel& model){
     // ---------------------------------------------------------------------------------
 
     {
-        std::ifstream file(directory + "/cameras.txt");
-        if(!file) return false;
-
-        std::string line;
-        if(!nextLine(file, line)) return false;   //jedna kamera je dovoljna; COLMAP ih moze imati vise
-
-        std::istringstream in(line);
-        uint32_t id = 0, width = 0, height = 0;
-        std::string name;
-        in >> id >> name >> width >> height;
-        if(!in) return false;
-
-        std::vector<double> params;
-        double value = 0.0;
-        while(in >> value) params.push_back(value);
-
-        model.cameraModel = name;
-
-        //Svaki model slaze parametre drukcije. Ono sto nam treba je uvijek prvo: zarista pa
-        //glavna tocka; distorzija dolazi iza i cita se kao izvjestaj
-        if(name == "SIMPLE_PINHOLE" && params.size() >= 3){
-            model.intrinsics.fx = float(params[0]);
-            model.intrinsics.fy = float(params[0]);
-            model.intrinsics.cx = float(params[1]);
-            model.intrinsics.cy = float(params[2]);
-        }else if(name == "PINHOLE" && params.size() >= 4){
-            model.intrinsics.fx = float(params[0]);
-            model.intrinsics.fy = float(params[1]);
-            model.intrinsics.cx = float(params[2]);
-            model.intrinsics.cy = float(params[3]);
-        }else if(name == "SIMPLE_RADIAL" && params.size() >= 4){
-            model.intrinsics.fx = float(params[0]);
-            model.intrinsics.fy = float(params[0]);
-            model.intrinsics.cx = float(params[1]);
-            model.intrinsics.cy = float(params[2]);
-            model.radialK1 = params[3];
-            model.intrinsics.k1 = float(params[3]);
-        }else if(name == "RADIAL" && params.size() >= 5){
-            model.intrinsics.fx = float(params[0]);
-            model.intrinsics.fy = float(params[0]);
-            model.intrinsics.cx = float(params[1]);
-            model.intrinsics.cy = float(params[2]);
-            model.radialK1 = params[3];
-            model.radialK2 = params[4];
-            model.intrinsics.k1 = float(params[3]);
-            model.intrinsics.k2 = float(params[4]);
-        }else{
-            return false;   //nepoznat model je bolje odbiti nego procitati nasumicne brojeve
-        }
-
-        //fy SE NE OKRECE. Loomov renderer vodi fy negativan jer kamera gleda niz -Z, i to sam
-        //prvo prenio ovamo - ali Engineova Intrinsics je pozitivna u oba zarista, a ColmapExport
-        //ju zapisuje takvu kakva jest. Krug je to odmah pokazao: fy je izasao -600 umjesto 600,
-        //a reprojekcija procitanog modela 133 px umjesto nule
+        if(!readColmapCamera(directory + "/cameras.txt", model.intrinsics, model.cameraModel)) return false;
+        model.radialK1 = double(model.intrinsics.k1);
+        model.radialK2 = double(model.intrinsics.k2);
     }
 
     // ---------------------------------------------------------------------------------

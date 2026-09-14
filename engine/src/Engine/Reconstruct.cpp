@@ -2,6 +2,7 @@
 #include "Engine/Triangulate.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 
 namespace Engine{
@@ -66,52 +67,159 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     }
 
     // ---------------------------------------------------------------------------------
-    // Pocetni par: najudaljeniji kadar koji jos dijeli dovoljno tocaka s prvim
+    // Pocetni par: onaj koji NAJVISE TRIANGULIRA, a ne onaj koji slucajno sadrzi kameru 0
     // ---------------------------------------------------------------------------------
+    //
+    // Prva verzija je par trazila iskljucivo oko kamere 0: najudaljeniji kadar koji s njom jos
+    // dijeli dovoljno tocaka. To pretpostavlja da je kadar 0 dobar kadar, a on je samo prvi.
+    //
+    // Izmjereno na pravim podacima (COLMAP-ov model iste snimke, 65 kamera): kamera 0 ima 141
+    // opazanje, a prosjek je 3564 - dvadeset pet puta slabija od prosjeka, jer je rubni kadar.
+    // Par se onda birao izmedju nje i kadra s kojim dijeli 56 tocaka, dvoprizorna poza je ispala
+    // besmislena, i SVIH 56 tocaka je zavrsilo iza kamere. Nula tocaka, dvije kamere, kraj.
+    //
+    // Sada se gledaju SVI parovi, a mjera nije koliko tocaka dijele nego koliko ih se iz njih dade
+    // stvarno triangulirati - ispred obje kamere i s dovoljno paralakse. To je jedina mjera koja
+    // ne zavarava: par moze dijeliti tisucu tocaka a nemati bazu, i tada ne vrijedi nista.
 
-    std::vector<uint8_t> seenByFirst(pointCount, 0);
-    for(const Observation* observation : byCamera[0]) seenByFirst[observation->point] = 1;
+    std::unordered_map<uint64_t, uint32_t> shared;
+    {
+        std::vector<uint32_t> seeing;
+        for(size_t point = 0; point < pointCount; ++point){
+            seeing.clear();
+            for(const Observation* observation : byPoint[point]) seeing.push_back(observation->camera);
+            std::sort(seeing.begin(), seeing.end());
+            seeing.erase(std::unique(seeing.begin(), seeing.end()), seeing.end());
 
-    size_t partner = 0;
-    size_t partnerCommon = 0;
-    for(size_t camera = cameraCount - 1; camera > 0; --camera){
-        size_t common = 0;
-        for(const Observation* observation : byCamera[camera]) if(seenByFirst[observation->point]) ++common;
-        if(common >= std::max<size_t>(30, byCamera[0].size() / 4)){
-            partner = camera;
-            partnerCommon = common;
-            break;
-        }
-        if(common > partnerCommon){
-            partner = camera;
-            partnerCommon = common;
+            for(size_t i = 0; i < seeing.size(); ++i){
+                for(size_t j = i + 1; j < seeing.size(); ++j){
+                    ++shared[uint64_t(seeing[i]) * uint64_t(cameraCount) + uint64_t(seeing[j])];
+                }
+            }
         }
     }
-    if(partner == 0 || partnerCommon < 8){
-        return state;
+    if(shared.empty()) return state;
+
+    struct Candidate{
+        uint32_t a = 0, b = 0;
+        uint32_t common = 0;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(shared.size());
+    for(const auto& entry : shared){
+        if(entry.second < 8) continue;          //ispod ovoga dvoprizorna poza nema sto rjesavati
+        candidates.push_back(Candidate{uint32_t(entry.first / uint64_t(cameraCount)),
+                                       uint32_t(entry.first % uint64_t(cameraCount)),
+                                       entry.second});
     }
+    if(candidates.empty()) return state;
+
+    //Najprometniji parovi prvi, ali se ne vjeruje broju nego se provjerava racunom
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& x, const Candidate& y){return x.common > y.common;});
+
+    auto sharedPixels = [&](uint32_t a, uint32_t b,
+                            std::vector<glm::vec2>& pixelsA, std::vector<glm::vec2>& pixelsB,
+                            std::vector<uint32_t>& which){
+        pixelsA.clear(); pixelsB.clear(); which.clear();
+        std::vector<const Observation*> inA(pointCount, nullptr);
+        for(const Observation* observation : byCamera[a]) inA[observation->point] = observation;
+        for(const Observation* observation : byCamera[b]){
+            if(!inA[observation->point]) continue;
+            pixelsA.push_back(inA[observation->point]->pixel);
+            pixelsB.push_back(observation->pixel);
+            which.push_back(observation->point);
+        }
+    };
+
+    struct Tried{
+        uint32_t a = 0, b = 0;
+        uint32_t usable = 0;
+        double medianAngle = 0.0;     //kut pod kojim se zrake sijeku, u stupnjevima
+        TwoViewResult pair;
+    };
+    std::vector<Tried> tried;
 
     std::vector<glm::vec2> pixelsA, pixelsB;
     std::vector<uint32_t> sharedPoints;
-    {
-        std::vector<const Observation*> inFirst(pointCount, nullptr);
-        for(const Observation* observation : byCamera[0]) inFirst[observation->point] = observation;
-        for(const Observation* observation : byCamera[partner]){
-            if(!inFirst[observation->point]) continue;
-            pixelsA.push_back(inFirst[observation->point]->pixel);
-            pixelsB.push_back(observation->pixel);
-            sharedPoints.push_back(observation->point);
+
+    //Provjerava se ogranicen broj kandidata: RANSAC po paru nije besplatan, a par koji dijeli malo
+    //tocaka ionako ne moze pobijediti par koji dijeli mnogo
+    const size_t toCheck = std::min<size_t>(candidates.size(), config.initialPairCandidates);
+    for(size_t index = 0; index < toCheck; ++index){
+        const Candidate& candidate = candidates[index];
+        sharedPixels(candidate.a, candidate.b, pixelsA, pixelsB, sharedPoints);
+        if(pixelsA.size() < 8) continue;
+
+        const TwoViewResult attempt = relativePoseRobust(pixelsA, pixelsB, intrinsics, config.ransac);
+        if(!attempt.solved) continue;
+
+        //Koliko se iz ovog para stvarno dade triangulirati - ispred obje kamere i s paralaksom
+        std::vector<Pose> twoPoses(cameraCount);
+        std::vector<uint8_t> twoPosed(cameraCount, 0);
+        twoPoses[candidate.a] = Pose{};
+        twoPoses[candidate.b] = attempt.pose;
+        twoPosed[candidate.a] = 1;
+        twoPosed[candidate.b] = 1;
+
+        uint32_t usable = 0;
+        std::vector<double> angles;
+        for(size_t i = 0; i < sharedPoints.size(); ++i){
+            const std::vector<View> views{View{candidate.a, pixelsA[i]}, View{candidate.b, pixelsB[i]}};
+            glm::vec3 position;
+            if(!triangulate(twoPoses, intrinsics, views, position, workingParallax)) continue;
+
+            glm::vec2 pixel;
+            if(!project(twoPoses[candidate.a], intrinsics, position, pixel)) continue;
+            if(!project(twoPoses[candidate.b], intrinsics, position, pixel)) continue;
+            ++usable;
+
+            //Kut pod kojim se dvije zrake sijeku. To je prava mjera baze: dva kadra mogu dijeliti
+            //tisucu tocaka a gledati ih gotovo iz istog mjesta, i tada dubina ne postoji
+            const glm::vec3 toA = glm::normalize(position - twoPoses[candidate.a].position);
+            const glm::vec3 toB = glm::normalize(position - twoPoses[candidate.b].position);
+            angles.push_back(glm::degrees(std::acos(double(glm::clamp(glm::dot(toA, toB), -1.0f, 1.0f)))));
+        }
+
+        if(usable < 8 || angles.empty()) continue;
+        std::nth_element(angles.begin(), angles.begin() + long(angles.size() / 2), angles.end());
+        tried.push_back(Tried{candidate.a, candidate.b, usable, angles[angles.size() / 2], attempt});
+    }
+
+    if(tried.empty()) return state;
+
+    //KUT JE UVJET, BROJ TOCAKA JE IZBOR - ne obrnuto. Prvo sam filtrirao po broju tocaka pa birao
+    //po kutu, i to je promasilo: par sa 309 tocaka i bazom od 1.71 stupnja izbacio je sve ostale iz
+    //igre, a par s 80 tocaka i 9.58 stupnjeva - koji je bio pravi - nije ni dosao na red. Dubina iz
+    //uske baze ne valja koliko god tocaka bilo, pa uska baza ne smije biti kandidat nego otpasti.
+    //
+    //Prag se IZVODI, ne zadaje. workingParallax je kut pri kojem jedna tocka jos drzi dopustenu
+    //gresku dubine (S10). Pocetni par nosi cijelu rekonstrukciju - iz njega nastaju sve prve tocke
+    //na koje se zatim oslanja svaka sljedeca kamera - pa se od njega trazi red velicine vise
+    const double demandedAngle = 10.0 * workingParallax;
+
+    const Tried* chosen = nullptr;
+    for(const Tried& one : tried){
+        if(one.medianAngle < demandedAngle) continue;
+        if(!chosen || one.usable > chosen->usable) chosen = &one;
+    }
+
+    //Kad nijedan par nema toliku bazu, uzima se najsiri koji postoji - bolje uska baza nego nikakva
+    if(!chosen){
+        for(const Tried& one : tried){
+            if(!chosen || one.medianAngle > chosen->medianAngle) chosen = &one;
         }
     }
+    if(!chosen) return state;
 
-    const TwoViewResult pair = relativePoseRobust(pixelsA, pixelsB, intrinsics, config.ransac);
-    if(!pair.solved){
-        return state;
-    }
+    const uint32_t first = chosen->a;
+    const uint32_t partner = chosen->b;
+    const TwoViewResult pair = chosen->pair;
+    sharedPixels(first, partner, pixelsA, pixelsB, sharedPoints);
 
-    state.poses[0] = Pose{};                //ishodiste i jedinicna orijentacija: gauge
+    state.poses[first] = Pose{};            //ishodiste i jedinicna orijentacija: gauge
     state.poses[partner] = pair.pose;       //pomak je jedinicni - mjerilo ostaje slobodno
-    state.posed[0] = 1;
+    state.posed[first] = 1;
     state.posed[partner] = 1;
     state.posedCameras = 2;
 
@@ -268,6 +376,43 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
 
     state.medianReprojection = medianOver(observations, state, intrinsics);
     state.ok = state.posedCameras >= 2 && state.solvedPoints > 0;
+    // ---------------------------------------------------------------------------------
+    // Ishodiste je PRVA RIJESENA KAMERA, uvijek
+    // ---------------------------------------------------------------------------------
+    //
+    // Mjerilo i polozaj rekonstrukcije su slobodni - to je gauge - pa netko mora odabrati gdje je
+    // ishodiste. Prije je to bila kamera 0, jer je par uvijek kretao od nje. Sada par bira racun,
+    // pa ishodiste vise nije unaprijed poznato.
+    //
+    // ZASTO SE TO NE SMIJE PUSTITI. Pozivatelj usporedjuje poze s istinom tako da obje svede na
+    // prvu kameru; ako rekonstrukcija odjednom stoji u okviru neke druge, razlika izadje kao
+    // rotacija od 57.29 stupnjeva - sto je tocno jedan radijan, i tocno ono sto se dogodilo kad
+    // sam izbor para promijenio a ovo zaboravio. Rjesenje je bilo ispravno cijelo vrijeme; krivo
+    // je bilo samo mjesto s kojeg se gleda.
+    //
+    // Pretvorba ne mijenja nijednu medjusobnu udaljenost ni kut, pa ni jednu reprojekciju
+    {
+        size_t gauge = cameraCount;
+        for(size_t camera = 0; camera < cameraCount; ++camera){
+            if(state.posed[camera]){ gauge = camera; break; }
+        }
+
+        if(gauge < cameraCount){
+            const Pose origin = state.poses[gauge];
+            const glm::quat inverse = glm::conjugate(glm::normalize(origin.orientation));
+
+            for(size_t camera = 0; camera < cameraCount; ++camera){
+                if(!state.posed[camera]) continue;
+                state.poses[camera].position = inverse * (state.poses[camera].position - origin.position);
+                state.poses[camera].orientation = glm::normalize(inverse * state.poses[camera].orientation);
+            }
+            for(size_t point = 0; point < pointCount; ++point){
+                if(!state.solved[point]) continue;
+                state.points[point] = inverse * (state.points[point] - origin.position);
+            }
+        }
+    }
+
     return state;
 }
 

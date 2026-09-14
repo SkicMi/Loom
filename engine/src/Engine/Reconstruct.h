@@ -54,6 +54,11 @@ struct ReconstructConfig{
     //Najmanje vec rijesenih tocaka koje nova kamera mora vidjeti
     uint32_t minPointsForPose = 12;
 
+    //Koliko se parova provjeri pri izboru pocetnog para. Mjera nije koliko tocaka par dijeli nego
+    //koliko ih se iz njega dade triangulirati, a to trazi RANSAC po paru - pa se provjerava samo
+    //najprometnije. Vidi komentar uz izbor u Reconstruct.cpp
+    uint32_t initialPairCandidates = 30;
+
     //PARALAKSA. Koliko se dubini smije vjerovati ne odlucuje kut sam po sebi nego kut zajedno sa
     //zaristem i sumom, pa se prag ne zadaje nego IZVODI:
     //

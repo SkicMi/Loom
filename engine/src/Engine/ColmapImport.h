@@ -52,4 +52,9 @@ struct ColmapModel{
 //Cita cameras.txt, images.txt i points3D.txt iz zadane mape. False kad ijedna fali ili je necitljiva
 bool readColmapText(const std::string& directory, ColmapModel& model);
 
+//Samo kamera, iz cameras.txt. Postoji zasebno jer je KALIBRACIJA korisna i bez rekonstrukcije:
+//jednom izmjerena za tijelo i objektiv, vrijedi za svaku sljedecu snimku istom kamerom - a nas
+//solver ju dotad pretpostavlja iz vidnog polja i pogadja i zarista i distorziju
+bool readColmapCamera(const std::string& camerasFile, Intrinsics& intrinsics, std::string& model);
+
 }
