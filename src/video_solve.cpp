@@ -89,6 +89,20 @@ int main(int argc, char** argv){
     //Mjereno je samo na 4K; omjer je odatle prenesen, a donja granica je stara vrijednost koja se
     //na malim slikama pokazala dobrom
     trackConfig.window = std::max(6u, uint32_t(info.width) / 320u);
+
+    //AFINO JE ISKLJUCENO NA PRAVOJ SNIMCI, i to je mjereno a ne pretpostavka. Na sintetici je afino
+    //pracenje 15 do 19 puta tocnije, ali na snimci iz kamere ne prezivi. Isti isjecak, 40 kadrova
+    //iz dijela gdje se kamera giba:
+    //
+    //   afino        21631 tragova, 31832 opazanja, medijan duljine traga 1 kadar,   30.7 s
+    //   samo pomak    1219 tragova, 23338 opazanja, medijan duljine traga 20 kadrova, 4.9 s
+    //
+    //Sest puta sporije i prakticki nijedan trag ne prezivi kadar u kojem je rodjen. Razlika prema
+    //sintetici nije u sumu - izmjeren je i jednak je na obje strane (0.247) - nego u tome sto
+    //renderirana slika nema ni rolling shutter, ni motion blur, ni kompresiju. Dok se ne nadje sto
+    //tocno afini dio zavodi, prava snimka ide na pomak. Sinteticki testovi ostaju na afinom, gdje
+    //je mjerljivo bolje - zato se ovo postavlja OVDJE, a ne mijenja u TrackConfigu
+    trackConfig.affine = false;
     trackConfig.minDistance = 14.0f;
     trackConfig.maxCorners = 800;
     trackConfig.minTracks = 400;
