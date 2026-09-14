@@ -137,6 +137,16 @@ def main():
                       [0, camera["fy"]/scale, camera["cy"]/scale],
                       [0, 0, 1]], dtype=torch.float32, device=device)
 
+    #KOLIKO CE SLIKE ZAUZETI, prije nego se ucitaju. Danas je COLMAP s previse dretvi uzeo 29.7 GB
+    #na stroju s 31 i kernel je pozvao OOM killer, pa je pod nozem zavrsilo sve u tom cgroupu.
+    #Ista pogreska ovdje: 634 slike na pola razlucivosti su 15.8 GB. Racun je jeftin, iznenadjenje
+    #nije
+    needed = len(frames) * width * height * 3 * 4 / (1 << 30)
+    if needed > 8.0:
+        raise SystemExit(
+            f"Slike bi uzele {needed:.1f} GB radne memorije ({len(frames)} kom, {width}x{height}).\n"
+            f"Povecaj --downscale: svaki korak dijeli s cetiri.")
+
     views, pictures = [], []
     for name, view in frames:
         path = Path(args.images) / name

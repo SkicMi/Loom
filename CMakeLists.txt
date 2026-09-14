@@ -395,7 +395,7 @@ add_dependencies(LoomApp LoomShaders)   # shaderi se prevedu prije exea
 # SplatViewer: .ply s gaussianima u prozoru. Isto stepenica 2 i iz istog razloga -
 # oblak od tri cetvrt milijuna gaussiana nije oblik koji Scene zna staviti u svoj red.
 add_executable(SplatViewer src/splat_viewer.cpp)
-target_link_libraries(SplatViewer PRIVATE Loom Spool)
+target_link_libraries(SplatViewer PRIVATE Loom Spool Engine)
 
 # SolveViewer - camera solve nacrtan: prave kamere protiv onih koje je solver nasao.
 # Jedini program koji linka i preset i Engine, jer je usporedba njegov cijeli posao

@@ -26,6 +26,8 @@
 #include "Vulkan/RenderTarget.h"
 #include "Vulkan/SplatRenderer.h"
 
+#include <Engine/ColmapImport.h>
+
 #include <Spool/GaussianPly.h>
 #include <Spool/ImageFile.h>
 
@@ -86,7 +88,7 @@ Bounds robustBounds(const std::vector<Splat>& splats){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        printf("Upotreba: SplatViewer <scena.ply> [korak] [pločica] [kadrovi] [kut] [ime.png] [iznutra]\n");
+        printf("Upotreba: SplatViewer <scena.ply> [korak] [pločica] [kadrovi] [kut] [ime.png] [iznutra|mapa_modela]\n");
         return 1;
     }
 
@@ -105,9 +107,28 @@ int main(int argc, char** argv){
     //Ime snimke, da se dvije usporedbe ne prepisu
     const std::string shotName = argc > 6 ? std::string(argv[6]) : std::string("splatview.png");
 
-    //Pocinje li se iznutra. Postoji kao argument a ne samo kao tipka, jer se pri snimanju bez
-    //gledanja nema tko prebaciti
-    const bool insideStart = argc > 7 && std::string(argv[7]) == "iznutra";
+    //Sedmi argument je ili "iznutra" ili MAPA S MODELOM. Model daje ono sto u .ply datoteci ne
+    //postoji: gdje je kamera stvarno stajala.
+    //
+    //ZASTO JE TO VAZNO. Bez njega se krece iz sredista scene, a srediste nije mjesto na kojem je
+    //itko stajao - na 68 sekundi obilaska to je ispalo u tamnom hodniku, i slika je bila kasa koja
+    //je izgledala kao los trening a nije bila. Prave poze se kroz njih i setaju, tipkama N i P
+    const std::string seventh = argc > 7 ? std::string(argv[7]) : std::string();
+    const bool insideStart = seventh == "iznutra";
+    const std::string modelPath = (!seventh.empty() && seventh != "iznutra") ? seventh : std::string();
+
+    std::vector<Engine::Pose> realPoses;
+    if(!modelPath.empty()){
+        Engine::ColmapModel model;
+        if(!Engine::readColmapText(modelPath, model)){
+            printf("Ne mogu procitati model iz %s\n", modelPath.c_str());
+            return 1;
+        }
+        for(size_t i = 0; i < model.reconstruction.poses.size(); ++i){
+            if(model.reconstruction.posed[i]) realPoses.push_back(model.reconstruction.poses[i]);
+        }
+        printf("Model: %zu pravih poza iz %s\n", realPoses.size(), modelPath.c_str());
+    }
 
     //Boja iz smjera pogleda se da ugasiti, i to nije udobnost nego mjerenje: razlika izmedju
     //upaljenog i ugasenog je jedini nacin da se vidi koliko G4 stvarno radi
@@ -272,7 +293,9 @@ int main(int argc, char** argv){
     //IZVANA ILI IZNUTRA. Predmet se obilazi, prostor se gleda iznutra - i to se ne da procitati iz
     //.ply datoteke, jer u njoj ne pise gdje je kamera stajala. Zato je zadano obilazenje, a tipka
     //I prebacuje. Bez toga je soba izgledala kao jednolicna smedja ploha: vanjska strana zidova
-    bool inside = insideStart;
+    bool inside = insideStart || !realPoses.empty();
+    size_t whichPose = realPoses.empty() ? 0 : realPoses.size() / 2;   //sredina snimke, ne rub
+    bool poseHeld = false;
     float angle = startAngle;
     float distance = inside ? 0.0f : 1.3f * bounds.radius;
     float height = inside ? 0.0f : 0.2f * bounds.radius;
@@ -295,7 +318,8 @@ int main(int argc, char** argv){
                box.halfExtent.x, boxSize);
     }
 
-    printf("\nStrelice: kruzenje i visina.  W/S: naprijed i natrag.  I: izvana/iznutra.  ESC: kraj.\n\n");
+    printf("\nStrelice: kruzenje i visina.  W/S: naprijed i natrag.  I: izvana/iznutra.%s  ESC: kraj.\n\n",
+           realPoses.empty() ? "" : "  N/P: sljedeca i prethodna prava kamera.");
 
     GLFWwindow* window = loom.window->getWindow();
     double lastReport = loom.getTime();
@@ -318,6 +342,19 @@ int main(int argc, char** argv){
         if(glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) height -= 0.03f * bounds.radius;
         //U prostoru W/S hoda naprijed i natrag jer mnozenje udaljenosti oko nule ne mice nista;
         //oko predmeta ostaje mnozenje, da se prilaz jednako ponasa na maloj i velikoj sceni
+        //Setnja kroz prave poze. Korak je jedna kamera, a ne jedan kadar snimke - kamere su vec
+        //prorijedjene, pa je jedan korak vidljiv pomak a ne treptaj
+        if(!realPoses.empty()){
+            const bool nextNow = glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS;
+            const bool backNow = glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS;
+            if((nextNow || backNow) && !poseHeld){
+                if(nextNow) whichPose = (whichPose + 1) % realPoses.size();
+                else        whichPose = (whichPose + realPoses.size() - 1) % realPoses.size();
+                printf("  kamera %zu od %zu\n", whichPose + 1, realPoses.size());
+            }
+            poseHeld = nextNow || backNow;
+        }
+
         //Prebacivanje na pritisak, ne na drzanje
         const bool insideNow = glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS;
         if(insideNow && !insideHeld){
@@ -344,7 +381,19 @@ int main(int argc, char** argv){
         //VAN - kut vise ne okrece polozaj nego pogled, jer je to jedini nacin da se prostor obidje
         //iznutra. Gledanje u srediste bi iz sobe znacilo zuriti u suprotni zid kroz zrak
         const glm::vec3 direction(std::sin(angle), 0.0f, std::cos(angle));
-        if(inside){
+        if(!realPoses.empty()){
+            //PRAVA POZA. Engineova Pose je kamera u svijetu, -Z naprijed i +Y gore - ista
+            //konvencija koju Loomova Camera ocekuje, pa se smjer i gore uzimaju iz nje umjesto da
+            //se pretpostavljaju. Strelice lijevo/desno okrecu pogled oko te poze, da se moze
+            //pogledati uokolo bez skakanja na drugu kameru
+            const Engine::Pose& pose = realPoses[whichPose];
+            const glm::quat turn = glm::angleAxis(angle - startAngle, glm::vec3(0.0f, 1.0f, 0.0f));
+            const glm::vec3 forward = turn * (pose.orientation * glm::vec3(0.0f, 0.0f, -1.0f));
+
+            cameraConfig.position = pose.position + glm::vec3(0.0f, height, 0.0f) + forward * distance;
+            cameraConfig.target = cameraConfig.position + forward * bounds.radius;
+            cameraConfig.up = pose.orientation * glm::vec3(0.0f, 1.0f, 0.0f);
+        }else if(inside){
             cameraConfig.position = bounds.centre + direction * distance + glm::vec3(0.0f, height, 0.0f);
             cameraConfig.target = cameraConfig.position + direction * bounds.radius
                                 + glm::vec3(0.0f, -0.15f * height, 0.0f);
