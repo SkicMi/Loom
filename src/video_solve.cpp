@@ -18,6 +18,7 @@
 #include <Engine/CameraHints.h>
 #include <Engine/ColmapExport.h>
 #include <Engine/ColmapImport.h>
+#include <Engine/MergeTracks.h>
 #include <Engine/Keyframes.h>
 #include <Engine/Reconstruct.h>
 #include <Engine/Track.h>
@@ -47,7 +48,7 @@ std::vector<uint8_t> toGray(const Spool::Image& image){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt]\n");
+        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [bez-spajanja]\n");
         std::printf("  cameras.txt: COLMAP-ova kalibracija. Kad je zadana, zarista i distorzija se\n");
         std::printf("               NE pogadjaju nego citaju, a opazanja se isprave prije solvea\n");
         return 1;
@@ -61,6 +62,9 @@ int main(int argc, char** argv){
     const double fieldOfView = argc > 4 ? std::atof(argv[4]) : 0.0;
     const std::string outputDirectory = argc > 5 ? std::string(argv[5]) : std::string();
     const std::string calibrationFile = argc > 6 ? std::string(argv[6]) : std::string();
+
+    //Spajanje tragova se da iskljuciti, jer je jedini nacin da se izmjeri koliko donosi
+    const bool mergeTracks = !(argc > 7 && std::string(argv[7]) == "bez-spajanja");
 
     Spool::VideoReader reader(path);
     const Spool::VideoInfo& info = reader.info();
@@ -158,6 +162,57 @@ int main(int argc, char** argv){
     }
     const uint32_t cameraCount = uint32_t(keys.frames.size());
 
+    // ---------------------------------------------------------------------------------
+    // Spajanje tragova preko potpisa
+    // ---------------------------------------------------------------------------------
+    //
+    // Pracenje umire cim ugao izadje iz kadra; kad se kamera vrati, isti kut se nadje kao NOVI trag.
+    // Izmjereno na ovoj snimci: kadar 0 dijeli 236 tocaka s kljucnim kadrom 5 i NIJEDNU s kadrom 10,
+    // pa siroka baza nije postojala nigdje. Vidi Engine/MergeTracks.h.
+    //
+    // ZASTO SE SNIMKA CITA DRUGI PUT. Kljucni kadrovi se znaju tek nakon sto je sve ispraceno, a
+    // drzati sve kadrove u memoriji nije opcija - 3384 kadra na 4K je 28 GB. Ponovno citanje kosta
+    // dekodiranje, oko 0.06 s po kadru, i to je jeftinije od svake druge mogucnosti
+    std::vector<Engine::Observation> observations = keys.observations;
+    uint32_t pointCount = tracker.trackCount();
+
+    if(mergeTracks){
+        std::vector<std::vector<uint8_t>> keyframeGray(cameraCount);
+        std::vector<Engine::GrayImage> keyframeImages(cameraCount);
+
+        Spool::VideoReader again(path);
+        uint32_t index = 0, taken = 0, seen = 0;
+        while(!again.atEnd() && taken < cameraCount){
+            const Spool::Image frame = again.readNext();
+            if(frame.pixels.empty()) break;
+            if(step > 1 && (index++ % step) != 0) continue;
+
+            //keys.frames nosi redne brojeve KORISTENIH kadrova, istim redom kojim su prosli kroz
+            //tracker - pa se broji isto kako se brojalo tada
+            if(taken < cameraCount && keys.frames[taken] == seen){
+                keyframeGray[taken] = toGray(frame);
+                keyframeImages[taken] = Engine::GrayImage{keyframeGray[taken].data(),
+                                                          frame.width, frame.height, frame.width};
+                ++taken;
+            }
+            ++seen;
+        }
+
+        if(taken == cameraCount){
+            Engine::MergeConfig mergeConfig;
+            const Engine::MergeResult merged = Engine::mergeTracks(
+                observations, keyframeImages, pointCount, Engine::Intrinsics{}, mergeConfig);
+
+            std::printf("  spajanje: %u -> %u tocaka, %u spajanja, %u od %u parova kadrova proslo geometriju\n",
+                        pointCount, merged.pointCount, merged.mergedPairs,
+                        merged.acceptedFrames, merged.comparedFrames);
+            observations = merged.observations;
+            pointCount = merged.pointCount;
+        }else{
+            std::printf("  spajanje preskoceno: naslo se %u od %u kljucnih kadrova\n", taken, cameraCount);
+        }
+    }
+
     //KALIBRACIJA, kad je zadana. Jednom izmjerena za tijelo i objektiv vrijedi za svaku sljedecu
     //snimku istom kamerom, pa je nema smisla pogadjati iz vidnog polja u svakoj
     Engine::Intrinsics measured;
@@ -172,7 +227,7 @@ int main(int argc, char** argv){
     //OPAZANJA SE ISPRAVE JEDNOM, na ulazu. Solver racuna s ravnom lecom - triangulacija, PnP i
     //bundle svi pretpostavljaju ravnu zraku - pa je jedino mjesto gdje distorzija smije postojati
     //ovdje, izmedju mjerenja i racuna. Da se nosi kroz svaki korak, svaki bi ju morao znati
-    std::vector<Engine::Observation> solveObservations = keys.observations;
+    std::vector<Engine::Observation> solveObservations = observations;
     if(calibrated && (measured.k1 != 0.0f || measured.k2 != 0.0f)){
         double worst = 0.0;
         for(Engine::Observation& one : solveObservations){
@@ -206,7 +261,7 @@ int main(int argc, char** argv){
         config.huberPixels = 2.0;
         config.acceptPixels = 6.0;
         config.minPointsForPose = 20;
-        return std::make_pair(Engine::reconstruct(solveObservations, cameraCount, tracker.trackCount(),
+        return std::make_pair(Engine::reconstruct(solveObservations, cameraCount, pointCount,
                                                   intrinsics, config), intrinsics);
     };
 
