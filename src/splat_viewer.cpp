@@ -8,6 +8,7 @@
 //   ./SplatViewer scena.ply 4          <- svaki cetvrti splat, kad procesor ne stize
 //   ./SplatViewer scena.ply 1 32       <- i velicina pločice
 //   ./SplatViewer scena.ply 8 16 60    <- odvrti 60 kadrova, spremi splatview.png i izadji
+//   ./SplatViewer soba.ply 1 16 0 0 x.png iznutra   <- prostor: kamera stoji unutra i gleda van
 //
 // BOJA OVISI O SMJERU POGLEDA (G4): odsjaj na metalu i nebo koje se mijenja dok kamera kruzi.
 // Racuna se svaki kadar, jer smjer od kamere do gaussiana je jedino sto se mijenja.
@@ -43,6 +44,8 @@ namespace{
 struct Bounds{
     glm::vec3 centre{0.0f};
     float radius = 1.0f;
+
+    float middleShare = 0.0f;   //koliki dio splatova je blizu sredista - podatak, ne odluka
 };
 
 Bounds robustBounds(const std::vector<Splat>& splats){
@@ -64,6 +67,18 @@ Bounds robustBounds(const std::vector<Splat>& splats){
     bounds.centre = 0.5f * (low + high);
     bounds.radius = 0.5f * glm::length(high - low);
     if(bounds.radius <= 0.0f) bounds.radius = 1.0f;
+
+    //Koliko gradje ima blizu sredista - samo kao podatak. Pokusao sam po tome razlikovati predmet
+    //od prostora i to je bilo krivo: namjestena soba NIJE suplja, u sredini su joj pult, stolice i
+    //stol, pa je izasla kao predmet (1.76 posto). Razlika nije u tome ima li gradje u sredini nego
+    //gdje je kamera STAJALA dok se snimalo, a to u .ply datoteci ne pise. Zato se ne pogadja nego
+    //bira - tipkom I
+    size_t inMiddle = 0;
+    const float middle = 0.35f * bounds.radius;
+    for(const Splat& splat : splats){
+        if(glm::length(splat.position - bounds.centre) < middle) ++inMiddle;
+    }
+    bounds.middleShare = float(double(inMiddle) / double(splats.size()));
     return bounds;
 }
 
@@ -71,7 +86,7 @@ Bounds robustBounds(const std::vector<Splat>& splats){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        printf("Upotreba: SplatViewer <scena.ply> [korak] [velicina pločice]\n");
+        printf("Upotreba: SplatViewer <scena.ply> [korak] [pločica] [kadrovi] [kut] [ime.png] [iznutra]\n");
         return 1;
     }
 
@@ -89,6 +104,10 @@ int main(int argc, char** argv){
 
     //Ime snimke, da se dvije usporedbe ne prepisu
     const std::string shotName = argc > 6 ? std::string(argv[6]) : std::string("splatview.png");
+
+    //Pocinje li se iznutra. Postoji kao argument a ne samo kao tipka, jer se pri snimanju bez
+    //gledanja nema tko prebaciti
+    const bool insideStart = argc > 7 && std::string(argv[7]) == "iznutra";
 
     //Boja iz smjera pogleda se da ugasiti, i to nije udobnost nego mjerenje: razlika izmedju
     //upaljenog i ugasenog je jedini nacin da se vidi koliko G4 stvarno radi
@@ -250,9 +269,16 @@ int main(int argc, char** argv){
     cameraConfig.up = glm::vec3(0.0f, -1.0f, 0.0f);   //3DGS scene dolaze s Y prema dolje
     Camera camera(cameraConfig);
 
+    //IZVANA ILI IZNUTRA. Predmet se obilazi, prostor se gleda iznutra - i to se ne da procitati iz
+    //.ply datoteke, jer u njoj ne pise gdje je kamera stajala. Zato je zadano obilazenje, a tipka
+    //I prebacuje. Bez toga je soba izgledala kao jednolicna smedja ploha: vanjska strana zidova
+    bool inside = insideStart;
     float angle = startAngle;
-    float distance = 1.3f * bounds.radius;
-    float height = 0.2f * bounds.radius;
+    float distance = inside ? 0.0f : 1.3f * bounds.radius;
+    float height = inside ? 0.0f : 0.2f * bounds.radius;
+    bool insideHeld = false;
+
+    printf("Blizu sredista je %.2f%% splatova.\n", 100.0 * double(bounds.middleShare));
 
     if(boxSize > 0.0f){
         SplatRenderer::Box box;
@@ -269,7 +295,7 @@ int main(int argc, char** argv){
                box.halfExtent.x, boxSize);
     }
 
-    printf("\nStrelice: kruzenje i visina.  W/S: blize i dalje.  ESC: kraj.\n\n");
+    printf("\nStrelice: kruzenje i visina.  W/S: naprijed i natrag.  I: izvana/iznutra.  ESC: kraj.\n\n");
 
     GLFWwindow* window = loom.window->getWindow();
     double lastReport = loom.getTime();
@@ -290,16 +316,43 @@ int main(int argc, char** argv){
         if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) angle += 0.02f;
         if(glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS) height += 0.03f * bounds.radius;
         if(glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) height -= 0.03f * bounds.radius;
-        if(glfwGetKey(window, GLFW_KEY_W)     == GLFW_PRESS) distance *= 0.97f;
-        if(glfwGetKey(window, GLFW_KEY_S)     == GLFW_PRESS) distance *= 1.03f;
+        //U prostoru W/S hoda naprijed i natrag jer mnozenje udaljenosti oko nule ne mice nista;
+        //oko predmeta ostaje mnozenje, da se prilaz jednako ponasa na maloj i velikoj sceni
+        //Prebacivanje na pritisak, ne na drzanje
+        const bool insideNow = glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS;
+        if(insideNow && !insideHeld){
+            inside = !inside;
+            distance = inside ? 0.0f : 1.3f * bounds.radius;
+            height = inside ? 0.0f : 0.2f * bounds.radius;
+            printf("  pogled: %s\n", inside ? "iznutra" : "izvana");
+        }
+        insideHeld = insideNow;
+
+        if(inside){
+            if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) distance += 0.02f * bounds.radius;
+            if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) distance -= 0.02f * bounds.radius;
+        }else{
+            if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) distance *= 0.97f;
+            if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) distance *= 1.03f;
+        }
 
         //Bez tipke se polako okrece, da se odmah vidi da je scena prostorna. Kad se snima iz
         //zadanog kuta to bi pomaknulo bas ono sto se htjelo usporediti, pa tada miruje
         if(framesThenShot == 0) angle += 0.002f;
 
-        cameraConfig.position = bounds.centre + glm::vec3(distance * std::sin(angle), height,
-                                                          distance * std::cos(angle));
-        cameraConfig.target = bounds.centre;
+        //PREDMET: kamera kruzi oko njega i gleda u njega. PROSTOR: kamera stoji u sredini i gleda
+        //VAN - kut vise ne okrece polozaj nego pogled, jer je to jedini nacin da se prostor obidje
+        //iznutra. Gledanje u srediste bi iz sobe znacilo zuriti u suprotni zid kroz zrak
+        const glm::vec3 direction(std::sin(angle), 0.0f, std::cos(angle));
+        if(inside){
+            cameraConfig.position = bounds.centre + direction * distance + glm::vec3(0.0f, height, 0.0f);
+            cameraConfig.target = cameraConfig.position + direction * bounds.radius
+                                + glm::vec3(0.0f, -0.15f * height, 0.0f);
+        }else{
+            cameraConfig.position = bounds.centre + glm::vec3(distance * std::sin(angle), height,
+                                                              distance * std::cos(angle));
+            cameraConfig.target = bounds.centre;
+        }
         camera = Camera(cameraConfig);
 
         const glm::mat4 view = camera.getView();

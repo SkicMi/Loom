@@ -220,9 +220,14 @@ def main():
     # -------------------------------------------------------------------------------
     # Izvoz
     # -------------------------------------------------------------------------------
+    #SIROVE VRIJEDNOSTI, ne aktivirane. Standardni 3DGS .ply drzi mjerilo kao LOGARITAM a
+    #neprozirnost kao LOGIT, i svaki preglednik na njih primijeni exp i sigmoid pri citanju.
+    #export_splats zapisuje sto mu se preda, pa sam mu prvo predao exp(scales) i sigmoid(opacities)
+    #- i onda je Loom aktivirao drugi put: exp(0.02) = 1.02 umjesto 0.02, splatovi pedeset puta
+    #preveliki, scena jednolicna ploha. Traceno je na kameru, a bilo je ovdje
     gsplat.export_splats(
-        means=params["means"], scales=torch.exp(params["scales"]), quats=params["quats"],
-        opacities=torch.sigmoid(params["opacities"]),
+        means=params["means"], scales=params["scales"], quats=params["quats"],
+        opacities=params["opacities"],
         sh0=params["sh0"], shN=params["shN"], format="ply", save_to=args.output)
     print(f"Spremljeno: {args.output} ({params['means'].shape[0]} gaussiana)")
 
