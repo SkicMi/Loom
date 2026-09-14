@@ -34,6 +34,7 @@ add_library(Engine STATIC
     src/Engine/TwoView.cpp
     src/Engine/Reconstruct.cpp
     src/Engine/ColmapExport.cpp
+    src/Engine/ColmapImport.cpp
     src/Engine/Track.cpp
     src/Engine/CameraHints.cpp
     src/Engine/Keyframes.cpp

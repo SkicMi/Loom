@@ -28,11 +28,44 @@ bool projectUnbounded(const Pose& pose, const Intrinsics& intrinsics, const glm:
         return false;
     }
 
-    pixel.x = intrinsics.cx + intrinsics.fx * inCamera.x / depth;
-    pixel.y = intrinsics.cy - intrinsics.fy * inCamera.y / depth;   //v raste prema dolje
+    //Normalizirane koordinate: gdje bi zraka pala na ravnini udaljenoj jedan, prije zarista
+    float nx = inCamera.x / depth;
+    float ny = -inCamera.y / depth;                                 //v raste prema dolje
+
+    //Zakrivljenje se primjenjuje OVDJE, na normaliziranim koordinatama - ne na pikselima. Da se
+    //racuna u pikselima, isti k bi znacio drugu distorziju za svaku razlucivost
+    if(intrinsics.k1 != 0.0f || intrinsics.k2 != 0.0f){
+        const float squared = nx * nx + ny * ny;
+        const float factor = 1.0f + squared * (intrinsics.k1 + squared * intrinsics.k2);
+        nx *= factor;
+        ny *= factor;
+    }
+
+    pixel.x = intrinsics.cx + intrinsics.fx * nx;
+    pixel.y = intrinsics.cy + intrinsics.fy * ny;
     return true;
 }
 
+}
+
+glm::vec2 undistort(const Intrinsics& intrinsics, const glm::vec2& pixel){
+    if(intrinsics.k1 == 0.0f && intrinsics.k2 == 0.0f) return pixel;
+    if(intrinsics.fx == 0.0f || intrinsics.fy == 0.0f) return pixel;
+
+    //U normalizirane, pa natrag - isti put kojim project ide, samo unatrag
+    const float mx = (pixel.x - intrinsics.cx) / intrinsics.fx;
+    const float my = (pixel.y - intrinsics.cy) / intrinsics.fy;
+
+    float nx = mx, ny = my;
+    for(int step = 0; step < 5; ++step){
+        const float squared = nx * nx + ny * ny;
+        const float factor = 1.0f + squared * (intrinsics.k1 + squared * intrinsics.k2);
+        if(factor <= 0.0f) break;
+        nx = mx / factor;
+        ny = my / factor;
+    }
+
+    return glm::vec2(intrinsics.cx + intrinsics.fx * nx, intrinsics.cy + intrinsics.fy * ny);
 }
 
 bool project(const Pose& pose, const Intrinsics& intrinsics, const glm::vec3& point, glm::vec2& pixel){

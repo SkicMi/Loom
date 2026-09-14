@@ -30,6 +30,17 @@ struct Intrinsics{
     float cy = 240.0f;
     uint32_t width = 640;
     uint32_t height = 480;
+
+    //RADIJALNA DISTORZIJA, nula znaci ravna leca i tada se racuna tocno ono sto se racunalo prije.
+    //Pravi objektiv zakrivi zraku to vise sto je dalje od osi: r' = r (1 + k1 r^2 + k2 r^4), gdje
+    //je r udaljenost od glavne tocke u NORMALIZIRANIM jedinicama, ne u pikselima.
+    //
+    //ZASTO JE OVO USLO. COLMAP je na istoj snimci rijesio k1 = 0.0148 i prijavio 0.91 px
+    //reprojekcije; nas projektor je na ISTOM njegovom modelu izmjerio 3.12 px, jer je racunao
+    //ravnu lecu. Razlika nije bila u pozama nego u tome sto mi nismo znali za zakrivljenje - a
+    //3.75 px na rubu kadra je vise nego cijeli nas prag prihvacanja kamere
+    float k1 = 0.0f;
+    float k2 = 0.0f;
 };
 
 //Gdje je kamera i kako je okrenuta, u svijetu. Tocka iz svijeta u kameru:
@@ -75,6 +86,13 @@ struct SyntheticConfig{
 
 //Tocka -> piksel. Vraca false kad je tocka iza kamere ili pada izvan slike
 bool project(const Pose& pose, const Intrinsics& intrinsics, const glm::vec3& point, glm::vec2& pixel);
+
+//Izmjeren piksel -> piksel kakav bi bio da je leca ravna. Solver racuna s ravnom lecom, pa se
+//opazanja isprave JEDNOM na ulazu umjesto da svaki korak nosi distorziju sa sobom.
+//
+//Inverz od r' = r(1 + k1 r^2 + k2 r^4) nema zatvoren oblik, pa se trazi iteracijom - pet koraka
+//je i previse za k reda stotinke, a divergirati ne moze jer je preslikavanje monotono blizu osi
+glm::vec2 undistort(const Intrinsics& intrinsics, const glm::vec2& pixel);
 
 //Ista scena za isto sjeme, do zadnjeg bita
 SyntheticScene makeSyntheticScene(const SyntheticConfig& config = {});

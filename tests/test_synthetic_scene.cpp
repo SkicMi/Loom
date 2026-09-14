@@ -219,5 +219,51 @@ int main(){
                 leastSeen, thinnestCamera, insideImage ? "da" : "NE"));
     }
 
+    // -------------------------------------------------------------------------------
+    // Distorzija: zakrivljenje i njegov inverz moraju se ponistiti
+    // -------------------------------------------------------------------------------
+    //
+    // Solver racuna s ravnom lecom, pa se opazanja ISPRAVE jednom na ulazu. Ako ispravak nije
+    // tocan inverz zakrivljenja, greska ulazi u svaku pozu i nitko je ne vidi kao gresku nego kao
+    // rekonstrukciju koja je "nekako kriva". Zato se provjerava krug, a ne formula.
+    //
+    // k1 = 0.0148 nije izmisljen: toliko je COLMAP rijesio na Sonyjevoj snimci
+
+    {
+        Engine::Intrinsics lens;
+        lens.fx = 5285.4f; lens.fy = 5285.4f;
+        lens.cx = 1920.0f; lens.cy = 1080.0f;
+        lens.width = 3840; lens.height = 2160;
+        lens.k1 = 0.01482f;
+
+        Engine::Intrinsics flat = lens;
+        flat.k1 = 0.0f;
+
+        //Tocke po dijagonali, od sredine do ruba - distorzija raste s kvadratom udaljenosti
+        double worst = 0.0, atEdge = 0.0;
+        for(int step = 0; step <= 10; ++step){
+            const float t = float(step) / 10.0f;
+            const glm::vec3 point(t * 3.0f, t * 1.7f, -6.0f);
+            const Engine::Pose pose;
+
+            glm::vec2 curved, straight;
+            if(!Engine::project(pose, lens, point, curved)) continue;
+            if(!Engine::project(pose, flat, point, straight)) continue;
+
+            //Ispravak mora vratiti piksel koji bi dala ravna leca
+            const glm::vec2 fixed = Engine::undistort(lens, curved);
+            worst = std::max(worst, double(glm::length(fixed - straight)));
+            atEdge = std::max(atEdge, double(glm::length(curved - straight)));
+        }
+
+        report.check("ispravak distorzije je inverz zakrivljenja",
+            worst < 0.01,
+            fmt("najveci ostatak %.4f px, a samo zakrivljenje pomice do %.2f px", worst, atEdge));
+
+        report.check("bez distorzije se nista ne mijenja",
+            Engine::undistort(flat, glm::vec2(123.0f, 456.0f)) == glm::vec2(123.0f, 456.0f),
+            "k1 = k2 = 0 vraca isti piksel");
+    }
+
     return report.result();
 }
