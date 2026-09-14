@@ -166,12 +166,24 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     triangulateVisible();
     runBundle();
 
-    //Redom dodaje kameru koja vidi najvise vec rijesenih tocaka
-    for(size_t added = 0; added + 2 <= cameraCount; ++added){
+    //Redom dodaje kameru koja vidi najvise vec rijesenih tocaka.
+    //
+    //KAMERA KOJA PADNE PRESKACE SE, ne zaustavlja lanac. Prije je jedan neuspjeh bio break, uz
+    //obrazlozenje "bolje manje nego krivo" - ali to brka dvije razlicite tvrdnje: OVA se kamera ne
+    //da rijesiti nije isto sto i NIJEDNA se ne da rijesiti. Kako se uvijek uzima kamera koja vidi
+    //najvise rijesenih tocaka, dovoljno je da bas ta padne pa se ostale nikad ni ne pokusaju.
+    //Izmjereno na pravoj snimci: 3 rijesene kamere od 318, jer je cetvrta pala.
+    //
+    //Oprez i dalje stoji tamo gdje pripada: kamera koja promasi vise od acceptPixels se ne uzima.
+    //Samo se zbog nje ne odbacuje ostatak snimke
+    std::vector<uint8_t> refused(cameraCount, 0);
+    bool secondChanceSpent = false;
+
+    for(size_t attempt = 0; attempt < 8 * cameraCount + 64; ++attempt){
         size_t best = cameraCount;
         size_t bestCount = 0;
         for(size_t camera = 0; camera < cameraCount; ++camera){
-            if(state.posed[camera]) continue;
+            if(state.posed[camera] || refused[camera]) continue;
             size_t count = 0;
             for(const Observation* observation : byCamera[camera]) if(state.solved[observation->point]) ++count;
             if(count > bestCount){
@@ -179,7 +191,14 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
                 best = camera;
             }
         }
-        if(best == cameraCount || bestCount < config.minPointsForPose) break;
+        if(best == cameraCount || bestCount < config.minPointsForPose){
+            //Nema vise kandidata. Jednom se odbijenima da druga prilika, jer je u medjuvremenu
+            //nastalo tocaka kojih tada nije bilo; ako ni tada nitko ne prodje, stalo je
+            if(secondChanceSpent) break;
+            secondChanceSpent = true;
+            std::fill(refused.begin(), refused.end(), 0);
+            continue;
+        }
 
         //Pocetna poza: najblizi vec rijeseni kadar. Vidi zaglavlje - P3P jos nemamo
         size_t nearest = 0;
@@ -203,7 +222,8 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         const PoseSolveResult pose = solvePose(state.points, seen, intrinsics, state.poses[nearest], poseConfig);
 
         if(!pose.solved || pose.endMedian > config.acceptPixels){
-            break;   //kamera koja se ne da rijesiti zaustavlja lanac; bolje manje nego krivo
+            refused[best] = 1;
+            continue;   //ova kamera ne ide; ostale se i dalje pokusavaju
         }
 
         state.poses[best] = pose.pose;
@@ -212,6 +232,11 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
 
         triangulateVisible();
         runBundle();
+
+        //Uspjeh znaci da je nastalo novih tocaka, pa odbijene vrijedi jos jednom pokusati - ali
+        //tek kad se iscrpe kandidati, ne odmah. Brisanje nakon svakog uspjeha bi na tristo kamera
+        //dalo kvadratno mnogo pokusaja
+        secondChanceSpent = false;
     }
 
     // ---------------------------------------------------------------------------------
