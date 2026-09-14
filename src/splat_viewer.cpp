@@ -8,7 +8,8 @@
 //   ./SplatViewer scena.ply 4          <- svaki cetvrti splat, kad procesor ne stize
 //   ./SplatViewer scena.ply 1 32       <- i velicina pločice
 //   ./SplatViewer scena.ply 8 16 60    <- odvrti 60 kadrova, spremi splatview.png i izadji
-//   ./SplatViewer soba.ply 1 16 0 0 x.png iznutra   <- prostor: kamera stoji unutra i gleda van
+//   ./SplatViewer soba.ply 1 16 0 0 x.png 1 0 iznutra        <- prostor, pogled iznutra
+//   ./SplatViewer soba.ply 1 16 40 0 x.png 1 0.05 model/txt  <- iz pravih poza, s kockom
 //
 // BOJA OVISI O SMJERU POGLEDA (G4): odsjaj na metalu i nebo koje se mijenja dok kamera kruzi.
 // Racuna se svaki kadar, jer smjer od kamere do gaussiana je jedino sto se mijenja.
@@ -88,7 +89,7 @@ Bounds robustBounds(const std::vector<Splat>& splats){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        printf("Upotreba: SplatViewer <scena.ply> [korak] [pločica] [kadrovi] [kut] [ime.png] [iznutra|mapa_modela]\n");
+        printf("Upotreba: SplatViewer <scena.ply> [korak] [pločica] [kadrovi] [kut] [ime.png] [sh] [kocka] [iznutra|mapa_modela]\n");
         return 1;
     }
 
@@ -107,15 +108,26 @@ int main(int argc, char** argv){
     //Ime snimke, da se dvije usporedbe ne prepisu
     const std::string shotName = argc > 6 ? std::string(argv[6]) : std::string("splatview.png");
 
-    //Sedmi argument je ili "iznutra" ili MAPA S MODELOM. Model daje ono sto u .ply datoteci ne
+    //Deveti argument je ili "iznutra" ili MAPA S MODELOM. Model daje ono sto u .ply datoteci ne
     //postoji: gdje je kamera stvarno stajala.
     //
     //ZASTO JE TO VAZNO. Bez njega se krece iz sredista scene, a srediste nije mjesto na kojem je
     //itko stajao - na 68 sekundi obilaska to je ispalo u tamnom hodniku, i slika je bila kasa koja
     //je izgledala kao los trening a nije bila. Prave poze se kroz njih i setaju, tipkama N i P
-    const std::string seventh = argc > 7 ? std::string(argv[7]) : std::string();
-    const bool insideStart = seventh == "iznutra";
-    const std::string modelPath = (!seventh.empty() && seventh != "iznutra") ? seventh : std::string();
+    //NE NA SEDMOM MJESTU - ono je vec bilo zauzeto za sferne harmonike, i kad sam ga preuzeo
+    //atoi("puni/txt") je dao nulu pa su se svi prikazi crtali BEZ boje iz smjera pogleda. Greska
+    //koja ne pada nego samo tise izgleda
+    const std::string mode = argc > 9 ? std::string(argv[9]) : std::string();
+    const bool insideStart = mode == "iznutra";
+    const std::string modelPath = (!mode.empty() && mode != "iznutra") ? mode : std::string();
+
+    //Boja iz smjera pogleda se da ugasiti, i to nije udobnost nego mjerenje: razlika izmedju
+    //upaljenog i ugasenog je jedini nacin da se vidi koliko G4 stvarno radi
+    const bool useSH = argc > 7 ? (std::atoi(argv[7]) != 0) : true;
+
+    //Ubacena kocka: velicina kao udio polumjera scene. Nula znaci bez nje. Ovo je mjerni predmet -
+    //ako poze i mjerilo valjaju, stoji gdje treba, prave je velicine i zaklanja ono iza sebe
+    const float boxSize = argc > 8 ? float(std::atof(argv[8])) : 0.0f;
 
     std::vector<Engine::Pose> realPoses;
     if(!modelPath.empty()){
@@ -130,13 +142,6 @@ int main(int argc, char** argv){
         printf("Model: %zu pravih poza iz %s\n", realPoses.size(), modelPath.c_str());
     }
 
-    //Boja iz smjera pogleda se da ugasiti, i to nije udobnost nego mjerenje: razlika izmedju
-    //upaljenog i ugasenog je jedini nacin da se vidi koliko G4 stvarno radi
-    const bool useSH = argc > 7 ? (std::atoi(argv[7]) != 0) : true;
-
-    //Ubacena kocka: velicina kao udio polumjera scene. Nula znaci bez nje. Ovo je mjerni predmet -
-    //ako poze i mjerilo valjaju, stoji gdje treba, prave je velicine i zaklanja ono iza sebe
-    const float boxSize = argc > 8 ? float(std::atof(argv[8])) : 0.0f;
 
     // -------------------------------------------------------------------------------
     // S diska u splatove
@@ -309,12 +314,26 @@ int main(int argc, char** argv){
         //Ne u sredistu scene - ondje je obicno sam predmet, pa bi kocka zavrsila zakopana u
         //njemu. Mjesto je FIKSNO U SVIJETU, vezano na kut zadan argumentom a ne na kameru: kocka
         //koja se seli s kamerom ne bi dokazivala nista o prostoru
-        box.center = bounds.centre + 0.55f * bounds.radius *
-                     glm::vec3(std::sin(0.436f), 0.15f, std::cos(0.436f));   //25 st, fiksno
+        //GDJE. Bez modela: pomaknuto od sredista scene, jer je u sredistu obicno sam predmet pa bi
+        //kocka zavrsila zakopana u njemu. S modelom: ispred POCETNE prave poze, jer kamera tada
+        //gleda u prostor a ne u geometrijsko srediste - i bez toga kocka jednostavno nije u kadru.
+        //
+        //U oba slucaja mjesto je FIKSNO U SVIJETU i racuna se JEDNOM. Kocka koja se seli s kamerom
+        //ne bi dokazivala nista o prostoru; ova stoji, pa se hodanjem kroz poze vidi kako je
+        //zaklanja ono ispred nje i kako joj se mijenja velicina
+        if(!realPoses.empty()){
+            const Engine::Pose& from = realPoses[whichPose];
+            const glm::vec3 forward = from.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+            box.center = from.position + forward * (0.35f * bounds.radius);
+        }else{
+            box.center = bounds.centre + 0.55f * bounds.radius *
+                         glm::vec3(std::sin(0.436f), 0.15f, std::cos(0.436f));   //25 st, fiksno
+        }
         box.halfExtent = glm::vec3(boxSize * bounds.radius);
         box.orientation = glm::angleAxis(0.4f, glm::normalize(glm::vec3(0.2f, 1.0f, 0.1f)));
         splatRenderer.setBox(box);
-        printf("Kocka u sredistu scene, poluosovina %.3f (%.2f polumjera scene)\n",
+        printf("Kocka %s, poluosovina %.3f (%.2f polumjera scene)\n",
+               realPoses.empty() ? "kraj sredista scene" : "ispred pocetne prave poze",
                box.halfExtent.x, boxSize);
     }
 

@@ -137,12 +137,13 @@ def main():
                       [0, camera["fy"]/scale, camera["cy"]/scale],
                       [0, 0, 1]], dtype=torch.float32, device=device)
 
-    #KOLIKO CE SLIKE ZAUZETI, prije nego se ucitaju. Danas je COLMAP s previse dretvi uzeo 29.7 GB
-    #na stroju s 31 i kernel je pozvao OOM killer, pa je pod nozem zavrsilo sve u tom cgroupu.
-    #Ista pogreska ovdje: 634 slike na pola razlucivosti su 15.8 GB. Racun je jeftin, iznenadjenje
-    #nije
-    needed = len(frames) * width * height * 3 * 4 / (1 << 30)
-    if needed > 8.0:
+    #SLIKE SE DRZE KAO BAJTOVI, ne kao float. Piksel je u datoteci osam bita po kanalu i pretvorba
+    #u float ga ne cini tocnijim - samo cetiri puta vecim. Na 634 slike u punoj polovici razlucivosti
+    #to je razlika izmedju 15.8 GB i 3.9 GB, dakle izmedju "ne stane" i "stane".
+    #
+    #Pretvorba u 0..1 se radi na kartici, nad jednom slikom po koraku, i tamo je besplatna.
+    needed = len(frames) * width * height * 3 / (1 << 30)
+    if needed > 12.0:
         raise SystemExit(
             f"Slike bi uzele {needed:.1f} GB radne memorije ({len(frames)} kom, {width}x{height}).\n"
             f"Povecaj --downscale: svaki korak dijeli s cetiri.")
@@ -153,7 +154,7 @@ def main():
         if not path.exists():
             continue
         picture = Image.open(path).convert("RGB").resize((width, height), Image.LANCZOS)
-        pictures.append(torch.from_numpy(np.asarray(picture, dtype=np.float32) / 255.0))
+        pictures.append(torch.from_numpy(np.asarray(picture, dtype=np.uint8)))
         views.append(torch.from_numpy(view).float())
     if not pictures:
         raise SystemExit("Nijedna slika se nije nasla")
@@ -163,7 +164,7 @@ def main():
     #smiju ostati gore
     pictures = torch.stack(pictures)
     views = torch.stack(views).to(device)
-    gigabytes = pictures.numel() * 4 / (1 << 30)
+    gigabytes = pictures.numel() / (1 << 30)
     print(f"Slike: {len(pictures)} kom, {width}x{height} ({gigabytes:.1f} GB u radnoj memoriji)")
 
     # -------------------------------------------------------------------------------
@@ -202,7 +203,7 @@ def main():
 
     for step in range(args.steps):
         index = int(torch.randint(len(pictures), (1,), generator=generator))
-        truth = pictures[index].to(device, non_blocking=True)
+        truth = pictures[index].to(device, non_blocking=True).float() / 255.0
 
         colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
         rendered, alpha, info = gsplat.rasterization(
@@ -260,7 +261,7 @@ def main():
             colors=colours_sh, viewmats=views[which:which+1], Ks=K[None],
             width=width, height=height, sh_degree=args.sh_degree, packed=True)
 
-        truth = pictures[which].to(device)
+        truth = pictures[which].to(device).float() / 255.0
         side = torch.cat([truth, rendered[0].clamp(0, 1)], dim=1)     # lijevo snimljeno, desno nacrtano
         picture = Image.fromarray((side.cpu().numpy() * 255).astype(np.uint8))
         preview = str(Path(args.output).with_suffix("")) + "_usporedba.png"
