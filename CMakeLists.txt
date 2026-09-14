@@ -405,6 +405,11 @@ target_link_libraries(SplatViewer PRIVATE Loom Spool)
 add_executable(VideoInfo src/video_info.cpp)
 target_link_libraries(VideoInfo PRIVATE Spool Engine)
 
+# ModelInfo - sto vrijedi jedna rekonstrukcija, bez poznate istine. Isti racun za nas model i za
+# COLMAP-ov, jer se inace usporedjuju dvije definicije umjesto dva rjesenja
+add_executable(ModelInfo src/model_info.cpp)
+target_link_libraries(ModelInfo PRIVATE Engine)
+
 add_executable(VideoSolve src/video_solve.cpp)
 target_link_libraries(VideoSolve PRIVATE Spool Engine)
 
