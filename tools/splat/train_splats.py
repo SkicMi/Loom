@@ -211,6 +211,10 @@ def main():
     #OBA SU ZADANO ISKLJUCENA, i to je mjereno a ne pretpostavka - vidi komentare uz njih
     ap.add_argument("--rasterize", choices=["classic", "antialiased"], default="classic",
                     help="antialiased obraduje gaussiane manje od piksela drukcije; izmjereno bez ucinka")
+    ap.add_argument("--anisotropy", type=float, default=10.0,
+                    help="od ovog omjera najduze/najkrace osi pa navise gaussiana se kaznjava; 0 iskljucuje")
+    ap.add_argument("--anisotropy-weight", type=float, default=0.0,
+                    help="koliko ta kazna tezi u gubitku")
     ap.add_argument("--depth", default="",
                     help="mapa s PFM kartama dubine (tools/depth/estimate_depth.py); prazno iskljucuje")
     #TEZINA 0.05 JE BILA ISKLJUCENO, a ne oprezno: clan dubine je oko 0.01, gubitak oko 0.04, pa je
@@ -411,6 +415,7 @@ def main():
     windowSize = 11
     window = gaussian_window(windowSize, 1.5, device)
     lastDepthTerm = 0.0
+    lastNeedles = 0.0
     print(f"Trening: {args.steps} koraka, mjerilo scene {spread:.2f}, gubitak {args.loss}, "
           f"rasterizacija {args.rasterize}, zasicenje od {args.saturation}")
     generator = torch.Generator(device="cpu").manual_seed(20260915)
@@ -454,6 +459,25 @@ def main():
         else:
             loss = absolute
 
+        #IGLICE. Gaussiana koja se izduzi u gotovo ravnu crtu s boka je nevidljiva, pa je nista u
+        #gubitku ne kaznjava - a cim se kut promijeni, pojavi se kao krhotina preko pola slike.
+        #Izmjereno na sceni: 19.65 posto gaussiana je izduzeno preko 10 puta, 0.90 posto preko sto,
+        #a najgora ima omjer od dvadeset milijuna - dakle ravnina bez debljine.
+        #
+        #Kaznjava se tek ono PREKO praga: izduzenost sama po sebi nije greska, ravna ploha i rub
+        #stola se njome i opisuju. Greska je kad omjer pobjegne toliko da gaussiana prestane biti
+        #tijelo
+        if args.anisotropy_weight > 0.0 and args.anisotropy > 0.0:
+            #LOGARITAM OMJERA, ne sam omjer. U linearnom obliku 100 gaussiana od 3.85 milijuna nosi
+            #52.6 posto kazne - najgora ima omjer od dvadeset milijuna - pa bi gradijent otisao
+            #gotovo iskljucivo na njih, a ostalih 750 tisuca izduzenih ostalo bi netaknuto.
+            #Logaritam izjednacava: kazna raste s REDOM VELICINE izduzenosti, ne s njezinim brojem
+            sizes = torch.exp(params["scales"])
+            ratio = sizes.max(dim=1).values / sizes.min(dim=1).values.clamp(min=1e-9)
+            needles = torch.relu(torch.log(ratio) - math.log(args.anisotropy)).mean()
+            loss = loss + args.anisotropy_weight * needles
+            lastNeedles = float(needles)
+
         if len(depthMaps):
             #Nacrtana dubina se pretvara u dispariter, jer model daje dispariter - a i zato sto je
             #on ravnomjerniji: u metrima daleki zid nosi tisucu puta vise tezine nego bliski stol
@@ -496,6 +520,7 @@ def main():
 
         if step % 500 == 0 or step == args.steps - 1:
             extra = f"  dubina {lastDepthTerm:.4f} (tezina {args.depth_weight})" if len(depthMaps) else ""
+            if args.anisotropy_weight > 0.0: extra += f"  iglice {lastNeedles:.3f} (tezina {args.anisotropy_weight})"
             print(f"  {step:5d}  gubitak {loss.item():.4f}  gaussiana {params['means'].shape[0]}{extra}")
 
     # -------------------------------------------------------------------------------

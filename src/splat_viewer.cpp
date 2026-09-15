@@ -142,8 +142,12 @@ int main(int argc, char** argv){
     //Iz kojeg polozaja na putanji krenuti. Postoji da se odredjeni kadar da pogledati bez crtanja
     //svih prije njega - a bas to je trebalo kad se provjeravalo zasto se kocka ne vidi
     int startPose = -1;
+    float lookOffset = 0.0f;
     for(int i = 1; i + 1 < argc; ++i){
         if(std::string(argv[i]) == "--poza") startPose = std::atoi(argv[i + 1]);
+        //Zaokret pogleda oko prave poze, u stupnjevima. Postoji jer argument [kut] u ovom nacinu ne
+        //radi nista: rotacija se racuna kao angle - startAngle, a angle bas odatle i krece
+        if(std::string(argv[i]) == "--zaokret") lookOffset = float(std::atof(argv[i + 1])) * 3.14159265f / 180.0f;
     }
     const bool insideStart = mode == "iznutra";
     const std::string modelPath = (!mode.empty() && mode != "iznutra") ? mode : std::string();
@@ -613,7 +617,7 @@ int main(int argc, char** argv){
             //se pretpostavljaju. Strelice lijevo/desno okrecu pogled oko te poze, da se moze
             //pogledati uokolo bez skakanja na drugu kameru
             const Engine::Pose& pose = cameraPath[whichPose];
-            const glm::quat turn = glm::angleAxis(angle - startAngle, glm::vec3(0.0f, 1.0f, 0.0f));
+            const glm::quat turn = glm::angleAxis(angle - startAngle + lookOffset, glm::vec3(0.0f, 1.0f, 0.0f));
             const glm::vec3 forward = turn * (pose.orientation * glm::vec3(0.0f, 0.0f, -1.0f));
 
             cameraConfig.position = pose.position + glm::vec3(0.0f, height, 0.0f) + forward * distance;
