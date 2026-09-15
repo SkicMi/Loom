@@ -2,8 +2,9 @@
 #include "Engine/Triangulate.h"
 
 #include <algorithm>
-#include <unordered_map>
 #include <cmath>
+#include <limits>
+#include <unordered_map>
 
 namespace Engine{
 namespace{
@@ -56,6 +57,13 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     if(cameraCount < 2 || pointCount < 8 || observations.empty()){
         return state;
     }
+
+    //OPAZANJA KOJA JOS SUDJELUJU. Ciscenje ide PO OPAZANJU a ne po tocki: jedno krivo poklapanje
+    //u dugom tragu inace odnese cijelu tocku, a nju vidi jos deset kamera koje su u pravu
+    std::vector<uint8_t> usable(observations.size(), 1);
+    auto indexOf = [&](const Observation* observation){
+        return size_t(observation - observations.data());
+    };
 
     //Tko sto vidi. Dvije strane istog popisa, jer se jedna cita po kameri a druga po tocki
     std::vector<std::vector<const Observation*>> byCamera(cameraCount);
@@ -227,11 +235,20 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     // Triangulacija svega sto vide dvije rijesene kamere, pa nova kamera, pa opet
     // ---------------------------------------------------------------------------------
 
-    auto triangulateVisible = [&](){
+    //redoSolved: PONOVNA TRIANGULACIJA vec rijesenih tocaka.
+    //
+    //Bez nje tocka zauvijek ostaje ondje gdje su je stavile prve dvije kamere koje su je vidjele -
+    //cesto par s uskom bazom, jer se pocetne kamere biraju po broju tocaka a ne po tome sto ta
+    //tocka treba. Kad je poslije vidi jos deset kamera, taj se podatak nikad ne iskoristi, a
+    //bundle tocku moze samo lokalno pomaknuti. Tisuce takvih tocaka onda drze poze u lososu
+    //minimumu iz kojeg bundle ne izlazi
+    auto triangulateVisible = [&](bool redoSolved){
         for(size_t point = 0; point < pointCount; ++point){
-            if(state.solved[point]) continue;
+            if(state.solved[point] && !redoSolved) continue;
+
             std::vector<View> views;
             for(const Observation* observation : byPoint[point]){
+                if(!usable[indexOf(observation)]) continue;
                 if(state.posed[observation->camera]) views.push_back(View{observation->camera, observation->pixel});
             }
             if(views.size() < 2) continue;
@@ -248,15 +265,19 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             if(!inFront) continue;
 
             state.points[point] = position;
-            state.solved[point] = 1;
-            ++state.solvedPoints;
+            if(!state.solved[point]){
+                state.solved[point] = 1;
+                ++state.solvedPoints;
+            }
         }
     };
 
     auto runBundle = [&](){
         std::vector<Observation> kept;
         kept.reserve(observations.size());
-        for(const Observation& observation : observations){
+        for(size_t index = 0; index < observations.size(); ++index){
+            if(!usable[index]) continue;
+            const Observation& observation = observations[index];
             if(state.posed[observation.camera] && state.solved[observation.point]) kept.push_back(observation);
         }
         if(kept.empty()) return;
@@ -271,7 +292,98 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         state.points = result.points;
     };
 
-    triangulateVisible();
+    //=================================================================================
+    // CISCENJE PO OPAZANJU, pa ponovna triangulacija, pa bundle - i to u krug.
+    //
+    // Zasto bas ovim redom i zasto uopce: izmjereno je da nas bundle NIJE kriv. Pusten na
+    // COLMAP-ovo gotovo rjesenje iste snimke drzi ga na mjestu i jos ga neznatno popravi
+    // (0.7461 -> 0.7380 px). Isti taj bundle na nasoj rekonstrukciji sjedne na 3.34 px i
+    // ondje ostane koliko god iteracija dobio (5 iteracija 3.330, 15 iteracija 3.341).
+    //
+    // Dakle rjesenje nije lose zato sto bundle ne zna sici, nego zato sto ga inkrementalni
+    // put dovede u DRUGI, losiji minimum iz kojeg lokalni korak ne izlazi. Iz njega se izlazi
+    // samo mijenjanjem onoga sto bundle dobije: izbaciti opazanja koja lazu, i tocke posloziti
+    // iznova iz svih kamera koje ih sada vide, a ne iz one dvije koje su ih prve vidjele.
+    //
+    // PRAG SE STEZE SAM. Fiksni prag od cetiri piksela nad rjesenjem koje je na tri i pol bi u
+    // prvom krugu odbacio pola scene. Zato je granica visekratnik TRENUTNOG medijana, sve dok
+    // ne padne na filterPixels - pa je ciscenje u pocetku blago i pooostrava se kako rjesenje
+    // postaje bolje
+    //=================================================================================
+
+    auto reprojectionOf = [&](const Observation& observation, double& error){
+        glm::vec2 pixel;
+        if(!project(state.poses[observation.camera], intrinsics, state.points[observation.point], pixel)){
+            error = std::numeric_limits<double>::infinity();
+            return false;
+        }
+        error = glm::length(pixel - observation.pixel);
+        return true;
+    };
+
+    auto filterObservations = [&](double maxPixels){
+        size_t dropped = 0;
+        if(maxPixels <= 0.0) return dropped;
+
+        for(size_t index = 0; index < observations.size(); ++index){
+            if(!usable[index]) continue;
+            const Observation& observation = observations[index];
+            if(!state.posed[observation.camera] || !state.solved[observation.point]) continue;
+
+            double error = 0.0;
+            if(!reprojectionOf(observation, error) || error > maxPixels){
+                usable[index] = 0;
+                ++dropped;
+            }
+        }
+
+        //Tocka koju vide manje od dvije kamere vise nije triangulirana nego pogodjena
+        for(size_t point = 0; point < pointCount; ++point){
+            if(!state.solved[point]) continue;
+            size_t left = 0;
+            for(const Observation* observation : byPoint[point]){
+                if(usable[indexOf(observation)] && state.posed[observation->camera]) ++left;
+            }
+            if(left < 2){
+                state.solved[point] = 0;
+                --state.solvedPoints;
+            }
+        }
+        return dropped;
+    };
+
+    auto currentMedian = [&](){
+        std::vector<double> errors;
+        errors.reserve(observations.size());
+        for(size_t index = 0; index < observations.size(); ++index){
+            if(!usable[index]) continue;
+            const Observation& observation = observations[index];
+            if(!state.posed[observation.camera] || !state.solved[observation.point]) continue;
+            double error = 0.0;
+            if(reprojectionOf(observation, error)) errors.push_back(error);
+        }
+        return medianOf(errors);
+    };
+
+    //USPUT LAGANO, NA KRAJU TEMELJITO. Puni ciklus usred gradnje bio bi na 634 kamere oko
+    //dvadeset devet ciscenja po pet krugova - dakle sto cetrdeset globalnih bundleova, sto je
+    //neupotrebljivo. Usput je dovoljan jedan krug: posao mu je drzati drift na uzdi, ne polirati
+    auto refine = [&](uint32_t rounds){
+        for(uint32_t round = 0; round < rounds; ++round){
+            const double median = currentMedian();
+            const double limit = std::max(config.filterPixels, config.filterMedians * median);
+
+            const size_t dropped = filterObservations(limit);
+            triangulateVisible(true);
+            runBundle();
+
+            //Krug koji nije nista izbacio nema sto izbaciti ni u sljedecem: prag ovisi o
+            //medijanu, a on se bez izbacivanja i ponovne triangulacije jedva mice
+            if(dropped == 0) break;
+        }
+    };
+
+    triangulateVisible(false);
     runBundle();
 
     //Redom dodaje kameru koja vidi najvise vec rijesenih tocaka.
@@ -284,8 +396,14 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     //
     //Oprez i dalje stoji tamo gdje pripada: kamera koja promasi vise od acceptPixels se ne uzima.
     //Samo se zbog nje ne odbacuje ostatak snimke
+    auto addCameras = [&](){
     std::vector<uint8_t> refused(cameraCount, 0);
     bool secondChanceSpent = false;
+
+    //Sljedeci broj kamera pri kojem se cisti usred gradnje - vidi refineGrowth
+    size_t nextRefine = config.refineGrowth > 1.0
+        ? size_t(double(state.posedCameras) * config.refineGrowth) + 1
+        : size_t(-1);
 
     for(size_t attempt = 0; attempt < 8 * cameraCount + 64; ++attempt){
         size_t best = cameraCount;
@@ -338,14 +456,32 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         state.posed[best] = 1;
         ++state.posedCameras;
 
-        triangulateVisible();
+        triangulateVisible(false);
         runBundle();
+
+        if(state.posedCameras >= nextRefine){
+            refine(1);
+            nextRefine = size_t(double(state.posedCameras) * config.refineGrowth) + 1;
+        }
 
         //Uspjeh znaci da je nastalo novih tocaka, pa odbijene vrijedi jos jednom pokusati - ali
         //tek kad se iscrpe kandidati, ne odmah. Brisanje nakon svakog uspjeha bi na tristo kamera
         //dalo kvadratno mnogo pokusaja
         secondChanceSpent = false;
     }
+    };
+
+    //KAMERE, PA CISCENJE, PA OPET KAMERE. Kamera koja je pala jer joj je PnP promasio vise od
+    //acceptPixels nije nuzno losa kamera - mozda su bile lose tocke koje je vidjela. Nakon
+    //ciscenja i ponovne triangulacije te su tocke drugdje, pa ista kamera dobiva drugi racun
+    addCameras();
+    for(uint32_t sweep = 0; sweep < 2 && config.refineRounds > 0; ++sweep){
+        const uint32_t before = state.posedCameras;
+        refine(config.refineRounds);
+        addCameras();
+        if(state.posedCameras == before) break;
+    }
+    refine(config.refineRounds);
 
     // ---------------------------------------------------------------------------------
     // Zadnja rijec o tockama: paralaksa nad KONACNIM pozama

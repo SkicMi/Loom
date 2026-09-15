@@ -81,6 +81,37 @@ struct ReconstructConfig{
     double assumedPixelNoise = 0.5;
 
     uint32_t bundleIterations = 15;
+
+    //=========================================================================================
+    // CISCENJE I PONOVNA TRIANGULACIJA, u krug, nakon sto se kamere iscrpe.
+    //
+    // Postoji zato sto je izmjereno da bundle nije kriv: pusten na COLMAP-ovo gotovo rjesenje
+    // iste snimke on ga drzi i jos neznatno popravi (0.7461 -> 0.7380 px), a na nasoj
+    // rekonstrukciji sjedne na 3.34 px i ne mice se koliko god iteracija dobio. Rjesenje dakle
+    // nije lose zato sto bundle ne zna sici nego zato sto ga put dovede u drugi minimum - a iz
+    // njega se izlazi samo mijenjanjem onoga sto bundle dobije.
+    //=========================================================================================
+
+    //Koliko krugova. Nula iskljucuje i vraca ponasanje otprije
+    uint32_t refineRounds = 5;
+
+    //Donja granica praga za izbacivanje opazanja, u pikselima
+    double filterPixels = 4.0;
+
+    //Prag je visekratnik TRENUTNOG medijana dok je on iznad filterPixels. Fiksni prag nad
+    //rjesenjem koje je tek na tri i pol piksela odbacio bi u prvom krugu pola scene; ovako je
+    //ciscenje u pocetku blago i steze se samo od sebe
+    double filterMedians = 2.5;
+
+    //KOLIKO CESTO USRED GRADNJE, kao visekratnik broja vec rijesenih kamera. 1.25 znaci: ocisti
+    //kad ih naraste za cetvrtinu.
+    //
+    //Ciscenje samo na kraju lijeci posljedicu umjesto uzroka - do tada je put vec zasao u losiji
+    //minimum, a lokalni korak iz njega ne izlazi. Usput se u njega uopce ne ulazi.
+    //
+    //Nula znaci samo na kraju. Cijena je linearna u broju ciscenja, a svako je jedan prolaz kroz
+    //sve tocke plus bundle
+    double refineGrowth = 1.25;
 };
 
 struct Reconstruction{
