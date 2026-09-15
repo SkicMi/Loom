@@ -14,6 +14,11 @@ mjesto gdje se dvije konvencije ne moraju pomiriti, i zato je najlakse promasiti
 import argparse, math, os, struct, sys
 from pathlib import Path
 
+#Fragmentacija je odnijela 3.16 GB od 11.49 pri prvom punom treningu - memorija je bila rezervirana
+#ali neiskoristiva, jer zgusnjavanje stalno trazi sve vece susjedne blokove. Mora stajati PRIJE
+#uvoza torcha, jer se cita jednom pri pokretanju
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import numpy as np
 import torch
 from PIL import Image
@@ -158,6 +163,8 @@ def main():
     ap.add_argument("--sh-degree", type=int, default=3)
     ap.add_argument("--loss", choices=["l1", "ssim"], default="ssim",
                     help="l1 je samo prosjek po pikselima; ssim dodaje mjeru strukture")
+    ap.add_argument("--max-gaussians", type=int, default=0,
+                    help="0 znaci izvedi iz slobodne memorije kartice")
     args = ap.parse_args()
 
     device = "cuda"
@@ -238,6 +245,31 @@ def main():
     strategy.check_sanity(params, optimizers)
 
     # -------------------------------------------------------------------------------
+    # Koliko gaussiana kartica podnosi
+    # -------------------------------------------------------------------------------
+    #
+    # Zgusnjavanje raste dok ga nesto ne zaustavi, a zaustavila ga je kartica: prvi puni trening s
+    # SSIM-om je pukao na 4 064 257 gaussiana u 13000. koraku, na kartici od 11.49 GiB.
+    #
+    # Po gaussiani se drzi parametar, dva Adamova stanja i gradijent - dakle cetiri primjerka - a
+    # pri dijeljenju se polja nakratko udvostruce. Zato se granica racuna iz SLOBODNE memorije, a ne
+    # zadaje brojem: ista scena na drugoj kartici ima drugu granicu.
+    floatsPer = 3 + 3 + 4 + 1 + 3 + 3 * (sh_count - 1)
+    bytesPer = floatsPer * 4 * 4                      #parametar + dva stanja + gradijent
+
+    if args.max_gaussians > 0:
+        budget = args.max_gaussians
+    else:
+        free, total = torch.cuda.mem_get_info()
+        #Trecina slobodne memorije: ostatak trosi rasterizacija, unatrazni prolaz i vrhunac pri
+        #dijeljenju. Izmjereno da granica tako ispadne blizu one na kojoj je stvarno puklo
+        budget = int(free * 0.33 / bytesPer)
+        print(f"Kartica: {free / (1 << 30):.1f} GB slobodno, {bytesPer} B po gaussiani "
+              f"-> granica {budget / 1e6:.1f} M")
+
+    capped = False
+
+    # -------------------------------------------------------------------------------
     # Trening
     # -------------------------------------------------------------------------------
     windowSize = 11
@@ -273,6 +305,14 @@ def main():
         strategy.step_post_backward(params, optimizers, state, step, info, packed=True)
         for optimizer in optimizers.values():
             optimizer.step()
+
+        #Kad se granica dosegne, zgusnjavanje staje a ucenje ide dalje - preostali koraci jos
+        #popravljaju polozaj, boju i neprozirnost onoga sto vec postoji
+        if not capped and params["means"].shape[0] >= budget:
+            strategy.refine_stop_iter = step
+            capped = True
+            print(f"  granica dosegnuta u {step}. koraku: {params['means'].shape[0]} gaussiana, "
+                  f"zgusnjavanje staje")
 
         if step % 500 == 0 or step == args.steps - 1:
             print(f"  {step:5d}  gubitak {loss.item():.4f}  gaussiana {params['means'].shape[0]}")
