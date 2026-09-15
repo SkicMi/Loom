@@ -60,4 +60,21 @@ struct GaussianCloud{
 //nista je prazna scena, i to se vidi tek tri sloja dalje
 GaussianCloud loadGaussianPly(const std::string& path);
 
+//U datoteku, istim zapisom kojim se cita: binary_little_endian, svojstva imenovana onako kako
+//ih imenuje referentni 3DGS, pa procitani i napisani file prolaze kroz iste alate.
+//
+//PISE SE ONO STO U OBLAKU STOJI, NEDIRNUTO. Isto pravilo kao pri citanju i iz istog razloga:
+//brojevi su u obliku PRIJE aktivacije, pa bi pisac koji ih "popravi" napravio file koji svaki
+//citatelj popravi jos jednom. Oblak koji je dosao iz loadGaussianPly i odmah se napise mora
+//dati datoteku istog sadrzaja.
+//
+//keep, ako nije prazan, bira sto se pise - po jedan ulaz na svaki gaussian oblaka, nula znaci
+//preskoci. Postoji zbog brisanja: kopija oblaka bez obrisanih bila bi jos jedan gigabajt na
+//sceni od cetiri milijuna gaussiana, a jedini razlog za nju je izbjeci ovaj argument.
+//
+//Baca s putanjom i razlogom
+void saveGaussianPly(const std::string& path,
+                     const GaussianCloud& cloud,
+                     const std::vector<uint8_t>& keep = {});
+
 }

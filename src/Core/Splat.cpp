@@ -262,4 +262,18 @@ bool touchesTile(const PreparedSplat& splat, int tileX, int tileY, uint32_t tile
     return best <= threshold * 1.001f + 1e-3f;
 }
 
+
+bool insideBox(const glm::vec3& point,
+               const glm::vec3& center,
+               const glm::vec3& halfExtent,
+               const glm::quat& orientation){
+    //U sustav kutije: konjugat rotira NATRAG. Kvaternion se normalizira jer kutija dolazi iz
+    //suicelja, a ondje nitko ne jamci duljinu - nenormiran bi tiho promijenio velicinu kutije
+    const glm::vec3 local = glm::conjugate(glm::normalize(orientation)) * (point - center);
+
+    return std::fabs(local.x) <= halfExtent.x
+        && std::fabs(local.y) <= halfExtent.y
+        && std::fabs(local.z) <= halfExtent.z;
+}
+
 }

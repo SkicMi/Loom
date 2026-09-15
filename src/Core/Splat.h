@@ -154,4 +154,20 @@ bool prepare(const Splat& splat,
 //parove, i da test drzi obje strane jednu uz drugu
 bool touchesTile(const PreparedSplat& splat, int tileX, int tileY, uint32_t tileSize);
 
+//-- odabir -----------------------------------------------------------------------------------
+//Je li tocka unutar zarotirane kutije.
+//
+//SREDISTE ODLUCUJE, NE OPSEG. Gaussiana je mrlja bez ruba - proteze se u beskonacnost, samo
+//sve slabije - pa "je li unutra" za nju nema jednoznacan odgovor. Sredistem se odgovor svede
+//na pitanje koje ga ima, i to je pitanje koje korisnik i postavlja kad kockom obuhvati dio
+//scene: ono cije je srediste unutra, unutra je.
+//
+//Cijena toga se vidi na rubu kutije: mrlja sa sredistem tik izvan ruba ostane, i njezin rep
+//viri unutra. Za ciscenje scene je to ispravan kompromis - kutija koja bi brisala sve sto
+//zadire unutra pojela bi i pola poda oko sebe
+bool insideBox(const glm::vec3& point,
+               const glm::vec3& center,
+               const glm::vec3& halfExtent,
+               const glm::quat& orientation);
+
 }

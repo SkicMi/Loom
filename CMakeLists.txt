@@ -244,6 +244,11 @@ add_subdirectory(spool)
 # vlastiti CMakeLists, iz istog razloga kao Spool: ne zna ni za Loom ni za Spool
 add_subdirectory(engine)
 
+# Treadle - suicelje. Isti odnos kao Spool i Engine, samo jos strozi: Treadle nema NIJEDNU
+# vanjsku ovisnost. Ulaz mu je zapis brojeva, izlaz polje vrhova u pikselima, a tko to crta
+# njegov je problem - vidi treadle/CMakeLists.txt
+add_subdirectory(treadle)
+
 # ----------------------------------------------------------------------------
 # Loom biblioteka
 # ----------------------------------------------------------------------------
@@ -354,6 +359,25 @@ target_compile_options(LoomPreset PRIVATE
 add_dependencies(LoomPreset LoomShaders)   # preset gradi shadow pipeline iz shadow.vert.spv
 
 # ----------------------------------------------------------------------------
+# TreadlePaint - suicelje nacrtano Loomom.
+#   Zaseban target iz istog razloga kao LoomPreset: jedini je koji zna i za Loom
+#   i za Treadle. Da je unutra, Treadle bi ovisio o Vulkanu i vise se ne bi dao
+#   testirati bez kartice, a Loom bi znao sto je gumb.
+# ----------------------------------------------------------------------------
+add_library(TreadlePaint STATIC
+    src/TreadlePaint/UiPainter.cpp
+)
+
+target_link_libraries(TreadlePaint PUBLIC Loom Treadle)
+target_include_directories(TreadlePaint PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_compile_options(TreadlePaint PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra>
+)
+
+add_dependencies(TreadlePaint LoomShaders)   # crta iz ui.vert.spv i ui.frag.spv
+
+# ----------------------------------------------------------------------------
 # Primjeri - specifikacija stepenice 1.
 #   Grade se s ostatkom da bi se znalo da se JOS UVIJEK prevode: primjer koji
 #   se ne prevodi je specifikacija koja laze. Ne pokrecu se kao testovi jer
@@ -395,7 +419,7 @@ add_dependencies(LoomApp LoomShaders)   # shaderi se prevedu prije exea
 # SplatViewer: .ply s gaussianima u prozoru. Isto stepenica 2 i iz istog razloga -
 # oblak od tri cetvrt milijuna gaussiana nije oblik koji Scene zna staviti u svoj red.
 add_executable(SplatViewer src/splat_viewer.cpp)
-target_link_libraries(SplatViewer PRIVATE Loom Spool Engine)
+target_link_libraries(SplatViewer PRIVATE Loom Spool Engine TreadlePaint)
 
 # SolveViewer - camera solve nacrtan: prave kamere protiv onih koje je solver nasao.
 # Jedini program koji linka i preset i Engine, jer je usporedba njegov cijeli posao
@@ -489,7 +513,7 @@ if(LOOM_BUILD_TESTS)
         add_executable(${TEST_NAME} ${TEST_SOURCE})
         # Testovi linkaju obje biblioteke. To je dozvoljeno i tu prestaje: same
         # biblioteke jedna o drugoj ne znaju nista.
-        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool Engine LoomPreset)
+        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool Engine Treadle LoomPreset TreadlePaint)
         target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         add_dependencies(${TEST_NAME} LoomShaders)
         add_dependencies(LoomTests ${TEST_NAME})

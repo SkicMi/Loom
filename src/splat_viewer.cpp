@@ -32,6 +32,9 @@
 #include <Spool/GaussianPly.h>
 #include <Spool/ImageFile.h>
 
+#include <Treadle/Ui.h>
+#include <TreadlePaint/UiPainter.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -40,6 +43,64 @@
 #include <vector>
 
 namespace{
+
+//=============================================================================================
+// POGLED KAO U BLENDERU: tocka oko koje se kruzi, dva kuta i udaljenost.
+//
+// Prije su to bila tri nezavisna broja (kut, visina, udaljenost) i jos prekidac izvana/iznutra,
+// pa je "iznutra" bio zaseban nacin s vlastitim racunom. Ovdje je iznutra samo udaljenost blizu
+// nule - jedan racun umjesto tri, i nista se ne moze raziici.
+//
+// Y RASTE PREMA DOLJE, jer 3DGS scene dolaze takve. Zato je u smjeru minus sinus: pozitivan
+// nagib podize kameru
+//=============================================================================================
+struct Orbit{
+    glm::vec3 pivot{0.0f};
+    float yaw = 0.0f;
+    float pitch = 0.2f;
+    float distance = 1.0f;
+
+    //Od sredista prema kameri
+    glm::vec3 offset() const{
+        return glm::vec3(std::cos(pitch) * std::sin(yaw), -std::sin(pitch), std::cos(pitch) * std::cos(yaw));
+    }
+
+    glm::vec3 eye() const {return pivot + offset() * distance;}
+    glm::vec3 forward() const {return -offset();}
+
+    //Desno i gore NA EKRANU. Trebaju pomicanju: povlacenje misa mora micati scenu onako kako
+    //je korisnik uhvatio, a ne po osima svijeta
+    glm::vec3 right() const{
+        return glm::normalize(glm::cross(forward(), glm::vec3(0.0f, -1.0f, 0.0f)));
+    }
+    glm::vec3 screenUp() const {return glm::normalize(glm::cross(right(), forward()));}
+
+    //Iz rijesene poze: ista kamera, samo zapisana drugim brojevima. Srediste se stavi ispred
+    //nje, jer bi inace kruzenje kruzilo oko tocke u kojoj kamera stoji
+    void fromPose(const Engine::Pose& pose, float reach){
+        const glm::vec3 ahead = pose.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+        pivot = pose.position + ahead * reach;
+        distance = reach;
+        pitch = std::asin(std::clamp(ahead.y, -1.0f, 1.0f));
+        yaw = std::atan2(-ahead.x, -ahead.z);
+    }
+};
+
+//Kotacic misa GLFW javlja dogadjajem a ne stanjem, pa se mora skupljati sa strane. Jedan
+//preglednik ima jedan prozor, pa je jedan broj dovoljan
+float wheelSinceLastFrame = 0.0f;
+
+void onScroll(GLFWwindow*, double, double y){
+    wheelSinceLastFrame += float(y);
+}
+
+//Broj u niz, sa zadanim brojem decimala. Suicelje trazi tekst, a std::to_string za float daje
+//sest decimala - sirinu koju nijedna ploha nema
+std::string fmtNumber(double value, int decimals){
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.*f", decimals, value);
+    return text;
+}
 
 //Sredina i polumjer scene, ali po postotcima a ne po krajnostima. Prava scena ima nekoliko
 //gaussiana koji su odletjeli daleko od svega ostalog - u train/7000 se x proteze od -62 do 172
@@ -139,6 +200,14 @@ int main(int argc, char** argv){
     const bool boxOnFloor = hasFlag("--kocka-na-podu");
     const bool newPath = hasFlag("--nova-putanja");
 
+    //Suicelje se u snimku NE crta, jer bi dvije slike koje se usporedjuju nosile plohu s
+    //gumbima preko sebe. Ovo je jedina iznimka i postoji zbog provjere samog suicelja - inace
+    //se ono nikako ne da vidjeti drukcije nego gledanjem u ekran
+    const bool uiInShot = hasFlag("--suicelje-na-slici");
+
+    //Kocka za brisanje odmah upaljena. Inace se pali kvacicom u suicelju
+    const bool cubeAtStart = hasFlag("--kocka-brisanje");
+
     //Iz kojeg polozaja na putanji krenuti. Postoji da se odredjeni kadar da pogledati bez crtanja
     //svih prije njega - a bas to je trebalo kad se provjeravalo zasto se kocka ne vidi
     int startPose = -1;
@@ -208,39 +277,57 @@ int main(int argc, char** argv){
 
     const uint32_t coeffsPerChannel = cloud.restStride / 3;
 
-    for(size_t i = 0; i < cloud.count(); i += stride){
-        const Spool::Gaussian& source = cloud.gaussians[i];
-
-        Splat splat;
-        splat.position = glm::vec3(source.position[0], source.position[1], source.position[2]);
-        splat.scale    = SplatMath::activateScale(glm::vec3(source.scale[0], source.scale[1], source.scale[2]));
-        splat.rotation = SplatMath::activateRotation(glm::vec4(source.rotation[0], source.rotation[1],
-                                                              source.rotation[2], source.rotation[3]));
-        splat.opacity  = SplatMath::activateOpacity(source.opacity);
-        splat.color    = SplatMath::colorFromSH0(glm::vec3(source.dc[0], source.dc[1], source.dc[2]));
-        splats.push_back(splat);
-        sourceIndex.push_back(uint32_t(i));
-    }
-
-    //TOCKE IZ MODELA KAO SPLATOVI. Ne crta ih se zasebnim prolazom nego se ubace u isti oblak:
-    //rasterizator ih time sortira i zaklanja zajedno sa scenom, pa tocka iza zida stvarno zavrsi
-    //iza zida. Zasebni prolaz bi ih crtao preko svega i pokazivao krivu sliku.
+    //KOJI GAUSSIAN JOS POSTOJI. Brisanje kockom radi NAD OBLAKOM, ne nad splatovima koji se
+    //crtaju: korak preskace, pa bi brisanje nad prorijedenim popisom ostavilo u datoteci sve
+    //ono sto se nije crtalo - a kutija je volumen i mora odnijeti sve unutar sebe.
     //
-    //Sitne su i neprozirne, i namjerno svijetle - nisu dio prizora nego mjerni instrument
-    size_t pointSplats = 0;
-    if(showPoints && !realPoses.empty() && !modelPoints.empty()){
-        for(const glm::vec3& point : modelPoints){
-            Splat dot;
-            dot.position = point;
-            dot.scale = glm::vec3(0.004f);
-            dot.rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-            dot.opacity = 0.95f;
-            dot.color = glm::vec3(0.15f, 0.95f, 1.0f);      //ciklama-plava: ne pojavljuje se u sobi
-            splats.push_back(dot);
-            sourceIndex.push_back(UINT32_MAX);              //nema izvora u oblaku - vidi upload
-            ++pointSplats;
+    //Maska a ne kopija oblaka: na sceni od cetiri milijuna gaussiana kopija je jos gigabajt
+    std::vector<uint8_t> alive(cloud.count(), 1);
+
+    auto buildSplats = [&]{
+        splats.clear();
+        sourceIndex.clear();
+
+        for(size_t i = 0; i < cloud.count(); i += stride){
+            if(!alive[i]) continue;
+
+            const Spool::Gaussian& source = cloud.gaussians[i];
+
+            Splat splat;
+            splat.position = glm::vec3(source.position[0], source.position[1], source.position[2]);
+            splat.scale    = SplatMath::activateScale(glm::vec3(source.scale[0], source.scale[1], source.scale[2]));
+            splat.rotation = SplatMath::activateRotation(glm::vec4(source.rotation[0], source.rotation[1],
+                                                                  source.rotation[2], source.rotation[3]));
+            splat.opacity  = SplatMath::activateOpacity(source.opacity);
+            splat.color    = SplatMath::colorFromSH0(glm::vec3(source.dc[0], source.dc[1], source.dc[2]));
+            splats.push_back(splat);
+            sourceIndex.push_back(uint32_t(i));
         }
-        printf("  + %zu tocaka iz modela nacrtano kao splatovi\n", pointSplats);
+
+        //TOCKE IZ MODELA KAO SPLATOVI. Ne crtaju se zasebnim prolazom nego se ubace u isti
+        //oblak: rasterizator ih time sortira i zaklanja zajedno sa scenom, pa tocka iza zida
+        //stvarno zavrsi iza zida. Zasebni prolaz bi ih crtao preko svega.
+        //
+        //Idu na kraj, poslije brisanja - one nisu dio scene nego mjerni instrument, pa ih
+        //kocka ne brise. Sitne su, neprozirne i namjerno svijetle
+        if(showPoints && !realPoses.empty() && !modelPoints.empty()){
+            for(const glm::vec3& point : modelPoints){
+                Splat dot;
+                dot.position = point;
+                dot.scale = glm::vec3(0.004f);
+                dot.rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+                dot.opacity = 0.95f;
+                dot.color = glm::vec3(0.15f, 0.95f, 1.0f);   //ciklama-plava: ne pojavljuje se u sobi
+                splats.push_back(dot);
+                sourceIndex.push_back(UINT32_MAX);           //nema izvora u oblaku - vidi upload
+            }
+        }
+    };
+
+    buildSplats();
+
+    if(showPoints && !realPoses.empty() && !modelPoints.empty()){
+        printf("  + %zu tocaka iz modela nacrtano kao splatovi\n", modelPoints.size());
     }
 
     const Bounds bounds = robustBounds(splats);
@@ -307,8 +394,13 @@ int main(int argc, char** argv){
 
     //SIROVI SPLATOVI, JEDNOM. Aktivacija je vec napravljena jer ne ovisi o kameri; sve sto ovisi
     //racuna kartica svaki kadar. Koeficijenti se uzimaju preko sourceIndex, jer korak preskace
-    const uint32_t splatCount = uint32_t(splats.size());
-    {
+    uint32_t splatCount = uint32_t(splats.size());
+
+    //Poziva se opet nakon brisanja. Oblak i koeficijenti ostaju na procesoru, pa ponovno
+    //slanje kosta samo prolaz kroz ono sto je ostalo
+    auto uploadSplats = [&](bool announce){
+        splatCount = uint32_t(splats.size());
+
         std::vector<SplatMath::RawSplat> raw;
         raw.reserve(splats.size());
         std::vector<float> rest;
@@ -345,10 +437,14 @@ int main(int argc, char** argv){
         }
 
         splatRenderer.uploadRaw(raw, rest, useSH ? cloud.shDegree : 0, useSH ? coeffsPerChannel : 0);
-        printf("  na karticu: %.0f MB splatova, %.0f MB koeficijenata\n",
-               double(raw.size() * sizeof(SplatMath::RawSplat)) / 1048576.0,
-               double(rest.size() * sizeof(float)) / 1048576.0);
-    }
+        if(announce){
+            printf("  na karticu: %.0f MB splatova, %.0f MB koeficijenata\n",
+                   double(raw.size() * sizeof(SplatMath::RawSplat)) / 1048576.0,
+                   double(rest.size() * sizeof(float)) / 1048576.0);
+        }
+    };
+
+    uploadSplats(true);
 
     printf("  pločica %ux%u, mreza %ux%u\n", tileSize, tileSize,
            splatRenderer.getGrid().width, splatRenderer.getGrid().height);
@@ -427,15 +523,32 @@ int main(int argc, char** argv){
     size_t whichPose = realPoses.empty() ? 0 : realPoses.size() / 2;   //sredina snimke, ne rub
     if(startPose >= 0 && !realPoses.empty()) whichPose = size_t(startPose) % realPoses.size();
     bool poseHeld = false;
-    float angle = startAngle;
-    float distance = inside ? 0.0f : 1.3f * bounds.radius;
-    float height = inside ? 0.0f : 0.2f * bounds.radius;
-    bool insideHeld = false;
+
+    //POGLED SE VISE NE OKRECE SAM. Dok se snimalo iz zadanog kuta to je smetalo mjerenju, a dok
+    //se gleda rukom smeta gledanju - kamera koja se mice sama odnese pogled s onoga sto se
+    //upravo promatra. Sve micanje je sada misem, kao u Blenderu
+    Orbit orbit;
+    if(!cameraPath.empty()){
+        orbit.fromPose(cameraPath[whichPose], 0.35f * bounds.radius);
+    }else{
+        orbit.pivot = bounds.centre;
+        orbit.yaw = startAngle + lookOffset;
+        orbit.pitch = inside ? 0.0f : 0.2f;
+        orbit.distance = inside ? 0.001f * bounds.radius : 1.3f * bounds.radius;
+    }
+
+    //Stanje vucenja: gdje je mis bio prosli kadar i je li gumb tada bio dolje
+    double lastCursorX = 0.0, lastCursorY = 0.0;
+    bool dragging = false;
 
     printf("Blizu sredista je %.2f%% splatova.\n", 100.0 * double(bounds.middleShare));
 
+    //Mjerna kocka iz argumenata: puna, na fiksnom mjestu. Zivi izvan grane jer je petlja mora
+    //vratiti svaki put kad se kocka za brisanje ugasi
+    SplatRenderer::Box measuringBox;
+
     if(boxSize > 0.0f){
-        SplatRenderer::Box box;
+        SplatRenderer::Box& box = measuringBox;
         box.visible = true;
         //Ne u sredistu scene - ondje je obicno sam predmet, pa bi kocka zavrsila zakopana u
         //njemu. Mjesto je FIKSNO U SVIJETU, vezano na kut zadan argumentom a ne na kameru: kocka
@@ -543,12 +656,60 @@ int main(int argc, char** argv){
                box.halfExtent.x, boxSize);
     }
 
-    printf("\nStrelice: kruzenje i visina.  W/S: naprijed i natrag.  I: izvana/iznutra.%s  ESC: kraj.\n\n",
+    printf("\nMis: srednji gumb okrece, Shift+srednji ili desni pomice, kotacic priblizava.\n"
+           "Tipkovnica: strelice okrecu, W/S naprijed i natrag, F vraca pogled na scenu.%s  ESC: kraj.\n\n",
            realPoses.empty() ? "" : "  N/P: sljedeca i prethodna prava kamera.");
 
     GLFWwindow* window = loom.window->getWindow();
+    glfwSetScrollCallback(window, onScroll);
+
+    // -------------------------------------------------------------------------------
+    // Suicelje i kocka kojom se brise
+    // -------------------------------------------------------------------------------
+
+    Treadle::Ui ui;
+    UiPainter painter(loom.device, loom.command, loom.getColorFormat(), vk::Format::eUndefined,
+                      1u << 17);
+
+    //KOCKA ZA BRISANJE je zasebna od one iz argumenata. Ona je mjerni predmet i puna je; ova je
+    //kavez i sluzi odabiru. Rasterizator drzi jednu, pa kad je ova upaljena ona ima prednost -
+    //a to i jest ono sto se tada gleda
+    bool cubeOn = cubeAtStart;
+    float cubeShare = 0.15f;              //poluosovina kao udio polumjera scene
+    int deleteMode = 0;                   //0 unutra, 1 izvan
+    //Pocetno na tocku oko koje se kruzi, ne na srediste scene: ondje kamera gleda, pa je kocka
+    //odmah u kadru. U sredistu scene bi na sobi zavrsila iza ledja
+    glm::vec3 cubeCenter = orbit.pivot;
+    bool cubeMoved = true;                //treba prebrojati sto je u njoj
+
+    size_t insideCount = 0;
+    size_t aliveCount = cloud.count();
+    double countMilliseconds = 0.0;
+    std::string lastMessage;
+
+    //Koliko je zivih gaussiana oblaka unutar kocke. Racuna se SAMO kad se kocka pomakne, jer je
+    //to prolaz kroz cijeli oblak - na cetiri milijuna gaussiana desetak milisekundi
+    auto countInside = [&]{
+        const auto started = std::chrono::steady_clock::now();
+        const glm::vec3 half(cubeShare * bounds.radius);
+        const glm::quat straight(1.0f, 0.0f, 0.0f, 0.0f);
+
+        insideCount = 0;
+        aliveCount = 0;
+        for(size_t i = 0; i < cloud.count(); ++i){
+            if(!alive[i]) continue;
+            ++aliveCount;
+            const glm::vec3 position(cloud.gaussians[i].position[0], cloud.gaussians[i].position[1],
+                                     cloud.gaussians[i].position[2]);
+            if(SplatMath::insideBox(position, cubeCenter, half, straight)) ++insideCount;
+        }
+        countMilliseconds = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+    };
+
     double lastReport = loom.getTime();
     int framesSinceReport = 0;
+    double framesPerSecond = 0.0;
     uint32_t totalFrames = 0;
     uint32_t pairsAsked = 0;
 
@@ -557,16 +718,188 @@ int main(int argc, char** argv){
     std::vector<std::pair<std::string, double>> stageSums;
     uint32_t timedFrames = 0;
 
+    //PROCESOROVA STRANA KADRA, po dijelovima. Kartica javlja svoje vrijeme sama, pa je dugo
+    //izgledalo da je sve receno - a kad se pokazalo 13 ms na kartici uz jedan kadar u sekundi,
+    //nije bilo nicega sto bi reklo gdje je ostatak.
+    //
+    //Odgovor je bio: 999 ms u slanju, i to JEDNAKO na sceni od 3.76 milijuna splatova i na onoj
+    //od 18 tisuca. Broj koji ne ovisi o poslu nije cijena posla nego cekanje - Wayland
+    //kompozitor gusi povrsinu koju nitko ne gleda na otprilike jedan poziv u sekundi, pa prozor
+    //iza drugog prozora crta jednom u sekundi bez obzira sto je u njemu. Cim se prozor izvuce
+    //naprijed, vraca se na brzinu ekrana. Ostavljeno jer je to jedini nacin da se ta razlika vidi
+    double uiMilliseconds = 0.0, waitMilliseconds = 0.0, submitMilliseconds = 0.0;
+    auto sinceNow = [](std::chrono::steady_clock::time_point from){
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count();
+    };
+
     while(!loom.shouldClose()){
+        const auto frameStarted = std::chrono::steady_clock::now();
         loom.pollEvents();
 
         if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
-        if(glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS) angle -= 0.02f;
-        if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) angle += 0.02f;
-        if(glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS) height += 0.03f * bounds.radius;
-        if(glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) height -= 0.03f * bounds.radius;
-        //U prostoru W/S hoda naprijed i natrag jer mnozenje udaljenosti oko nule ne mice nista;
-        //oko predmeta ostaje mnozenje, da se prilaz jednako ponasa na maloj i velikoj sceni
+
+        // ---------------------------------------------------------------------------
+        // Ulaz u Treadle. Suicelje ga vidi PRVO, pa tek onda kamera pita smije li i ona -
+        // inace bi vucenje klizaca ujedno okretalo pogled
+        // ---------------------------------------------------------------------------
+
+        double cursorX = 0.0, cursorY = 0.0;
+        glfwGetCursorPos(window, &cursorX, &cursorY);
+
+        Treadle::Input input;
+        input.mouseX = float(cursorX);
+        input.mouseY = float(cursorY);
+        input.down[uint32_t(Treadle::MouseButton::Left)]   = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        input.down[uint32_t(Treadle::MouseButton::Right)]  = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+        input.down[uint32_t(Treadle::MouseButton::Middle)] = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+        input.wheel = wheelSinceLastFrame;
+        input.shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+                   || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+
+        if(cubeMoved){
+            countInside();
+            cubeMoved = false;
+        }
+
+        ui.begin(input, float(size.width), float(size.height));
+        ui.panel("Loom", 16.0f, 16.0f, 320.0f);
+
+        ui.value("splatova", std::to_string(splatCount));
+        ui.value("kadrova/s", fmtNumber(framesPerSecond, 1));
+        if(!cameraPath.empty()){
+            ui.value("kamera", std::to_string(whichPose + 1) + " / " + std::to_string(cameraPath.size()));
+        }
+
+        ui.separator();
+        ui.checkbox("kocka za brisanje", &cubeOn);
+
+        if(cubeOn){
+            if(ui.slider("velicina", &cubeShare, 0.01f, 1.0f)) cubeMoved = true;
+
+            if(ui.button("Kocka ovamo")){
+                //Na tocku oko koje se kruzi, a ne na kameru: to je mjesto u koje se gleda, i
+                //jedino koje korisnik postavlja namjerno
+                cubeCenter = orbit.pivot;
+                cubeMoved = true;
+            }
+
+            ui.choice("brise se", {"unutra", "izvan"}, &deleteMode);
+            ui.value("u kocki", std::to_string(insideCount) + " od " + std::to_string(aliveCount));
+
+            if(ui.button("Obrisi")){
+                const glm::vec3 half(cubeShare * bounds.radius);
+                const glm::quat straight(1.0f, 0.0f, 0.0f, 0.0f);
+                const bool removeInside = deleteMode == 0;
+
+                size_t removed = 0;
+                for(size_t i = 0; i < cloud.count(); ++i){
+                    if(!alive[i]) continue;
+                    const glm::vec3 position(cloud.gaussians[i].position[0], cloud.gaussians[i].position[1],
+                                             cloud.gaussians[i].position[2]);
+                    if(SplatMath::insideBox(position, cubeCenter, half, straight) == removeInside){
+                        alive[i] = 0;
+                        ++removed;
+                    }
+                }
+
+                //CEKA SE PRIJE PISANJA. SplatRenderer ima jedan primjerak radnih polja, pa slanje
+                //novog oblaka dok prethodni kadar jos crta prepisuje ono sto kartica upravo cita
+                loom.waitIdle();
+                buildSplats();
+                uploadSplats(false);
+                cubeMoved = true;
+
+                aliveCount -= removed;   //tocno i nakon drugog brisanja; countInside ga svejedno prebroji
+                lastMessage = "obrisano " + std::to_string(removed);
+                printf("Obrisano %zu gaussiana (%s kocke), ostalo %zu\n",
+                       removed, removeInside ? "unutar" : "izvan", aliveCount);
+            }
+
+            if(ui.button("Spremi .ply")){
+                if(aliveCount == 0){
+                    //Prazan .ply se ne da procitati natrag, pa bi zapisivanje dalo datoteku
+                    //koja izgleda kao rezultat a nije. Do praznog se dodje jednim klikom:
+                    //"izvan" male kocke u praznom zraku odnese cijelu scenu
+                    lastMessage = "nema sto spremiti";
+                    printf("Nista nije ostalo - prazan .ply se ne pise\n");
+                }else{
+                    //NOVI FILE, nikad preko ulaznog. Brisanje nema korak natrag, pa je jedina
+                    //obrana to da izvorna datoteka ostane netaknuta dok se ne provjeri sto je ispalo
+                    const size_t dot = path.rfind('.');
+                    const std::string out = (dot == std::string::npos ? path : path.substr(0, dot))
+                                          + "_rezano.ply";
+                    try{
+                        Spool::saveGaussianPly(out, cloud, alive);
+                        lastMessage = "spremljeno";
+                        printf("Spremljeno %s (%zu gaussiana)\n", out.c_str(), aliveCount);
+                    }catch(const std::exception& error){
+                        lastMessage = "greska pri spremanju";
+                        printf("%s\n", error.what());
+                    }
+                }
+            }
+
+            if(!lastMessage.empty()) ui.label(lastMessage);
+        }
+
+        ui.end();
+
+        // ---------------------------------------------------------------------------
+        // Pogled. Sve micanje je misem; tipkovnica je samo rezerva za mis bez srednjeg gumba
+        // ---------------------------------------------------------------------------
+
+        const bool orbitDrag = input.isDown(Treadle::MouseButton::Middle) && !input.shift;
+        const bool panDrag = (input.isDown(Treadle::MouseButton::Middle) && input.shift)
+                          || input.isDown(Treadle::MouseButton::Right);
+
+        const bool wantsDrag = (orbitDrag || panDrag) && !ui.wantsMouse();
+
+        if(wantsDrag && dragging){
+            const float dx = float(cursorX - lastCursorX);
+            const float dy = float(cursorY - lastCursorY);
+
+            if(orbitDrag){
+                orbit.yaw -= dx * 0.006f;
+                orbit.pitch -= dy * 0.006f;
+
+                //Preko zenita bi se gore prevrnulo i pogled bi se vrtio na mjestu. Granica je tik
+                //ispod pravog kuta, jer je na samom zenitu smjer pogleda i "gore" isti vektor
+                orbit.pitch = std::clamp(orbit.pitch, -1.55f, 1.55f);
+            }else{
+                //Pomicanje PRATI POKAZIVAC: koliko svijeta stane u jedan piksel na udaljenosti
+                //sredista. Bez toga se na velikoj sceni mice nevidljivo malo, a na maloj odleti
+                const float perPixel = 2.0f * std::max(orbit.distance, 1e-4f)
+                                     * std::tan(0.5f * cameraConfig.fovY) / float(size.height);
+                orbit.pivot += (-dx * orbit.right() + dy * orbit.screenUp()) * perPixel;
+            }
+        }
+        dragging = wantsDrag;
+        lastCursorX = cursorX;
+        lastCursorY = cursorY;
+
+        if(!ui.wantsMouse() && wheelSinceLastFrame != 0.0f){
+            //Mnozenje a ne oduzimanje: korak kotacica je uvijek isti udio udaljenosti, pa
+            //priblizavanje jednako radi na sobi i na predmetu
+            orbit.distance *= std::exp(-wheelSinceLastFrame * 0.15f);
+        }
+        wheelSinceLastFrame = 0.0f;
+
+        if(glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS) orbit.yaw -= 0.02f;
+        if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) orbit.yaw += 0.02f;
+        if(glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS) orbit.pitch = std::min(1.55f, orbit.pitch + 0.02f);
+        if(glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) orbit.pitch = std::max(-1.55f, orbit.pitch - 0.02f);
+        if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) orbit.distance *= 0.97f;
+        if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) orbit.distance *= 1.03f;
+
+        //Izlaz iz zabludjelog pogleda. Scena je velika i lako je odletjeti van nje, a onda nista
+        //ne pomaze jer se kruzi oko tocke koja je ostala iza
+        if(glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS){
+            orbit.pivot = bounds.centre;
+            orbit.distance = 1.3f * bounds.radius;
+        }
+
+        orbit.distance = std::clamp(orbit.distance, 1e-4f * bounds.radius, 40.0f * bounds.radius);
+
         //U preletu poza napreduje sama, jedan kadar jedna poza
         if(flyover && !cameraPath.empty() && totalFrames > 0){
             whichPose = size_t(totalFrames) % cameraPath.size();
@@ -580,63 +913,49 @@ int main(int argc, char** argv){
             if((nextNow || backNow) && !poseHeld){
                 if(nextNow) whichPose = (whichPose + 1) % cameraPath.size();
                 else        whichPose = (whichPose + cameraPath.size() - 1) % cameraPath.size();
+                orbit.fromPose(cameraPath[whichPose], 0.35f * bounds.radius);
                 printf("  kamera %zu od %zu\n", whichPose + 1, cameraPath.size());
             }
             poseHeld = nextNow || backNow;
         }
 
-        //Prebacivanje na pritisak, ne na drzanje
-        const bool insideNow = glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS;
-        if(insideNow && !insideHeld){
-            inside = !inside;
-            distance = inside ? 0.0f : 1.3f * bounds.radius;
-            height = inside ? 0.0f : 0.2f * bounds.radius;
-            printf("  pogled: %s\n", inside ? "iznutra" : "izvana");
-        }
-        insideHeld = insideNow;
-
-        if(inside){
-            if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) distance += 0.02f * bounds.radius;
-            if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) distance -= 0.02f * bounds.radius;
-        }else{
-            if(glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) distance *= 0.97f;
-            if(glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) distance *= 1.03f;
-        }
-
-        //Bez tipke se polako okrece, da se odmah vidi da je scena prostorna. Kad se snima iz
-        //zadanog kuta to bi pomaknulo bas ono sto se htjelo usporediti, pa tada miruje
-        if(framesThenShot == 0) angle += 0.002f;
-
-        //PREDMET: kamera kruzi oko njega i gleda u njega. PROSTOR: kamera stoji u sredini i gleda
-        //VAN - kut vise ne okrece polozaj nego pogled, jer je to jedini nacin da se prostor obidje
-        //iznutra. Gledanje u srediste bi iz sobe znacilo zuriti u suprotni zid kroz zrak
-        const glm::vec3 direction(std::sin(angle), 0.0f, std::cos(angle));
-        if(!cameraPath.empty()){
-            //PRAVA POZA. Engineova Pose je kamera u svijetu, -Z naprijed i +Y gore - ista
-            //konvencija koju Loomova Camera ocekuje, pa se smjer i gore uzimaju iz nje umjesto da
-            //se pretpostavljaju. Strelice lijevo/desno okrecu pogled oko te poze, da se moze
-            //pogledati uokolo bez skakanja na drugu kameru
+        //SNIMANJE I PRELET IDU IZ POZE, ne iz pogleda koji se rukom pomice. Slika koja se
+        //usporedjuje s drugom mora doci iz istog mjesta oba puta, a rucni pogled to nije
+        if((flyover || framesThenShot > 0) && !cameraPath.empty()){
             const Engine::Pose& pose = cameraPath[whichPose];
-            const glm::quat turn = glm::angleAxis(angle - startAngle + lookOffset, glm::vec3(0.0f, 1.0f, 0.0f));
-            const glm::vec3 forward = turn * (pose.orientation * glm::vec3(0.0f, 0.0f, -1.0f));
-
-            cameraConfig.position = pose.position + glm::vec3(0.0f, height, 0.0f) + forward * distance;
-            cameraConfig.target = cameraConfig.position + forward * bounds.radius;
+            const glm::vec3 ahead = glm::angleAxis(lookOffset, glm::vec3(0.0f, 1.0f, 0.0f))
+                                  * (pose.orientation * glm::vec3(0.0f, 0.0f, -1.0f));
+            cameraConfig.position = pose.position;
+            cameraConfig.target = pose.position + ahead * bounds.radius;
             cameraConfig.up = pose.orientation * glm::vec3(0.0f, 1.0f, 0.0f);
-        }else if(inside){
-            cameraConfig.position = bounds.centre + direction * distance + glm::vec3(0.0f, height, 0.0f);
-            cameraConfig.target = cameraConfig.position + direction * bounds.radius
-                                + glm::vec3(0.0f, -0.15f * height, 0.0f);
         }else{
-            cameraConfig.position = bounds.centre + glm::vec3(distance * std::sin(angle), height,
-                                                              distance * std::cos(angle));
-            cameraConfig.target = bounds.centre;
+            cameraConfig.position = orbit.eye();
+            cameraConfig.target = orbit.pivot;
+            cameraConfig.up = glm::vec3(0.0f, -1.0f, 0.0f);   //3DGS scene dolaze s Y prema dolje
         }
         camera = Camera(cameraConfig);
+
+        //Kocka za brisanje ima prednost nad mjernom: rasterizator drzi jednu, a kad je ova
+        //upaljena ona je ono sto se gleda
+        if(cubeOn){
+            SplatRenderer::Box cage;
+            cage.visible = true;
+            cage.center = cubeCenter;
+            cage.halfExtent = glm::vec3(cubeShare * bounds.radius);
+            cage.orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            cage.color = glm::vec3(1.0f, 0.75f, 0.2f);
+            cage.edgeShare = 0.02f;
+            splatRenderer.setBox(cage);
+        }else{
+            splatRenderer.setBox(measuringBox);
+        }
 
         const glm::mat4 view = camera.getView();
         const glm::mat4 projection = camera.getProjection(size.width, size.height);
         const CameraIntrinsics intrinsics = CameraIntrinsics::fromProjection(projection, size.width, size.height);
+
+        uiMilliseconds += sinceNow(frameStarted);
+        const auto waitStarted = std::chrono::steady_clock::now();
 
         //ČEKA SE PRIJE PISANJA, i to nije opreznost nego nužnost. Loom drži dva kadra u letu, a
         //SplatRenderer ima JEDAN primjerak svakog radnog polja - kameru, splatove, ključeve,
@@ -645,6 +964,9 @@ int main(int argc, char** argv){
         //rasterizatora a nije. Dok polja ne postanu po kadru, ovo košta paralelizam kartice i
         //procesora - i to je sad, kad je priprema na kartici, prava cijena
         loom.waitIdle();
+
+        waitMilliseconds += sinceNow(waitStarted);
+        const auto submitStarted = std::chrono::steady_clock::now();
 
         //Prosli kadar je gotov, pa je broj koji je trazio sad tocan
         pairsAsked = splatRenderer.requestedPairs();
@@ -671,9 +993,18 @@ int main(int argc, char** argv){
 
         loom.renderer.beginPass();
         loom.renderer.drawFullscreen(present);
+
+        //SUICELJE SE NE SNIMA. Slika koja se usporedjuje s drugom ne smije nositi plohu s
+        //gumbima preko sebe - a to bi se primijetilo tek kad bi netko usporedio dvije slike
+        //i vidio da se razlikuju bas ondje gdje je ploha
+        if(uiInShot || (!flyover && framesThenShot == 0)){
+            painter.draw(loom.renderer, ui.drawn(), size.width, size.height);
+        }
+
         loom.renderer.endPass();
 
         loom.renderer.endFrame();
+        submitMilliseconds += sinceNow(submitStarted);
 
         ++framesSinceReport;
         ++totalFrames;
@@ -717,6 +1048,7 @@ int main(int argc, char** argv){
 
         const double now = loom.getTime();
         if(now - lastReport > 1.0){
+            framesPerSecond = framesSinceReport / (now - lastReport);
             printf("  %.1f kadrova/s   %u splatova, %u parova%s\n",
                    framesSinceReport / (now - lastReport), splatCount, pairsAsked,
                    pairsAsked > rendererConfig.maxPairs ? "   PREMALO MJESTA - dio slike nedostaje (maxPairs)" : "");
@@ -731,6 +1063,12 @@ int main(int argc, char** argv){
                 for(auto& stage : stageSums) stage.second = 0.0;
                 timedFrames = 0;
             }
+            if(framesSinceReport > 0){
+                printf("    procesor: suicelje %.1f ms, cekanje %.1f ms, slanje %.1f ms\n",
+                       uiMilliseconds / framesSinceReport, waitMilliseconds / framesSinceReport,
+                       submitMilliseconds / framesSinceReport);
+            }
+            uiMilliseconds = waitMilliseconds = submitMilliseconds = 0.0;
             fflush(stdout);
             lastReport = now;
             framesSinceReport = 0;

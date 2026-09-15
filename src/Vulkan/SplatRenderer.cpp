@@ -313,7 +313,7 @@ void SplatRenderer::draw(VulkanRenderer& renderer, uint32_t splatCount){
         rasterParams.boxHalfExtent = glm::vec4(insertedBox.halfExtent, 0.0f);
         rasterParams.boxAxisX = glm::vec4(viewRotation * rotation[0], 0.0f);
         rasterParams.boxAxisY = glm::vec4(viewRotation * rotation[1], 0.0f);
-        rasterParams.boxColor = glm::vec4(insertedBox.color, 0.0f);
+        rasterParams.boxColor = glm::vec4(insertedBox.color, insertedBox.edgeShare);
     }
 
     //Rasponi se ciste uvijek, i kad nema nijednog para - inace bi pločica zadrzala ono sto je

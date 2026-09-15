@@ -336,6 +336,59 @@ int main(){
         message.find("scale_1") != std::string::npos && message.find("missing.ply") != std::string::npos,
         message.empty() ? "nije ni bacio" : message.c_str());
 
+    // -------------------------------------------------------------------------------
+    // I natrag na disk. Procitano pa napisano pa opet procitano mora dati isto - to je
+    // jedina provjera koja hvata pisca koji je "popravio" logit ili logaritam, jer takav
+    // file i dalje izgleda kao file i cita se bez ijedne primjedbe
+    // -------------------------------------------------------------------------------
+
+    {
+        const Spool::GaussianCloud original = Spool::loadGaussianPly(plain);
+        const std::string writtenPath = (work / "napisano.ply").string();
+        Spool::saveGaussianPly(writtenPath, original);
+
+        const Spool::GaussianCloud again = Spool::loadGaussianPly(writtenPath);
+
+        bool same = again.count() == original.count()
+                 && again.shDegree == original.shDegree
+                 && again.restStride == original.restStride
+                 && again.shRest.size() == original.shRest.size();
+
+        for(size_t i = 0; same && i < original.count(); ++i){
+            same = std::memcmp(&again.gaussians[i], &original.gaussians[i], sizeof(Spool::Gaussian)) == 0;
+        }
+        for(size_t i = 0; same && i < original.shRest.size(); ++i){
+            same = again.shRest[i] == original.shRest[i];
+        }
+
+        report.check("krug kroz disk", same,
+            fmt("%zu gaussiana, stupanj %u, %u koeficijenata", again.count(),
+                again.shDegree, again.restStride));
+
+        //Brisanje: maska bira sto ide na disk, i ono sto ostane mora biti bas to
+        std::vector<uint8_t> keep(original.count(), 1);
+        keep[0] = 0;
+        const std::string cutPath = (work / "rezano.ply").string();
+        Spool::saveGaussianPly(cutPath, original, keep);
+
+        const Spool::GaussianCloud cut = Spool::loadGaussianPly(cutPath);
+
+        bool shifted = cut.count() == original.count() - 1;
+        for(size_t i = 0; shifted && i < cut.count(); ++i){
+            shifted = std::memcmp(&cut.gaussians[i], &original.gaussians[i + 1], sizeof(Spool::Gaussian)) == 0;
+        }
+
+        report.check("maska brise", shifted,
+            fmt("%zu od %zu preslo, ostatak nepomaknut", cut.count(), original.count()));
+
+        //Maska krive duljine je greska pozivatelja i mora se cuti. Tiho bi znacilo file s
+        //nasumicnim dijelom scene
+        bool threw = false;
+        try{ Spool::saveGaussianPly(cutPath, original, std::vector<uint8_t>(original.count() + 2, 1)); }
+        catch(const std::runtime_error&){ threw = true; }
+        report.check("kriva maska", threw, threw ? "baca" : "NE BACA");
+    }
+
     std::filesystem::remove_all(work);
     return report.result();
 }

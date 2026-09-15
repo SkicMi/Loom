@@ -109,6 +109,14 @@ class SplatRenderer{
         glm::vec3 halfExtent{0.5f};
         glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
         glm::vec3 color{0.85f, 0.35f, 0.15f};
+
+        //Debljina ruba kao udio poluosovine. Nula je puno tijelo - mjerni predmet koji
+        //zaklanja ono iza sebe, i to je ono zbog cega kocka i postoji.
+        //
+        //Iznad nule crta se samo KAVEZ: dvanaest bridova, a kroz plohe se vidi. To je ono sto
+        //treba kad se kockom BIRA sto obrisati, jer puni blok zaklanja bas one splatove o
+        //kojima se odlucuje. Kavez se vidi i iznutra
+        float edgeShare = 0.0f;
     };
 
     void setBox(const Box& box){insertedBox = box;}

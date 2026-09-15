@@ -242,5 +242,48 @@ int main(){
         std::fabs(justOutside[0][0] - farOutside[0][0]) < 1e-4f,
         fmt("na 6 jedinica %.4f, na 20 jedinica %.4f", double(justOutside[0][0]), double(farOutside[0][0])));
 
+    // -------------------------------------------------------------------------------
+    // ODABIR KUTIJOM: sto je unutra a sto nije. Racun na kojem visi brisanje splatova, pa
+    // se provjerava ondje gdje jedino i moze pogrijesiti - na zarotiranoj kutiji.
+    //
+    // Nezarotirana kutija prolazi i s kodom koji rotaciju posve ignorira, pa bi test samo s
+    // njom bio test koji ne moze pasti
+    // -------------------------------------------------------------------------------
+
+    {
+        const glm::vec3 centre(1.0f, 2.0f, 3.0f);
+        const glm::vec3 halfExtent(0.5f, 1.0f, 2.0f);
+        const glm::quat straight(1.0f, 0.0f, 0.0f, 0.0f);
+
+        report.check("srediste je unutra",
+            SplatMath::insideBox(centre, centre, halfExtent, straight), "po definiciji");
+
+        report.check("ugao je unutra",
+            SplatMath::insideBox(centre + halfExtent, centre, halfExtent, straight),
+            "rub se racuna kao unutra");
+
+        report.check("tik izvan je vani",
+            !SplatMath::insideBox(centre + glm::vec3(0.51f, 0.0f, 0.0f), centre, halfExtent, straight),
+            "0.51 od poluosovine 0.5");
+
+        //Zaokret od 90 stupnjeva oko Z zamijeni X i Y poluosovinu. Tocka na 0.9 po X je izvan
+        //kutije bez rotacije (0.5), a unutar nje sa zaokretom (jer je tada X duljine 1.0)
+        const glm::quat quarter = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        const glm::vec3 probe = centre + glm::vec3(0.9f, 0.0f, 0.0f);
+
+        report.check("rotacija se postuje",
+            !SplatMath::insideBox(probe, centre, halfExtent, straight)
+            && SplatMath::insideBox(probe, centre, halfExtent, quarter),
+            "ista tocka: bez zaokreta vani, sa zaokretom od 90 stupnjeva unutra");
+
+        //Nenormiran kvaternion bi tiho promijenio velicinu kutije. Duljina 2 znaci rotaciju
+        //koja skalira cetiri puta, pa bi tocka na 1.9 poluosovine ispala "unutra"
+        const glm::quat stretched = quarter * 2.0f;
+        report.check("nenormiran kvaternion",
+            SplatMath::insideBox(probe, centre, halfExtent, stretched)
+            == SplatMath::insideBox(probe, centre, halfExtent, quarter),
+            "duljina kvaterniona ne mijenja odgovor");
+    }
+
     return report.result();
 }

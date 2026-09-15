@@ -1162,6 +1162,15 @@ void VulkanRenderer::bindMaterial(const Material& material) {
 
 }
 
+const vk::raii::CommandBuffer& VulkanRenderer::borrowCommands(){
+    if(!passActive){
+        throw std::runtime_error("borrowCommands: no pass active");
+    }
+
+    boundPipeline = nullptr;
+    return command.getCommandBuffers()[currentFrame];
+}
+
 void VulkanRenderer::drawFullscreen(const Material& material){
     if(!passActive){
         throw std::runtime_error("drawFullscreen: no pass active");

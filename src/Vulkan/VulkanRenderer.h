@@ -90,6 +90,20 @@ class VulkanRenderer{
     void draw(const Mesh& mesh, const glm::mat4& model = glm::mat4(1.0f));
     void draw(const Mesh& mesh, const glm::mat4& model, const Material& material); //overload fuction for model with material
     void drawFullscreen(const Material& material);
+
+    //=========================================================================================
+    // NAREDBE KADRA, POSUDJENE. Za crtanje koje Loom ne poznaje - suicelje je prvi takav
+    // slucaj: geometrija mu nastaje svaki kadar iznova i nije Mesh, a cjevovod mu nije
+    // Material jer nema nijedan descriptor.
+    //
+    // PONISTAVA ZAPAMCENI CJEVOVOD, i zato ovo nije obicni getter. Loom pamti koji je
+    // cjevovod vezan da ga ne veze dvaput; tko ovdje veze svoj, tu pretpostavku razbija, a
+    // sljedeci draw() bi preskocio vezanje i crtao tudjim cjevovodom. Greska bi bila jedan
+    // kadar kasno i izgledala bi kao greska u shaderu.
+    //
+    // Pozivatelj snima unutar prolaza i sam veze sve sto mu treba
+    //=========================================================================================
+    const vk::raii::CommandBuffer& borrowCommands();
     void dispatch(const ComputeMaterial& material,
                   uint32_t groupsX, uint32_t groupsY = 1, uint32_t groupsZ = 1,
                   const void* pushData = nullptr, uint32_t pushSize = 0);

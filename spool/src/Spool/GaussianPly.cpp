@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -12,6 +13,12 @@ namespace{
 
 [[noreturn]] void fail(const std::string& path, const std::string& why){
     throw std::runtime_error("Spool::loadGaussianPly(\"" + path + "\"): " + why);
+}
+
+//Vlastita, jer poruka nosi ime pozivatelja. Ista poruka s krivim imenom salje onoga tko je
+//cita citati pogresnu funkciju
+[[noreturn]] void failWrite(const std::string& path, const std::string& why){
+    throw std::runtime_error("Spool::saveGaussianPly(\"" + path + "\"): " + why);
 }
 
 //Sve sto PLY zna, jer se preko nepoznatog svojstva mora moci PRESKOCITI. Bez ove tablice
@@ -271,6 +278,84 @@ GaussianCloud loadGaussianPly(const std::string& path){
     }
 
     return cloud;
+}
+
+
+void saveGaussianPly(const std::string& path,
+                     const GaussianCloud& cloud,
+                     const std::vector<uint8_t>& keep){
+    if(!keep.empty() && keep.size() != cloud.count()){
+        failWrite(path, "keep ima " + std::to_string(keep.size()) + " ulaza, a oblak " +
+                   std::to_string(cloud.count()) + " gaussiana");
+    }
+    if(cloud.shRest.size() != cloud.count() * cloud.restStride){
+        failWrite(path, "oblak nosi " + std::to_string(cloud.shRest.size()) + " koeficijenata, a " +
+                   std::to_string(cloud.count()) + " gaussiana po " +
+                   std::to_string(cloud.restStride) + " trazi " +
+                   std::to_string(cloud.count() * cloud.restStride));
+    }
+
+    size_t written = 0;
+    for(size_t i = 0; i < cloud.count(); ++i){
+        if(keep.empty() || keep[i]) ++written;
+    }
+
+    std::filesystem::path file(path);
+    if(file.has_parent_path()) std::filesystem::create_directories(file.parent_path());
+
+    std::ofstream out(path, std::ios::binary);
+    if(!out) failWrite(path, "ne mogu otvoriti za pisanje");
+
+    //REDOSLIJED SVOJSTAVA JE ONAJ KOJIM IH NABRAJA REFERENTNI 3DGS. Citac ih trazi po imenu pa
+    //bi mu svaki poredak odgovarao, ali tudji alati nisu svi tako oprezni
+    out << "ply\n";
+    out << "format binary_little_endian 1.0\n";
+    out << "element vertex " << written << "\n";
+    out << "property float x\nproperty float y\nproperty float z\n";
+    out << "property float nx\nproperty float ny\nproperty float nz\n";
+    out << "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n";
+    for(uint32_t c = 0; c < cloud.restStride; ++c) out << "property float f_rest_" << c << "\n";
+    out << "property float opacity\n";
+    out << "property float scale_0\nproperty float scale_1\nproperty float scale_2\n";
+    out << "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n";
+    out << "end_header\n";
+
+    //Zapis se slaze u komad pa se pise odjednom. Po gaussianu bi to bilo cetiri milijuna
+    //poziva na file od gigabajta, sto je razlika u minutama a ne u postotcima
+    const size_t floatsPerRecord = 3 + 3 + 3 + cloud.restStride + 1 + 3 + 4;
+    std::vector<float> record(floatsPerRecord);
+
+    constexpr size_t recordsPerChunk = 4096;
+    std::vector<float> chunk;
+    chunk.reserve(floatsPerRecord * recordsPerChunk);
+
+    auto flush = [&]{
+        if(chunk.empty()) return;
+        out.write(reinterpret_cast<const char*>(chunk.data()),
+                  std::streamsize(chunk.size() * sizeof(float)));
+        chunk.clear();
+    };
+
+    for(size_t i = 0; i < cloud.count(); ++i){
+        if(!keep.empty() && !keep[i]) continue;
+
+        const Gaussian& gaussian = cloud.gaussians[i];
+        size_t at = 0;
+        for(int c = 0; c < 3; ++c) record[at++] = gaussian.position[c];
+        for(int c = 0; c < 3; ++c) record[at++] = gaussian.normal[c];
+        for(int c = 0; c < 3; ++c) record[at++] = gaussian.dc[c];
+        for(uint32_t c = 0; c < cloud.restStride; ++c) record[at++] = cloud.shRest[i * cloud.restStride + c];
+        record[at++] = gaussian.opacity;
+        for(int c = 0; c < 3; ++c) record[at++] = gaussian.scale[c];
+        for(int c = 0; c < 4; ++c) record[at++] = gaussian.rotation[c];
+
+        chunk.insert(chunk.end(), record.begin(), record.end());
+        if(chunk.size() >= floatsPerRecord * recordsPerChunk) flush();
+    }
+    flush();
+
+    out.flush();
+    if(!out) failWrite(path, "pisanje nije uspjelo do kraja");
 }
 
 }

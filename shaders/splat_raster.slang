@@ -39,6 +39,10 @@ struct BoxHit{
     bool hit;
     float depth;
     float3 normal;   //u pogledu
+
+    //Pogodjena tocka U SUSTAVU KUTIJE, podijeljena poluosovinama - pa je na plohi jedna
+    //komponenta tocno +-1. Sluzi zicanom okviru: rub je ondje gdje su DVIJE blizu jedinice
+    float3 local;
 };
 
 BoxHit intersectBox(float3 direction, float4 center, float4 halfExtent, float3 axisX, float3 axisY){
@@ -60,6 +64,8 @@ BoxHit intersectBox(float3 direction, float4 center, float4 halfExtent, float3 a
     float far = 1e30;
     int nearAxis = 0;
     float nearSign = 1.0;
+    int farAxis = 0;
+    float farSign = 1.0;
 
     for(int axis = 0; axis < 3; ++axis){
         const float d = ray[axis];
@@ -85,17 +91,34 @@ BoxHit intersectBox(float3 direction, float4 center, float4 halfExtent, float3 a
             nearAxis = axis;
             nearSign = sign;
         }
-        far = min(far, t1);
+        if(t1 < far){
+            far = t1;
+            farAxis = axis;
+            farSign = -sign;
+        }
         if(near > far) return result;
     }
 
-    //Iza kamere se ne crta. Kad je kamera UNUTAR kutije, near je negativan i takoder se odbija -
-    //unutrasnjost kocke nije ono sto se ovdje zeli vidjeti
-    if(near <= 0.0) return result;
+    //IZNUTRA SE GLEDA IZLAZNA PLOHA, ne ulazna. Kad je kamera unutar kutije near je negativan -
+    //ulazna ploha je iza ledja. Prije se tada nije crtalo nista, sto je za puni mjerni predmet
+    //bilo ispravno; za kavez kojim se bira sto obrisati nije, jer se u njega ulazi da se vidi
+    //sto je unutra, a kavez koji tada nestane ne govori vise gdje mu je rub
+    float t = near;
+    int axis = nearAxis;
+    float axisSign = nearSign;
+    if(near <= 0.0){
+        t = far;
+        axis = farAxis;
+        axisSign = farSign;
+    }
+    if(t <= 0.0) return result;
 
     result.hit = true;
-    result.depth = near;
-    result.normal = nearSign * (nearAxis == 0 ? axisX : (nearAxis == 1 ? axisY : axisZ));
+    result.depth = t;
+    result.normal = axisSign * (axis == 0 ? axisX : (axis == 1 ? axisY : axisZ));
+
+    const float3 hitPoint = origin + ray * t;
+    result.local = hitPoint / max(halfExtent.xyz, float3(1e-12, 1e-12, 1e-12));
     return result;
 }
 
@@ -132,6 +155,20 @@ void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
                                         -1.0);
         box = intersectBox(direction, params.boxCenter, params.boxHalfExtent,
                            params.boxAxisX.xyz, params.boxAxisY.xyz);
+
+        //ZICANI OKVIR umjesto punog bloka. boxColor.w je debljina ruba kao udio poluosovine;
+        //nula znaci puno tijelo, sto je ono sto mjerni predmet i dalje treba.
+        //
+        //Kavez postoji zato sto se kockom BIRA sto obrisati: puni blok bi zaklonio bas one
+        //splatove o kojima se odlucuje. Rub je ondje gdje su dvije od tri koordinate blizu
+        //jedinice - jedna je to uvijek, jer se stoji na plohi
+        if(box.hit && params.boxColor.w > 0.0){
+            const float3 away = abs(box.local);
+            const float biggest = max(max(away.x, away.y), away.z);
+            const float smallest = min(min(away.x, away.y), away.z);
+            const float middle = (away.x + away.y + away.z) - biggest - smallest;
+            if(middle < 1.0 - params.boxColor.w) box.hit = false;
+        }
     }
 
     float3 color = float3(0.0, 0.0, 0.0);

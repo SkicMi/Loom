@@ -212,5 +212,70 @@ int main(){
             fmt("%zu od %zu piksela razlicito", different, reference.size()));
     }
 
+    // -------------------------------------------------------------------------------
+    // KAVEZ. Ista kutija, ali crtana samo po bridovima - to je ono sto treba kad se kockom
+    // BIRA sto obrisati, jer puni blok zaklanja bas one splatove o kojima se odlucuje.
+    //
+    // Dvije tvrdnje, i jedna bez druge ne vrijedi: kroz plohu se mora vidjeti zid, a brid
+    // mora ostati. Kavez koji se samo ne vidi prosao bi prvu
+    // -------------------------------------------------------------------------------
+
+    {
+        SplatRenderer::Box cage = front;
+        cage.edgeShare = 0.12f;
+        const std::vector<Pixel> withCage = drawWith(cage);
+
+        const size_t middle = size_t(size.height / 2) * size.width + size.width / 2;
+
+        //Silueta je 2*h*f/d piksela siroka, a d je PREDNJA PLOHA - dakle boxDepth - half, ne
+        //boxDepth. S razmakom do sredista ispalo bi 30 px umjesto 33, pa bi uzorak na 28 px
+        //bio na 0.84 poluosovine - unutar plohe, izvan ruba. Kavez bi izgledao pokvaren a
+        //bio bi tocan
+        const int halfWidth = int(half * focal / (boxDepth - half));
+        const size_t edge = size_t(size.height / 2) * size.width + size_t(int(size.width / 2) + halfWidth - 2);
+
+        const bool seeThrough = std::fabs(double(withCage[middle].b) - double(reference[middle].b)) < 1e-4
+                             && std::fabs(double(withCage[middle].r) - double(reference[middle].r)) < 1e-4;
+
+        //Na bridu je kutija, a ona je narancasta - dakle crveno mora nadvladati plavo, sto je
+        //kod zida obrnuto
+        const bool edgeDrawn = withCage[edge].r > withCage[edge].b;
+
+        report.check("kroz kavez se vidi", seeThrough,
+            fmt("srediste (%.3f %.3f %.3f), zid (%.3f %.3f %.3f)",
+                withCage[middle].r, withCage[middle].g, withCage[middle].b,
+                reference[middle].r, reference[middle].g, reference[middle].b));
+
+        report.check("brid kaveza stoji", edgeDrawn,
+            fmt("na %d px od sredine: (%.3f %.3f %.3f)", halfWidth - 2,
+                withCage[edge].r, withCage[edge].g, withCage[edge].b));
+    }
+
+    // -------------------------------------------------------------------------------
+    // IZNUTRA. Kamera unutar kutije: prije se tada nije crtalo nista, jer je ulazna ploha
+    // iza ledja. Za mjerni predmet je to bilo ispravno, za kavez nije - u njega se ulazi da
+    // se vidi sto je unutra, a kavez koji tada nestane ne govori vise gdje mu je rub
+    // -------------------------------------------------------------------------------
+
+    {
+        //Poluosovine su nejednake namjerno: kutija mora biti dovoljno uska da joj bridovi
+        //udju u kadar. S kockom 3x3x3 oko kamere bridovi zavrsavaju na 211 px od sredine, a
+        //slika je siroka 200 - kavez bi bio tocan a ne bi se vidio nista
+        SplatRenderer::Box around;
+        around.visible = true;
+        around.center = glm::vec3(0.0f, 0.0f, -1.0f);
+        around.halfExtent = glm::vec3(0.6f, 0.45f, 3.0f);   //kamera je u nuli, dakle unutra
+        around.edgeShare = 0.06f;
+        const std::vector<Pixel> fromInside = drawWith(around);
+
+        size_t painted = 0;
+        for(size_t i = 0; i < reference.size(); ++i){
+            if(fromInside[i].r > reference[i].r + 0.02f) ++painted;
+        }
+
+        report.check("kavez se vidi iznutra", painted > 100,
+            fmt("%zu piksela nosi boju kutije", painted));
+    }
+
     return report.result();
 }
