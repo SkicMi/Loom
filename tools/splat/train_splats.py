@@ -165,6 +165,11 @@ def main():
                     help="l1 je samo prosjek po pikselima; ssim dodaje mjeru strukture")
     ap.add_argument("--max-gaussians", type=int, default=0,
                     help="0 znaci izvedi iz slobodne memorije kartice")
+    #OBA SU ZADANO ISKLJUCENA, i to je mjereno a ne pretpostavka - vidi komentare uz njih
+    ap.add_argument("--rasterize", choices=["classic", "antialiased"], default="classic",
+                    help="antialiased obraduje gaussiane manje od piksela drukcije; izmjereno bez ucinka")
+    ap.add_argument("--saturation", type=float, default=1.0,
+                    help="od ove svjetline pa navise piksel se manje broji; 1.0 iskljucuje")
     args = ap.parse_args()
 
     device = "cuda"
@@ -274,7 +279,8 @@ def main():
     # -------------------------------------------------------------------------------
     windowSize = 11
     window = gaussian_window(windowSize, 1.5, device)
-    print(f"Trening: {args.steps} koraka, mjerilo scene {spread:.2f}, gubitak {args.loss}")
+    print(f"Trening: {args.steps} koraka, mjerilo scene {spread:.2f}, gubitak {args.loss}, "
+          f"rasterizacija {args.rasterize}, zasicenje od {args.saturation}")
     generator = torch.Generator(device="cpu").manual_seed(20260915)
 
     for step in range(args.steps):
@@ -288,11 +294,27 @@ def main():
             colors=colours_sh, viewmats=views[index:index+1], Ks=K[None],
             width=width, height=height,
             sh_degree=min(args.sh_degree, step // 1000),   #niži redovi prvi, kao u izvornom radu
+            rasterize_mode=args.rasterize,
             packed=True)
 
         strategy.step_pre_backward(params, optimizers, state, step, info)
 
-        absolute = (rendered[0] - truth).abs().mean()
+        #ZASICENI PIKSEL NE NOSI PODATAK. Gdje je senzor u zasicenju - zarulja, odsjaj - prava
+        #vrijednost je "barem ovoliko", ne "tocno ovoliko", pa optimizacija pokusava pogoditi broj
+        #koji u snimci ne postoji.
+        #
+        #ZADANO ISKLJUCENO, JER MJERENJE NIJE POTVRDILO KORIST. Na sceni s 1.16 posto zasicenih
+        #piksela, 7000 koraka: crne mrlje unutar zarulje NESTANU, ali cijela zarulja postane
+        #zamucena i razlivena, uz sivi oreol. Razlika od fotografije 0.0167 -> 0.0177. Jedan kvar
+        #zamijenjen drugim. Ostaje kao prekidac jer na drugoj snimci moze ispasti drukcije - ali ne
+        #kao zadano, dok se ne nadje oblik koji ne zamuti
+        if args.saturation < 1.0:
+            brightest = truth.max(dim=-1).values
+            weight = (1.0 - (brightest - args.saturation).clamp(min=0.0) / (1.0 - args.saturation)).clamp(0.0, 1.0)
+            absolute = ((rendered[0] - truth).abs().mean(dim=-1) * weight).sum() / weight.sum().clamp(min=1.0)
+        else:
+            absolute = (rendered[0] - truth).abs().mean()
+
         if args.loss == "ssim":
             structure = 1.0 - ssim(rendered[0], truth, window, windowSize)
             loss = 0.8 * absolute + 0.2 * structure
