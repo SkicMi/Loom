@@ -90,6 +90,11 @@ Bounds robustBounds(const std::vector<Splat>& splats){
 int main(int argc, char** argv){
     if(argc < 2){
         printf("Upotreba: SplatViewer <scena.ply> [korak] [pločica] [kadrovi] [kut] [ime.png] [sh] [kocka] [iznutra|mapa_modela] [prelet]\n");
+        printf("\nImenovani prekidaci, mogu stajati bilo gdje:\n");
+        printf("  --tocke           crta rekonstruirane tocke kao sitne svijetle splatove\n");
+        printf("  --kocka-na-podu   kocka lezi na podu, na mjestu koje vidi najvise kamera\n");
+        printf("  --nova-putanja    kamera ide zagladjenom krivuljom kroz poze, a ne kroz njih\n");
+        printf("  --poza N          krece od N-tog polozaja na putanji\n");
         return 1;
     }
 
@@ -123,6 +128,23 @@ int main(int argc, char** argv){
     //pokazuje je li scena prostorna - tek se kroz gibanje vidi zaklon i paralaksa, dakle da je ovo
     //prostor a ne razglednica
     const bool flyover = argc > 10 && std::string(argv[10]) == "prelet";
+
+    //IMENOVANI PREKIDACI. Popis polozajnih argumenata je narastao do deset i dalje se ne da citati,
+    //pa novo ide pod imenom. Mogu stajati bilo gdje
+    auto hasFlag = [&](const char* name){
+        for(int i = 1; i < argc; ++i) if(std::string(argv[i]) == name) return true;
+        return false;
+    };
+    const bool showPoints = hasFlag("--tocke");
+    const bool boxOnFloor = hasFlag("--kocka-na-podu");
+    const bool newPath = hasFlag("--nova-putanja");
+
+    //Iz kojeg polozaja na putanji krenuti. Postoji da se odredjeni kadar da pogledati bez crtanja
+    //svih prije njega - a bas to je trebalo kad se provjeravalo zasto se kocka ne vidi
+    int startPose = -1;
+    for(int i = 1; i + 1 < argc; ++i){
+        if(std::string(argv[i]) == "--poza") startPose = std::atoi(argv[i + 1]);
+    }
     const bool insideStart = mode == "iznutra";
     const std::string modelPath = (!mode.empty() && mode != "iznutra") ? mode : std::string();
 
@@ -135,6 +157,7 @@ int main(int argc, char** argv){
     const float boxSize = argc > 8 ? float(std::atof(argv[8])) : 0.0f;
 
     std::vector<Engine::Pose> realPoses;
+    std::vector<glm::vec3> modelPoints;
     if(!modelPath.empty()){
         Engine::ColmapModel model;
         if(!Engine::readColmapText(modelPath, model)){
@@ -144,7 +167,11 @@ int main(int argc, char** argv){
         for(size_t i = 0; i < model.reconstruction.poses.size(); ++i){
             if(model.reconstruction.posed[i]) realPoses.push_back(model.reconstruction.poses[i]);
         }
-        printf("Model: %zu pravih poza iz %s\n", realPoses.size(), modelPath.c_str());
+        for(size_t i = 0; i < model.reconstruction.points.size(); ++i){
+            if(model.reconstruction.solved[i]) modelPoints.push_back(model.reconstruction.points[i]);
+        }
+        printf("Model: %zu pravih poza i %zu tocaka iz %s\n",
+               realPoses.size(), modelPoints.size(), modelPath.c_str());
     }
 
 
@@ -189,6 +216,27 @@ int main(int argc, char** argv){
         splat.color    = SplatMath::colorFromSH0(glm::vec3(source.dc[0], source.dc[1], source.dc[2]));
         splats.push_back(splat);
         sourceIndex.push_back(uint32_t(i));
+    }
+
+    //TOCKE IZ MODELA KAO SPLATOVI. Ne crta ih se zasebnim prolazom nego se ubace u isti oblak:
+    //rasterizator ih time sortira i zaklanja zajedno sa scenom, pa tocka iza zida stvarno zavrsi
+    //iza zida. Zasebni prolaz bi ih crtao preko svega i pokazivao krivu sliku.
+    //
+    //Sitne su i neprozirne, i namjerno svijetle - nisu dio prizora nego mjerni instrument
+    size_t pointSplats = 0;
+    if(showPoints && !realPoses.empty() && !modelPoints.empty()){
+        for(const glm::vec3& point : modelPoints){
+            Splat dot;
+            dot.position = point;
+            dot.scale = glm::vec3(0.004f);
+            dot.rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            dot.opacity = 0.95f;
+            dot.color = glm::vec3(0.15f, 0.95f, 1.0f);      //ciklama-plava: ne pojavljuje se u sobi
+            splats.push_back(dot);
+            sourceIndex.push_back(UINT32_MAX);              //nema izvora u oblaku - vidi upload
+            ++pointSplats;
+        }
+        printf("  + %zu tocaka iz modela nacrtano kao splatovi\n", pointSplats);
     }
 
     const Bounds bounds = robustBounds(splats);
@@ -264,18 +312,31 @@ int main(int argc, char** argv){
 
         for(size_t i = 0; i < splats.size(); ++i){
             const Splat& splat = splats[i];
-            const Spool::Gaussian& source = cloud.gaussians[sourceIndex[i]];
+            const bool fromCloud = sourceIndex[i] != UINT32_MAX;
 
             SplatMath::RawSplat one;
             one.positionOpacity = glm::vec4(splat.position, splat.opacity);
             one.scale = glm::vec4(splat.scale, 0.0f);
             one.rotation = glm::vec4(splat.rotation.w, splat.rotation.x, splat.rotation.y, splat.rotation.z);
-            one.dc = glm::vec4(source.dc[0], source.dc[1], source.dc[2], 0.0f);
+
+            if(fromCloud){
+                const Spool::Gaussian& source = cloud.gaussians[sourceIndex[i]];
+                one.dc = glm::vec4(source.dc[0], source.dc[1], source.dc[2], 0.0f);
+            }else{
+                //Ubacena tocka nema koeficijente: boja se vraca u nulti clan sfernih harmonika, a
+                //visi clanovi su nula - pa joj boja ne ovisi o smjeru, sto je za biljeg i ispravno
+                const glm::vec3 sh = (splat.color - 0.5f) / 0.2820948f;
+                one.dc = glm::vec4(sh, 0.0f);
+            }
             raw.push_back(one);
 
             if(useSH && coeffsPerChannel > 0){
-                const float* coefficients = cloud.restFor(sourceIndex[i]);
-                rest.insert(rest.end(), coefficients, coefficients + coeffsPerChannel * 3);
+                if(fromCloud){
+                    const float* coefficients = cloud.restFor(sourceIndex[i]);
+                    rest.insert(rest.end(), coefficients, coefficients + coeffsPerChannel * 3);
+                }else{
+                    rest.insert(rest.end(), size_t(coeffsPerChannel) * 3, 0.0f);
+                }
             }
         }
 
@@ -300,11 +361,67 @@ int main(int argc, char** argv){
     cameraConfig.up = glm::vec3(0.0f, -1.0f, 0.0f);   //3DGS scene dolaze s Y prema dolje
     Camera camera(cameraConfig);
 
+    //NOVA PUTANJA. Rijesene poze su mjesta na kojima je kamera STVARNO bila, pa prelet kroz njih
+    //pokazuje scenu ondje gdje je i snimljena - najpovoljniji mogući pogled. Ovdje se umjesto toga
+    //napravi glatka krivulja koja kroz ta mjesta samo PROLAZI: jaki tekuci prosjek preko sirokog
+    //prozora, pa podignuta.
+    //
+    //ZASTO JE TO JACA PROVJERA. Kamera zavrsi ondje gdje nije bila nijednom, i gleda u smjeru u
+    //kojem nije gledala. Ako geometrija valja, kocka postavljena na pod ostaje na istom mjestu i
+    //pod istim kutom; ako ne valja, pluta ili klizi - a to se na pravim pozama ne bi vidjelo
+    std::vector<Engine::Pose> pathPoses;
+    if(newPath && realPoses.size() > 8){
+        const int span = std::max(4, int(realPoses.size()) / 12);
+        for(int i = 0; i < int(realPoses.size()); ++i){
+            glm::vec3 sum(0.0f);
+            int taken = 0;
+            for(int d = -span; d <= span; ++d){
+                const int j = i + d;
+                if(j < 0 || j >= int(realPoses.size())) continue;
+                sum += realPoses[size_t(j)].position;
+                ++taken;
+            }
+            Engine::Pose smoothed;
+            smoothed.position = sum / float(taken);
+            //Y raste prema DOLJE u 3DGS sceni, pa se oduzimanjem kamera podize
+            smoothed.position.y -= 0.05f * bounds.radius;
+
+            //ODSTUPANJE SE OGRANICAVA. Zagladjivanje sece zavoje, a na obilasku sobe zavoj ide oko
+            //namjestaja i uza zid - pa presjecena putanja zavrsi U zidu ili iznad stropa, gdje nema
+            //nicega. Izmjereno: bez ove granice je 40 od 274 kadra (15 posto) bilo posve prazno, i
+            //to u jednom neprekinutom rasponu.
+            //
+            //Putanja time ostaje nova - nijedan polozaj nije nijedna snimljena poza - ali ne izlazi
+            //iz prostora kojim se stvarno prolazilo
+            const glm::vec3 original = realPoses[size_t(i)].position;
+            const float limit = 0.06f * bounds.radius;
+            const glm::vec3 away = smoothed.position - original;
+            const float distance = glm::length(away);
+            if(distance > limit) smoothed.position = original + away * (limit / distance);
+
+            smoothed.orientation = realPoses[size_t(i)].orientation;
+            pathPoses.push_back(smoothed);
+        }
+
+        //Smjer se uzima iz same krivulje - kamo putanja ide, tamo se i gleda. Orijentacija iz
+        //izvorne poze bi vratila stari pogled i ponistila smisao nove putanje
+        for(size_t i = 0; i < pathPoses.size(); ++i){
+            const size_t ahead = std::min(pathPoses.size() - 1, i + size_t(span));
+            const glm::vec3 forward = pathPoses[ahead].position - pathPoses[i].position;
+            if(glm::length(forward) < 1e-4f) continue;
+            pathPoses[i].orientation = glm::quatLookAt(glm::normalize(forward), glm::vec3(0.0f, -1.0f, 0.0f));
+        }
+        printf("Nova putanja: %zu polozaja, zagladjeno preko %d susjeda\n", pathPoses.size(), span);
+    }
+
+    const std::vector<Engine::Pose>& cameraPath = pathPoses.empty() ? realPoses : pathPoses;
+
     //IZVANA ILI IZNUTRA. Predmet se obilazi, prostor se gleda iznutra - i to se ne da procitati iz
     //.ply datoteke, jer u njoj ne pise gdje je kamera stajala. Zato je zadano obilazenje, a tipka
     //I prebacuje. Bez toga je soba izgledala kao jednolicna smedja ploha: vanjska strana zidova
     bool inside = insideStart || !realPoses.empty();
     size_t whichPose = realPoses.empty() ? 0 : realPoses.size() / 2;   //sredina snimke, ne rub
+    if(startPose >= 0 && !realPoses.empty()) whichPose = size_t(startPose) % realPoses.size();
     bool poseHeld = false;
     float angle = startAngle;
     float distance = inside ? 0.0f : 1.3f * bounds.radius;
@@ -326,8 +443,88 @@ int main(int argc, char** argv){
         //U oba slucaja mjesto je FIKSNO U SVIJETU i racuna se JEDNOM. Kocka koja se seli s kamerom
         //ne bi dokazivala nista o prostoru; ova stoji, pa se hodanjem kroz poze vidi kako je
         //zaklanja ono ispred nje i kako joj se mijenja velicina
-        if(!realPoses.empty()){
-            const Engine::Pose& from = realPoses[whichPose];
+        if(boxOnFloor && !modelPoints.empty()){
+            //NA POD, a ne u zrak. U 3DGS sceni Y raste prema DOLJE, pa je pod medju NAJVECIM
+            //vrijednostima Y. Uzima se 92. percentil a ne najveca: par odbjeglih tocaka ispod poda
+            //inace odredi visinu, i kocka zavrsi zakopana.
+            //
+            //Vodoravno ide u srediste putanje - ondje je otvoren prostor kojim se prolazilo, pa
+            //kocka nije unutar namjestaja. Mjesto se racuna JEDNOM i ostaje fiksno u svijetu
+            std::vector<float> heights;
+            heights.reserve(modelPoints.size());
+            for(const glm::vec3& point : modelPoints) heights.push_back(point.y);
+            std::sort(heights.begin(), heights.end());
+            const float floorY = heights[size_t(0.92 * double(heights.size()))];
+
+            box.halfExtent = glm::vec3(boxSize * bounds.radius);
+
+            //MJESTO SE BIRA MJERENJEM, ne pogadja. Prvi pokusaj ju je stavio ispred kamere na
+            //sredini putanje - i bila je vidljiva u 4 kadra od 634, jer putanja ide dalje a kocka
+            //ostaje. Kocka koja se ne vidi ne dokazuje nista.
+            //
+            //Sada se po podu razapne mreza kandidata i za svakoga prebroji iz koliko ju kamera na
+            //putanji vide. Uzima se onaj koji se vidi najduze - to je mjesto na koje se snimatelj
+            //stvarno najvise osvrtao, i ondje kocka moze stajati dovoljno dugo da se vidi drzi li se
+            std::vector<float> xs, zs;
+            xs.reserve(modelPoints.size()); zs.reserve(modelPoints.size());
+            for(const glm::vec3& point : modelPoints){ xs.push_back(point.x); zs.push_back(point.z); }
+            std::sort(xs.begin(), xs.end());
+            std::sort(zs.begin(), zs.end());
+
+            //Cetvrtine a ne krajevi: rub oblaka je obicno par odbjeglih tocaka
+            const float x0 = xs[size_t(0.25 * double(xs.size()))], x1 = xs[size_t(0.75 * double(xs.size()))];
+            const float z0 = zs[size_t(0.25 * double(zs.size()))], z1 = zs[size_t(0.75 * double(zs.size()))];
+
+            glm::vec3 best(0.0f);
+            uint32_t bestSeen = 0;
+            const int grid = 14;
+            for(int i = 0; i <= grid; ++i){
+                for(int j = 0; j <= grid; ++j){
+                    const glm::vec3 candidate(
+                        x0 + (x1 - x0) * float(i) / float(grid),
+                        floorY - box.halfExtent.y,
+                        z0 + (z1 - z0) * float(j) / float(grid));
+
+                    uint32_t seen = 0;
+                    for(const Engine::Pose& pose : cameraPath){
+                        const glm::vec3 inCamera = glm::conjugate(pose.orientation) * (candidate - pose.position);
+                        const float depth = -inCamera.z;
+                        //Raspon dubine je sirok namjerno. Prva verzija ga je stegnula na 1.2
+                        //polumjera i dobila JEDAN vidljiv polozaj od 634 - jer je pod 3.4 jedinice
+                        //ispod kamere, pa da udje u kadar od 60 stupnjeva mora biti dalje od toga.
+                        //Stegnut raspon je time iskljucivao bas ono sto se trazilo
+                        if(depth < 0.05f * bounds.radius || depth > 3.0f * bounds.radius) continue;
+
+                        //Vidno polje preglednika: 60 stupnjeva okomito, slika 16:9
+                        const float halfHeight = depth * std::tan(glm::radians(30.0f));
+                        const float halfWidth = halfHeight * 16.0f / 9.0f;
+                        if(std::fabs(inCamera.x) < halfWidth * 0.9f && std::fabs(inCamera.y) < halfHeight * 0.9f) ++seen;
+                    }
+                    if(seen > bestSeen){ bestSeen = seen; best = candidate; }
+                }
+            }
+
+            box.center = best;
+            printf("Kocka na podu: srediste %.2f %.2f %.2f, vidljiva iz %u od %zu polozaja\n",
+                   double(best.x), double(best.y), double(best.z), bestSeen, cameraPath.size());
+
+            //Koji su to polozaji - da se zna gdje u preletu gledati
+            std::string which;
+            uint32_t listed = 0;
+            for(size_t i = 0; i < cameraPath.size() && listed < 14; ++i){
+                const glm::vec3 inCamera = glm::conjugate(cameraPath[i].orientation) * (best - cameraPath[i].position);
+                const float depth = -inCamera.z;
+                if(depth < 0.05f * bounds.radius || depth > 3.0f * bounds.radius) continue;
+                const float halfHeight = depth * std::tan(glm::radians(30.0f));
+                if(std::fabs(inCamera.x) < halfHeight * (16.0f / 9.0f) * 0.9f && std::fabs(inCamera.y) < halfHeight * 0.9f){
+                    which += " " + std::to_string(i);
+                    ++listed;
+                }
+            }
+            printf("  vidi se iz kadrova:%s ...\n", which.c_str());
+            printf("Pod je na y = %.3f; kocka lezi na njemu\n", double(floorY));
+        }else if(!cameraPath.empty()){
+            const Engine::Pose& from = cameraPath[whichPose];
             const glm::vec3 forward = from.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
             box.center = from.position + forward * (0.35f * bounds.radius);
         }else{
@@ -338,7 +535,7 @@ int main(int argc, char** argv){
         box.orientation = glm::angleAxis(0.4f, glm::normalize(glm::vec3(0.2f, 1.0f, 0.1f)));
         splatRenderer.setBox(box);
         printf("Kocka %s, poluosovina %.3f (%.2f polumjera scene)\n",
-               realPoses.empty() ? "kraj sredista scene" : "ispred pocetne prave poze",
+               boxOnFloor ? "na podu" : (cameraPath.empty() ? "kraj sredista scene" : "ispred pocetne poze"),
                box.halfExtent.x, boxSize);
     }
 
@@ -367,19 +564,19 @@ int main(int argc, char** argv){
         //U prostoru W/S hoda naprijed i natrag jer mnozenje udaljenosti oko nule ne mice nista;
         //oko predmeta ostaje mnozenje, da se prilaz jednako ponasa na maloj i velikoj sceni
         //U preletu poza napreduje sama, jedan kadar jedna poza
-        if(flyover && !realPoses.empty() && totalFrames > 0){
-            whichPose = size_t(totalFrames) % realPoses.size();
+        if(flyover && !cameraPath.empty() && totalFrames > 0){
+            whichPose = size_t(totalFrames) % cameraPath.size();
         }
 
         //Setnja kroz prave poze. Korak je jedna kamera, a ne jedan kadar snimke - kamere su vec
         //prorijedjene, pa je jedan korak vidljiv pomak a ne treptaj
-        if(!realPoses.empty()){
+        if(!cameraPath.empty()){
             const bool nextNow = glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS;
             const bool backNow = glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS;
             if((nextNow || backNow) && !poseHeld){
-                if(nextNow) whichPose = (whichPose + 1) % realPoses.size();
-                else        whichPose = (whichPose + realPoses.size() - 1) % realPoses.size();
-                printf("  kamera %zu od %zu\n", whichPose + 1, realPoses.size());
+                if(nextNow) whichPose = (whichPose + 1) % cameraPath.size();
+                else        whichPose = (whichPose + cameraPath.size() - 1) % cameraPath.size();
+                printf("  kamera %zu od %zu\n", whichPose + 1, cameraPath.size());
             }
             poseHeld = nextNow || backNow;
         }
@@ -410,12 +607,12 @@ int main(int argc, char** argv){
         //VAN - kut vise ne okrece polozaj nego pogled, jer je to jedini nacin da se prostor obidje
         //iznutra. Gledanje u srediste bi iz sobe znacilo zuriti u suprotni zid kroz zrak
         const glm::vec3 direction(std::sin(angle), 0.0f, std::cos(angle));
-        if(!realPoses.empty()){
+        if(!cameraPath.empty()){
             //PRAVA POZA. Engineova Pose je kamera u svijetu, -Z naprijed i +Y gore - ista
             //konvencija koju Loomova Camera ocekuje, pa se smjer i gore uzimaju iz nje umjesto da
             //se pretpostavljaju. Strelice lijevo/desno okrecu pogled oko te poze, da se moze
             //pogledati uokolo bez skakanja na drugu kameru
-            const Engine::Pose& pose = realPoses[whichPose];
+            const Engine::Pose& pose = cameraPath[whichPose];
             const glm::quat turn = glm::angleAxis(angle - startAngle, glm::vec3(0.0f, 1.0f, 0.0f));
             const glm::vec3 forward = turn * (pose.orientation * glm::vec3(0.0f, 0.0f, -1.0f));
 
@@ -479,7 +676,7 @@ int main(int argc, char** argv){
 
         //U preletu se sprema SVAKI kadar, pa se od njih sklopi snimka. Inace se ceka zadani broj
         //kadrova i sprema jedan - da se scena stigne slegnuti prije nego se usporedjuje
-        const bool saveNow = flyover ? (totalFrames > 0 && totalFrames <= realPoses.size())
+        const bool saveNow = flyover ? (totalFrames > 0 && totalFrames <= cameraPath.size())
                                      : (framesThenShot > 0 && totalFrames >= framesThenShot);
 
         if(saveNow){
@@ -503,9 +700,9 @@ int main(int argc, char** argv){
             Spool::saveImage(name, image);
 
             if(flyover){
-                if(totalFrames % 25 == 0) printf("\r  prelet %u / %zu  ", uint32_t(totalFrames), realPoses.size());
-                if(totalFrames >= realPoses.size()){
-                    printf("\nPrelet gotov: %zu kadrova\n", realPoses.size());
+                if(totalFrames % 25 == 0) printf("\r  prelet %u / %zu  ", uint32_t(totalFrames), cameraPath.size());
+                if(totalFrames >= cameraPath.size()){
+                    printf("\nPrelet gotov: %zu kadrova\n", cameraPath.size());
                     break;
                 }
             }else{
