@@ -256,11 +256,20 @@ int main(){
             return distance[size_t(0.99 * double(distance.size() - 1))] / double(extent);
         };
 
+        //MUTACIJA MORA UGASITI OBA PRAGA. Provjera paralakse ima dva izvora - izvedeni iz
+        //zarista i apsolutni pod - pa gasenje samo jednog ostavi drugi da radi, i detektor
+        //prestane detektirati a da to nigdje ne pise
         Engine::ReconstructConfig without;
-        without.maxRelativeDepthError = 0.0;     //mutacija: provjera ugasena
+        without.maxRelativeDepthError = 0.0;
+        without.minParallaxDegrees = 0.0;
+
+        //A izvedeni prag se mjeri s ugasenim podom, inace se mjeri pod
+        Engine::ReconstructConfig derivedOnly;
+        derivedOnly.minParallaxDegrees = 0.0;
 
         const Engine::Reconstruction guarded = Engine::reconstruct(narrow.observations, narrow.poses.size(),
-                                                                   narrow.points.size(), narrow.intrinsics);
+                                                                   narrow.points.size(), narrow.intrinsics,
+                                                                   derivedOnly);
         const Engine::Reconstruction bare = Engine::reconstruct(narrow.observations, narrow.poses.size(),
                                                                 narrow.points.size(), narrow.intrinsics, without);
 
@@ -271,6 +280,32 @@ int main(){
             guarded.parallaxLimitDegrees > 0.2 && guarded.parallaxLimitDegrees < 0.5,
             fmt("f = %.0f px, sum 0.5 px, dopusteno 15%% dubine -> %.3f st",
                 double(narrow.intrinsics.fx), guarded.parallaxLimitDegrees));
+
+        //APSOLUTNI POD. Izvedeni prag je geometrijski tocan, ali pada s duljinom optike: isti
+        //broj 0.15 daje 0.318 st na f = 600 i 0.036 st na f = 5285. Tocka koja se vidi pod tri
+        //stotinke stupnja je za postavljanje sljedece kamere degenerirana ma kako joj dubina
+        //ispala, i to je na pravoj snimci bila razlika izmedju 45 i svih 65 kamera.
+        //
+        //Uzima se ono sto je STROŽE, pa pod mora nadvladati manji izvedeni prag i ustupiti
+        //vecem - obje strane se provjeravaju, jer max koji je zapravo min prolazi prvu
+        Engine::ReconstructConfig highFloor;
+        highFloor.minParallaxDegrees = 2.0;      //iznad izvedenih 0.318
+        const Engine::Reconstruction floored = Engine::reconstruct(narrow.observations, narrow.poses.size(),
+                                                                   narrow.points.size(), narrow.intrinsics,
+                                                                   highFloor);
+
+        Engine::ReconstructConfig lowFloor;
+        lowFloor.minParallaxDegrees = 0.05;      //ispod izvedenih 0.318
+        const Engine::Reconstruction unfloored = Engine::reconstruct(narrow.observations, narrow.poses.size(),
+                                                                     narrow.points.size(), narrow.intrinsics,
+                                                                     lowFloor);
+
+        report.check("pod paralakse je strozi od oba",
+            std::fabs(floored.parallaxLimitDegrees - 2.0) < 1e-9
+            && std::fabs(unfloored.parallaxLimitDegrees - guarded.parallaxLimitDegrees) < 1e-9,
+            fmt("pod 2.0 -> %.3f st, pod 0.05 -> %.3f st (izvedeno %.3f)",
+                floored.parallaxLimitDegrees, unfloored.parallaxLimitDegrees,
+                guarded.parallaxLimitDegrees));
 
         report.check("bez provjere rep odleti", tailOf(bare) > 50.0,
             fmt("p99 udaljenosti %.1f dosega putanje", tailOf(bare)));

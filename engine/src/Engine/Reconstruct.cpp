@@ -2,6 +2,7 @@
 #include "Engine/Triangulate.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <unordered_map>
@@ -45,9 +46,11 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     //blazi: ondje postoji samo da sustav ne bude singularan, jer slaba tocka i dalje dobro vodi
     //rotaciju sljedece kamere. Izmjereno: uz puni prag tijekom gradnje dronska snimka rijesi 2 od
     //24 kamere, uz blazi svih 24. Sto se VJERUJE odlucuje se na kraju, nad konacnim pozama
-    const double finalParallax = config.maxRelativeDepthError > 0.0
+    const double derivedParallax = config.maxRelativeDepthError > 0.0
         ? glm::degrees(config.assumedPixelNoise / (double(intrinsics.fx) * config.maxRelativeDepthError))
         : 0.0;
+    //Ono sto je strože od izvedenog praga i apsolutnog poda - vidi minParallaxDegrees
+    const double finalParallax = std::max(derivedParallax, config.minParallaxDegrees);
     const double workingParallax = finalParallax / 3.0;
     state.parallaxLimitDegrees = finalParallax;
 
@@ -396,6 +399,51 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     //
     //Oprez i dalje stoji tamo gdje pripada: kamera koja promasi vise od acceptPixels se ne uzima.
     //Samo se zbog nje ne odbacuje ostatak snimke
+    //Piramida vidljivosti - vidi ReconstructConfig::visibilityScore. Jedno polje za sve kamere,
+    //jer se ocjenjuje jedna po jedna
+    constexpr int pyramidLevels = 6;
+    std::array<size_t, pyramidLevels> levelOffset{};
+    size_t pyramidCells = 0;
+    for(int level = 0; level < pyramidLevels; ++level){
+        levelOffset[size_t(level)] = pyramidCells;
+        const size_t dim = size_t(1) << (level + 1);
+        pyramidCells += dim * dim;
+    }
+    std::vector<uint8_t> occupied(pyramidCells, 0);
+
+    //Ocjena kamere i broj rijesenih tocaka koje vidi. Broj i dalje treba, jer je on uvjet
+    //(minPointsForPose), a ocjena je izbor
+    auto scoreCamera = [&](size_t camera, size_t& seen){
+        seen = 0;
+        if(!config.visibilityScore){
+            for(const Observation* observation : byCamera[camera]){
+                if(state.solved[observation->point] && usable[indexOf(observation)]) ++seen;
+            }
+            return seen;
+        }
+
+        std::fill(occupied.begin(), occupied.end(), uint8_t(0));
+        size_t score = 0;
+
+        for(const Observation* observation : byCamera[camera]){
+            if(!state.solved[observation->point] || !usable[indexOf(observation)]) continue;
+            ++seen;
+
+            for(int level = 0; level < pyramidLevels; ++level){
+                const size_t dim = size_t(1) << (level + 1);
+                const long cx = long(double(observation->pixel.x) / double(intrinsics.width) * double(dim));
+                const long cy = long(double(observation->pixel.y) / double(intrinsics.height) * double(dim));
+                if(cx < 0 || cy < 0 || cx >= long(dim) || cy >= long(dim)) continue;
+
+                uint8_t& cell = occupied[levelOffset[size_t(level)] + size_t(cy) * dim + size_t(cx)];
+                if(cell) continue;
+                cell = 1;
+                score += dim * dim;   //tezina razine je broj celija na njoj
+            }
+        }
+        return score;
+    };
+
     auto addCameras = [&](){
     std::vector<uint8_t> refused(cameraCount, 0);
     bool secondChanceSpent = false;
@@ -407,13 +455,18 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
 
     for(size_t attempt = 0; attempt < 8 * cameraCount + 64; ++attempt){
         size_t best = cameraCount;
+        size_t bestScore = 0;
         size_t bestCount = 0;
         for(size_t camera = 0; camera < cameraCount; ++camera){
             if(state.posed[camera] || refused[camera]) continue;
-            size_t count = 0;
-            for(const Observation* observation : byCamera[camera]) if(state.solved[observation->point]) ++count;
-            if(count > bestCount){
-                bestCount = count;
+
+            size_t seen = 0;
+            const size_t score = scoreCamera(camera, seen);
+            if(seen < config.minPointsForPose) continue;
+
+            if(score > bestScore){
+                bestScore = score;
+                bestCount = seen;
                 best = camera;
             }
         }

@@ -75,6 +75,24 @@ struct ReconstructConfig{
     //ostane, svih 24 kamera ostane, a reprojekcija se ne pomakne (0.191 px)
     double maxRelativeDepthError = 0.15;
 
+    //APSOLUTNI POD ZA PARALAKSU, u stupnjevima. Izveden prag iznad je geometrijski tocan - duza
+    //optika razlucuje kutove finije, pa joj za istu preciznost dubine treba manji kut - ali
+    //dubina nije jedino sto se od tocke trazi. Tocka koja se vidi pod tri stotinke stupnja je za
+    //postavljanje SLJEDECE KAMERE prakticki degenerirana ma kako dobro joj dubina ispala.
+    //
+    //Zato je ovo pod, a ne zamjena: uzima se ono sto je strože. Bez njega isti broj 0.15 na
+    //dronskoj snimci (f = 649) znaci 0.294 stupnja, a na 4K snimci (f = 5285) samo 0.036 -
+    //osam puta labavije, na istoj postavci.
+    //
+    //Izmjereno na COLMAP-ovim korespondencijama (65 kamera), prag prihvacanja 4 px:
+    //
+    //   pod   kamere      tocke   reprojekcija
+    //   0.0  45 od 65     15984     1.742 px
+    //   0.5  65 od 65     26498     1.146 px
+    //
+    //COLMAP na istim podacima filtrira ispod 1.5 stupnja (filter_min_tri_angle)
+    double minParallaxDegrees = 0.5;
+
     //Sum u pikselima koji se pripisuje pracenju uglova. Nije mjerenje nego pretpostavka, i zato
     //stoji ovdje gdje se vidi. Mjerena reprojekcija bi bila kriva zamjena: bundle je namjesti na
     //podatke pa ispadne manja od pravog suma, i prag bi izasao prenizak
@@ -112,6 +130,41 @@ struct ReconstructConfig{
     //Nula znaci samo na kraju. Cijena je linearna u broju ciscenja, a svako je jedan prolaz kroz
     //sve tocke plus bundle
     double refineGrowth = 1.25;
+
+    //=========================================================================================
+    // KAKO SE BIRA SLJEDECA KAMERA.
+    //
+    // Dosad: ona koja vidi NAJVISE vec rijesenih tocaka. To je razumno i pogresno iz istog
+    // razloga - broj ne kaze nista o tome GDJE su te tocke u slici. Kamera koja ih vidi tisucu,
+    // sve zbijene u jedan kut, daje lose uvjetovanu pozu: rotacija i pomak se ondje mijesaju i
+    // PnP ih ne razlucuje. Takva kamera se postavi malo krivo, tocke koje ona otkljuca nastanu
+    // malo krivo, i pogreska ostane u tom dijelu snimke.
+    //
+    // A upravo to nam je i izmjereno: greska po kameri kroz snimku ima doline i grebene - 0.8 px
+    // na jednim kadrovima, 5.5 px na drugima - dakle vezana je uz dijelove snimke, a ne uz
+    // udaljenost od pocetnog para.
+    //
+    // Umjesto broja: PIRAMIDA VIDLJIVOSTI. Slika se dijeli na 2x2, pa 4x4, sve do 64x64. Celija
+    // koja prvi put dobije tocku donese tezinu jednaku BROJU CELIJA na svojoj razini, i vise
+    // nikad. Time broj tocaka odlucuje dok ih je malo, a njihov RASPORED cim ih ima dovoljno -
+    // jer zbijene tocke pune malo celija koliko god ih bilo.
+    //
+    // Sest razina i tezina jednaka broju celija su ono sto COLMAP koristi (Schoenberger i Frahm,
+    // Structure-from-Motion Revisited, 4.2), a njihova je usporedba pokazala da bas taj izbor
+    // nadmasuje biranje po broju tocaka.
+    //
+    // ZADANO ISKLJUCENO, i to je mjereno a ne pretpostavka. Na COLMAP-ovim korespondencijama (65
+    // kamera, 3564 opazanja po kameri) razlike NEMA: 1.146 px i s piramidom i bez nje, najgora
+    // kamera 4.20 naspram 4.29 px. Razlog je vidljiv iz same mjere - kad svaka kamera vidi tri i
+    // pol tisuce tocaka rasutih po cijeloj slici, sve kandidate piramida ocijeni jednako i
+    // raspored nema sto razluciti. COLMAP je gradi za neuredjene zbirke fotografija, gdje se
+    // pokrivenost izmedju slika razlikuje u redovima velicine.
+    //
+    // Ostaje jer NASE korespondencije nisu takve: oko 300 opazanja po kadru i cesto zbijene ondje
+    // gdje je teksture. Tamo bi mogla nesto znaciti, i tada se ukljucuje jednim poljem umjesto da
+    // se pise iznova
+    //=========================================================================================
+    bool visibilityScore = false;
 };
 
 struct Reconstruction{
