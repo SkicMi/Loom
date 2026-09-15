@@ -168,6 +168,10 @@ def main():
     #OBA SU ZADANO ISKLJUCENA, i to je mjereno a ne pretpostavka - vidi komentare uz njih
     ap.add_argument("--rasterize", choices=["classic", "antialiased"], default="classic",
                     help="antialiased obraduje gaussiane manje od piksela drukcije; izmjereno bez ucinka")
+    ap.add_argument("--holdout", type=int, default=0,
+                    help="svaki N-ti kadar se IZDVAJA iz treninga i sluzi za ocjenu; 0 iskljucuje")
+    ap.add_argument("--holdout-block", type=int, default=1,
+                    help="koliko UZASTOPNIH kadrova se izdvaja odjednom; 1 znaci pojedinacno")
     ap.add_argument("--saturation", type=float, default=1.0,
                     help="od ove svjetline pa navise piksel se manje broji; 1.0 iskljucuje")
     args = ap.parse_args()
@@ -216,8 +220,37 @@ def main():
     #SLIKE OSTAJU NA PROCESORU, na karticu ide samo ona koja se u tom koraku crta. Sve odjednom
     #je za 65 slika 1.6 GB i prolazi, ali za 677 je 17 GB - a kartica ima 12. Poze su sitne pa one
     #smiju ostati gore
+    #IZDVOJENI KADROVI. Ocjena na kadru na kojem je model treniran mjeri koliko ga je zapamtio, ne
+    #koliko je scenu razumio - a bas se ta razlika i trazi. Objavljene brojke za 3DGS mjere se na
+    #kadrovima koje model nikad nije vidio, pa se i nase moraju tako mjeriti da bi se usporedile.
+    #
+    #Uzima se svaki N-ti, ne nasumicnih N posto: susjedni kadrovi na snimci su gotovo isti, pa bi
+    #nasumican izbor izdvojio kadar cijeli susjed kojega je u treningu - i ocjena bi opet bila
+    #precijenjena, samo neprimjetnije
+    #IZDVAJANJE U ODSJECCIMA, ne pojedinacno. Prva verzija je uzimala svaki N-ti kadar i to nije
+    #bilo dovoljno: model uzima svaki peti kadar snimke, pa je izdvojeni kadar od svojih susjeda u
+    #treningu udaljen desetinku sekunde gibanja kamere - prakticki isti pogled. Ocjena je time
+    #mjerila gotovo isto sto i ocjena na kadru iz treninga.
+    #
+    #Kad se izdvoji odsjecak od K uzastopnih kadrova, sredina tog odsjecka je od najblizeg kadra iz
+    #treninga udaljena K/2 koraka - i tek tada se mjeri sto model zna o pogledu koji nije vidio
+    heldOut = []
+    if args.holdout > 1:
+        block = max(1, args.holdout_block)
+        for start in range(0, len(pictures), args.holdout * block):
+            heldOut.extend(range(start, min(start + block, len(pictures))))
+        keep = [i for i in range(len(pictures)) if i not in set(heldOut)]
+        heldPictures = [pictures[i] for i in heldOut]
+        heldViews = [views[i] for i in heldOut]
+        pictures = [pictures[i] for i in keep]
+        views = [views[i] for i in keep]
+        print(f"Izdvojeno {len(heldPictures)} kadrova za ocjenu, trenira se na {len(pictures)}")
+
     pictures = torch.stack(pictures)
     views = torch.stack(views).to(device)
+    if heldOut:
+        heldPictures = torch.stack(heldPictures)
+        heldViews = torch.stack(heldViews).to(device)
     gigabytes = pictures.numel() / (1 << 30)
     print(f"Slike: {len(pictures)} kom, {width}x{height} ({gigabytes:.1f} GB u radnoj memoriji)")
 
@@ -363,6 +396,33 @@ def main():
     # ZASTO BAS IZ PRAVE KAMERE. Soba se rekonstruira IZNUTRA, pa je pogled izvana beskoristan -
     # vidi se vanjska strana zidova, jednolicna masa. To se dogodilo u Loomovom pregledniku, koji
     # scenu obilazi izvana jer je pisan za predmete a ne za prostore
+    # -------------------------------------------------------------------------------
+    # Ocjena na izdvojenim kadrovima
+    # -------------------------------------------------------------------------------
+
+    if heldOut:
+        with torch.no_grad():
+            colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
+            psnrs, ssims = [], []
+            for i in range(len(heldPictures)):
+                shown, _, _ = gsplat.rasterization(
+                    means=params["means"], quats=params["quats"],
+                    scales=torch.exp(params["scales"]), opacities=torch.sigmoid(params["opacities"]),
+                    colors=colours_sh, viewmats=heldViews[i:i+1], Ks=K[None],
+                    width=width, height=height, sh_degree=args.sh_degree,
+                    rasterize_mode=args.rasterize, packed=True)
+
+                truth = heldPictures[i].to(device).float() / 255.0
+                shown = shown[0].clamp(0, 1)
+                mse = float(((shown - truth) ** 2).mean())
+                psnrs.append(10.0 * math.log10(1.0 / max(mse, 1e-12)))
+                ssims.append(float(ssim(shown, truth, window, windowSize)))
+
+            psnrs.sort(); ssims.sort()
+            print(f"OCJENA na {len(psnrs)} izdvojenih kadrova: "
+                  f"PSNR medijan {psnrs[len(psnrs)//2]:.2f} dB (najgori {psnrs[0]:.2f}, najbolji {psnrs[-1]:.2f}), "
+                  f"SSIM medijan {ssims[len(ssims)//2]:.3f}")
+
     with torch.no_grad():
         which = len(pictures) // 2
         colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
