@@ -265,6 +265,16 @@ bool touchesTile(const PreparedSplat& splat, int tileX, int tileY, uint32_t tile
 
 bool insideBox(const glm::vec3& point,
                const glm::vec3& center,
+               const glm::vec3& halfExtent){
+    const glm::vec3 away = point - center;
+
+    return std::fabs(away.x) <= halfExtent.x
+        && std::fabs(away.y) <= halfExtent.y
+        && std::fabs(away.z) <= halfExtent.z;
+}
+
+bool insideBox(const glm::vec3& point,
+               const glm::vec3& center,
                const glm::vec3& halfExtent,
                const glm::quat& orientation){
     //U sustav kutije: konjugat rotira NATRAG. Kvaternion se normalizira jer kutija dolazi iz

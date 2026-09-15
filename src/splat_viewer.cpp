@@ -284,6 +284,16 @@ int main(int argc, char** argv){
     //Maska a ne kopija oblaka: na sceni od cetiri milijuna gaussiana kopija je jos gigabajt
     std::vector<uint8_t> alive(cloud.count(), 1);
 
+    //SAMO POLOZAJI, u vlastitom polju. Brojanje i brisanje citaju iz cijelog oblaka samo tri
+    //broja po gaussianu, a zapis je 62 bajta - pa se kroz memoriju vukla 233 MB za 45 MB
+    //podatka. Izmjereno na 3.76 milijuna gaussiana, medijan od 15 prolaza: 11.3 ms iz oblaka,
+    //3.9 ms odavde. Klizac velicine se prebrojava svaki kadar dok se vuce, pa se to osjeti
+    std::vector<glm::vec3> positions;
+    positions.reserve(cloud.count());
+    for(const Spool::Gaussian& gaussian : cloud.gaussians){
+        positions.push_back(glm::vec3(gaussian.position[0], gaussian.position[1], gaussian.position[2]));
+    }
+
     auto buildSplats = [&]{
         splats.clear();
         sourceIndex.clear();
@@ -368,7 +378,10 @@ int main(int argc, char** argv){
     config.pipelineConfig.depthWriteEnable = false;
 
     LoomInitializer loom(config);
-    const vk::Extent2D size = loom.getExtent();
+    //VELICINA SLIKE NA POCETKU. Prozor se moze promijeniti, pa ovo NIJE ista stvar kao velicina
+    //u kojoj se crta ovog kadra - vidi windowSize u petlji. Ovdje stoji samo zato sto se meta i
+    //rasterizator grade prije prvog kadra i moraju od necega poceti
+    vk::Extent2D size = loom.getExtent();
 
     //Meta u koju rasterizator pise, i s koje fullscreen prolaz cita. Float, jer je to ono sto
     //kompozicija stvarno racuna - pretvorbu u osam bita napravi tek swapchain
@@ -377,11 +390,6 @@ int main(int argc, char** argv){
     targetConfig.extraColorUsage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage;
     targetConfig.enableDepth = false;
     targetConfig.finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    RenderTarget splatTarget(loom.device, size, targetConfig);
-
-    Material present(loom.device, loom.command, loom.getDescriptorPool(),
-                     loom.vulkanGraphicsPipeline, splatTarget.getSampled());
-
     SplatRendererConfig rendererConfig;
     rendererConfig.tileSize = tileSize;
     rendererConfig.maxSplats = uint32_t(splats.size());
@@ -389,8 +397,31 @@ int main(int argc, char** argv){
     rendererConfig.maxPairs = 65535u * 256u;
     rendererConfig.maxShCoefficients = useSH ? coeffsPerChannel * 3 : 0;
 
-    SplatRenderer splatRenderer(loom.device, loom.getDescriptorPool(),
-                                splatTarget.getColorImage(), size, rendererConfig);
+    //META, PRIKAZ I RASTERIZATOR SE MOGU SAGRADITI IZNOVA, jer im velicina ovisi o prozoru.
+    //Zato stoje u optionalu: nijedan od ta tri tipa se ne da pridruziti (drze vk::raii i
+    //reference), pa je unistiti-pa-sagraditi-na-mjestu jedini nacin da promijene velicinu.
+    //
+    //Bez toga je meta ostajala na velicini s pocetka, a fullscreen prolaz ju je razvlacio preko
+    //novog prozora - slika u krivom omjeru koja se ne moze objasniti nicim u sceni
+    std::optional<RenderTarget> splatTarget;
+    std::optional<Material> present;
+    std::optional<SplatRenderer> splatRenderer;
+
+    auto buildForSize = [&](vk::Extent2D extent){
+        //Redom obrnutim od gradnje: rasterizator drzi metinu sliku, prikaz je uzorkuje
+        splatRenderer.reset();
+        present.reset();
+        splatTarget.reset();
+
+        splatTarget.emplace(loom.device, extent, targetConfig);
+        present.emplace(loom.device, loom.command, loom.getDescriptorPool(),
+                        loom.vulkanGraphicsPipeline, splatTarget->getSampled());
+        splatRenderer.emplace(loom.device, loom.getDescriptorPool(),
+                              splatTarget->getColorImage(), extent, rendererConfig);
+        size = extent;
+    };
+
+    buildForSize(size);
 
     //SIROVI SPLATOVI, JEDNOM. Aktivacija je vec napravljena jer ne ovisi o kameri; sve sto ovisi
     //racuna kartica svaki kadar. Koeficijenti se uzimaju preko sourceIndex, jer korak preskace
@@ -436,7 +467,7 @@ int main(int argc, char** argv){
             }
         }
 
-        splatRenderer.uploadRaw(raw, rest, useSH ? cloud.shDegree : 0, useSH ? coeffsPerChannel : 0);
+        splatRenderer->uploadRaw(raw, rest, useSH ? cloud.shDegree : 0, useSH ? coeffsPerChannel : 0);
         if(announce){
             printf("  na karticu: %.0f MB splatova, %.0f MB koeficijenata\n",
                    double(raw.size() * sizeof(SplatMath::RawSplat)) / 1048576.0,
@@ -447,7 +478,7 @@ int main(int argc, char** argv){
     uploadSplats(true);
 
     printf("  pločica %ux%u, mreza %ux%u\n", tileSize, tileSize,
-           splatRenderer.getGrid().width, splatRenderer.getGrid().height);
+           splatRenderer->getGrid().width, splatRenderer->getGrid().height);
 
     // -------------------------------------------------------------------------------
     // Kamera: kruzi oko scene
@@ -650,7 +681,7 @@ int main(int argc, char** argv){
         }
         box.halfExtent = glm::vec3(boxSize * bounds.radius);
         box.orientation = glm::angleAxis(0.4f, glm::normalize(glm::vec3(0.2f, 1.0f, 0.1f)));
-        splatRenderer.setBox(box);
+        splatRenderer->setBox(box);
         printf("Kocka %s, poluosovina %.3f (%.2f polumjera scene)\n",
                boxOnFloor ? "na podu" : (cameraPath.empty() ? "kraj sredista scene" : "ispred pocetne poze"),
                box.halfExtent.x, boxSize);
@@ -675,12 +706,27 @@ int main(int argc, char** argv){
     //kavez i sluzi odabiru. Rasterizator drzi jednu, pa kad je ova upaljena ona ima prednost -
     //a to i jest ono sto se tada gleda
     bool cubeOn = cubeAtStart;
-    float cubeShare = 0.15f;              //poluosovina kao udio polumjera scene
+
+    //TRI POLUOSOVINE, ne jedna. Kocka jednakih stranica ne moze obrisati pod a ostaviti zid -
+    //za to treba ploca. Kvacica "sve jednako" drzi ih zajedno dok se ne zatreba drukcije, pa
+    //uobicajeni slucaj i dalje ide jednim klizacem
+    glm::vec3 cubeShare{0.15f, 0.15f, 0.15f};   //poluosovine kao udio polumjera scene
+    bool cubeUniform = true;
     int deleteMode = 0;                   //0 unutra, 1 izvan
     //Pocetno na tocku oko koje se kruzi, ne na srediste scene: ondje kamera gleda, pa je kocka
     //odmah u kadru. U sredistu scene bi na sobi zavrsila iza ledja
     glm::vec3 cubeCenter = orbit.pivot;
     bool cubeMoved = true;                //treba prebrojati sto je u njoj
+
+    //HVATANJE KOCKE TIPKOM G, kao u Blenderu. Drzi se dubina na kojoj je kocka bila kad je
+    //uhvacena, pa se ona mice po ravnini usporednoj s ekranom - kotacic tada mijenja bas tu
+    //dubinu umjesto da priblizava kameru
+    bool grabbing = false;
+    float grabDepth = 0.0f;
+
+    //Sto je zadnje brisanje odnijelo. Cetiri bajta po obrisanom gaussianu, a bez toga jedan
+    //promasen klik znaci ponovno ucitavanje cijele scene s diska
+    std::vector<uint32_t> lastRemoved;
 
     size_t insideCount = 0;
     size_t aliveCount = cloud.count();
@@ -691,21 +737,22 @@ int main(int argc, char** argv){
     //to prolaz kroz cijeli oblak - na cetiri milijuna gaussiana desetak milisekundi
     auto countInside = [&]{
         const auto started = std::chrono::steady_clock::now();
-        const glm::vec3 half(cubeShare * bounds.radius);
-        const glm::quat straight(1.0f, 0.0f, 0.0f, 0.0f);
+        const glm::vec3 half = cubeShare * bounds.radius;
 
         insideCount = 0;
         aliveCount = 0;
         for(size_t i = 0; i < cloud.count(); ++i){
             if(!alive[i]) continue;
             ++aliveCount;
-            const glm::vec3 position(cloud.gaussians[i].position[0], cloud.gaussians[i].position[1],
-                                     cloud.gaussians[i].position[2]);
-            if(SplatMath::insideBox(position, cubeCenter, half, straight)) ++insideCount;
+            if(SplatMath::insideBox(positions[i], cubeCenter, half)) ++insideCount;
         }
         countMilliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - started).count();
     };
+
+    //Promjena prozora primijecena, ali jos ne izvedena - vidi petlju
+    bool resizePending = false;
+    double resizeSeenAt = 0.0;
 
     double lastReport = loom.getTime();
     int framesSinceReport = 0;
@@ -743,12 +790,50 @@ int main(int argc, char** argv){
         // inace bi vucenje klizaca ujedno okretalo pogled
         // ---------------------------------------------------------------------------
 
+        //VELICINA SE PITA SVAKI KADAR. Prije je ovdje stajala ona procitana prije prvog kadra,
+        //pa se poslije promjene prozora suicelje crtalo u starom mjerilu dok je mis dolazio u
+        //novom: gumbi su bili pomaknuti i moralo se klikati pokraj njih. Nista nije puklo -
+        //samo se promasivalo
+        const vk::Extent2D windowSize = loom.getExtent();
+
+        //PREGRADNJA TEK KAD SE PROZOR SMIRI. Vucenje ruba salje promjenu svakih par
+        //milisekundi, a pregradnja trazi ponovno slanje cijelog oblaka na karticu - na cetiri
+        //milijuna gaussiana skoro sekundu. Pregradnja po svakoj promjeni znacila bi da se
+        //prozor ne da povuci. Suicelje se u medjuvremenu vec crta u novoj velicini, pa se
+        //klika tocno i dok slika jos stoji u staroj
+        if(windowSize.width != size.width || windowSize.height != size.height){
+            if(!resizePending){
+                resizePending = true;
+                resizeSeenAt = loom.getTime();
+            }else if(loom.getTime() - resizeSeenAt > 0.25 && windowSize.width > 0 && windowSize.height > 0){
+                const auto rebuildStarted = std::chrono::steady_clock::now();
+                loom.waitIdle();
+                buildForSize(windowSize);
+                uploadSplats(false);
+                resizePending = false;
+                printf("Nova velicina %ux%u, pločica %ux%u, za %.2f s\n",
+                       size.width, size.height, splatRenderer->getGrid().width,
+                       splatRenderer->getGrid().height,
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() - rebuildStarted).count());
+            }
+        }else{
+            resizePending = false;
+        }
+
         double cursorX = 0.0, cursorY = 0.0;
         glfwGetCursorPos(window, &cursorX, &cursorY);
 
+        //POKAZIVAC DOLAZI U KOORDINATAMA PROZORA, a suicelje se crta u PIKSELIMA SLIKE. To su
+        //dvije razlicite mjere cim kompozitor skalira prozor, i tada se promasuje jednako kao
+        //s ustajalom velicinom. Omjer se pita, ne pretpostavlja
+        int windowWidth = 0, windowHeight = 0;
+        glfwGetWindowSize(window, &windowWidth, &windowHeight);
+        const float cursorScaleX = windowWidth > 0 ? float(windowSize.width) / float(windowWidth) : 1.0f;
+        const float cursorScaleY = windowHeight > 0 ? float(windowSize.height) / float(windowHeight) : 1.0f;
+
         Treadle::Input input;
-        input.mouseX = float(cursorX);
-        input.mouseY = float(cursorY);
+        input.mouseX = float(cursorX) * cursorScaleX;
+        input.mouseY = float(cursorY) * cursorScaleY;
         input.down[uint32_t(Treadle::MouseButton::Left)]   = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         input.down[uint32_t(Treadle::MouseButton::Right)]  = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
         input.down[uint32_t(Treadle::MouseButton::Middle)] = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
@@ -761,7 +846,7 @@ int main(int argc, char** argv){
             cubeMoved = false;
         }
 
-        ui.begin(input, float(size.width), float(size.height));
+        ui.begin(input, float(windowSize.width), float(windowSize.height));
         ui.panel("Loom", 16.0f, 16.0f, 320.0f);
 
         ui.value("splatova", std::to_string(splatCount));
@@ -774,7 +859,25 @@ int main(int argc, char** argv){
         ui.checkbox("kocka za brisanje", &cubeOn);
 
         if(cubeOn){
-            if(ui.slider("velicina", &cubeShare, 0.01f, 1.0f)) cubeMoved = true;
+            ui.checkbox("sve stranice jednake", &cubeUniform);
+
+            //Klizac koji je pomaknut vodi ostale kad su stranice vezane. Prvo se ne zna koji
+            //ce to biti, pa se pita svaki - a mice se najvise jedan po kadru
+            float sizeX = cubeShare.x, sizeY = cubeShare.y, sizeZ = cubeShare.z;
+            const bool movedX = ui.slider("sirina X", &sizeX, 0.005f, 1.5f);
+            const bool movedY = ui.slider("visina Y", &sizeY, 0.005f, 1.5f);
+            const bool movedZ = ui.slider("dubina Z", &sizeZ, 0.005f, 1.5f);
+
+            if(movedX || movedY || movedZ){
+                const float driver = movedX ? sizeX : (movedY ? sizeY : sizeZ);
+                cubeShare = cubeUniform ? glm::vec3(driver) : glm::vec3(sizeX, sizeY, sizeZ);
+                cubeMoved = true;
+            }else if(cubeUniform && (cubeShare.x != cubeShare.y || cubeShare.y != cubeShare.z)){
+                //Kvacica upravo ukljucena nad razlicitim stranicama: izjednacuje se po najvecoj,
+                //jer smanjivanje bi tiho odbacilo dio odabira
+                cubeShare = glm::vec3(std::max({cubeShare.x, cubeShare.y, cubeShare.z}));
+                cubeMoved = true;
+            }
 
             if(ui.button("Kocka ovamo")){
                 //Na tocku oko koje se kruzi, a ne na kameru: to je mjesto u koje se gleda, i
@@ -783,24 +886,25 @@ int main(int argc, char** argv){
                 cubeMoved = true;
             }
 
+            ui.label("G i mis: pomakni kocku");
+
             ui.choice("brise se", {"unutra", "izvan"}, &deleteMode);
             ui.value("u kocki", std::to_string(insideCount) + " od " + std::to_string(aliveCount));
+            ui.value("brojanje", fmtNumber(countMilliseconds, 1) + " ms");
 
             if(ui.button("Obrisi")){
-                const glm::vec3 half(cubeShare * bounds.radius);
-                const glm::quat straight(1.0f, 0.0f, 0.0f, 0.0f);
+                const glm::vec3 half = cubeShare * bounds.radius;
                 const bool removeInside = deleteMode == 0;
 
-                size_t removed = 0;
+                lastRemoved.clear();
                 for(size_t i = 0; i < cloud.count(); ++i){
                     if(!alive[i]) continue;
-                    const glm::vec3 position(cloud.gaussians[i].position[0], cloud.gaussians[i].position[1],
-                                             cloud.gaussians[i].position[2]);
-                    if(SplatMath::insideBox(position, cubeCenter, half, straight) == removeInside){
+                    if(SplatMath::insideBox(positions[i], cubeCenter, half) == removeInside){
                         alive[i] = 0;
-                        ++removed;
+                        lastRemoved.push_back(uint32_t(i));
                     }
                 }
+                const size_t removed = lastRemoved.size();
 
                 //CEKA SE PRIJE PISANJA. SplatRenderer ima jedan primjerak radnih polja, pa slanje
                 //novog oblaka dok prethodni kadar jos crta prepisuje ono sto kartica upravo cita
@@ -813,6 +917,20 @@ int main(int argc, char** argv){
                 lastMessage = "obrisano " + std::to_string(removed);
                 printf("Obrisano %zu gaussiana (%s kocke), ostalo %zu\n",
                        removed, removeInside ? "unutar" : "izvan", aliveCount);
+            }
+
+            if(!lastRemoved.empty() && ui.button("Vrati zadnje brisanje")){
+                for(uint32_t index : lastRemoved) alive[index] = 1;
+                aliveCount += lastRemoved.size();
+
+                loom.waitIdle();
+                buildSplats();
+                uploadSplats(false);
+                cubeMoved = true;
+
+                lastMessage = "vraceno " + std::to_string(lastRemoved.size());
+                printf("Vraceno %zu gaussiana\n", lastRemoved.size());
+                lastRemoved.clear();
             }
 
             if(ui.button("Spremi .ply")){
@@ -852,7 +970,10 @@ int main(int argc, char** argv){
         const bool panDrag = (input.isDown(Treadle::MouseButton::Middle) && input.shift)
                           || input.isDown(Treadle::MouseButton::Right);
 
-        const bool wantsDrag = (orbitDrag || panDrag) && !ui.wantsMouse();
+        //Dok se kocka drzi, mis pripada njoj. Bez ovoga bi se scena okretala ispod kocke koja
+        //se upravo postavlja, pa bi se oboje micalo i nista se ne bi dalo pogoditi
+        const bool holdingCube = cubeOn && glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS;
+        const bool wantsDrag = (orbitDrag || panDrag) && !ui.wantsMouse() && !holdingCube;
 
         if(wantsDrag && dragging){
             const float dx = float(cursorX - lastCursorX);
@@ -869,7 +990,7 @@ int main(int argc, char** argv){
                 //Pomicanje PRATI POKAZIVAC: koliko svijeta stane u jedan piksel na udaljenosti
                 //sredista. Bez toga se na velikoj sceni mice nevidljivo malo, a na maloj odleti
                 const float perPixel = 2.0f * std::max(orbit.distance, 1e-4f)
-                                     * std::tan(0.5f * cameraConfig.fovY) / float(size.height);
+                                     * std::tan(0.5f * cameraConfig.fovY) / float(windowSize.height);
                 orbit.pivot += (-dx * orbit.right() + dy * orbit.screenUp()) * perPixel;
             }
         }
@@ -877,7 +998,45 @@ int main(int argc, char** argv){
         lastCursorX = cursorX;
         lastCursorY = cursorY;
 
-        if(!ui.wantsMouse() && wheelSinceLastFrame != 0.0f){
+        // ---------------------------------------------------------------------------
+        // KOCKA SE HVATA TIPKOM G. Klizaci mogu sve, ali postaviti kocku trima brojevima
+        // znaci gledati u brojeve umjesto u scenu. Ovako se drzi G i kocka ide za
+        // pokazivacem - po ravnini USPOREDNOJ S EKRANOM, na dubini na kojoj je zatecena.
+        //
+        // Dubina se ne pogadja iz pokazivaca jer je pokazivac dvodimenzionalan: zraka kroz
+        // piksel sijece beskonacno mnogo tocaka i sve su jednako dobre. Zato dubinu dok traje
+        // hvatanje mijenja kotacic, koji tada ne priblizava kameru
+        // ---------------------------------------------------------------------------
+
+        const bool grabNow = cubeOn && glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS && !ui.wantsMouse();
+
+        if(grabNow && !grabbing){
+            grabDepth = glm::dot(cubeCenter - orbit.eye(), orbit.forward());
+            printf("  kocka uhvacena; kotacic mijenja dubinu\n");
+        }
+        grabbing = grabNow;
+
+        if(grabbing){
+            grabDepth *= std::exp(wheelSinceLastFrame * 0.1f);
+            grabDepth = std::max(grabDepth, 0.02f * bounds.radius);
+
+            //Zraka kroz pokazivac, slozena iz osi samog pogleda - bez obrata matrice i bez
+            //jos jednog mjesta na kojem se konvencija moze raziici
+            const float tanHalf = std::tan(0.5f * cameraConfig.fovY);
+            const float aspect = float(windowSize.width) / float(windowSize.height);
+            const float acrossX = (2.0f * input.mouseX / float(windowSize.width) - 1.0f) * tanHalf * aspect;
+            const float acrossY = -(2.0f * input.mouseY / float(windowSize.height) - 1.0f) * tanHalf;
+
+            const glm::vec3 ray = orbit.forward() + orbit.right() * acrossX + orbit.screenUp() * acrossY;
+
+            //Dijeli se s komponentom PO SMJERU POGLEDA, ne s duljinom: tako svaka tocka ravnine
+            //ostane na istoj dubini, pa kocka ne bjezi prema rubovima kadra
+            const float along = glm::dot(ray, orbit.forward());
+            if(std::fabs(along) > 1e-6f){
+                cubeCenter = orbit.eye() + ray * (grabDepth / along);
+                cubeMoved = true;
+            }
+        }else if(!ui.wantsMouse() && wheelSinceLastFrame != 0.0f){
             //Mnozenje a ne oduzimanje: korak kotacica je uvijek isti udio udaljenosti, pa
             //priblizavanje jednako radi na sobi i na predmetu
             orbit.distance *= std::exp(-wheelSinceLastFrame * 0.15f);
@@ -941,13 +1100,13 @@ int main(int argc, char** argv){
             SplatRenderer::Box cage;
             cage.visible = true;
             cage.center = cubeCenter;
-            cage.halfExtent = glm::vec3(cubeShare * bounds.radius);
+            cage.halfExtent = cubeShare * bounds.radius;
             cage.orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
             cage.color = glm::vec3(1.0f, 0.75f, 0.2f);
             cage.edgeShare = 0.02f;
-            splatRenderer.setBox(cage);
+            splatRenderer->setBox(cage);
         }else{
-            splatRenderer.setBox(measuringBox);
+            splatRenderer->setBox(measuringBox);
         }
 
         const glm::mat4 view = camera.getView();
@@ -969,7 +1128,7 @@ int main(int argc, char** argv){
         const auto submitStarted = std::chrono::steady_clock::now();
 
         //Prosli kadar je gotov, pa je broj koji je trazio sad tocan
-        pairsAsked = splatRenderer.requestedPairs();
+        pairsAsked = splatRenderer->requestedPairs();
 
         const std::vector<GpuTimestamp> marks = loom.renderer.readFrameTimes();
         if(marks.size() > 1){
@@ -983,22 +1142,22 @@ int main(int argc, char** argv){
             ++timedFrames;
         }
 
-        splatRenderer.setCamera(view, cameraConfig.position, intrinsics.fx, intrinsics.fy,
+        splatRenderer->setCamera(view, cameraConfig.position, intrinsics.fx, intrinsics.fy,
                                 intrinsics.cx, intrinsics.cy);
 
         if(!loom.renderer.beginFrame()) continue;
 
-        splatRenderer.prepare(loom.renderer, splatCount);
-        splatRenderer.draw(loom.renderer, splatCount);
+        splatRenderer->prepare(loom.renderer, splatCount);
+        splatRenderer->draw(loom.renderer, splatCount);
 
         loom.renderer.beginPass();
-        loom.renderer.drawFullscreen(present);
+        loom.renderer.drawFullscreen(*present);
 
         //SUICELJE SE NE SNIMA. Slika koja se usporedjuje s drugom ne smije nositi plohu s
         //gumbima preko sebe - a to bi se primijetilo tek kad bi netko usporedio dvije slike
         //i vidio da se razlikuju bas ondje gdje je ploha
         if(uiInShot || (!flyover && framesThenShot == 0)){
-            painter.draw(loom.renderer, ui.drawn(), size.width, size.height);
+            painter.draw(loom.renderer, ui.drawn(), windowSize.width, windowSize.height);
         }
 
         loom.renderer.endPass();

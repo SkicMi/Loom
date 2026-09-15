@@ -170,4 +170,19 @@ bool insideBox(const glm::vec3& point,
                const glm::vec3& halfExtent,
                const glm::quat& orientation);
 
+//Ista provjera za kutiju POSTAVLJENU PO OSIMA. Postoji zbog cijene, i cijena je izmjerena -
+//medijan od 15 prolaza kroz 3.76 milijuna gaussiana:
+//
+//   iz oblaka, s kvaternionom   14.5 ms
+//   iz oblaka, po osima         11.3 ms
+//   iz polja samih polozaja      3.9 ms
+//
+//Kutija kojom se u pregledniku bira sto obrisati je po osima - njoj se rotacija racunala samo
+//da bi se ponistila. A ostatak nije racun nego citanje: zapis gaussiana je 62 bajta, pa se za
+//12 bajtova polozaja kroz memoriju vuce 233 MB. Tko ovo zove svaki kadar, neka polozaje drzi
+//u vlastitom polju - vidi SplatViewer
+bool insideBox(const glm::vec3& point,
+               const glm::vec3& center,
+               const glm::vec3& halfExtent);
+
 }
