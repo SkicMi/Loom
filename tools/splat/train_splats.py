@@ -24,7 +24,7 @@ import torch
 from PIL import Image
 
 import gsplat
-from gsplat.strategy import DefaultStrategy
+from gsplat.strategy import DefaultStrategy, MCMCStrategy
 
 
 # ---------------------------------------------------------------------------------
@@ -149,6 +149,49 @@ def ssim(a, b, window, size):
     return (((2 * mxy + c1) * (2 * vxy + c2)) / ((mxx + myy + c1) * (vx + vy + c2))).mean()
 
 
+#=============================================================================================
+# Dubina iz modela kao uporiste ondje gdje geometrija nema nikakvo
+#
+# ZASTO. Rekonstrukcija daje tocke samo gdje ima teksture: izmjereno na ovoj snimci, 313 tocaka po
+# kadru na tamnom parketu i 20499 na kamenom zidu. Ondje gdje tocaka nema, gaussiane nemaju sto
+# drzati na mjestu - pa lebde, i iz novog kuta se raspadnu. Bas to strogi test i kaznjava.
+#
+# Monokularni model dubine (Depth Anything) ne zna mjerilo ni gdje je kamera, ali zna sto je BLIZE
+# a sto DALJE - i to zna i na praznom zidu. To je uporiste koje geometrija ondje nema.
+#
+# MJERILO I POMAK SE NE ZNAJU, pa se ne smiju ni pretpostaviti: model daje dispariter do na linearnu
+# preobrazbu. Zato se po slici najprije NAJMANJIM KVADRATIMA namjesti a*d + b na ono sto scena
+# stvarno crta, pa se kaznjava tek ostatak. Bez toga bi se kaznjavala razlika u mjerilu, koja nije
+# greska nego svojstvo modela.
+#
+# IZMJERENO: NE POMAZE, i zato je zadano iskljuceno (--depth prazno). Na 634 kadra, 30000 koraka,
+# strogi test s izdvojenim odsjeccima:
+#
+#   bez dubine          PSNR 29.07 dB, najgori 25.06
+#   dubina tezina 0.05  PSNR 29.01 dB, najgori 25.20
+#   dubina tezina 1.0   PSNR 28.95 dB, najgori 24.79
+#
+# Prva tezina je bila isuvise mala da bi se uopce cula - clan dubine je oko 0.01 uz gubitak od 0.04,
+# dakle jedan posto - pa je "nema razlike" tada znacilo "nije ni ukljuceno". Uz tezinu koja se cuje
+# rezultat je neznatno GORI. Ne znaci da dubina opcenito ne radi; znaci da na ovoj sceni i s ovom
+# izvedbom ne daje nista. Moguce je da je normalizacija po slici pregruba, ili da model dubine u
+# tamnim dijelovima grijesi taman koliko i geometrija - a bas su ti dijelovi bili razlog.
+#=============================================================================================
+
+def read_pfm(path):
+    with open(path, "rb") as f:
+        header = f.readline().decode().strip()
+        if header not in ("Pf", "PF"):
+            raise SystemExit(f"{path}: nije PFM")
+        channels = 1 if header == "Pf" else 3
+        w, h = (int(v) for v in f.readline().decode().split())
+        scale = float(f.readline().decode().strip())
+        data = np.frombuffer(f.read(w * h * channels * 4),
+                             dtype="<f4" if scale < 0 else ">f4")
+        image = data.reshape(h, w, channels)[::-1]      #PFM ide odozdo prema gore
+        return image[..., 0].copy()
+
+
 def rgb_to_sh0(rgb):
     return (rgb - 0.5) / 0.28209479177387814            # C0 clan sfernih harmonika
 
@@ -168,6 +211,15 @@ def main():
     #OBA SU ZADANO ISKLJUCENA, i to je mjereno a ne pretpostavka - vidi komentare uz njih
     ap.add_argument("--rasterize", choices=["classic", "antialiased"], default="classic",
                     help="antialiased obraduje gaussiane manje od piksela drukcije; izmjereno bez ucinka")
+    ap.add_argument("--depth", default="",
+                    help="mapa s PFM kartama dubine (tools/depth/estimate_depth.py); prazno iskljucuje")
+    #TEZINA 0.05 JE BILA ISKLJUCENO, a ne oprezno: clan dubine je oko 0.01, gubitak oko 0.04, pa je
+    #doprinos bio jedan posto. Izmjereno je i s 1.0 - ni tada ne pomaze, vidi komentar uz read_pfm
+    ap.add_argument("--depth-weight", type=float, default=1.0,
+                    help="koliko dubina tezi u gubitku")
+    #MCMC JE ZADANO, i to je mjereno: 29.07 dB naspram 26.70, a najgori kadar 25.06 naspram 18.42
+    ap.add_argument("--strategy", choices=["default", "mcmc"], default="mcmc",
+                    help="mcmc PREMJESTA gaussiane umjesto da ih dodaje po gradijentu")
     ap.add_argument("--holdout", type=int, default=0,
                     help="svaki N-ti kadar se IZDVAJA iz treninga i sluzi za ocjenu; 0 iskljucuje")
     ap.add_argument("--holdout-block", type=int, default=1,
@@ -206,6 +258,26 @@ def main():
             f"Slike bi uzele {needed:.1f} GB radne memorije ({len(frames)} kom, {width}x{height}).\n"
             f"Povecaj --downscale: svaki korak dijeli s cetiri.")
 
+    #KARTE SE POVEZUJU SA SLIKAMA PO REDOSLIJEDU, ne po imenu. estimate_depth.py ih zove
+    #depth_0000.pfm a kadrovi su 00001.jpg - pravilo prevodjenja bi bilo tocno danas i krivo cim
+    #se ijedna od dvije skripte preimenuje. Obje mape dolaze iz istog niza, pa je redoslijed ono
+    #sto ih stvarno povezuje
+    depthFor = {}
+    if args.depth:
+        allImages = sorted(p.name for p in Path(args.images).iterdir() if p.suffix.lower() in (".jpg", ".png"))
+        allDepths = sorted(Path(args.depth).glob("*.pfm"))
+        #BROJEVI SE MORAJU POKLAPATI TOCNO. Prva verzija je trazila samo "barem toliko" i time tiho
+        #uparila 101 sliku jednog isjecka s prvih 101 karata cijele snimke - dakle krive kadrove, bez
+        #ijedne poruke. Trening je prosao i dao broj koji ne znaci nista.
+        #
+        #Kad se povezuje po redoslijedu, jednak broj je jedino sto potvrdjuje da su to isti kadrovi
+        if len(allDepths) != len(allImages):
+            raise SystemExit(
+                f"Karata dubine je {len(allDepths)}, a slika {len(allImages)} - to nisu isti kadrovi.\n"
+                f"Karte se povezuju po redoslijedu, pa moraju biti napravljene bas iz ove mape slika.")
+        depthFor = {name: path for name, path in zip(allImages, allDepths)}
+
+    depthMaps = []
     views, pictures = [], []
     for name, view in frames:
         path = Path(args.images) / name
@@ -214,6 +286,15 @@ def main():
         picture = Image.open(path).convert("RGB").resize((width, height), Image.LANCZOS)
         pictures.append(torch.from_numpy(np.asarray(picture, dtype=np.uint8)))
         views.append(torch.from_numpy(view).float())
+
+        if args.depth:
+            pfm = depthFor.get(name)
+            if pfm is None:
+                raise SystemExit(f"Nema karte dubine za {name}")
+            prior = read_pfm(str(pfm))
+            small = np.asarray(Image.fromarray(prior).resize((width, height), Image.BILINEAR),
+                               dtype=np.float32)
+            depthMaps.append(torch.from_numpy(small))
     if not pictures:
         raise SystemExit("Nijedna slika se nije nasla")
 
@@ -244,7 +325,12 @@ def main():
         heldViews = [views[i] for i in heldOut]
         pictures = [pictures[i] for i in keep]
         views = [views[i] for i in keep]
+        if len(depthMaps): depthMaps = [depthMaps[i] for i in keep]
         print(f"Izdvojeno {len(heldPictures)} kadrova za ocjenu, trenira se na {len(pictures)}")
+
+    if depthMaps:
+        depthMaps = torch.stack(depthMaps)
+        print(f"Karte dubine: {len(depthMaps)} kom")
 
     pictures = torch.stack(pictures)
     views = torch.stack(views).to(device)
@@ -278,10 +364,6 @@ def main():
     optimizers = {k: torch.optim.Adam([{"params": params[k], "lr": rates[k], "name": k}],
                                       eps=1e-15, betas=(0.9, 0.999)) for k in params}
 
-    strategy = DefaultStrategy(verbose=False)
-    state = strategy.initialize_state(scene_scale=spread)
-    strategy.check_sanity(params, optimizers)
-
     # -------------------------------------------------------------------------------
     # Koliko gaussiana kartica podnosi
     # -------------------------------------------------------------------------------
@@ -307,11 +389,28 @@ def main():
 
     capped = False
 
+    #DVIJE STRATEGIJE ZGUSNJAVANJA, i razlika je u vrsti. Default DODAJE gaussiane ondje gdje je
+    #gradijent velik, pa raste dok ga nesto ne zaustavi - kod nas kartica. MCMC drzi FIKSAN broj i
+    #premjesta ih: mrtvu gaussianu preseli tamo gdje fali. Na neravnomjernoj pokrivenosti - a nasa
+    #snimka daje 313 tocaka po kadru na parketu i 20499 na kamenom zidu - to bi trebalo biti
+    #otpornije, jer broj gaussiana ne odlucuje gdje ce zavrsiti
+    if args.strategy == "mcmc":
+        strategy = MCMCStrategy(cap_max=budget, verbose=False)
+    else:
+        strategy = DefaultStrategy(verbose=False)
+    #MCMC ne uzima mjerilo scene - njegovo premjestanje radi u prostoru parametara, ne u metrima
+    state = (strategy.initialize_state() if args.strategy == "mcmc"
+             else strategy.initialize_state(scene_scale=spread))
+    strategy.check_sanity(params, optimizers)
+
+
+
     # -------------------------------------------------------------------------------
     # Trening
     # -------------------------------------------------------------------------------
     windowSize = 11
     window = gaussian_window(windowSize, 1.5, device)
+    lastDepthTerm = 0.0
     print(f"Trening: {args.steps} koraka, mjerilo scene {spread:.2f}, gubitak {args.loss}, "
           f"rasterizacija {args.rasterize}, zasicenje od {args.saturation}")
     generator = torch.Generator(device="cpu").manual_seed(20260915)
@@ -328,6 +427,7 @@ def main():
             width=width, height=height,
             sh_degree=min(args.sh_degree, step // 1000),   #niži redovi prvi, kao u izvornom radu
             rasterize_mode=args.rasterize,
+            render_mode="RGB+ED" if len(depthMaps) else "RGB",
             packed=True)
 
         strategy.step_pre_backward(params, optimizers, state, step, info)
@@ -344,33 +444,59 @@ def main():
         if args.saturation < 1.0:
             brightest = truth.max(dim=-1).values
             weight = (1.0 - (brightest - args.saturation).clamp(min=0.0) / (1.0 - args.saturation)).clamp(0.0, 1.0)
-            absolute = ((rendered[0] - truth).abs().mean(dim=-1) * weight).sum() / weight.sum().clamp(min=1.0)
+            absolute = ((rendered[0][..., :3] - truth).abs().mean(dim=-1) * weight).sum() / weight.sum().clamp(min=1.0)
         else:
-            absolute = (rendered[0] - truth).abs().mean()
+            absolute = (rendered[0][..., :3] - truth).abs().mean()
 
         if args.loss == "ssim":
-            structure = 1.0 - ssim(rendered[0], truth, window, windowSize)
+            structure = 1.0 - ssim(rendered[0][..., :3], truth, window, windowSize)
             loss = 0.8 * absolute + 0.2 * structure
         else:
             loss = absolute
+
+        if len(depthMaps):
+            #Nacrtana dubina se pretvara u dispariter, jer model daje dispariter - a i zato sto je
+            #on ravnomjerniji: u metrima daleki zid nosi tisucu puta vise tezine nego bliski stol
+            drawn = rendered[0][..., 3]
+            near = 1.0 / drawn.clamp(min=1e-3)
+            prior = depthMaps[index].to(device, non_blocking=True)
+
+            #Gleda se samo ono sto je stvarno nacrtano: gdje nema gaussiana dubina je besmislena
+            mask = drawn > 1e-3
+            if mask.any():
+                x = prior[mask]
+                y = near[mask]
+                #Najmanji kvadrati za a i b u a*x + b ~ y, zatvorenog oblika
+                mx, my = x.mean(), y.mean()
+                cov = ((x - mx) * (y - my)).mean()
+                var = ((x - mx) ** 2).mean().clamp(min=1e-8)
+                a = cov / var
+                b = my - a * mx
+                depthTerm = (a * x + b - y).abs().mean()
+                loss = loss + args.depth_weight * depthTerm
+                lastDepthTerm = float(depthTerm)
         for optimizer in optimizers.values():
             optimizer.zero_grad(set_to_none=True)
         loss.backward()
 
-        strategy.step_post_backward(params, optimizers, state, step, info, packed=True)
+        if args.strategy == "mcmc":
+            strategy.step_post_backward(params, optimizers, state, step, info, lr=rates["means"])
+        else:
+            strategy.step_post_backward(params, optimizers, state, step, info, packed=True)
         for optimizer in optimizers.values():
             optimizer.step()
 
         #Kad se granica dosegne, zgusnjavanje staje a ucenje ide dalje - preostali koraci jos
         #popravljaju polozaj, boju i neprozirnost onoga sto vec postoji
-        if not capped and params["means"].shape[0] >= budget:
+        if not capped and args.strategy == "default" and params["means"].shape[0] >= budget:
             strategy.refine_stop_iter = step
             capped = True
             print(f"  granica dosegnuta u {step}. koraku: {params['means'].shape[0]} gaussiana, "
                   f"zgusnjavanje staje")
 
         if step % 500 == 0 or step == args.steps - 1:
-            print(f"  {step:5d}  gubitak {loss.item():.4f}  gaussiana {params['means'].shape[0]}")
+            extra = f"  dubina {lastDepthTerm:.4f} (tezina {args.depth_weight})" if len(depthMaps) else ""
+            print(f"  {step:5d}  gubitak {loss.item():.4f}  gaussiana {params['means'].shape[0]}{extra}")
 
     # -------------------------------------------------------------------------------
     # Izvoz
@@ -410,10 +536,12 @@ def main():
                     scales=torch.exp(params["scales"]), opacities=torch.sigmoid(params["opacities"]),
                     colors=colours_sh, viewmats=heldViews[i:i+1], Ks=K[None],
                     width=width, height=height, sh_degree=args.sh_degree,
-                    rasterize_mode=args.rasterize, packed=True)
+                    rasterize_mode=args.rasterize,
+                    render_mode="RGB+ED" if len(depthMaps) else "RGB", packed=True)
 
                 truth = heldPictures[i].to(device).float() / 255.0
-                shown = shown[0].clamp(0, 1)
+                shown = shown[0]
+                shown = shown[..., :3]
                 mse = float(((shown - truth) ** 2).mean())
                 psnrs.append(10.0 * math.log10(1.0 / max(mse, 1e-12)))
                 ssims.append(float(ssim(shown, truth, window, windowSize)))
@@ -430,21 +558,23 @@ def main():
             means=params["means"], quats=params["quats"],
             scales=torch.exp(params["scales"]), opacities=torch.sigmoid(params["opacities"]),
             colors=colours_sh, viewmats=views[which:which+1], Ks=K[None],
-            width=width, height=height, sh_degree=args.sh_degree, packed=True)
+            width=width, height=height, sh_degree=args.sh_degree,
+            rasterize_mode=args.rasterize,
+            render_mode="RGB+ED" if len(depthMaps) else "RGB", packed=True)
 
         truth = pictures[which].to(device).float() / 255.0
-        side = torch.cat([truth, rendered[0].clamp(0, 1)], dim=1)     # lijevo snimljeno, desno nacrtano
+        side = torch.cat([truth, rendered[0][..., :3].clamp(0, 1)], dim=1)     # lijevo snimljeno, desno nacrtano
         picture = Image.fromarray((side.cpu().numpy() * 255).astype(np.uint8))
         preview = str(Path(args.output).with_suffix("")) + "_usporedba.png"
         picture.save(preview)
 
         #I sam prikaz zasebno, da se dva trcanja mogu staviti jedno uz drugo
-        alone = Image.fromarray((rendered[0].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8))
+        alone = Image.fromarray((rendered[0][..., :3].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8))
         alone.save(str(Path(args.output).with_suffix("")) + "_prikaz.png")
         Image.fromarray((truth.cpu().numpy() * 255).astype(np.uint8)).save(
             str(Path(args.output).with_suffix("")) + "_snimljeno.png")
 
-        difference = float((truth - rendered[0].clamp(0, 1)).abs().mean())
+        difference = float((truth - rendered[0][..., :3].clamp(0, 1)).abs().mean())
         print(f"Usporedba: {preview}  (lijevo snimljeno, desno nacrtano; razlika {difference:.4f})")
 
 
