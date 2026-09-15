@@ -104,6 +104,46 @@ def initial_scale(points, neighbours=3):
     return torch.cat(out).clamp(min=1e-6)
 
 
+#=============================================================================================
+# SSIM: mjera strukture, ne prosjeka
+#
+# ZASTO. L1 mjeri prosjecnu razliku po pikselima, a prosjek ne razlikuje ostro od mutnog - mutna
+# mrlja preko svjetiljke ima isti prosjek kao ostra zarulja, pa optimizacija nema razloga popraviti
+# je. Izmjereno: udvostrucena razlucivost i udvostruceni broj koraka dali su LOSIJI rezultat
+# (0.0142 -> 0.0169), sto je simptom bas toga - plato nije u broju koraka nego u tome sto se mjeri.
+#
+# SSIM usporedjuje lokalnu srednju vrijednost, raspon i suodnos dvaju prozora, pa mutnocu kaznjava
+# izravno. Izvorni rad o 3DGS koristi 0.8*L1 + 0.2*(1-SSIM), i to je omjer koji je ovdje zadan.
+#=============================================================================================
+
+def gaussian_window(size, sigma, device):
+    coords = torch.arange(size, dtype=torch.float32, device=device) - (size - 1) / 2
+    line = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    line = line / line.sum()
+    return (line[:, None] @ line[None, :])[None, None, ...]
+
+
+def ssim(a, b, window, size):
+    """a i b su (H, W, 3) u rasponu 0..1."""
+    x = a.permute(2, 0, 1)[None]
+    y = b.permute(2, 0, 1)[None]
+    kernel = window.expand(3, 1, size, size)
+
+    pad = size // 2
+    mx = torch.nn.functional.conv2d(x, kernel, padding=pad, groups=3)
+    my = torch.nn.functional.conv2d(y, kernel, padding=pad, groups=3)
+
+    mxx, myy, mxy = mx * mx, my * my, mx * my
+    vx = torch.nn.functional.conv2d(x * x, kernel, padding=pad, groups=3) - mxx
+    vy = torch.nn.functional.conv2d(y * y, kernel, padding=pad, groups=3) - myy
+    vxy = torch.nn.functional.conv2d(x * y, kernel, padding=pad, groups=3) - mxy
+
+    #Konstante iz izvornog rada o SSIM-u; drze racun stabilnim kad su srednja vrijednost ili
+    #raspon blizu nule, sto se na tamnim plohama dogadja stalno
+    c1, c2 = 0.01 ** 2, 0.03 ** 2
+    return (((2 * mxy + c1) * (2 * vxy + c2)) / ((mxx + myy + c1) * (vx + vy + c2))).mean()
+
+
 def rgb_to_sh0(rgb):
     return (rgb - 0.5) / 0.28209479177387814            # C0 clan sfernih harmonika
 
@@ -116,6 +156,8 @@ def main():
     ap.add_argument("--steps", type=int, default=7000)
     ap.add_argument("--downscale", type=int, default=2, help="4K je za 12 GB previse; 2 znaci pola")
     ap.add_argument("--sh-degree", type=int, default=3)
+    ap.add_argument("--loss", choices=["l1", "ssim"], default="ssim",
+                    help="l1 je samo prosjek po pikselima; ssim dodaje mjeru strukture")
     args = ap.parse_args()
 
     device = "cuda"
@@ -198,7 +240,9 @@ def main():
     # -------------------------------------------------------------------------------
     # Trening
     # -------------------------------------------------------------------------------
-    print(f"Trening: {args.steps} koraka, mjerilo scene {spread:.2f}")
+    windowSize = 11
+    window = gaussian_window(windowSize, 1.5, device)
+    print(f"Trening: {args.steps} koraka, mjerilo scene {spread:.2f}, gubitak {args.loss}")
     generator = torch.Generator(device="cpu").manual_seed(20260915)
 
     for step in range(args.steps):
@@ -216,7 +260,12 @@ def main():
 
         strategy.step_pre_backward(params, optimizers, state, step, info)
 
-        loss = (rendered[0] - truth).abs().mean()
+        absolute = (rendered[0] - truth).abs().mean()
+        if args.loss == "ssim":
+            structure = 1.0 - ssim(rendered[0], truth, window, windowSize)
+            loss = 0.8 * absolute + 0.2 * structure
+        else:
+            loss = absolute
         for optimizer in optimizers.values():
             optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -266,6 +315,12 @@ def main():
         picture = Image.fromarray((side.cpu().numpy() * 255).astype(np.uint8))
         preview = str(Path(args.output).with_suffix("")) + "_usporedba.png"
         picture.save(preview)
+
+        #I sam prikaz zasebno, da se dva trcanja mogu staviti jedno uz drugo
+        alone = Image.fromarray((rendered[0].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8))
+        alone.save(str(Path(args.output).with_suffix("")) + "_prikaz.png")
+        Image.fromarray((truth.cpu().numpy() * 255).astype(np.uint8)).save(
+            str(Path(args.output).with_suffix("")) + "_snimljeno.png")
 
         difference = float((truth - rendered[0].clamp(0, 1)).abs().mean())
         print(f"Usporedba: {preview}  (lijevo snimljeno, desno nacrtano; razlika {difference:.4f})")

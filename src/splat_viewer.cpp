@@ -89,7 +89,7 @@ Bounds robustBounds(const std::vector<Splat>& splats){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        printf("Upotreba: SplatViewer <scena.ply> [korak] [pločica] [kadrovi] [kut] [ime.png] [sh] [kocka] [iznutra|mapa_modela]\n");
+        printf("Upotreba: SplatViewer <scena.ply> [korak] [pločica] [kadrovi] [kut] [ime.png] [sh] [kocka] [iznutra|mapa_modela] [prelet]\n");
         return 1;
     }
 
@@ -118,6 +118,11 @@ int main(int argc, char** argv){
     //atoi("puni/txt") je dao nulu pa su se svi prikazi crtali BEZ boje iz smjera pogleda. Greska
     //koja ne pada nego samo tise izgleda
     const std::string mode = argc > 9 ? std::string(argv[9]) : std::string();
+
+    //PRELET: crta redom kroz sve prave poze i sprema po sliku za svaku. Postoji jer jedna slika ne
+    //pokazuje je li scena prostorna - tek se kroz gibanje vidi zaklon i paralaksa, dakle da je ovo
+    //prostor a ne razglednica
+    const bool flyover = argc > 10 && std::string(argv[10]) == "prelet";
     const bool insideStart = mode == "iznutra";
     const std::string modelPath = (!mode.empty() && mode != "iznutra") ? mode : std::string();
 
@@ -361,6 +366,11 @@ int main(int argc, char** argv){
         if(glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS) height -= 0.03f * bounds.radius;
         //U prostoru W/S hoda naprijed i natrag jer mnozenje udaljenosti oko nule ne mice nista;
         //oko predmeta ostaje mnozenje, da se prilaz jednako ponasa na maloj i velikoj sceni
+        //U preletu poza napreduje sama, jedan kadar jedna poza
+        if(flyover && !realPoses.empty() && totalFrames > 0){
+            whichPose = size_t(totalFrames) % realPoses.size();
+        }
+
         //Setnja kroz prave poze. Korak je jedna kamera, a ne jedan kadar snimke - kamere su vec
         //prorijedjene, pa je jedan korak vidljiv pomak a ne treptaj
         if(!realPoses.empty()){
@@ -467,7 +477,12 @@ int main(int argc, char** argv){
         ++framesSinceReport;
         ++totalFrames;
 
-        if(framesThenShot > 0 && totalFrames >= framesThenShot){
+        //U preletu se sprema SVAKI kadar, pa se od njih sklopi snimka. Inace se ceka zadani broj
+        //kadrova i sprema jedan - da se scena stigne slegnuti prije nego se usporedjuje
+        const bool saveNow = flyover ? (totalFrames > 0 && totalFrames <= realPoses.size())
+                                     : (framesThenShot > 0 && totalFrames >= framesThenShot);
+
+        if(saveNow){
             loom.waitIdle();
             const ImageData shot = loom.renderer.readLastFrame();
 
@@ -478,10 +493,25 @@ int main(int argc, char** argv){
             const Spool::Image image = Spool::imageFromPixels(shot.pixels.data(),
                 shot.extent.width, shot.extent.height,
                 isBgraFormat(shot.format) ? Spool::ChannelOrder::BGRA : Spool::ChannelOrder::RGBA);
-            Spool::saveImage(shotName, image);
+            std::string name = shotName;
+            if(flyover){
+                char numbered[64];
+                std::snprintf(numbered, sizeof(numbered), "_%05u.png", uint32_t(totalFrames - 1));
+                const size_t dot = shotName.rfind('.');
+                name = (dot == std::string::npos ? shotName : shotName.substr(0, dot)) + numbered;
+            }
+            Spool::saveImage(name, image);
 
-            printf("\nSnimljeno %s (%ux%u)\n", shotName.c_str(), image.width, image.height);
-            break;
+            if(flyover){
+                if(totalFrames % 25 == 0) printf("\r  prelet %u / %zu  ", uint32_t(totalFrames), realPoses.size());
+                if(totalFrames >= realPoses.size()){
+                    printf("\nPrelet gotov: %zu kadrova\n", realPoses.size());
+                    break;
+                }
+            }else{
+                printf("\nSnimljeno %s (%ux%u)\n", name.c_str(), image.width, image.height);
+                break;
+            }
         }
 
         const double now = loom.getTime();
