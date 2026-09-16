@@ -320,7 +320,18 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     if(candidates.empty()) return corners;
 
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b){return a.score > b.score;});
-    const float threshold = candidates.front().score * config.quality;
+
+    //PRAG IZ SUMA, uz relativni. Uzima se ono sto je strože - vidi TrackConfig::minStrengthOverNoise
+    float threshold = candidates.front().score * config.quality;
+    if(config.minStrengthOverNoise > 0.0f){
+        double weightSum = 0.0;
+        for(float w : kernel) weightSum += double(w);
+
+        const double noise = double(estimateNoise(image));
+        const double floorScore = 0.5 * noise * noise * weightSum * weightSum
+                                * double(config.minStrengthOverNoise);
+        threshold = std::max(threshold, float(floorScore));
+    }
     const float minDistanceSquared = config.minDistance * config.minDistance;
 
     //RAZMAK SE PROVJERAVA PREKO MREZE, ne prolaskom kroz sve prihvacene.

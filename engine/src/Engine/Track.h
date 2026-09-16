@@ -86,6 +86,49 @@ struct TrackConfig{
     //da fina vise ne mjeri. Uz to na dugoj snimci daje najgori rezultat od svih. 1.1 je najbolji
     //na dugoj snimci, a duga snimka je ono za sto ovo postoji
     float maxStretch = 1.1f;
+
+    //=========================================================================================
+    // NAJMANJA JACINA UGLA, IZRAZENA U SUMU SLIKE. Nula iskljucuje.
+    //
+    // Prag quality iznad je RELATIVAN prema najboljem uglu u slici, i to je dobro protiv razlike
+    // u osvjetljenju - ali ne kaze nista o tome je li ono sto je naslo uopce struktura. Na kadru
+    // s jednim jakim kutom je jedan posto od njega vrlo malo, pa prolazi i sum na praznom zidu.
+    //
+    // Izmjereno posljedicom: nas oblak tocaka ima tocke rasute po praznom bijelom zidu, gdje
+    // strukture nema; COLMAP-ove sjede na fugama kamena i rubovima. Takve tocke kvare i geometriju
+    // i splat, jer trener splatova od njih krece.
+    //
+    // KAKO SE IZVODI. Bodovanje je Shi-Tomasi: manja svojstvena vrijednost tezinjene strukturne
+    // matrice. Za cisti sum odstupanja s od centralne razlike ima varijancu s^2 / 2, pa obje
+    // svojstvene vrijednosti ocekivano iznose (s^2 / 2) * W^2, gdje je W zbroj tezina po osi.
+    // Ovaj broj je koliko puta jaci od toga ugao mora biti da bi se uopce racunao.
+    //
+    // Sum se MJERI po slici (estimateNoise), ne pretpostavlja - ista postavka time vrijedi i za
+    // svijetlu i za tamnu snimku.
+    //
+    // ZADANO ISKLJUCENO, i to je najzanimljiviji nalaz od svih. Prag POPRAVLJA poze i tragove:
+    //
+    //   jacina   kamere    tragovi   polozaj   rotacija
+    //     0     101/101      5.16      1.6 %    6.60 st
+    //     1      93/101      5.95      1.4 %    4.32 st
+    //     2     101/101      5.95      1.5 %    5.06 st
+    //     3     101/101      6.01      1.3 %    6.37 st
+    //     4     101/101      6.09      2.2 %    9.12 st
+    //     6     101/101      6.31     32.1 %  132.53 st
+    //
+    // A KVARI SPLAT, koji je jedino sto se isporucuje:
+    //
+    //   bez praga    PSNR 26.81 dB, najgori 24.69, SSIM 0.861
+    //   uz prag 2x   PSNR 26.34 dB, najgori 22.35, SSIM 0.853
+    //
+    // Objasnjenje koje se slaze s oboje: slabe tocke na praznom zidu jesu geometrijski slabe - i
+    // zato su izgledale kao smece kad su se nacrtale preko kadra - ali treneru splatova daju
+    // POKRIVENOST. Bez njih zid nema od cega poceti, pa MCMC gaussiane mora dovlaciti izdaleka.
+    //
+    // Poanta je sira od ovog polja: slaganje poza s COLMAP-om NIJE pouzdan pokazatelj kvalitete
+    // splata, i sve sto se ovdje mijenja mora se na kraju izmjeriti u decibelima
+    //=========================================================================================
+    float minStrengthOverNoise = 0.0f;
 };
 
 //Uglovi koje se isplati pratiti, najjaci prvi

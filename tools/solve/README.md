@@ -78,6 +78,21 @@ spajali, pa ono sto ostane prezivi ciscenje sukoba umjesto da padne s njim.
 
 Filtar se NE primjenjuje kad trojka ne moze ni nastati - ispod tri kadra ili uz prozor 1.
 
+### Prag jacine ugla: popravi poze, pokvari splat
+
+Nase su tocke bile rasute po praznom bijelom zidu, a COLMAP-ove sjede na fugama kamena - pa je
+izgledalo ocito da ih treba odbaciti. Prag se izvodi iz SUMA slike, ne zadaje: bodovanje je
+Shi-Tomasi, a za cisti sum obje svojstvene vrijednosti imaju poznatu ocekivanu vrijednost.
+
+Poze i tragovi se time popravljaju - rotacija 6.60 -> 5.06 st, duljina traga 5.16 -> 5.95 - ali
+splat postaje losiji: 26.81 -> 26.34 dB, najgori kadar 24.69 -> 22.35.
+
+Slabe tocke na zidu jesu geometrijski slabe, ali treneru daju POKRIVENOST: bez njih zid nema od
+cega poceti. Zadano iskljuceno.
+
+**Poanta je sira od tog polja**: slaganje poza s COLMAP-om nije pouzdan pokazatelj kvalitete
+splata. Svaka izmjena mora zavrsiti mjerenjem u decibelima.
+
 ### Dvije ideje koje su pale na mjerenju
 
 **Spajanje koje odbija sukob** umjesto da pokvarenu komponentu poslije baca. Radi ono sto obecava -
