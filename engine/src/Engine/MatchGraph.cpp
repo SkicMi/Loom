@@ -60,6 +60,7 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
 
     std::vector<std::vector<glm::vec2>> points(frames);
     std::vector<std::vector<Descriptor>> signatures(frames);
+    std::vector<std::vector<SiftDescriptor>> siftSignatures(frames);
     std::vector<uint32_t> offset(frames + 1, 0);
 
     //ZAKRPA PRATI RAZLUCIVOST, kao i prozor pracenja i iz istog razloga. 256 bitova treba strukturu
@@ -130,9 +131,14 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     TrackConfig detect = config.detect;
     if(shrink > 1) detect.minDistance = std::max(2.0f, config.detect.minDistance / float(shrink));
 
+    //Zakrpa i zagladjivanje SIFT-ovog potpisa prate istu sirinu; zagladjivanje se izvodi iz zakrpe
+    SiftConfig sift = config.sift;
+    if(config.patchFromWidth) sift.patch = describe.patch;
+
     for(uint32_t frame = 0; frame < frames; ++frame){
         points[frame] = detectCorners(working[frame], detect);
-        signatures[frame] = describeAll(working[frame], points[frame], describe);
+        if(config.useSift) siftSignatures[frame] = describeSiftAll(working[frame], points[frame], sift);
+        else               signatures[frame] = describeAll(working[frame], points[frame], describe);
         offset[frame + 1] = offset[frame] + uint32_t(points[frame].size());
     }
     result.localizationPixels = float(shrink);
@@ -152,18 +158,34 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
         for(uint32_t step = 1; step <= config.window; ++step){
             const uint32_t b = a + step;
             if(b >= frames) break;
-            if(signatures[a].empty() || signatures[b].empty()) continue;
+            if(config.useSift){ if(siftSignatures[a].empty() || siftSignatures[b].empty()) continue; }
+            else              { if(signatures[a].empty() || signatures[b].empty()) continue; }
 
             ++result.comparedFrames;
-            const std::vector<Match> matches = matchDescriptorsNear(
-                signatures[a], points[a], signatures[b], points[b], radius, describe);
+
+            //Dva potpisa daju dva razlicita zapisa poklapanja; dalje ih zanima samo tko s kim
+            std::vector<std::pair<uint32_t, uint32_t>> matches;
+            std::vector<uint32_t> distances;
+            if(config.useSift){
+                for(const SiftMatch& one : matchSiftNear(siftSignatures[a], points[a],
+                                                          siftSignatures[b], points[b], radius, sift)){
+                    matches.push_back({one.from, one.to});
+                    distances.push_back(uint32_t(one.distance));
+                }
+            }else{
+                for(const Match& one : matchDescriptorsNear(signatures[a], points[a],
+                                                            signatures[b], points[b], radius, describe)){
+                    matches.push_back({one.from, one.to});
+                    distances.push_back(one.distance);
+                }
+            }
             if(matches.size() < config.minInliers) continue;
 
             std::vector<glm::vec2> here, there;
             here.reserve(matches.size()); there.reserve(matches.size());
-            for(const Match& match : matches){
-                here.push_back(points[a][match.from]);
-                there.push_back(points[b][match.to]);
+            for(const auto& match : matches){
+                here.push_back(points[a][match.first]);
+                there.push_back(points[b][match.second]);
             }
 
             const TwoViewResult pose = relativePoseRobust(here, there, small, config.ransac);
@@ -174,8 +196,8 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
 
             for(size_t i = 0; i < matches.size(); ++i){
                 if(i < pose.inliers.size() && !pose.inliers[i]) continue;
-                edges.push_back(Edge{offset[a] + matches[i].from, offset[b] + matches[i].to,
-                                     matches[i].distance});
+                edges.push_back(Edge{offset[a] + matches[i].first, offset[b] + matches[i].second,
+                                     distances[i]});
             }
         }
     }

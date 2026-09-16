@@ -186,6 +186,44 @@ velikom razmaku steti vise nego na malom, jer stvara lazne veze izmedju udaljeni
 **Prozor 10 je time optimalan ZA OVAJ POTPIS, a ne po sebi.** Sirina baze koja u snimci postoji
 ceka razlucljiviji potpis.
 
+### SIFT-ov potpis: dvostruko bolji po paru, jos ne i u lancu
+
+Napisan je potpis preko histograma gradijenata - 4x4 celije po 8 smjerova, trolinearna raspodjela,
+128 bajtova. Ima vlastiti test (isti detalj ostaje blizu, razliciti daleko, svjetlina ne mijenja
+nista, rub vraca false).
+
+Po paru kadrova je bitno bolji od binarnog, koliko parova prezivi geometrijsku provjeru:
+
+| razmak kadrova | 1 | 10 | 15 | 20 |
+|---|---|---|---|---|
+| binarni | 4322 | 25 | 18 | 22 |
+| SIFT | **9424** | **61** | **29** | **40** |
+
+Dvije stvari su ga dovele dotle, obje izmjerene:
+
+**Zagladjivanje prije gradijenata.** Izvorni SIFT ih racuna na slici zamucenoj na mjerilo znacajke.
+Bez toga potpis opisuje najfiniju teksturu koja se izmedju dva pogleda ne ponavlja: 2677 -> 6248
+poklapanja na susjednom kadru. Ista greska koju smo vec jednom napravili s binarnim potpisom.
+
+**Drugi po redu mora biti prostorno odvojen.** Prag omjera pretpostavlja da je drugi po redu KRIVO
+poklapanje. Kod uglova na tri piksela razmaka i zakrpe od 24 to ne stoji - susjedni ugao gleda
+gotovo istu okolinu, pa je drugi po redu SUSJED PRAVOG i prag odbija tocna poklapanja. Na razmaku
+od deset kadrova: 7 poklapanja s pragom, 1815 bez njega, 388 uz prostornu ogradu.
+
+U CIJELOM LANCU jos ne prolazi. Tragovi se produze i sukobi nestanu, ali poze ostaju krive:
+
+| uglovi | tragovi | sukobljenih | polozaj | smjer koraka |
+|---|---|---|---|---|
+| binarni, razmak 3 px | 5.16 | 5762 | **1.6 %** | **3.05 st** |
+| SIFT, razmak 3 px | 4.74 | 8390 | 18.2 % | 124.25 st |
+| SIFT, razmak 8 px | 6.32 | 1435 | 36.2 % | 124.32 st |
+| SIFT, razmak 12 px | **7.30** | **173** | 33.9 % | 126.01 st |
+
+Duljina traga od 7.30 je najbliza COLMAP-ovih 8.7 sto smo ikad imali, i sukoba prakticki nema - a
+rjesenje je svejedno zrcaljeno, i to ISTIM kutom kroz sve postavke. Ponovljeni 124 st kroz posve
+razlicite postavke nije ugadjanje nego nesto sustavno u tom putu, i to je sljedece sto treba naci.
+Zadano je `useSift = false`.
+
 ### Sto jos nije rijeseno
 
 Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram

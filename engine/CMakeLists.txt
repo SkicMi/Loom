@@ -36,6 +36,7 @@ add_library(Engine STATIC
     src/Engine/ColmapExport.cpp
     src/Engine/ColmapImport.cpp
     src/Engine/Describe.cpp
+    src/Engine/Sift.cpp
     src/Engine/MatchGraph.cpp
     src/Engine/MergeTracks.cpp
     src/Engine/Track.cpp

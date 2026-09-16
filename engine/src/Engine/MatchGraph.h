@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Describe.h"
+#include "Engine/Sift.h"
 #include "Engine/TwoView.h"
 
 #include <vector>
@@ -33,6 +34,22 @@ namespace Engine{
 struct MatchGraphConfig{
     TrackConfig detect;        //za detectCorners; maxCorners je ovdje bitno veci nego pri pracenju
     DescribeConfig describe;
+    SiftConfig sift;
+
+    //=========================================================================================
+    // KOJI POTPIS. Binarni je 256 usporedbi intenziteta, SIFT-ov histogram gradijenata u 4x4
+    // celije po 8 smjerova.
+    //
+    // Izmjereno na pravim kadrovima, koliko parova prezivi geometrijsku provjeru:
+    //
+    //   razmak kadrova      1     10     15     20
+    //   binarni          4322     25     18     22
+    //   SIFT             9424     61     29     40
+    //
+    // Vise nego dvostruko na svakom razmaku, a upravo veliki razmaci nose sirinu baze koja
+    // odredjuje tocnost poza
+    //=========================================================================================
+    bool useSift = false;
     RansacConfig ransac;
 
     //Koliko kadrova unaprijed se usporedjuje. COLMAP za video koristi deset
