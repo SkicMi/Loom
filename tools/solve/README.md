@@ -95,6 +95,28 @@ slike spaja bas po imenu - pa se nas solver do sada nije mogao ni nahraniti. Sad
 piksel za 5.62 px, pa je svaka dosad trenirana scena imala rubove nacrtane krivo. Ovdje je
 zaobidjeno tako da su slike ispravljene prije treninga; u samom treneru jos nije.
 
+### Fina lokalizacija: ideja tocna, izvedba nije
+
+Polozaji znacajki su kvantizirani na cetiri piksela jer se poklapa na smanjenoj slici, a
+COLMAP-ovi su subpikselni - pa je izgledalo da je dotjerivanje na punoj slici najizravniji potez.
+
+`refineCorner` je tocan i ima vlastiti test: iz procjene promasene 1.54 px vraca kut na 0.13 px.
+Ali primijenjen po opazanju NEOVISNO, steti na svakoj postavci:
+
+| najveci dopusteni pomak | kamere | polozaj | rotacija |
+|---|---|---|---|
+| bez dotjerivanja | **96/101** | **4.4 %** | **7.09 st** |
+| 1 px | 91/101 | 7.2 % | 11.94 st |
+| 2 px | 66/101 | 28.1 % | 120.54 st |
+| 4 px | 90/101 | 33.0 % | 57.78 st |
+
+Monotono, i vec na jednom pikselu losije nego bez njega. Razlog: na 4K je unutar cetiri piksela
+vise uglova, pa se dva opazanja istog traga zalijepe na RAZLICITE. Trag koji je bio kvantiziran ali
+dosljedan postane tocan ali nedosljedan - a triangulaciji treba ovo drugo.
+
+Prava inacica trazi dosljednost: jedno opazanje traga je referentno, a ostala se dotjeruju
+Lucas-Kanadeom prema njegovoj zakrpi.
+
 ### Sto jos nije rijeseno
 
 Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram

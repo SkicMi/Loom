@@ -92,6 +92,30 @@ struct TrackConfig{
 std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& config = {});
 
 //=============================================================================================
+// KUT DOTJERAN ISPOD PIKSELA, iz priblizne pozicije.
+//
+// ZASTO OVO TREBA. Graf poklapanja trazi i poklapa na smanjenoj slici, jer na punoj razlucivosti
+// detektor hvata sum senzora koji se izmedju kadrova ne ponavlja - udio ispravnih poklapanja ide
+// s 36 na 82 posto. Ali polozaj se time kvantizira na onoliko piksela koliko je smanjenje: na 4K
+// smanjenom cetiri puta, svaka je znacajka tocna na cetiri piksela. COLMAP-ove su subpikselne, i
+// ta razlika ide ravno u tocnost poza.
+//
+// KAKO. Kod pravog kuta gradijent je okomit na smjer ruba, pa za svaki piksel p okoline vrijedi
+// g(p) . (p - q) = 0, gdje je q kut. Vise takvih uvjeta daje sustav 2x2:
+//
+//     q = (suma g g') ^-1 * (suma g g' p)
+//
+// Isti racun koji stoji iza cornerSubPixa. Ponovi se nekoliko puta jer se okolina racuna oko
+// trenutne procjene.
+//
+// GRANICA POMAKA JE NUZNA, ne oprez: ako u okolini nema pravog kuta nego rub ili sum, sustav je
+// slabo uvjetovan i rjesenje odleti. Tko se pomakne dalje od maxShift, vraca se na pocetak -
+// bolje kvantiziran polozaj nego pogresan
+//=============================================================================================
+glm::vec2 refineCorner(const GrayImage& image, const glm::vec2& start,
+                       uint32_t window = 5, float maxShift = 4.0f, uint32_t iterations = 4);
+
+//=============================================================================================
 // Koliko slika ima suma, u istim jedinicama u kojima su pikseli.
 //
 // ZASTO OVO TREBA PRACENJU. Afini warp ima sest parametara, a zakrpa ih ne odredjuje jednako

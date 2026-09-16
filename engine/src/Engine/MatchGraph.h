@@ -133,6 +133,40 @@ struct MatchGraphConfig{
     // kandidat je suglasnost trojki: brid koji nema zajednickog susjeda nije potvrdjen nicim
     //=========================================================================================
     bool conflictFreeMerge = false;
+
+    //=========================================================================================
+    // POLOZAJ DOTJERAN NA PUNOJ SLICI.
+    //
+    // Trazenje i poklapanje idu na smanjenoj slici jer ondje potpis mjeri strukturu a ne sum.
+    // Cijena je kvantizacija: pri smanjenju cetiri puta svaka je znacajka tocna na cetiri piksela,
+    // a COLMAP-ove su subpikselne. Ta razlika ide ravno u tocnost poza, dakle u ostrinu splata.
+    //
+    // Ovdje se to placa samo jednom po opazanju koje je PREZIVJELO sva sita: polozaj se vrati u
+    // punu sliku i ondje dotjera Foerstnerovim racunom (vidi refineCorner). Poklapanje ostaje
+    // grubo, mjerenje postaje fino.
+    //
+    // ZADANO ISKLJUCENO, I TO ŠTETI - izmjereno, protiv COLMAP-ovog rjesenja iste snimke:
+    //
+    //   najveci pomak   kamere    polozaj   rotacija
+    //   bez dotjerivanja 96/101     4.4 %     7.09 st
+    //   1 px             91/101     7.2 %    11.94 st
+    //   2 px             66/101    28.1 %   120.54 st
+    //   4 px             90/101    33.0 %    57.78 st
+    //
+    // Monotono: sto se vise dopusti, to gore - i vec na jednom pikselu je losije nego bez ikakvog
+    // dotjerivanja. Sam refineCorner je tocan (test ga s 1.54 px promasaja vraca na 0.13), pa
+    // greska nije u njemu nego u tome STO SE DOTJERUJE NEOVISNO: na 4K je unutar cetiri piksela
+    // vise uglova, pa se dva opazanja istog traga zalijepe na RAZLICITE - i trag koji je bio
+    // kvantiziran ali dosljedan postane tocan ali nedosljedan. Triangulaciji treba ovo drugo.
+    //
+    // Prava inacica trazi dosljednost: jedno opazanje traga je referentno, a ostala se dotjeruju
+    // Lucas-Kanadeom PREMA NJEGOVOJ ZAKRPI, pa svi opisuju istu fizicku tocku. To je jos posao
+    //=========================================================================================
+    bool refineAtFullResolution = false;
+
+    //Koliko se polozaj smije pomaknuti pri dotjerivanju, u pikselima pune slike. Nula znaci
+    //onoliko koliko je slika smanjena - dakle koliko kvantizacija najvise i moze promasiti
+    float refineMaxShift = 0.0f;
 };
 
 struct MatchGraphResult{

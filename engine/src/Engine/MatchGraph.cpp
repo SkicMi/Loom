@@ -1,4 +1,6 @@
+#include "Engine/Bands.h"
 #include "Engine/MatchGraph.h"
+#include "Engine/Track.h"
 
 #include <algorithm>
 #include <numeric>
@@ -296,6 +298,20 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     for(uint32_t point = 0; point < uint32_t(views.size()); ++point){
         if(config.dropConflicting && conflicted.count(point)) continue;
         if(views[point] >= config.minViews) renumbered[point] = next++;
+    }
+
+    //DOTJERIVANJE NA PUNOJ SLICI, tek sada - samo za ono sto je proslo sva sita. Prije sortiranja
+    //u izlaz, jer se time mijenja samo polozaj a ne pripadnost
+    if(config.refineAtFullResolution && shrink > 1){
+        const uint32_t reach = std::max(3u, shrink + 1);
+        const float allowed = config.refineMaxShift > 0.0f ? config.refineMaxShift : float(shrink);
+
+        inBands(0, int(collected.size()), [&](uint32_t, int firstItem, int lastItem){
+            for(int index = firstItem; index < lastItem; ++index){
+                Observation& one = collected[size_t(index)];
+                one.pixel = refineCorner(images[one.camera], one.pixel, reach, allowed);
+            }
+        });
     }
 
     result.observations.reserve(collected.size());

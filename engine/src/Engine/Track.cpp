@@ -375,6 +375,60 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     return corners;
 }
 
+glm::vec2 refineCorner(const GrayImage& image, const glm::vec2& start,
+                       uint32_t window, float maxShift, uint32_t iterations){
+    if(window < 2 || image.width < 4 || image.height < 4) return start;
+
+    glm::vec2 corner = start;
+
+    for(uint32_t step = 0; step < iterations; ++step){
+        //Sustav 2x2: suma g g' i suma g g' p. Tezina pada prema rubu okoline, jer piksel daleko od
+        //procjene vjerojatnije pripada drugoj strukturi
+        double gxx = 0.0, gxy = 0.0, gyy = 0.0, bx = 0.0, by = 0.0;
+
+        const int centreX = int(std::lround(corner.x));
+        const int centreY = int(std::lround(corner.y));
+        const int reach = int(window);
+        const double sigma = double(window) * 0.5;
+
+        for(int dy = -reach; dy <= reach; ++dy){
+            for(int dx = -reach; dx <= reach; ++dx){
+                const int x = centreX + dx, y = centreY + dy;
+                if(x < 1 || y < 1 || x + 1 >= int(image.width) || y + 1 >= int(image.height)) continue;
+
+                const double gx = 0.5 * double(at(image, x + 1, y) - at(image, x - 1, y));
+                const double gy = 0.5 * double(at(image, x, y + 1) - at(image, x, y - 1));
+
+                const double away = double(dx * dx + dy * dy) / (2.0 * sigma * sigma);
+                const double weight = std::exp(-away);
+
+                const double wxx = weight * gx * gx;
+                const double wxy = weight * gx * gy;
+                const double wyy = weight * gy * gy;
+
+                gxx += wxx; gxy += wxy; gyy += wyy;
+                bx += wxx * double(x) + wxy * double(y);
+                by += wxy * double(x) + wyy * double(y);
+            }
+        }
+
+        const double determinant = gxx * gyy - gxy * gxy;
+        //Slabo uvjetovan sustav znaci rub ili ravnu plohu, a ne kut - ondje se nema sto dotjerivati
+        if(std::fabs(determinant) < 1e-9) return start;
+
+        const glm::vec2 solved(float((gyy * bx - gxy * by) / determinant),
+                               float((gxx * by - gxy * bx) / determinant));
+
+        if(!std::isfinite(solved.x) || !std::isfinite(solved.y)) return start;
+        if(glm::length(solved - start) > maxShift) return start;
+
+        if(glm::length(solved - corner) < 1e-4f){ corner = solved; break; }
+        corner = solved;
+    }
+
+    return glm::length(corner - start) > maxShift ? start : corner;
+}
+
 Pyramid::Pyramid(const GrayImage& image, uint32_t levels){
     //buildPyramid vraca svoj Level iz anonimnog imenika; ovdje se prepisuje u nas
     for(const auto& source : buildPyramid(image, levels)){
