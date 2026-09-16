@@ -155,6 +155,37 @@ dosljedan postane tocan ali nedosljedan - a triangulaciji treba ovo drugo.
 Prava inacica trazi dosljednost: jedno opazanje traga je referentno, a ostala se dotjeruju
 Lucas-Kanadeom prema njegovoj zakrpi.
 
+### Sira baza postoji u snimci, ali je nas potpis ne vidi
+
+Drift se svodi na bazu: zaokret po koraku je 0.073 st, a SMJER koraka griješi 3.05 st - a smjer
+pomaka izmedju dvije kamere odredjuje paralaksa. Nasa baza je medijan 3.36 st, COLMAP-ova 7.93.
+
+Gdje je sira baza: u COLMAP-ovom modelu se vidi da kamera OBILAZI i vraca se. Zajednickih tocaka
+po razmaku kadrova:
+
+| razmak | 1 | 5 | 10 | 15 | 20 | 30+ |
+|---|---|---|---|---|---|---|
+| medijan zajednickih | 732 | 376 | 119 | **764** | **613** | ~0 |
+
+Najjace preklapanje NIJE na najmanjem razmaku nego na 15 do 20, jer se tada gleda isti zid s druge
+strane sobe. Parova s razmakom vecim od 15 i preko sto zajednickih tocaka ima 137, a nas prozor
+staje na 10 - ne gledamo ih uopce.
+
+Ali prosirivanje prozora ne pomaze, nego ruši:
+
+| prozor | kamere | polozaj | rotacija | smjer koraka |
+|---|---|---|---|---|
+| 7 | 87/101 | 4.5 % | 12.16 st | - |
+| **10** | **101/101** | **1.6 %** | **6.60 st** | **3.05 st** |
+| 20 | 101/101 | 33.4 % | 139.98 st | 137.13 st |
+
+Razlog je u potpisu: na razmaku 15 do 25 nas potpis nalazi 16 do 25 provjerenih parova ondje gdje
+COLMAP ima 600 do 760 zajednickih tocaka. Tridesetak puta manje, i vecina toga je sum - a sum na
+velikom razmaku steti vise nego na malom, jer stvara lazne veze izmedju udaljenih dijelova snimke.
+
+**Prozor 10 je time optimalan ZA OVAJ POTPIS, a ne po sebi.** Sirina baze koja u snimci postoji
+ceka razlucljiviji potpis.
+
 ### Sto jos nije rijeseno
 
 Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram
