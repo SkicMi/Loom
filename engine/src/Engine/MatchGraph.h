@@ -250,6 +250,64 @@ struct MatchGraphConfig{
     // krivo spajali, pa ono sto ostane prezivi ciscenje sukoba umjesto da padne s njim
     //=========================================================================================
     uint32_t minTriangleSupport = 1;
+
+    //=========================================================================================
+    // RASTAVITI SUKOBLJENU KOMPONENTU UMJESTO DA SE BACI.
+    //
+    // dropConflicting baca komponentu koja isti kadar dodirne dvaput, i to je najskuplja odluka u
+    // cijelom grafu: takve komponente nose 13 957 opazanja. One su k tome DUGE - trag koji prezivi
+    // kroz vise kadrova ima i vise prilika da pokupi jedan krivi brid - pa se bacanjem sustavno
+    // gube upravo najduzi tragovi, a duljina traga je jedina mjera po kojoj jos zaostajemo za
+    // COLMAP-om (5.16 naspram 8.7).
+    //
+    // Komponenta nije kriva cijela; kriv je jedan brid u njoj. Ovdje se njezini bridovi slazu
+    // ponovno, najpouzdaniji prvi, a spoj koji bi opet doveo dva opazanja u isti kadar se ne
+    // izvede. Od jedne bacene komponente ostane vise ispravnih tragova.
+    //
+    // NIJE ISTO STO I conflictFreeMerge, iako je pravilo isto. Ondje je vrijedilo za SVE
+    // komponente, pa je krivi brid s malom udaljenoscu potpisa znao odbiti pravi i u zdravoj
+    // komponenti koja to nije trebala - i rezultat je bio 33 posto greske polozaja. Ovdje se dira
+    // samo ono sto je vec dokazano pokvareno.
+    //
+    // I sudac je bolji: prvo broj svjedoka iz trecih kadrova, pa tek onda udaljenost potpisa.
+    // Svjedok je neovisna potvrda, udaljenost potpisa nije - to je ista mjera koja je brid i
+    // stvorila.
+    //
+    // ZADANO UKLJUCENO, uz splitSupport 2. Izmjereno na 101 kadru prave snimke, protiv COLMAP-ovog
+    // rjesenja iste snimke, i na kraju u decibelima na istom skupu izdvojenih kadrova:
+    //
+    //                    tragovi   baza   polozaj   rotacija   zaokret/kadar   smjer koraka   PSNR    SSIM
+    //   bacanje            5.16    3.36     1.6 %    6.60 st      0.073 st        3.05 st    29.29   0.860
+    //   rastavljanje       7.77    4.72     1.3 %    4.69 st      0.035 st        1.87 st    30.29   0.873
+    //
+    // Prva izmjena koja popravlja I poze I splat. Jedan decibel je osam puta iznad izmjerene
+    // ponovljivosti PSNR-a (0.13 dB). Tragovi se priblize COLMAP-ovih 8.7, baza se prosiri za
+    // trecinu, a zaokret iz kadra u kadar se PREPOLOVI.
+    //
+    // Na 30 kadrova koje COLMAP uopce nije registrirao: tocaka 938 -> 5074, baza 1.55 -> 5.44 st
+    //=========================================================================================
+    bool splitConflicting = true;
+
+    //=========================================================================================
+    // KOLIKO SVJEDOKA MORA IMATI BRID DA BI SE UNUTAR SUMNJIVE KOMPONENTE UOPCE PONOVNO KORISTIO.
+    //
+    // Nula znaci svi. Komponenta je vec dokazano pokvarena, pa u njoj vrijedi stroziji prag nego u
+    // ostatku grafa - ono sto se raspadne, raspalo se jer ga nista nije drzalo.
+    //
+    // ZADANO DVA, i prozor je uzak - to treba znati:
+    //
+    //   svjedoka   tragovi   polozaj   rotacija   smjer koraka
+    //     0         8.22      35.0 %   119.08 st    132.56 st
+    //     2         7.77       1.3 %     4.69 st      1.87 st
+    //     3         6.84      15.3 %   142.98 st    110.10 st
+    //     4         6.84      25.7 %    78.80 st     96.51 st
+    //
+    // Pad nije postupan nego se rusi, i to je isti potpis koji ima i SIFT-ov put: cim graf izgubi
+    // vezu preko slabog dijela snimke, rekonstrukcija skrene u zrcalnu granu i sve iza nje je
+    // krivo. To NIJE svojstvo ovog polja nego rekonstrukcije, koja nema provjeru koja bi takvu
+    // granu odbila - i to je sljedece sto treba rijesiti. Dotad je dvojka izmjerena granica
+    //=========================================================================================
+    uint32_t splitSupport = 2;
 };
 
 struct MatchGraphResult{
@@ -289,6 +347,12 @@ struct MatchGraphResult{
 
     //Koliko ih je odbaceno jer ih nijedan treci kadar nije potvrdio - vidi minTriangleSupport
     uint32_t unwitnessedEdges = 0;
+
+    //Koliko je sukobljenih komponenti rastavljeno umjesto bacenih - vidi splitConflicting
+    uint32_t splitPoints = 0;
+
+    //Koliko je bridova u njima baceno jer nisu imali dovoljno svjedoka - vidi splitSupport
+    uint32_t droppedWeakEdges = 0;
 };
 
 MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,

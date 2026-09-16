@@ -51,6 +51,30 @@ float speckle(float x, float y){
     return top * (1.0f - fy) + bottom * fy;
 }
 
+//Ista tekstura, ali POPLOCANA: isti isjecak se ponavlja svakih 320 px. Sluzi samo jednoj
+//provjeri - da bi komponenta uopce mogla postati sukobljena, poklapanja moraju griyesiti, a ona
+//ne grijese dok je tekstura neponavljajuca. Ovdje svaki ugao ima svog blizanca s tocno istim
+//potpisom, i unutar polumjera pretrage, pa se trag jednom zalijepi za pravog a drugi put za
+//blizanca - i komponenta dodirne isti kadar dvaput
+std::vector<uint8_t> renderRepeating(glm::vec2 shift){
+    const float period = 320.0f;
+    std::vector<uint8_t> pixels(size_t(width) * height);
+    for(uint32_t y = 0; y < height; ++y){
+        for(uint32_t x = 0; x < width; ++x){
+            float at = std::fmod(float(x) - shift.x, period);
+            if(at < 0.0f) at += period;
+            //Malo NEPOPLOCANOG suma preko svega: bez njega su blizanci savrseno jednaki, pa
+            //izjednacenje uvijek puca na istu stranu i graf ostane dosljedan iako je kriv. Sum
+            //cini izbor izmedju blizanaca nasumicnim po paru kadrova - i tek tada se dva traga
+            //stvarno slijepe
+            const float value = 0.94f * speckle(at, float(y) - shift.y)
+                              + 0.06f * speckle(float(x) + 5000.0f, float(y) + 5000.0f);
+            pixels[size_t(y) * width + x] = uint8_t(std::max(0.0f, std::min(255.0f, value)));
+        }
+    }
+    return pixels;
+}
+
 std::vector<uint8_t> render(glm::vec2 shift){
     std::vector<uint8_t> pixels(size_t(width) * height);
     for(uint32_t y = 0; y < height; ++y){
@@ -274,6 +298,107 @@ int main(){
             refused.refusedEdges == 0 && refused.observations.size() == kept.observations.size(),
             fmt("%u odbijenih bridova, opazanja %zu naspram %zu",
                 refused.refusedEdges, refused.observations.size(), kept.observations.size()));
+    }
+
+    //-- rastavljanje sukobljene komponente ---------------------------------------------------
+    //
+    //Sukob se na neponavljajucoj teksturi ne da napraviti (vidi gore), pa se ovdje namjerno
+    //pravi: resetka daje uglove koji se stvarno ne razlikuju, a prag omjera se iskljuci (ratio 1
+    //znaci "odbaci ako je najbolji losiji od drugog", dakle nikad). Tada krivi bridovi nastaju i
+    //komponente se slijepe - tocno ono stanje zbog kojeg dropConflicting postoji.
+    //
+    //Sto se brani:
+    //
+    //  invarijanta   nakon rastavljanja NIJEDNA tocka ne smije imati dva opazanja u istom kadru.
+    //                To je cijela svrha postupka i mjeri se iz samog izlaza, bez brojaca
+    //  dobitak       rastavljanje mora vratiti opazanja koja bi bacanje izgubilo
+    //  bezopasnost   na cistoj teksturi ne smije promijeniti nista - bit po bit isti izlaz kao
+    //                slijepo spajanje. Upravo to conflictFreeMerge nije imao, i zato je stetio
+    {
+        std::vector<std::vector<uint8_t>> store;
+        std::vector<Engine::GrayImage> frames;
+        for(uint32_t k = 0; k < 4; ++k){
+            store.push_back(renderRepeating(glm::vec2(36.0f * float(k), 20.0f * float(k))));
+            frames.push_back(Engine::GrayImage{store.back().data(), width, height, width});
+        }
+
+        Engine::MatchGraphConfig loose = config;
+        loose.window = 3;
+        loose.describe.ratio = 1.0f;   //bez praga omjera - resetka se tada poklapa preko perioda
+        loose.dropConflicting = false;
+        loose.minTriangleSupport = 0;   //svjedoci bas ovakve bridove i brisu - ovdje se brani rastavljanje, ne oni
+        loose.splitConflicting = false; //mjera za usporedbu: slijepo spajanje, bez ikakvog popravka
+
+        const Engine::MatchGraphResult glued = Engine::buildMatchGraph(frames, intrinsics, loose);
+
+        //Prag svjedoka se ovdje IZRICITO gasi. Zadana dvojka je izmjerena na pravoj snimci, a na
+        //ovoj sceni bi pobrisala i ono cime se rastavljanje uopce brani - a brani se mehanizam,
+        //ne postavka
+        Engine::MatchGraphConfig splitting = loose;
+        splitting.splitConflicting = true;
+        splitting.splitSupport = 0;
+        const Engine::MatchGraphResult split = Engine::buildMatchGraph(frames, intrinsics, splitting);
+
+        Engine::MatchGraphConfig dropping = loose;
+        dropping.dropConflicting = true;
+        dropping.splitConflicting = false;
+        const Engine::MatchGraphResult dropped = Engine::buildMatchGraph(frames, intrinsics, dropping);
+
+        auto twiceInFrame = [](const Engine::MatchGraphResult& graph){
+            std::map<uint64_t, uint32_t> seen;
+            uint32_t doubled = 0;
+            for(const Engine::Observation& one : graph.observations){
+                const uint64_t key = (uint64_t(one.camera) << 32) | uint64_t(one.point);
+                if(++seen[key] == 2) ++doubled;
+            }
+            return doubled;
+        };
+
+        report.check("scena stvarno daje sukobe",
+            glued.conflictingPoints > 0,
+            fmt("%u sukobljenih komponenti, %u opazanja u njima",
+                glued.conflictingPoints, glued.conflictingObservations));
+
+        report.check("rastavljanje ukloni sukob",
+            split.conflictingPoints == 0 && split.splitPoints > 0,
+            fmt("%u sukobljenih ostalo (slijepo ih je %u), rastavljenih %u",
+                split.conflictingPoints, glued.conflictingPoints, split.splitPoints));
+
+        //I iz samog izlaza, bez brojaca: nijedna tocka ne smije imati dva opazanja u istom kadru
+        report.check("izlaz nema tocku dvaput u kadru",
+            twiceInFrame(split) == 0,
+            fmt("%u takvih tocaka na %zu opazanja",
+                twiceInFrame(split), split.observations.size()));
+
+        report.check("rastavljanje vrati vise nego bacanje",
+            split.observations.size() > dropped.observations.size(),
+            fmt("rastavljeno %zu opazanja, baceno %zu, slijepo %zu",
+                split.observations.size(), dropped.observations.size(), glued.observations.size()));
+
+        //-- i na cistom mora mirovati --------------------------------------------------------
+        Engine::MatchGraphConfig clean = config;
+        clean.window = 1;
+        clean.splitConflicting = false;
+        const Engine::MatchGraphResult blind = Engine::buildMatchGraph(images, intrinsics, clean);
+
+        Engine::MatchGraphConfig cleanSplit = clean;
+        cleanSplit.splitConflicting = true;
+        cleanSplit.splitSupport = 0;
+        const Engine::MatchGraphResult quiet = Engine::buildMatchGraph(images, intrinsics, cleanSplit);
+
+        bool same = blind.observations.size() == quiet.observations.size()
+                 && blind.pointCount == quiet.pointCount;
+        for(size_t i = 0; same && i < blind.observations.size(); ++i){
+            same = blind.observations[i].camera == quiet.observations[i].camera
+                && blind.observations[i].point == quiet.observations[i].point
+                && blind.observations[i].pixel == quiet.observations[i].pixel;
+        }
+
+        report.check("na cistom rastavljanje ne mijenja nista",
+            same && quiet.splitPoints == 0 && quiet.refusedEdges == 0,
+            fmt("%zu naspram %zu opazanja, rastavljenih %u, odbijenih %u",
+                blind.observations.size(), quiet.observations.size(),
+                quiet.splitPoints, quiet.refusedEdges));
     }
 
     return report.result();

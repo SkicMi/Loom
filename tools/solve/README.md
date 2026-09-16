@@ -121,8 +121,9 @@ isti izdvojeni odsjecci. Razlikuju se samo poze.
 | Loom, sa suglasnoscu trojki | 26.81 dB | **24.69** | 0.861 |
 | Loom, prije nje | 25.68 dB | 18.25 | 0.835 |
 
-Jaz je s 3.91 pao na 2.78 dB, a NAJGORI kadar nam je sada bolji od njegovog - 24.69 naspram 23.85.
-Medijan jos zaostaje, ali scena vise nema mjesta koja se raspadnu.
+Jaz je s 3.91 pao na 2.78 dB. (Redak "najgori" ostaje ovdje samo zato sto je izmjeren; ne znaci
+nista - vidi "Koliko je PSNR uopce ponovljiv" nize, gdje se pokazalo da najgori kadar varira 6.67
+dB izmedju dva pokretanja ISTOG modela.)
 
 Uz to su usput pronadjene dvije rupe u lancu:
 
@@ -296,12 +297,80 @@ detektor nije nista nasao.
 
 Zadano iskljuceno, ali je to najtjesnja odluka u cijelom ovom dokumentu.
 
+### Rastavljanje sukobljene komponente: prva izmjena koja popravlja oboje
+
+Komponenta koja isti kadar dodirne dvaput sadrzi bar jedan krivi brid, i dosad se cijela bacala.
+To je bila najskuplja odluka u grafu, i skuplja nego sto je ovdje pisalo: brojac je javljao 13 957
+opazanja, ali su se opazanja spojenog kadra izbacivala jos ranije, pa je stvarni gubitak bio preko
+polovice grafa - 275 tisuca naspram 626 tisuca.
+
+I gubile su se bas NAJDUZE komponente: trag koji prezivi kroz vise kadrova ima i vise prilika da
+pokupi jedan krivi brid.
+
+Umjesto bacanja, komponenta se sada RASTAVLJA - njezini se bridovi slazu ponovno, najpouzdaniji
+prvi, i spoj koji bi opet doveo dva opazanja u isti kadar se ne izvede.
+
+**Prvi pokusaj je pao, i to je bilo poucno.** Bez ikakvog dodatnog praga tragovi su skocili na 8.22
+kadra - prakticki COLMAP-ovih 8.7 - a poze su se raspale: 35 % polozaja, 119 st rotacije, 132 st
+smjera koraka. Isti potpis koji ima i SIFT-ov put (124 st). Dakle **odsustvo sukoba nije tocnost**:
+sukob je bio SIMPTOM, a rastavljanje ga uklanja ne dirajuci uzrok.
+
+Provjerena je i ocita sumnja - je li rjesenje samo zrcalno. Nije: uz dopusteno zrcaljenje u
+Umeyami greska ne padne nego rotacija ode na 180 st.
+
+**Popravak je stroziji prag unutar sumnjive komponente.** Ona je vec dokazano pokvarena, pa se u
+njoj ne vjeruje bridu koji ima samo jednog svjedoka u trecem kadru. Takav se brid BACA, ne odgadja.
+
+| svjedoka u komponenti | tragovi | polozaj | rotacija | smjer koraka |
+|---|---|---|---|---|
+| 0 (svi bridovi) | 8.22 | 35.0 % | 119.08 st | 132.56 st |
+| **2** | **7.77** | **1.3 %** | **4.69 st** | **1.87 st** |
+| 3 | 6.84 | 15.3 % | 142.98 st | 110.10 st |
+| 4 | 6.84 | 25.7 % | 78.80 st | 96.51 st |
+
+Uz dvojku se popravlja SVE sto se mjeri, i po prvi put i poze i splat:
+
+| | tragovi | baza | polozaj | rotacija | zaokret/kadar | smjer koraka |
+|---|---|---|---|---|---|---|
+| bacanje | 5.16 | 3.36 st | 1.6 % | 6.60 st | 0.073 st | 3.05 st |
+| rastavljanje, svj. >= 2 | **7.77** | **4.72 st** | **1.3 %** | **4.69 st** | **0.035 st** | **1.87 st** |
+
+I u decibelima, na istom skupu izdvojenih kadrova i s COLMAP-om treniranim istom naredbom (7
+izdvojenih kadrova - zato se ovi brojevi ne smiju usporedjivati s tablicom gore, koja je imala 10):
+
+| poze | PSNR medijan | SSIM |
+|---|---|---|
+| COLMAP | **32.00 dB** | **0.907** |
+| Loom, rastavljanje | 30.29 dB | 0.873 |
+| Loom, bacanje | 29.29 dB | 0.860 |
+
+**Jaz je s 2.71 pao na 1.71 dB**, a to je osam puta iznad izmjerene ponovljivosti od 0.13 dB. Prva
+izmjena otkad se mjeri koja popravlja i poze i splat - dosad su tri popravile poze a pokvarile
+splat.
+
+Na 30 kadrova s pocetka snimke, koje COLMAP nije registrirao uopce: tocaka 938 -> 5074, baza
+1.55 -> 5.44 st.
+
+**Prozor je uzak i to treba znati.** Nula, tri i cetiri svjedoka sve ruse rjesenje, i to ne
+postupno nego naglo. To nije svojstvo ovog polja nego rekonstrukcije: cim graf izgubi vezu preko
+slabog dijela snimke, registracija skrene u krivu granu i sve iza nje je zrcaljeno ili zaokrenuto.
+Ista se granica vidi u SIFT-ovom putu (124 st kroz posve razlicite postavke) i u pragu svjedoka po
+bridu (dva svjedoka globalno = 86 st). **Rekonstrukcija nema provjeru koja bi takvu granu odbila, i
+to je sljedeca stvar.**
+
 ### Sto jos nije rijeseno
 
-Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram
-COLMAP-ovih 8.7, a baza medijan 2.75 st naspram 7.93 - tocke jos ne zive dovoljno dugo da bi ih
-vidjelo dovoljno kamera. Poklapanje drzi do razmaka od sedam kadrova (1680 provjerenih parova), a
-na deset pada na 25 - pa prozor od deset kadrova vecinom radi uprazno.
+**Rekonstrukcija nema obranu od krive grane.** Kad graf oslabi, registracija skrene i cijelo
+rjesenje se zaokrene za sto i nesto stupnjeva - vidjeno u tri neovisna puta (SIFT, dva svjedoka po
+bridu, rastavljanje bez praga). Reprojekcija to ne prijavi jer se poze slozu oko izmisljenih
+tocaka. Ovo je sada glavna prepreka: blokira SIFT-ov potpis i cini svaki dobitak krhkim.
+
+**Jaz u decibelima je 1.71 dB** (30.29 naspram 32.00). Duljina traga je 7.77 naspram COLMAP-ovih
+8.7, baza 4.72 st naspram 7.93 - blize nego ikad, ali jos nije tu.
+
+**Sto se u alatu jos ne rjesava**: distorzija se ne racuna u solveru nego se slike ispravljaju
+unaprijed; trener i dalje ignorira k1; `VideoSolve` nije provjeren od .MP4 do kraja; nema izvoza u
+Blender ni Nuke.
 
 ## Solve
 

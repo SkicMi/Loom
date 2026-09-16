@@ -27,6 +27,7 @@ struct Groups{
 struct Edge{
     uint32_t a = 0, b = 0;
     uint32_t distance = 0;
+    uint32_t support = 0;   //koliko ga je trecih kadrova potvrdilo - vidi minTriangleSupport
 };
 
 //Koje kadrove komponenta vec drzi. Trag je kratak - nekoliko kadrova - pa je obicno polje brze od
@@ -249,8 +250,11 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
                 else { ++shared; ++i; ++j; }
             }
 
-            if(shared >= config.minTriangleSupport) witnessed.push_back(edge);
-            else ++result.unwitnessedEdges;
+            if(shared >= config.minTriangleSupport){
+                Edge kept = edge;
+                kept.support = shared;
+                witnessed.push_back(kept);
+            }else ++result.unwitnessedEdges;
         }
         edges.swap(witnessed);
     }
@@ -289,6 +293,101 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
         }
     }else{
         for(const Edge& edge : edges) groups.join(edge.a, edge.b);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Popravak sukobljene komponente umjesto bacanja
+    // ---------------------------------------------------------------------------------
+    //
+    // Komponenta koja isti kadar dodirne dvaput sadrzi bar jedan krivi brid. Dosad se cijela
+    // bacala - a s njom i sve sto je u njoj bilo tocno. Ovdje se ona RASTAVLJA: njezini se bridovi
+    // prolaze ponovno, najpouzdaniji prvi, i spoj koji bi opet doveo dva opazanja u isti kadar se
+    // ne izvede. Umjesto jednog bacenog traga ostane vise ispravnih.
+    //
+    // ZASTO OVDJE RADI, A GLOBALNO (conflictFreeMerge) NIJE: ondje je isto pravilo vrijedilo za sve
+    // komponente, pa je krivi brid s malom udaljenoscu potpisa znao zauzeti mjesto i odbiti pravi -
+    // u zdravoj komponenti koja to nije trebala. Ovdje se dira samo ono sto je vec dokazano
+    // pokvareno; zdrave komponente prolaze nedirnute.
+    //
+    // I SUDAC JE BOLJI: prvo broj svjedoka (koliko je trecih kadrova potvrdilo brid), pa tek onda
+    // udaljenost potpisa. Svjedok je neovisna potvrda, udaljenost potpisa nije
+    if(config.splitConflicting && !config.conflictFreeMerge && !edges.empty()){
+        //Koja komponenta dodiruje isti kadar dvaput. Znacajke su poredane po kadrovima, pa je
+        //dovoljno pamtiti zadnji vidjeni kadar po korijenu
+        std::vector<uint32_t> lastFrame(result.featuresTotal, UINT32_MAX);
+        std::vector<uint8_t> clashes(result.featuresTotal, 0);
+        for(uint32_t frame = 0; frame < frames; ++frame){
+            for(uint32_t i = offset[frame]; i < offset[frame + 1]; ++i){
+                const uint32_t root = groups.find(i);
+                if(lastFrame[root] == frame) clashes[root] = 1;
+                lastFrame[root] = frame;
+            }
+        }
+
+        //Zdravo se prepisuje kako jest, pokvareno ide na ponovno slaganje. Oba kraja brida imaju
+        //isti korijen, pa je dovoljno pitati jedan
+        Groups repaired(result.featuresTotal);
+        std::vector<Edge> broken;
+        for(const Edge& edge : edges){
+            if(clashes[groups.find(edge.a)]) broken.push_back(edge);
+            else repaired.join(edge.a, edge.b);
+        }
+
+        //JACI DOKAZ UNUTAR SUMNJIVE KOMPONENTE. Komponenta je vec dokazano pokvarena, pa se u njoj
+        //ne vjeruje bridu koji je prosao samo najnizi prag svjedoka. Brid ispod ovog praga se ne
+        //odgadja nego BACA - ono sto se raspadne, raspalo se jer ga nista nije drzalo
+        if(config.splitSupport > 0){
+            std::vector<Edge> strong;
+            strong.reserve(broken.size());
+            for(const Edge& edge : broken){
+                if(edge.support >= config.splitSupport) strong.push_back(edge);
+                else ++result.droppedWeakEdges;
+            }
+            broken.swap(strong);
+        }
+
+        if(!broken.empty()){
+            //POREDAK JE POTPUNO ZADAN: vise svjedoka prvo, pa manja udaljenost potpisa, pa redni
+            //brojevi - inace bi rezultat ovisio o poretku parova kadrova
+            std::stable_sort(broken.begin(), broken.end(), [](const Edge& one, const Edge& two){
+                if(one.support != two.support) return one.support > two.support;
+                if(one.distance != two.distance) return one.distance < two.distance;
+                if(one.a != two.a) return one.a < two.a;
+                return one.b < two.b;
+            });
+
+            FrameSets sets(result.featuresTotal);
+            for(const Edge& edge : broken){
+                sets.frames[edge.a] = {frameOf[edge.a]};
+                sets.frames[edge.b] = {frameOf[edge.b]};
+            }
+
+            for(const Edge& edge : broken){
+                const uint32_t rootA = repaired.find(edge.a);
+                const uint32_t rootB = repaired.find(edge.b);
+                if(rootA == rootB) continue;
+
+                if(sets.wouldClash(sets.frames[rootA], sets.frames[rootB])){
+                    ++result.refusedEdges;
+                    continue;
+                }
+
+                repaired.join(rootA, rootB);
+                const uint32_t root = repaired.find(rootA);
+                const uint32_t other = root == rootA ? rootB : rootA;
+
+                sets.frames[root].insert(sets.frames[root].end(),
+                                         sets.frames[other].begin(), sets.frames[other].end());
+                sets.frames[other].clear();
+                sets.frames[other].shrink_to_fit();
+            }
+
+            for(uint32_t root = 0; root < result.featuresTotal; ++root){
+                if(clashes[root]) ++result.splitPoints;
+            }
+        }
+
+        groups.parent.swap(repaired.parent);
     }
 
     // ---------------------------------------------------------------------------------
