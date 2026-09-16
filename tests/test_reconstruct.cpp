@@ -325,5 +325,75 @@ int main(){
                 guarded.medianReprojection, bare.medianReprojection));
     }
 
+    //-- pocetni par: javlja se, dade se zadati, i vise pokusaja ne kvari ---------------------
+    //
+    //Cijela rekonstrukcija visi o prvom paru. Izmjereno na pravoj snimci: na ISTOM grafu par 86-89
+    //daje 4.69 st greske rotacije, a par 80-89 daje 119.94 st - a oba prolaze sve provjere koje
+    //izbor para ima. Razlika se ne vidi dok se scena ne izgradi do kraja.
+    //
+    //Zato postoje tri stvari, i sve tri se ovdje brane:
+    //
+    //  javlja se     koji je par izabran i kakav je bio, inace se na pitanje "odakle je krenulo"
+    //                ne da odgovoriti bez prekapanja po kodu
+    //  dade se zadati  bez toga se ne moze izmjeriti je li kriv izbor para ili sve ostalo
+    //  vise pokusaja  gradi se nekoliko kandidata do kraja i zadrzi najbolji. Na cistoj sintetici
+    //                nema sto popraviti, pa se ovdje brani da NE POKVARI - isto pravilo koje je
+    //                palo conflictFreeMerge
+    {
+        const Engine::Reconstruction once = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                               scene.points.size(), scene.intrinsics);
+
+        report.check("pocetni par se javlja",
+            once.initialA != once.initialB
+            && once.posed[once.initialA] && once.posed[once.initialB]
+            && once.initialAngle > 0.0 && once.initialPoints >= 8,
+            fmt("par %u-%u, kut %.2f st, %u tocaka", once.initialA, once.initialB,
+                once.initialAngle, once.initialPoints));
+
+        report.check("baza rjesenja se javlja",
+            once.medianTriangulationAngle > 0.0,
+            fmt("%.2f st", once.medianTriangulationAngle));
+
+        //Zadani par: uzima se drugi od onoga koji je racun sam izabrao, pa se provjerava da je
+        //stvarno posluzan
+        Engine::ReconstructConfig forced;
+        forced.forceInitialA = 0;
+        forced.forceInitialB = uint32_t(scene.poses.size() / 2);
+        if(forced.forceInitialB == 0) forced.forceInitialB = 1;
+
+        const Engine::Reconstruction chosen = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                  scene.points.size(), scene.intrinsics, forced);
+
+        const bool honoured = (chosen.initialA == forced.forceInitialA && chosen.initialB == forced.forceInitialB)
+                           || (chosen.initialA == forced.forceInitialB && chosen.initialB == forced.forceInitialA);
+
+        report.check("zadani pocetni par se postuje",
+            chosen.ok && honoured,
+            fmt("trazeno %u-%u, dobiveno %u-%u", forced.forceInitialA, forced.forceInitialB,
+                chosen.initialA, chosen.initialB));
+
+        Engine::ReconstructConfig many;
+        many.initialPairTrials = 3;
+        const Engine::Reconstruction best = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                scene.points.size(), scene.intrinsics, many);
+
+        report.check("vise pokusaja ne kvari",
+            best.ok && best.posedCameras >= once.posedCameras
+            && (best.posedCameras > once.posedCameras
+                || best.medianTriangulationAngle >= once.medianTriangulationAngle - 1e-9),
+            fmt("%u kamera i baza %.3f st naspram %u i %.3f",
+                best.posedCameras, best.medianTriangulationAngle,
+                once.posedCameras, once.medianTriangulationAngle));
+
+        const Comparison result = compare(best, scene);
+        const Comparison plain = compare(once, scene);
+        report.check("vise pokusaja i dalje pogadja istinu",
+            result.medianRotation < 2.0 * std::max(0.01, plain.medianRotation)
+            && result.medianPosition < 2.0 * std::max(0.001, plain.medianPosition),
+            fmt("rotacija %.4f st i polozaj %.4f m, naspram %.4f i %.4f s jednim pokusajem",
+                result.medianRotation, result.medianPosition,
+                plain.medianRotation, plain.medianPosition));
+    }
+
     return report.result();
 }

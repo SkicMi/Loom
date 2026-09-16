@@ -42,6 +42,45 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
                            size_t pointCount,
                            const Intrinsics& intrinsics,
                            const ReconstructConfig& config){
+    //=================================================================================
+    // VISE POCETNIH PAROVA, svaki do kraja - vidi ReconstructConfig::initialPairTrials.
+    //
+    // Izvodi se rekurzivno: svaki pokusaj je obicna rekonstrukcija sa ZADANIM parom i jednim
+    // pokusajem, pa se ovdje samo bira izmedju gotovih rjesenja. Time se ne udvaja nijedan korak
+    // gradnje i nijedan uvjet ne moze se razici izmedju dva puta
+    //=================================================================================
+    if(config.initialPairTrials > 1 && config.forceInitialA == config.forceInitialB){
+        ReconstructConfig once = config;
+        once.initialPairTrials = 1;
+
+        Reconstruction best;
+        std::vector<std::pair<uint32_t, uint32_t>> seen;
+
+        for(uint32_t trial = 0; trial < config.initialPairTrials; ++trial){
+            //Sljedeci po redu izbor: isti racun kao inace, ali bez parova koji su vec probani
+            ReconstructConfig probe = once;
+            probe.skipInitialPairs = seen;
+
+            const Reconstruction attempt = reconstruct(observations, cameraCount, pointCount,
+                                                       intrinsics, probe);
+            if(!attempt.ok) break;
+
+            const std::pair<uint32_t, uint32_t> pair{attempt.initialA, attempt.initialB};
+            if(std::find(seen.begin(), seen.end(), pair) != seen.end()) break;
+            seen.push_back(pair);
+
+            //BROJ KAMERA PRVO, PA BAZA. Rjesenje s manje kamera nije bolje ma kako siroku bazu
+            //imalo - ono naprosto nije rijesilo snimku
+            const bool better = !best.ok
+                || attempt.posedCameras > best.posedCameras
+                || (attempt.posedCameras == best.posedCameras
+                    && attempt.medianTriangulationAngle > best.medianTriangulationAngle);
+            if(better) best = attempt;
+        }
+
+        if(best.ok) return best;
+    }
+
     Reconstruction state;
     state.poses.assign(cameraCount, Pose{});
     state.posed.assign(cameraCount, 0);
@@ -213,7 +252,27 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     const double demandedAngle = 10.0 * workingParallax;
 
     const Tried* chosen = nullptr;
+
+    //Zadani par, ako ga je pozivatelj trazio i ako je uopce prosao provjeru racunom
+    if(config.forceInitialA != config.forceInitialB){
+        for(const Tried& one : tried){
+            const bool same = (one.a == config.forceInitialA && one.b == config.forceInitialB)
+                           || (one.a == config.forceInitialB && one.b == config.forceInitialA);
+            if(same){ chosen = &one; break; }
+        }
+    }
+
+    auto alreadyTried = [&](const Tried& one){
+        for(const auto& pair : config.skipInitialPairs){
+            if(pair.first == one.a && pair.second == one.b) return true;
+            if(pair.first == one.b && pair.second == one.a) return true;
+        }
+        return false;
+    };
+
     for(const Tried& one : tried){
+        if(chosen && config.forceInitialA != config.forceInitialB) break;
+        if(alreadyTried(one)) continue;
         if(one.medianAngle < demandedAngle) continue;
         if(!chosen || one.usable > chosen->usable) chosen = &one;
     }
@@ -221,6 +280,7 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     //Kad nijedan par nema toliku bazu, uzima se najsiri koji postoji - bolje uska baza nego nikakva
     if(!chosen){
         for(const Tried& one : tried){
+            if(alreadyTried(one)) continue;
             if(!chosen || one.medianAngle > chosen->medianAngle) chosen = &one;
         }
     }
@@ -228,6 +288,10 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
 
     const uint32_t first = chosen->a;
     const uint32_t partner = chosen->b;
+    state.initialA = first;
+    state.initialB = partner;
+    state.initialAngle = chosen->medianAngle;
+    state.initialPoints = chosen->usable;
     const TwoViewResult pair = chosen->pair;
     sharedPixels(first, partner, pixelsA, pixelsB, sharedPoints);
 
@@ -601,6 +665,25 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     }
 
     state.medianReprojection = medianOver(observations, state, intrinsics, usable);
+
+    //BAZA KONACNOG RJESENJA. Racuna se ovdje, nad istim tockama koje su ostale - vidi
+    //Reconstruction::medianTriangulationAngle. Ovo je mjera po kojoj se biraju pocetni parovi
+    {
+        std::vector<double> angles;
+        angles.reserve(pointCount);
+        for(size_t point = 0; point < pointCount; ++point){
+            if(!state.solved[point]) continue;
+            std::vector<View> views;
+            for(const Observation* observation : byPoint[point]){
+                if(!usable[indexOf(observation)]) continue;
+                if(state.posed[observation->camera]) views.push_back(View{observation->camera, observation->pixel});
+            }
+            if(views.size() < 2) continue;
+            angles.push_back(parallaxDegrees(state.poses, intrinsics, views));
+        }
+        state.medianTriangulationAngle = medianOf(angles);
+    }
+
     state.ok = state.posedCameras >= 2 && state.solvedPoints > 0;
     // ---------------------------------------------------------------------------------
     // Ishodiste je PRVA RIJESENA KAMERA, uvijek

@@ -59,6 +59,30 @@ struct ReconstructConfig{
     //najprometnije. Vidi komentar uz izbor u Reconstruct.cpp
     uint32_t initialPairCandidates = 30;
 
+    //ZADANI POCETNI PAR, za mjerenje. Kad su oba ista, par se bira kao i inace. Postoji zato sto je
+    //pitanje "je li kriv izbor pocetnog para ili sve ostalo" inace nemjerljivo
+    uint32_t forceInitialA = 0, forceInitialB = 0;
+
+    //=========================================================================================
+    // KOLIKO SE POCETNIH PAROVA ISPROBA DO KRAJA.
+    //
+    // Cijela rekonstrukcija visi o prvom paru, i izmjereno je koliko: na istom grafu par 86-89 daje
+    // 4.69 st greske rotacije, a par 80-89 daje 119.94 st. Oba prolaze sve provjere koje izbor
+    // para ima - dovoljno tocaka, dovoljan kut, dvoprizorna poza rijesena - pa se razlika NE VIDI
+    // dok se ne izgradi cijela scena.
+    //
+    // Zato se ovdje ne bira nego POKUSAVA: prvih nekoliko kandidata se izgradi do kraja i zadrzi se
+    // najbolji. Mjera je broj rijesenih kamera, pa medijan kuta pod kojim se zrake sijeku - vidi
+    // Reconstruction::medianTriangulationAngle. Reprojekcija se NE koristi, jer ona krivo rjesenje
+    // ne prijavi: ono se samo sa sobom slaze jednako dobro kao ispravno.
+    //
+    // Jedan znaci kao dosad - uzme se prvi izbor i s njim se ide do kraja
+    //=========================================================================================
+    uint32_t initialPairTrials = 1;
+
+    //Parovi koje ne treba ponovno probati. Puni ga visestruki pokusaj sam; pozivatelj ga ne dira
+    std::vector<std::pair<uint32_t, uint32_t>> skipInitialPairs;
+
     //PARALAKSA. Koliko se dubini smije vjerovati ne odlucuje kut sam po sebi nego kut zajedno sa
     //zaristem i sumom, pa se prag ne zadaje nego IZVODI:
     //
@@ -224,6 +248,21 @@ struct Reconstruction{
     //svoje odbacene ni ne zapise u model, pa mu se mjeri samo ono sto je zadrzao
     double medianReprojection = 0.0;
     double parallaxLimitDegrees = 0.0;   //kut izveden iz zarista i suma, onaj koji je stvarno vrijedio
+
+    //POCETNI PAR, ONAKO KAKO JE ZAVRSIO. Cijela rekonstrukcija visi o njemu - iz njega nastaju prve
+    //tocke na koje se zatim oslanja svaka sljedeca kamera - pa kad rjesenje ispadne krivo, prvo
+    //pitanje je odakle je krenulo. Bez ovoga se na to nije dalo odgovoriti bez prekapanja po kodu
+    //MEDIJAN KUTA POD KOJIM SE ZRAKE SIJEKU, nad konacnim pozama. Dubina iz uske baze ne postoji
+    //koliko god tocaka bilo, pa je ovo jedina mjera kakvoce koja ne trazi poznatu istinu - i jedina
+    //koja razlikuje dobru rekonstrukciju od one koja se sama sa sobom slaze a kriva je.
+    //Izmjereno na istoj snimci: rjesenja s bazom 4.7-4.9 st daju 4.7-6.8 st greske rotacije protiv
+    //COLMAP-a, a ona s 2.9-3.1 st daju 119 st. Reprojekcija ih ne razlikuje - obje su oko 1.65 px
+    double medianTriangulationAngle = 0.0;
+
+    uint32_t initialA = 0, initialB = 0;
+    double initialAngle = 0.0;       //medijan kuta pod kojim se zrake tog para sijeku
+    uint32_t initialPoints = 0;      //koliko se iz njega dalo triangulirati
+
     bool ok = false;
 };
 
