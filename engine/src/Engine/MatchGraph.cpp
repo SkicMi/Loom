@@ -21,6 +21,28 @@ struct Groups{
     }
 };
 
+//Jedan provjereni brid: dvije znacajke koje su isto, i koliko su im potpisi bili blizu
+struct Edge{
+    uint32_t a = 0, b = 0;
+    uint32_t distance = 0;
+};
+
+//Koje kadrove komponenta vec drzi. Trag je kratak - nekoliko kadrova - pa je obicno polje brze od
+//svakog skupa, a i cuva poredak, sto ovdje nije svejedno
+struct FrameSets{
+    std::vector<std::vector<uint32_t>> frames;
+    explicit FrameSets(size_t count) : frames(count){}
+
+    bool wouldClash(const std::vector<uint32_t>& one, const std::vector<uint32_t>& two) const {
+        for(uint32_t frame : one){
+            for(uint32_t other : two){
+                if(frame == other) return true;
+            }
+        }
+        return false;
+    }
+};
+
 }
 
 MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
@@ -120,6 +142,7 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     // ---------------------------------------------------------------------------------
 
     Groups groups(result.featuresTotal);
+    std::vector<Edge> edges;
     std::vector<double> perPair;
     const float radius = config.searchFraction * float(working[0].width);
 
@@ -149,7 +172,8 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
 
             for(size_t i = 0; i < matches.size(); ++i){
                 if(i < pose.inliers.size() && !pose.inliers[i]) continue;
-                groups.join(offset[a] + matches[i].from, offset[b] + matches[i].to);
+                edges.push_back(Edge{offset[a] + matches[i].from, offset[b] + matches[i].to,
+                                     matches[i].distance});
             }
         }
     }
@@ -157,6 +181,52 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     if(!perPair.empty()){
         std::sort(perPair.begin(), perPair.end());
         result.medianMatchesPerPair = perPair[perPair.size() / 2];
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Bridovi u komponente
+    // ---------------------------------------------------------------------------------
+
+    //Kojem kadru pripada koja znacajka - treba spajanju koje odbija sukob
+    std::vector<uint32_t> frameOf(result.featuresTotal, 0);
+    for(uint32_t frame = 0; frame < frames; ++frame){
+        for(uint32_t i = offset[frame]; i < offset[frame + 1]; ++i) frameOf[i] = frame;
+    }
+
+    if(config.conflictFreeMerge){
+        //NAJPOUZDANIJI BRID PRVI. Kad dva traga ne smiju u isti, pobjeduje onaj koji je stigao
+        //prvi - pa je vazno da to bude bolji brid, a ne slucajni. Poredak je potpuno zadan:
+        //po udaljenosti potpisa, a kod izjednacenja po rednim brojevima znacajki
+        std::stable_sort(edges.begin(), edges.end(), [](const Edge& one, const Edge& two){
+            if(one.distance != two.distance) return one.distance < two.distance;
+            if(one.a != two.a) return one.a < two.a;
+            return one.b < two.b;
+        });
+
+        FrameSets sets(result.featuresTotal);
+        for(uint32_t i = 0; i < result.featuresTotal; ++i) sets.frames[i] = {frameOf[i]};
+
+        for(const Edge& edge : edges){
+            const uint32_t rootA = groups.find(edge.a);
+            const uint32_t rootB = groups.find(edge.b);
+            if(rootA == rootB) continue;
+
+            if(sets.wouldClash(sets.frames[rootA], sets.frames[rootB])){
+                ++result.refusedEdges;
+                continue;
+            }
+
+            groups.join(rootA, rootB);
+            const uint32_t root = groups.find(rootA);
+            const uint32_t other = root == rootA ? rootB : rootA;
+
+            sets.frames[root].insert(sets.frames[root].end(),
+                                     sets.frames[other].begin(), sets.frames[other].end());
+            sets.frames[other].clear();
+            sets.frames[other].shrink_to_fit();
+        }
+    }else{
+        for(const Edge& edge : edges) groups.join(edge.a, edge.b);
     }
 
     // ---------------------------------------------------------------------------------

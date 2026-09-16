@@ -19,6 +19,10 @@
 //   precizinost se javlja  localizationPixels mora reci koliko je slika smanjena, jer prag
 //                      prihvacanja kamere u reconstructu iz toga izvodi svoj broj
 //   puna sirina        bez smanjenja mora biti tocno, na piksel
+//   pomijesani tragovi na ponavljajucem uzorku poklapanja GRIJESE, i tada komponenta dodirne isti
+//                      kadar dvaput - jedna tocka na dva mjesta u istoj slici. To se mora
+//                      prebrojati, i bacanjem stvarno ukloniti. Na pravoj snimci je takvih bilo
+//                      27 posto svih opazanja, a greska poza je bacanjem pala s 15.7 na 4.4 posto
 #include "TestHarness.h"
 
 #include <Engine/MatchGraph.h>
@@ -216,6 +220,60 @@ int main(){
             alongX.size() > 50 && std::fabs(offsetX) < 1.0 && std::fabs(offsetY) < 1.0,
             fmt("%zu tocaka, srednjak odmaka (%.2f, %.2f) px - bez pola bloka bio bi (1.5, 1.5)",
                 alongX.size(), offsetX, offsetY));
+    }
+
+    //-- ciscenje ne smije jesti zdravo ------------------------------------------------------
+    //
+    //Bacanje sukobljenih komponenti je sada ZADANO, i to je na pravoj snimci bilo 27 posto svih
+    //opazanja - greska poza je time pala s 15.7 na 4.4 posto. Ali upravo zato ono mora biti tiho
+    //kad nema sto baciti: na podacima bez krivih poklapanja ne smije nestati nijedno opazanje.
+    //
+    //Sukobljena komponenta se ovdje ne da napraviti, i to nije propust nego svojstvo: za sukob
+    //trebaju najmanje TRI kadra (A1-A2, A2-A3 i krivi A1-B3), a krivo poklapanje na
+    //neponavljajucoj teksturi ne nastaje. Perfektno ponavljajuci uzorak ga takodjer ne daje, jer
+    //ga prag omjera odbije prije nego dodje do spajanja. Zato se ta strana mjeri na pravoj
+    //snimci, a ovdje se brani da ciscenje ne radi stetu kad steta ne postoji
+    {
+        const std::vector<uint8_t> third = render(glm::vec2(72.0f, 40.0f));
+        const std::vector<Engine::GrayImage> three{
+            Engine::GrayImage{first.data(), width, height, width},
+            Engine::GrayImage{second.data(), width, height, width},
+            Engine::GrayImage{third.data(), width, height, width}};
+
+        Engine::MatchGraphConfig threeFrames = config;
+        threeFrames.window = 2;
+
+        Engine::MatchGraphConfig keeping = threeFrames;
+        keeping.dropConflicting = false;
+        const Engine::MatchGraphResult kept = Engine::buildMatchGraph(three, intrinsics, keeping);
+
+        Engine::MatchGraphConfig dropping = threeFrames;
+        dropping.dropConflicting = true;
+        const Engine::MatchGraphResult dropped = Engine::buildMatchGraph(three, intrinsics, dropping);
+
+        report.check("na cistom nema sukoba",
+            kept.conflictingPoints == 0,
+            fmt("%u sukobljenih komponenti na %u tocaka", kept.conflictingPoints, kept.pointCount));
+
+        report.check("ciscenje tada ne dira nista",
+            dropped.observations.size() == kept.observations.size()
+            && dropped.pointCount == kept.pointCount && kept.pointCount > 100,
+            fmt("opazanja %zu naspram %zu, tocaka %u naspram %u",
+                kept.observations.size(), dropped.observations.size(),
+                kept.pointCount, dropped.pointCount));
+
+        //I spajanje koje odbija sukob: na cistom ne smije odbiti nijedan brid, pa mora dati
+        //istu rekonstrukciju kao slijepo. Zadano je iskljuceno jer na pravoj snimci daje losije
+        //poze - vidi MatchGraphConfig::conflictFreeMerge - ali mehanizam mora biti tocan
+        Engine::MatchGraphConfig refusing = threeFrames;
+        refusing.dropConflicting = false;
+        refusing.conflictFreeMerge = true;
+        const Engine::MatchGraphResult refused = Engine::buildMatchGraph(three, intrinsics, refusing);
+
+        report.check("odbijanje sukoba na cistom miruje",
+            refused.refusedEdges == 0 && refused.observations.size() == kept.observations.size(),
+            fmt("%u odbijenih bridova, opazanja %zu naspram %zu",
+                refused.refusedEdges, refused.observations.size(), kept.observations.size()));
     }
 
     return report.result();

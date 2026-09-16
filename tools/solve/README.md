@@ -56,6 +56,19 @@ negdje izmedju njih. Sada se cijela takva komponenta baca (`dropConflicting`).
 je isti do zadnje znamenke. Na nasima nije: 0.5 daje 21 % i 177 st, 1.0 daje 4.4 % i 7.1 st.
 Zadano je sada 1.0.
 
+### Dvije ideje koje su pale na mjerenju
+
+**Spajanje koje odbija sukob** umjesto da pokvarenu komponentu poslije baca. Radi ono sto obecava -
+sukobljenih ostane nula, tragovi se produze s 3.72 na 5.88 kadra, opazanja s 343 na 946 tisuca - a
+poze su svejedno losije: najbolje sto daje je 11.5 % i 26.2 st, protiv 4.4 % i 7.1 st. Razlog je u
+sucu: "prvi stigao pobjedjuje" znaci da krivo poklapanje s manjom udaljenoscu potpisa zauzme mjesto
+i pravo se ODBIJE. Ostaje kao polje (`conflictFreeMerge`), zadano iskljuceno.
+
+**Kraci prozor poklapanja.** Poklapanje drzi do razmaka od sedam kadrova (1680 provjerenih parova) i
+na deset pada na 25, pa je izgledalo da prozor od deset radi uprazno i samo unosi smece. Ne: s
+prozorom 7 tragovi se skrate s 3.72 na 3.12 kadra, a poze daju 4.5 % i 12.2 st uz 87 kamera umjesto
+4.4 % i 7.1 st uz 96. Onih par poklapanja na velikom razmaku nosi bazu koju nista drugo ne daje.
+
 ### Sto jos nije rijeseno
 
 Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram

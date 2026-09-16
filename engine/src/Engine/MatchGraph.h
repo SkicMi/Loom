@@ -103,6 +103,36 @@ struct MatchGraphConfig{
     // sobom slaze na 1.2 px svejedno moze biti kriva, i s pomijesanim tragovima je bila
     //=========================================================================================
     bool dropConflicting = true;
+
+    //=========================================================================================
+    // SPAJANJE KOJE ODBIJA SUKOB, umjesto da ga poslije lijeci.
+    //
+    // dropConflicting baca komponentu koja je nastala krivo - ali s njom i sve sto je u njoj bilo
+    // tocno, a to je bilo dvadeset sedam posto svih opazanja. Ovdje se sukob ne dopusta da nastane:
+    // spajanje dvaju tragova koji bi zajedno dodirnuli isti kadar dvaput jednostavno se NE izvede.
+    // Odbaci se jedan brid, ne cijela komponenta.
+    //
+    // POREDAK ODLUCUJE, pa je zadan: bridovi se obilaze po rastucoj udaljenosti potpisa, dakle
+    // najpouzdaniji prvi. Krivo poklapanje tada zatekne mjesto zauzeto i otpadne, umjesto da ono
+    // slijepi dva traga prije nego dobri stignu.
+    //
+    // ZADANO ISKLJUCENO, i to je izmjereno. Radi ono sto obecava - sukobljenih komponenti ostane
+    // NULA, tragovi se produze s 3.72 na 5.88 kadra, opazanja s 343 na 946 tisuca - a poze su
+    // svejedno losije, protiv COLMAP-ovog rjesenja iste snimke:
+    //
+    //                                     kamere    polozaj   rotacija
+    //   slijepo + bacanje sukobljenih     96/101      4.4 %     7.09 st
+    //   bez sukoba, tragovi >= 2          68/101     33.5 %   171.28 st
+    //   bez sukoba, tragovi >= 4          76/101     11.5 %    26.18 st
+    //
+    // Zasto: "prvi stigao pobjedjuje" nije dovoljno dobar sudac. Ako krivo poklapanje ima manju
+    // udaljenost potpisa od pravog puta do istog kadra, ono zauzme mjesto i pravo se ODBIJE - pa
+    // trag zadrzi krivog clana umjesto da se, kao dosad, cijela takva komponenta prepozna i baci.
+    //
+    // Ostaje u kodu jer sama ideja stoji; fali joj bolji sudac od udaljenosti potpisa. Ocit
+    // kandidat je suglasnost trojki: brid koji nema zajednickog susjeda nije potvrdjen nicim
+    //=========================================================================================
+    bool conflictFreeMerge = false;
 };
 
 struct MatchGraphResult{
@@ -133,6 +163,9 @@ struct MatchGraphResult{
     //vidi MatchGraphConfig::dropConflicting
     uint32_t conflictingPoints = 0;
     uint32_t conflictingObservations = 0;
+
+    //Koliko je bridova odbijeno jer bi spojio dva traga u isti kadar - vidi conflictFreeMerge
+    uint32_t refusedEdges = 0;
 };
 
 MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
