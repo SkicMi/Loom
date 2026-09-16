@@ -69,6 +69,32 @@ na deset pada na 25, pa je izgledalo da prozor od deset radi uprazno i samo unos
 prozorom 7 tragovi se skrate s 3.72 na 3.12 kadra, a poze daju 4.5 % i 12.2 st uz 87 kamera umjesto
 4.4 % i 7.1 st uz 96. Onih par poklapanja na velikom razmaku nosi bazu koju nista drugo ne daje.
 
+### A daju li nase poze bolji splat
+
+Ne. To je jedina mjera koja stvarno broji, i dugo nije bila napravljena - sve brojke o kvaliteti
+splatova dosad bile su trenirane na COLMAP-ovim pozama.
+
+Usporedba je postena koliko se dalo: ISTIH 65 kadrova (nasih 31 dodatnih izostavljeno da izdvojeni
+skup bude isti), iste ISPRAVLJENE slike, isti pinhole model, isti trener, istih 7000 koraka,
+isti izdvojeni odsjecci. Razlikuju se samo poze.
+
+| poze | PSNR medijan | najgori | SSIM |
+|---|---|---|---|
+| COLMAP | **29.59 dB** | 23.85 | 0.903 |
+| Loom | 25.68 dB | 18.25 | 0.835 |
+
+Cetiri decibela, i vidi se golim okom - nasa scena je mekana, njegova ostra. Greska poza od 4.4 %
+i 7.1 st je za splatanje jos uvijek puno.
+
+Uz to su usput pronadjene dvije rupe u lancu:
+
+**Izvoz nije nosio imena slika.** `writeColmapText` je pisao `frame_0000.png`, a trener model i
+slike spaja bas po imenu - pa se nas solver do sada nije mogao ni nahraniti. Sada nosi prava imena.
+
+**Trener ignorira distorziju.** Cita f, cx i cy, a k1 preskace. Na ovoj snimci k1 pomice rubni
+piksel za 5.62 px, pa je svaka dosad trenirana scena imala rubove nacrtane krivo. Ovdje je
+zaobidjeno tako da su slike ispravljene prije treninga; u samom treneru jos nije.
+
 ### Sto jos nije rijeseno
 
 Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram

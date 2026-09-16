@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
+#include <string>
 #include <vector>
 
 namespace Engine{
@@ -10,7 +11,8 @@ namespace Engine{
 bool writeColmapText(const std::string& directory,
                      const Reconstruction& reconstruction,
                      const Intrinsics& intrinsics,
-                     const std::vector<Observation>& observations){
+                     const std::vector<Observation>& observations,
+                     const std::vector<std::string>& imageNames){
     std::ofstream cameras(directory + "/cameras.txt");
     std::ofstream images(directory + "/images.txt");
     std::ofstream points(directory + "/points3D.txt");
@@ -58,8 +60,10 @@ bool writeColmapText(const std::string& directory,
         const glm::quat rotation = glm::normalize(glm::quat_cast(colmap));
         const glm::vec3 translation = -(colmap * reconstruction.poses[camera].position);
 
-        char name[32];
-        std::snprintf(name, sizeof(name), "frame_%04u.png", uint32_t(camera));
+        char generated[32];
+        std::snprintf(generated, sizeof(generated), "frame_%04u.png", uint32_t(camera));
+        const std::string name = camera < imageNames.size() && !imageNames[camera].empty()
+                               ? imageNames[camera] : std::string(generated);
 
         images << (camera + 1) << " "
                << rotation.w << " " << rotation.x << " " << rotation.y << " " << rotation.z << " "

@@ -27,9 +27,16 @@ namespace Engine{
 
 //Zapisuje cameras.txt, images.txt i points3D.txt u zadanu mapu. Mapa mora postojati.
 //Imena slika su frame_0000.png, frame_0001.png ... - onim redom kojim kamere idu
+//imageNames, ako nije prazan, daje IME po kameri - onako kako se slika stvarno zove na disku.
+//
+//Bez toga se pisalo frame_0000.png i tako dalje, sto je za usporedbu dvaju rjesenja bilo dovoljno
+//jer se imena nisu ni citala. Cim rezultat treba PROCI DALJE, nije: trener splatova model i slike
+//spaja bas po imenu, pa je nas solver sve do sada mogao dati poze koje se ne mogu nahraniti
+//nicim. Lanac od snimke do scene je ondje bio prekinut, a nigdje to nije pisalo
 bool writeColmapText(const std::string& directory,
                      const Reconstruction& reconstruction,
                      const Intrinsics& intrinsics,
-                     const std::vector<Observation>& observations);
+                     const std::vector<Observation>& observations,
+                     const std::vector<std::string>& imageNames = {});
 
 }
