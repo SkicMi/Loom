@@ -167,6 +167,39 @@ struct MatchGraphConfig{
     //Koliko se polozaj smije pomaknuti pri dotjerivanju, u pikselima pune slike. Nula znaci
     //onoliko koliko je slika smanjena - dakle koliko kvantizacija najvise i moze promasiti
     float refineMaxShift = 0.0f;
+
+    //=========================================================================================
+    // SUGLASNOST TROJKI: koliko trecih kadrova mora potvrditi jedan brid.
+    //
+    // Poklapanje A-B provjerava dvoprizorna geometrija, a ona propusta sve sto se slaze s JEDNIM
+    // rjesenjem - ukljucujuci krivo poklapanje na ponavljajucoj teksturi, jer i ono lezi na
+    // epipolarnoj crti. Takav brid zatim slijepi dva neovisna traga, a to je nosilo dvadeset sedam
+    // posto svih opazanja.
+    //
+    // Trojka je jaca provjera i ne trazi poze: ako postoji znacajka C koja se poklapa i s A i s B,
+    // onda se TRI kadra slazu oko iste tocke. C je nuzno u trecem kadru, jer se poklapa samo
+    // izmedju razlicitih kadrova.
+    //
+    // Nula iskljucuje. Jedan znaci da svaki brid treba bar jednog svjedoka.
+    //
+    // NE PRIMJENJUJE SE kad trojka ne moze ni nastati - dakle ispod tri kadra ili uz prozor 1, gdje
+    // postoje samo bridovi susjednih kadrova. Bez te ograde bi na dva kadra pobrisala sve.
+    //
+    // ZADANO JEDAN, i to je izmjereno protiv COLMAP-ovog rjesenja iste snimke:
+    //
+    //   svjedoka   kamere    polozaj   rotacija   duljina traga
+    //     0        96/101      4.4 %     7.09 st      3.09
+    //     1       101/101      1.6 %     6.60 st      5.16
+    //     2       101/101     24.9 %    86.06 st      5.55
+    //
+    // Jedan svjedok otklanja gotovo tri cetvrtine greske polozaja i produzi tragove za dvije
+    // trecine; sukobljenih komponenti ostane 5762 umjesto 11361. Dva svjedoka ruse sve - odbace
+    // 639 tisuca bridova umjesto 338, i s njima i ono sto je scenu drzalo na okupu.
+    //
+    // Tragovi su duzi iako se bridovi BACAJU, i to nije proturjecje: bacaju se oni koji su tragove
+    // krivo spajali, pa ono sto ostane prezivi ciscenje sukoba umjesto da padne s njim
+    //=========================================================================================
+    uint32_t minTriangleSupport = 1;
 };
 
 struct MatchGraphResult{
@@ -200,6 +233,9 @@ struct MatchGraphResult{
 
     //Koliko je bridova odbijeno jer bi spojio dva traga u isti kadar - vidi conflictFreeMerge
     uint32_t refusedEdges = 0;
+
+    //Koliko ih je odbaceno jer ih nijedan treci kadar nije potvrdio - vidi minTriangleSupport
+    uint32_t unwitnessedEdges = 0;
 };
 
 MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,

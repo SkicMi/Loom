@@ -195,6 +195,44 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
         for(uint32_t i = offset[frame]; i < offset[frame + 1]; ++i) frameOf[i] = frame;
     }
 
+    //SUGLASNOST TROJKI. Brid bez svjedoka u trecem kadru nije potvrdjen nicim osim dvoprizornom
+    //geometrijom, a ona propusta sve sto lezi na epipolarnoj crti - ukljucujuci krivo poklapanje
+    //TROJKA MORA BITI MOGUCA. Svjedok je znacajka u TRECEM kadru, pa je za nju potrebno i da
+    //kadrova ima barem tri i da se usporedjuju parovi preko susjednog - uz prozor 1 postoje samo
+    //bridovi (i, i+1), a njima trojka ne moze nastati. Bez ove ograde filtar na dva kadra pobrise
+    //sve i graf tiho izadje prazan
+    const bool trianglesPossible = frames >= 3 && config.window >= 2;
+
+    if(config.minTriangleSupport > 0 && trianglesPossible && !edges.empty()){
+        //Susjedi po znacajki. Znacajka ih ima malo - najvise onoliko koliko ima parova u prozoru -
+        //pa je presjek dvaju sortiranih popisa jeftin
+        std::vector<std::vector<uint32_t>> neighbours(result.featuresTotal);
+        for(const Edge& edge : edges){
+            neighbours[edge.a].push_back(edge.b);
+            neighbours[edge.b].push_back(edge.a);
+        }
+        for(std::vector<uint32_t>& list : neighbours) std::sort(list.begin(), list.end());
+
+        std::vector<Edge> witnessed;
+        witnessed.reserve(edges.size());
+        for(const Edge& edge : edges){
+            const std::vector<uint32_t>& first = neighbours[edge.a];
+            const std::vector<uint32_t>& second = neighbours[edge.b];
+
+            uint32_t shared = 0;
+            size_t i = 0, j = 0;
+            while(i < first.size() && j < second.size()){
+                if(first[i] < second[j]) ++i;
+                else if(second[j] < first[i]) ++j;
+                else { ++shared; ++i; ++j; }
+            }
+
+            if(shared >= config.minTriangleSupport) witnessed.push_back(edge);
+            else ++result.unwitnessedEdges;
+        }
+        edges.swap(witnessed);
+    }
+
     if(config.conflictFreeMerge){
         //NAJPOUZDANIJI BRID PRVI. Kad dva traga ne smiju u isti, pobjeduje onaj koji je stigao
         //prvi - pa je vazno da to bude bolji brid, a ne slucajni. Poredak je potpuno zadan:

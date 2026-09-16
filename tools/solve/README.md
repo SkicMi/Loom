@@ -56,6 +56,28 @@ negdje izmedju njih. Sada se cijela takva komponenta baca (`dropConflicting`).
 je isti do zadnje znamenke. Na nasima nije: 0.5 daje 21 % i 177 st, 1.0 daje 4.4 % i 7.1 st.
 Zadano je sada 1.0.
 
+### Suglasnost trojki
+
+Brid A-B provjerava dvoprizorna geometrija, a ona propusta sve sto lezi na epipolarnoj crti -
+ukljucujuci krivo poklapanje na ponavljajucoj teksturi. Trojka je jaca provjera i ne trazi poze:
+ako postoji znacajka C koja se poklapa i s A i s B, onda se TRI kadra slazu. C je nuzno u trecem
+kadru, jer se poklapa samo izmedju razlicitih.
+
+| svjedoka po bridu | kamere | polozaj | rotacija | duljina traga |
+|---|---|---|---|---|
+| 0 | 96/101 | 4.4 % | 7.09 st | 3.09 |
+| **1** | **101/101** | **1.6 %** | **6.60 st** | **5.16** |
+| 2 | 101/101 | 24.9 % | 86.06 st | 5.55 |
+
+Jedan svjedok otklanja gotovo tri cetvrtine greske polozaja; sukobljenih komponenti ostane 5762
+umjesto 11361. Dva ruse sve - odbace 639 tisuca bridova umjesto 338, i s njima i ono sto je scenu
+drzalo na okupu.
+
+Tragovi su duzi iako se bridovi BACAJU, i to nije proturjecje: bacaju se oni koji su tragove krivo
+spajali, pa ono sto ostane prezivi ciscenje sukoba umjesto da padne s njim.
+
+Filtar se NE primjenjuje kad trojka ne moze ni nastati - ispod tri kadra ili uz prozor 1.
+
 ### Dvije ideje koje su pale na mjerenju
 
 **Spajanje koje odbija sukob** umjesto da pokvarenu komponentu poslije baca. Radi ono sto obecava -
@@ -81,10 +103,11 @@ isti izdvojeni odsjecci. Razlikuju se samo poze.
 | poze | PSNR medijan | najgori | SSIM |
 |---|---|---|---|
 | COLMAP | **29.59 dB** | 23.85 | 0.903 |
-| Loom | 25.68 dB | 18.25 | 0.835 |
+| Loom, sa suglasnoscu trojki | 26.81 dB | **24.69** | 0.861 |
+| Loom, prije nje | 25.68 dB | 18.25 | 0.835 |
 
-Cetiri decibela, i vidi se golim okom - nasa scena je mekana, njegova ostra. Greska poza od 4.4 %
-i 7.1 st je za splatanje jos uvijek puno.
+Jaz je s 3.91 pao na 2.78 dB, a NAJGORI kadar nam je sada bolji od njegovog - 24.69 naspram 23.85.
+Medijan jos zaostaje, ali scena vise nema mjesta koja se raspadnu.
 
 Uz to su usput pronadjene dvije rupe u lancu:
 
