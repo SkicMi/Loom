@@ -27,33 +27,41 @@ njegovom: objedinjeno 0.735 px naspram 0.746, medijan po kameri 0.76 naspram 0.7
 hvata sum senzora koji se izmedju kadrova ne ponavlja. Udio poklapanja koja prezive geometrijsku
 provjeru ide s 36 na 82 posto, a opazanja po kadru s 300 na 3400.
 
-### Sto NIJE rijeseno, i to je sljedeci posao
+### Koliko se poze slazu s COLMAP-ovima
 
-**Poze se ne slazu s COLMAP-ovima.** Nakon poravnanja slicnoscu (Umeyama, mjerac provjeren na
-poznatom odgovoru - daje nulu), na 65 zajednickih kamera:
+Mjeri se poravnanjem slicnoscu (Umeyama) na zajednickim kamerama; mjerac je provjeren na poznatom
+odgovoru - COLMAP-ove poze preslikane zadanom slicnoscu pa usporedjene same sa sobom daju tocnu
+nulu i tocno zadano mjerilo.
 
-| | |
-|---|---|
-| polozaj, medijan | 15.7 % dosega putanje |
-| rotacija, medijan | 26.8 st |
+| ulaz | kamere | polozaj | rotacija |
+|---|---|---|---|
+| COLMAP-ove korespondencije | 65 / 65 | **0.2 %** | **0.51 st** |
+| nase korespondencije | 96 / 101 | 4.4 % | 7.09 st |
 
-Rekonstrukcija koja se sama sa sobom slaze na 1.25 px moze biti posve kriva, i ovdje jest. Niska
-reprojekcija nije dokaz geometrije.
+Prvi redak je vazan jer zatvara jedno pitanje zauvijek: **solver nije problem**. Na dobrom ulazu
+daje poze koje se od COLMAP-ovih ne razlikuju.
 
-**Zasto: baza je preuska.** Kut pod kojim se zrake sijeku:
+### Sto je popravilo drugi redak
 
-| | COLMAP | Loom |
-|---|---|---|
-| medijan | 4.51 st | 2.55 st |
-| p10 | 2.42 st | 0.77 st |
-| ispod 1 st | 0 od 26 761 | 8 827 od 51 778 (17 %) |
+Bio je 15.7 % i 26.8 st. Dvije stvari, obje izmjerene:
 
-Sedamnaest posto nasih tocaka nema bazu, a dubina iz uske baze ne postoji koliko god tocaka bilo.
-COLMAP filtrira ispod 1.5 st (`filter_min_tri_angle`); nas `minParallaxDegrees` stoji na 0.5, a
-tijekom gradnje je jos tri puta blazi. Prvo sto treba isprobati je podici ga.
+**Pomijesani tragovi.** Trag nastaje kao prijelazno zatvorenje poklapanja, pa jedno krivo
+poklapanje slijepi dva neovisna traga u jedan. Prepozna se po tome sto takva komponenta jedan kadar
+dodirne dvaput - jedna tocka ne moze biti na dva mjesta u istoj slici. Takvih je 11 361 i nose
+92 848 od 343 161 opazanja, dakle **dvadeset sedam posto svega**. Prije se zadrzavalo prvo vidjeno
+po kadru, sto ne popravlja nista: trag ostane jedan, samo pomijesan iz dvije tocke, i triangulira
+negdje izmedju njih. Sada se cijela takva komponenta baca (`dropConflicting`).
 
-Uz to je duljina traga 3.7 kadra po tocki naspram COLMAP-ovih 8.7 - tocke jos ne zive dovoljno
-dugo da bi ih vidjelo dovoljno kamera za siroku bazu.
+**Pod paralakse.** Na COLMAP-ovim korespondencijama je svejedno je li 0.5, 1.0 ili 1.5 - rezultat
+je isti do zadnje znamenke. Na nasima nije: 0.5 daje 21 % i 177 st, 1.0 daje 4.4 % i 7.1 st.
+Zadano je sada 1.0.
+
+### Sto jos nije rijeseno
+
+Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram
+COLMAP-ovih 8.7, a baza medijan 2.75 st naspram 7.93 - tocke jos ne zive dovoljno dugo da bi ih
+vidjelo dovoljno kamera. Poklapanje drzi do razmaka od sedam kadrova (1680 provjerenih parova), a
+na deset pada na 25 - pa prozor od deset kadrova vecinom radi uprazno.
 
 ## Solve
 

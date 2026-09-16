@@ -174,6 +174,9 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     std::vector<uint64_t> takenKeys;
     std::unordered_map<uint64_t, uint8_t> taken;
 
+    //Koje su komponente sukobljene - zna se tek kad se sve prodje, pa se najprije samo biljezi
+    std::unordered_map<uint32_t, uint8_t> conflicted;
+
     for(uint32_t frame = 0; frame < frames; ++frame){
         for(uint32_t i = 0; i < uint32_t(points[frame].size()); ++i){
             const uint32_t root = groups.find(offset[frame] + i);
@@ -185,7 +188,10 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
             const uint32_t point = found->second;
 
             const uint64_t key = (uint64_t(frame) << 32) | uint64_t(point);
-            if(!taken.emplace(key, 1).second) continue;
+            if(!taken.emplace(key, 1).second){
+                conflicted[point] = 1;
+                continue;
+            }
 
             //NATRAG U KOORDINATE POZIVATELJEVE SLIKE. Prosjek po kvadratu od f piksela stavlja
             //srediste bloka na x*f + (f-1)/2, pa se tim istim izrazom vraca - bez pola piksela
@@ -205,12 +211,20 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     // takvih je vecina - detektor ih nadje na tisuce po kadru. Brojevi se zatim zbiju, jer
     // reconstruct polja indeksira brojem tocke
 
+    //Sukobljene komponente: prebrojati ih, pa po postavci i izbaciti
     std::vector<uint32_t> views(numbering.size(), 0);
     for(const Observation& one : collected) ++views[one.point];
+
+    for(const auto& entry : conflicted){
+        if(entry.first >= views.size()) continue;
+        ++result.conflictingPoints;
+        result.conflictingObservations += views[entry.first];
+    }
 
     std::vector<uint32_t> renumbered(numbering.size(), UINT32_MAX);
     uint32_t next = 0;
     for(uint32_t point = 0; point < uint32_t(views.size()); ++point){
+        if(config.dropConflicting && conflicted.count(point)) continue;
         if(views[point] >= config.minViews) renumbered[point] = next++;
     }
 

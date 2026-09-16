@@ -74,6 +74,35 @@ struct MatchGraphConfig{
     //ZADANO 960, i to je mjereno na cijelom lancu a ne na paru kadrova. Slika uza od toga se ne
     //dira, pa ista postavka vrijedi i za 480x360 sintetiku i za 4K snimku
     uint32_t workingWidth = 960;
+
+    //=========================================================================================
+    // STO S KOMPONENTOM KOJA DVA PUTA DODIRNE ISTI KADAR.
+    //
+    // Trag nastaje kao prijelazno zatvorenje poklapanja: ako je A isto sto i B, a B isto sto i C,
+    // onda su sva tri jedna tocka. Jedno krivo poklapanje time slijepi dva NEOVISNA traga u jedan,
+    // i to se prepozna po tome sto takva komponenta jedan kadar dodirne dvaput - jedna tocka ne
+    // moze biti na dva mjesta u istoj slici.
+    //
+    // Dosad se zadrzavalo prvo vidjeno po kadru. To ne popravlja nista: komponenta i dalje daje
+    // JEDAN trag, samo pomijesan iz dvije tocke - a takav trag triangulira negdje izmedju njih i
+    // povlaci poze za sobom. Reprojekcija toga ne prijavi, jer se poze slozu oko izmisljene tocke.
+    //
+    // true baca cijelu takvu komponentu. Gubi se i ono sto je u njoj bilo tocno, ali ne ulazi
+    // nista sto je sigurno krivo.
+    //
+    // ZADANO UKLJUCENO, i cijena i dobitak su izmjereni. Na 101 kadru prave snimke sukobljenih je
+    // komponenti 11361 i nose 92848 od 343161 opazanja - dakle dvadeset sedam posto svega. Kad se
+    // bace, uz pod paralakse 1 stupanj:
+    //
+    //                          kamere    polozaj    rotacija
+    //   krate se (prije)      101/101     15.7 %     26.84 st
+    //   bacaju se (sada)       96/101      4.4 %      7.09 st
+    //
+    // Polozaj i rotacija su mjereni protiv COLMAP-ovog rjesenja iste snimke, nakon poravnanja
+    // slicnoscu. Pet kamera manje, a greska cetiri puta manja - jer rekonstrukcija koja se sama sa
+    // sobom slaze na 1.2 px svejedno moze biti kriva, i s pomijesanim tragovima je bila
+    //=========================================================================================
+    bool dropConflicting = true;
 };
 
 struct MatchGraphResult{
@@ -98,6 +127,12 @@ struct MatchGraphResult{
     //
     //Dakle dvostruko od ovoga je dovoljno, a vise ne mijenja nista
     float localizationPixels = 1.0f;
+
+    //Koliko je komponenti dva puta dotaknulo isti kadar, i koliko su opazanja nosile. Jedna tocka
+    //ne moze biti na dva mjesta u istoj slici, pa je takva komponenta spoj dvije stvarne tocke -
+    //vidi MatchGraphConfig::dropConflicting
+    uint32_t conflictingPoints = 0;
+    uint32_t conflictingObservations = 0;
 };
 
 MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,

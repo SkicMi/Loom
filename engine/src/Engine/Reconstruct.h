@@ -90,8 +90,20 @@ struct ReconstructConfig{
     //   0.0  45 od 65     15984     1.742 px
     //   0.5  65 od 65     26498     1.146 px
     //
-    //COLMAP na istim podacima filtrira ispod 1.5 stupnja (filter_min_tri_angle)
-    double minParallaxDegrees = 0.5;
+    //COLMAP na istim podacima filtrira ispod 1.5 stupnja (filter_min_tri_angle).
+    //
+    //ZADANO 1.0, i to je odlucila DRUGA snimka od one gore. Na COLMAP-ovim korespondencijama je
+    //svejedno - 0.5, 1.0 i 1.5 daju isti rezultat do zadnje znamenke (0.735 px, 65 od 65 kamera,
+    //polozaj 0.2 posto, rotacija 0.51 st). Na nasima nije:
+    //
+    //   pod   kamere    polozaj   rotacija
+    //   0.5   74/101     21.2 %   176.81 st
+    //   1.0   96/101      4.4 %     7.09 st
+    //   1.5   86/101      6.3 %    10.56 st
+    //
+    //Dakle broj koji dobar ulaz ne osjeti, los ulaz osjeti jako - i zato stoji ondje gdje je
+    //losem ulazu najbolje, a dobrom svejedno
+    double minParallaxDegrees = 1.0;
 
     //Sum u pikselima koji se pripisuje pracenju uglova. Nije mjerenje nego pretpostavka, i zato
     //stoji ovdje gdje se vidi. Mjerena reprojekcija bi bila kriva zamjena: bundle je namjesti na
