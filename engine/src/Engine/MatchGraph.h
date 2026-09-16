@@ -122,6 +122,39 @@ struct MatchGraphConfig{
     bool dropConflicting = true;
 
     //=========================================================================================
+    // DVA OPAZANJA ISTE TOCKE U ISTOM KADRU: SPOJITI ILI PROGLASITI SUKOBOM.
+    //
+    // Uglovi su po konstrukciji najmanje minDistance razmaknuti, pa "ista tocka dvaput u istom
+    // kadru" nisu dva piksela nego dva SUSJEDNA UGLA cije se zakrpe preklapaju. Uz razmak od tri
+    // piksela na radnoj sirini i zakrpu od 24, dva susjedna ugla gledaju gotovo istu okolinu - i
+    // oba se poklope s istom tockom u drugom kadru. To nije krivo poklapanje nego dvostruko
+    // uzorkovanje iste tocke.
+    //
+    // Izmjereno je da su nasa poklapanja oko 97 posto tocna (usporedbom 3D polozaja s COLMAP-ovim
+    // rjesenjem), pa bacanje cijele takve komponente - a to je bilo 27 posto svih opazanja - baca
+    // uglavnom ispravan podatak, i s njim veze koje bi tragove produzile.
+    //
+    // Ovaj broj je koliko daleko smiju biti da bi se SPOJILA u jedno opazanje, u pikselima
+    // pozivateljeve slike. Nula znaci izvedeno iz razmaka uglova. Sto je dalje od toga i dalje je
+    // sukob.
+    //
+    // ZADANO ISKLJUCENO, i to je najtjesnja odluka dana. Spajanje popravlja SVE mjere poze:
+    //
+    //                    tragovi   polozaj   rotacija   smjer koraka   PSNR    SSIM
+    //   bacanje            5.16      1.6 %    6.60 st      3.05 st    26.81   0.861
+    //   spajanje, sredina  5.57      1.5 %    6.07 st      3.00 st    26.27   0.844
+    //   spajanje, prvi     5.57      1.4 %    5.86 st      2.15 st    26.40   0.840
+    //
+    // Smjer koraka od 2.15 st je najbolji koji smo imali, i vraca 22 247 opazanja koja se inace
+    // bacaju. Ali splat je losiji za 0.4 dB - a splat je ono sto se isporucuje.
+    //
+    // Razlika je tijesna: ponovljivost samog PSNR-a je izmjerena i medijan varira 0.13 dB izmedju
+    // dva pokretanja istog modela. Dakle 0.4 dB jest iznad suma, ali ne puno
+    //=========================================================================================
+    bool mergeDuplicates = false;
+    float mergeWithin = 0.0f;
+
+    //=========================================================================================
     // SPAJANJE KOJE ODBIJA SUKOB, umjesto da ga poslije lijeci.
     //
     // dropConflicting baca komponentu koja je nastala krivo - ali s njom i sve sto je u njoj bilo
@@ -247,6 +280,9 @@ struct MatchGraphResult{
     //vidi MatchGraphConfig::dropConflicting
     uint32_t conflictingPoints = 0;
     uint32_t conflictingObservations = 0;
+
+    //Koliko je opazanja stopljeno jer su bila isti detalj uzorkovan vise puta - vidi mergeWithin
+    uint32_t mergedObservations = 0;
 
     //Koliko je bridova odbijeno jer bi spojio dva traga u isti kadar - vidi conflictFreeMerge
     uint32_t refusedEdges = 0;

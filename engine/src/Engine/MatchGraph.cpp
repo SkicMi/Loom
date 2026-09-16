@@ -295,19 +295,17 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     // Komponente u tocke
     // ---------------------------------------------------------------------------------
     //
-    // Komponenta koja dva puta dodirne isti kadar je greska u poklapanju: jedna tocka ne moze biti
-    // na dva mjesta u istoj slici. Zadrzava se prvo vidjeno, jer ostalo bi triangulaciju vuklo
-    // prema mjestu izmedju dva - dakle nikamo
+    // Komponenta koja dva puta dodirne isti kadar NIJE nuzno greska: uglovi su razmaknuti najmanje
+    // minDistance, pa su ta dva opazanja dva SUSJEDNA UGLA cije se zakrpe preklapaju - dvostruko
+    // uzorkovanje iste tocke. Bliska se stapaju u jedno, daleka ostaju sukob. Vidi mergeWithin
 
     std::unordered_map<uint32_t, uint32_t> numbering;
     std::vector<Observation> collected;
     collected.reserve(result.featuresTotal);
 
-    std::vector<uint64_t> takenKeys;
-    std::unordered_map<uint64_t, uint8_t> taken;
-
-    //Koje su komponente sukobljene - zna se tek kad se sve prodje, pa se najprije samo biljezi
-    std::unordered_map<uint32_t, uint8_t> conflicted;
+    //Sve sto je pala u isti (kadar, tocka) - tek kad se skupi zna se je li to jedno ili dvoje
+    std::unordered_map<uint64_t, std::vector<glm::vec2>> gathered;
+    std::vector<uint64_t> order;   //poredak prvog pojavljivanja, da izlaz ne ovisi o tablici
 
     for(uint32_t frame = 0; frame < frames; ++frame){
         for(uint32_t i = 0; i < uint32_t(points[frame].size()); ++i){
@@ -319,29 +317,59 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
             }
             const uint32_t point = found->second;
 
-            const uint64_t key = (uint64_t(frame) << 32) | uint64_t(point);
-            if(!taken.emplace(key, 1).second){
-                conflicted[point] = 1;
-                continue;
-            }
-
             //NATRAG U KOORDINATE POZIVATELJEVE SLIKE. Prosjek po kvadratu od f piksela stavlja
             //srediste bloka na x*f + (f-1)/2, pa se tim istim izrazom vraca - bez pola piksela
             //pomaka svaka bi tocka bila sustavno pomaknuta prema gore lijevo
             glm::vec2 pixel = points[frame][i];
             if(shrink > 1) pixel = pixel * float(shrink) + glm::vec2(0.5f * float(shrink - 1));
 
-            collected.push_back(Observation{frame, point, pixel});
+            const uint64_t key = (uint64_t(frame) << 32) | uint64_t(point);
+            auto& list = gathered[key];
+            if(list.empty()) order.push_back(key);
+            list.push_back(pixel);
         }
     }
 
-    // ---------------------------------------------------------------------------------
-    // Tocke vidjene iz premalo kadrova ne ulaze
-    // ---------------------------------------------------------------------------------
-    //
-    // Znacajka koju nijedan drugi kadar nije potvrdio nije tocka nego pojedinacno opazanje, a
-    // takvih je vecina - detektor ih nadje na tisuce po kadru. Brojevi se zatim zbiju, jer
-    // reconstruct polja indeksira brojem tocke
+    //Koliko daleko smiju biti da bi bila isti detalj. Izvedeno: razmak uglova u koordinatama
+    //pozivateljeve slike, s malo zaliha - dva susjedna ugla su tocno toliko razmaknuta
+    const float mergeWithin = config.mergeWithin > 0.0f
+        ? config.mergeWithin
+        : 1.5f * detect.minDistance * float(shrink);
+
+    std::unordered_map<uint32_t, uint8_t> conflicted;
+
+    for(uint64_t key : order){
+        const std::vector<glm::vec2>& list = gathered[key];
+        const uint32_t frame = uint32_t(key >> 32);
+        const uint32_t point = uint32_t(key & 0xffffffffu);
+
+        if(list.size() == 1){
+            collected.push_back(Observation{frame, point, list[0]});
+            continue;
+        }
+
+        //Koliko su medjusobno daleko. Ako stanu u mergeWithin, to je jedan detalj uzorkovan vise
+        //puta i stapa se u srediste; ako ne, komponenta je stvarno spojila dvije razlicite tocke
+        float widest = 0.0f;
+        for(size_t a = 0; a < list.size(); ++a){
+            for(size_t b = a + 1; b < list.size(); ++b){
+                widest = std::max(widest, glm::length(list[a] - list[b]));
+            }
+        }
+
+        if(config.mergeDuplicates && widest <= mergeWithin){
+            //UZIMA SE PRVI, NE SREDINA. Sredina dvaju uglova nije ugao - to je mjesto izmedju njih,
+            //gdje detektor nije nista nasao, pa tocka triangulirana iz nje sjedi malo pokraj.
+            //Izmjereno: sa sredinom 26.27 dB, s prvim 26.81 na istim postavkama.
+            //
+            //Prvi je uvijek onaj s manjim rednim brojem ugla, a detektor ih vraca po jacini - pa
+            //je to ujedno i jaci od njih dvaju
+            collected.push_back(Observation{frame, point, list[0]});
+            ++result.mergedObservations;
+        }else{
+            conflicted[point] = 1;
+        }
+    }
 
     //Sukobljene komponente: prebrojati ih, pa po postavci i izbaciti
     std::vector<uint32_t> views(numbering.size(), 0);

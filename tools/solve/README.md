@@ -259,6 +259,43 @@ poklapanja 97 posto tocna, vecina tih sukoba nije greska nego posljedica GUSTIH 
 susjedna ugla na tri piksela razmaka oba se poklope, i trag ih obojicu skupi u isti kadar. To nije
 krivo poklapanje nego dvostruko uzorkovanje iste tocke, i treba ga SPOJITI a ne baciti.
 
+### Koliko je PSNR uopce ponovljiv
+
+Isti model, isti argumenti, dva pokretanja trenera:
+
+| | PSNR medijan | najgori kadar | SSIM |
+|---|---|---|---|
+| prvi put | 26.81 dB | **24.69** | 0.861 |
+| drugi put | 26.68 dB | **18.02** | 0.860 |
+
+Medijan varira 0.13 dB, dakle razlike ispod otprilike dvije desetinke ne znace nista. Ali NAJGORI
+KADAR varira 6.67 dB - on nije mjera nego sum.
+
+**Time pada jedna tvrdnja koja je ovdje stajala**: da nam je najgori kadar bolji od COLMAP-ovog
+(24.69 naspram 23.85). Taj se broj ne ponavlja i ne smije se koristiti kao dokaz.
+
+Medijan se smije, uz zalihu od dvije desetinke.
+
+### Stapanje dvostrukih opazanja: bolje poze, losiji splat
+
+Komponenta koja dva puta dodirne isti kadar nije nuzno greska - uglovi su razmaknuti najmanje
+minDistance, pa su to dva SUSJEDNA ugla cije se zakrpe preklapaju. Umjesto bacanja cijele
+komponente, bliska se opazanja stapaju u jedno.
+
+| | tragovi | polozaj | rotacija | smjer koraka | PSNR | SSIM |
+|---|---|---|---|---|---|---|
+| bacanje | 5.16 | 1.6 % | 6.60 st | 3.05 st | **26.81** | **0.861** |
+| stapanje, sredina | 5.57 | 1.5 % | 6.07 st | 3.00 st | 26.27 | 0.844 |
+| stapanje, prvi | 5.57 | **1.4 %** | **5.86 st** | **2.15 st** | 26.40 | 0.840 |
+
+Smjer koraka od 2.15 st je najbolji koji smo imali - drift pada za trecinu - i vraca 22 247
+opazanja koja se inace bacaju. Ali splat je losiji za 0.4 dB, a splat je ono sto se isporucuje.
+
+Sredina je losija od prvog jer sredina dvaju uglova NIJE ugao: to je mjesto izmedju njih, gdje
+detektor nije nista nasao.
+
+Zadano iskljuceno, ali je to najtjesnja odluka u cijelom ovom dokumentu.
+
 ### Sto jos nije rijeseno
 
 Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram
