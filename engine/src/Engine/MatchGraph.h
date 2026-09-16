@@ -50,6 +50,30 @@ struct MatchGraphConfig{
     //Izvodi li se velicina zakrpe iz sirine slike. Vidi mjerenje u MatchGraph.cpp - razlika izmedju
     //zakrpe 16 i 96 na 4K je cetrnaest puta vise dobrih parova
     bool patchFromWidth = true;
+
+    //=========================================================================================
+    // NA KOJOJ SE SIRINI TRAZI I POKLAPA. Nula znaci na izvornoj.
+    //
+    // Na 4K detektor hvata sum senzora i najfiniju teksturu, a to se izmedju dva kadra ne
+    // ponavlja - pa potpis opisuje nesto cega u drugom kadru nema. Izmjereno na dva prava kadra
+    // (0050 i 0051), koliko parova prezivi geometrijsku provjeru i koliki im je udio:
+    //
+    //   sirina   zakrpa   zagladjivanje   poklopljeno   provjereno   prezivi
+    //    3840      96          8              633          230        36 %
+    //    1920      48          4              967          565        58 %
+    //     960      24          2              729          598        82 %
+    //
+    // Dvije trecine poklapanja na 4K su kriva, na 960 ih je krivo osamnaest posto. Uz gusce
+    // uglove (razmak 3 px umjesto 8) na 960 se dobije 4322 provjerena para po paru kadrova -
+    // dvadeset puta vise nego s cime smo poceli, i u redu velicine COLMAP-ovih 3564 opazanja po
+    // kadru.
+    //
+    // Opazanja se vracaju u KOORDINATAMA SLIKE KOJU JE POZIVATELJ DAO, ne u smanjenima: tko ovo
+    // ukljuci ne smije morati mijenjati intrinsics
+    //=========================================================================================
+    //ZADANO 960, i to je mjereno na cijelom lancu a ne na paru kadrova. Slika uza od toga se ne
+    //dira, pa ista postavka vrijedi i za 480x360 sintetiku i za 4K snimku
+    uint32_t workingWidth = 960;
 };
 
 struct MatchGraphResult{
@@ -60,6 +84,20 @@ struct MatchGraphResult{
     uint32_t acceptedFrames = 0;
     uint32_t featuresTotal = 0;
     double medianMatchesPerPair = 0.0;
+
+    //KOLIKO JE POLOZAJ ZNACAJKE TOCAN, u pikselima slike koju je pozivatelj dao. Jedan kad se
+    //radilo na izvornoj sirini; inace onoliko koliko je slika smanjena.
+    //
+    //Postoji zato sto reconstruct ima prag prihvacanja kamere u pikselima, a taj prag mora biti
+    //veci od ove nepreciznosti - inace se odbijaju kamere koje su tocne koliko podatak dopusta.
+    //Izmjereno na 30 kadrova prave snimke, radna sirina 960 (dakle tocnost 4 px):
+    //
+    //   prag  4 px    5 od 30 kamera
+    //   prag  8 px   30 od 30 kamera, reprojekcija 1.199 px
+    //   prag 16 px   isto sto i 8
+    //
+    //Dakle dvostruko od ovoga je dovoljno, a vise ne mijenja nista
+    float localizationPixels = 1.0f;
 };
 
 MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,

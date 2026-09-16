@@ -48,14 +48,70 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     //
     //Cetrnaest puta razlike izmedju 16 i 96. Vrh je na 96, sto je 2.5 posto sirine - isti odnos
     //koji na 480x360 daje 12 px, koliko je ondje i bilo dobro
+    //SIRINA NA KOJOJ SE RADI - vidi MatchGraphConfig::workingWidth. Cijeli djelitelj, jer prosjek
+    //po kvadratu ne trazi interpolaciju ni odluku o njoj
+    uint32_t shrink = 1;
+    if(config.workingWidth > 0 && images[0].width > config.workingWidth){
+        shrink = images[0].width / config.workingWidth;
+        if(shrink < 1) shrink = 1;
+    }
+
+    std::vector<std::vector<uint8_t>> smallPixels;
+    std::vector<GrayImage> working(images);
+    if(shrink > 1){
+        smallPixels.resize(frames);
+        for(uint32_t frame = 0; frame < frames; ++frame){
+            const GrayImage& source = images[frame];
+            const uint32_t stride = source.stride ? source.stride : source.width;
+            const uint32_t width = source.width / shrink;
+            const uint32_t height = source.height / shrink;
+
+            smallPixels[frame].assign(size_t(width) * height, 0);
+            for(uint32_t y = 0; y < height; ++y){
+                for(uint32_t x = 0; x < width; ++x){
+                    uint32_t sum = 0;
+                    for(uint32_t dy = 0; dy < shrink; ++dy){
+                        const uint8_t* row = source.pixels + size_t(y * shrink + dy) * stride;
+                        for(uint32_t dx = 0; dx < shrink; ++dx) sum += row[x * shrink + dx];
+                    }
+                    smallPixels[frame][size_t(y) * width + x] = uint8_t(sum / (shrink * shrink));
+                }
+            }
+            working[frame] = GrayImage{smallPixels[frame].data(), width, height, width};
+        }
+    }
+
+    //Kamera na smanjenoj slici: zariste i glavna tocka dijele se istim brojem. Dvoprizorna poza
+    //se racuna nad tim koordinatama, pa mora dobiti i njima pripadnu kameru
+    Intrinsics small = intrinsics;
+    if(shrink > 1){
+        small.width = working[0].width;
+        small.height = working[0].height;
+        small.fx = intrinsics.fx / float(shrink);
+        small.fy = intrinsics.fy / float(shrink);
+        small.cx = (intrinsics.cx - 0.5f * float(shrink - 1)) / float(shrink);
+        small.cy = (intrinsics.cy - 0.5f * float(shrink - 1)) / float(shrink);
+    }
+
     DescribeConfig describe = config.describe;
-    if(config.patchFromWidth) describe.patch = std::max(12u, images[0].width / 40u);
+    if(config.patchFromWidth) describe.patch = std::max(12u, working[0].width / 40u);
+
+    //I ZAGLADJIVANJE PRATI ZAKRPU. Zakrpa od 96 px uzorkovana uz sigmu 1.5 uzima sirove piksele
+    //sest puta rjedje nego zakrpa od 16 - dakle uzorkuje sum umjesto strukture. Izmjereno na
+    //istom paru kadrova pri zakrpi 96: sigma 1.5 daje 255 poklapanja, sigma 8 daje 633
+    if(config.patchFromWidth){
+        describe.smoothing = std::max(1.5f, float(describe.patch) / 12.0f);
+    }
+
+    TrackConfig detect = config.detect;
+    if(shrink > 1) detect.minDistance = std::max(2.0f, config.detect.minDistance / float(shrink));
 
     for(uint32_t frame = 0; frame < frames; ++frame){
-        points[frame] = detectCorners(images[frame], config.detect);
-        signatures[frame] = describeAll(images[frame], points[frame], describe);
+        points[frame] = detectCorners(working[frame], detect);
+        signatures[frame] = describeAll(working[frame], points[frame], describe);
         offset[frame + 1] = offset[frame] + uint32_t(points[frame].size());
     }
+    result.localizationPixels = float(shrink);
     result.featuresTotal = offset[frames];
     if(result.featuresTotal == 0) return result;
 
@@ -65,7 +121,7 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
 
     Groups groups(result.featuresTotal);
     std::vector<double> perPair;
-    const float radius = config.searchFraction * float(images[0].width);
+    const float radius = config.searchFraction * float(working[0].width);
 
     for(uint32_t a = 0; a < frames; ++a){
         for(uint32_t step = 1; step <= config.window; ++step){
@@ -85,7 +141,7 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
                 there.push_back(points[b][match.to]);
             }
 
-            const TwoViewResult pose = relativePoseRobust(here, there, intrinsics, config.ransac);
+            const TwoViewResult pose = relativePoseRobust(here, there, small, config.ransac);
             if(!pose.solved || pose.inlierCount < config.minInliers) continue;
 
             ++result.acceptedFrames;
@@ -131,7 +187,13 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
             const uint64_t key = (uint64_t(frame) << 32) | uint64_t(point);
             if(!taken.emplace(key, 1).second) continue;
 
-            collected.push_back(Observation{frame, point, points[frame][i]});
+            //NATRAG U KOORDINATE POZIVATELJEVE SLIKE. Prosjek po kvadratu od f piksela stavlja
+            //srediste bloka na x*f + (f-1)/2, pa se tim istim izrazom vraca - bez pola piksela
+            //pomaka svaka bi tocka bila sustavno pomaknuta prema gore lijevo
+            glm::vec2 pixel = points[frame][i];
+            if(shrink > 1) pixel = pixel * float(shrink) + glm::vec2(0.5f * float(shrink - 1));
+
+            collected.push_back(Observation{frame, point, pixel});
         }
     }
 

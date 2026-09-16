@@ -178,6 +178,11 @@ int main(int argc, char** argv){
     // ZASTO SE SNIMKA CITA DRUGI PUT. Kljucni kadrovi se znaju tek nakon sto je sve ispraceno, a
     // drzati sve kadrove u memoriji nije opcija - 3384 kadra na 4K je 28 GB. Ponovno citanje kosta
     // dekodiranje, oko 0.06 s po kadru, i to je jeftinije od svake druge mogucnosti
+    //Koliko su polozaji znacajki tocni, u pikselima izvorne slike. Pracenje radi na punoj slici,
+    //graf poklapanja na smanjenoj - a prag prihvacanja kamere mora znati o kojem se od to dvoje
+    //radi, inace odbija kamere koje su tocne koliko podatak dopusta
+    float featurePixels = 1.0f;
+
     std::vector<Engine::Observation> observations = keys.observations;
     uint32_t pointCount = tracker.trackCount();
 
@@ -218,8 +223,13 @@ int main(int argc, char** argv){
             if(matchGraph){
                 Engine::MatchGraphConfig graphConfig;
                 graphConfig.detect = trackConfig;
-                graphConfig.detect.maxCorners = 4000;      //neovisno trazenje, pa ih smije biti puno vise
-                graphConfig.detect.minDistance = 8.0f;
+
+                //UGLOVA KOLIKO IH IMA, I GUSTO. Trazenje je neovisno po kadru, pa ih smije biti
+                //puno vise nego pri pracenju; a razmak se u MatchGraphu jos dijeli smanjenjem, pa
+                //12 na 4K postane 3 na radnoj sirini od 960. Izmjereno na dva prava kadra: razmak
+                //8 daje 598 provjerenih parova, razmak 3 daje 2928
+                graphConfig.detect.maxCorners = 20000;
+                graphConfig.detect.minDistance = 12.0f;
                 graphConfig.describe.ratio = 0.9f;        //vidi mjerenje u MatchGraph.cpp
                 graphConfig.describe.maxDistance = 96;
 
@@ -236,6 +246,7 @@ int main(int argc, char** argv){
                 if(graph.pointCount > 0){
                     observations = graph.observations;
                     pointCount = graph.pointCount;
+                    featurePixels = graph.localizationPixels;
                 }
             }else{
                 Engine::MergeConfig mergeConfig;
@@ -299,7 +310,12 @@ int main(int argc, char** argv){
 
         Engine::ReconstructConfig config;
         config.huberPixels = 2.0;
-        config.acceptPixels = 6.0;
+
+        //PRAG PRATI TOCNOST ZNACAJKE. Graf poklapanja radi na smanjenoj slici, pa su polozaji
+        //tocni na onoliko piksela koliko je smanjenje - i prag mora biti veci od toga, inace se
+        //odbijaju kamere koje su tocne koliko podatak uopce dopusta. Izmjereno na 30 kadrova
+        //prave snimke uz tocnost od 4 px: prag 4 daje 5 od 30 kamera, prag 8 daje 30 od 30
+        config.acceptPixels = std::max(6.0, 2.0 * double(featurePixels));
         config.minPointsForPose = 20;
         return std::make_pair(Engine::reconstruct(solveObservations, cameraCount, pointCount,
                                                   intrinsics, config), intrinsics);
