@@ -224,6 +224,34 @@ rjesenje je svejedno zrcaljeno, i to ISTIM kutom kroz sve postavke. Ponovljeni 1
 razlicite postavke nije ugadjanje nego nesto sustavno u tom putu, i to je sljedece sto treba naci.
 Zadano je `useSift = false`.
 
+### Trecina nasih poklapanja je KRIVA, i to je prava meta
+
+Dvoprizorna geometrija propusta sve sto lezi na epipolarnoj crti, pa "prezivjelo geometriju" ne
+znaci "tocno". COLMAP-ov model zna koja su dva piksela ista tocka, i to je jedina istina koju
+imamo. Poklapanje je tocno ako u oba kadra postoji COLMAP-ovo opazanje blize od 6 px i ako su ta
+dva opazanja ISTA 3D tocka.
+
+Mjereno na kadrovima gdje istina ima cime suditi (COLMAP ondje ima oko 9800 opazanja po kadru,
+dakle razmak od tridesetak piksela - pridruzivanje unutar 6 px je jednoznacno):
+
+| par | potpis | poklapanja | s istinom | tocno | udio |
+|---|---|---|---|---|---|
+| 0091 + 0092 | binarni | 13378 | 2315 | 1599 | **69.1 %** |
+| 0091 + 0092 | SIFT | 15679 | 2652 | 1749 | 66.0 % |
+| 0091 + 0096 | binarni | 8030 | 1089 | 658 | **60.4 %** |
+| 0091 + 0096 | SIFT | 10504 | 1272 | 711 | 55.9 % |
+
+Geometrijsku provjeru prolazi 87 do 94 posto poklapanja, a tocno ih je 60 do 69. Dakle svaki treci
+brid u tragu je kriv.
+
+**To objasnjava sve sto se danas dogodilo.** Suglasnost trojki je pomogla jer izbacuje bridove bez
+svjedoka, dakle krive. Labaviji prag omjera, siri prozor i SIFT su svi dodavali poklapanja i svi su
+skodili - jer dodaju kriva brze nego tocna. SIFT po paru daje vise poklapanja, ali mu je udio
+TOCNIH nizi od binarnog.
+
+**Meta vise nije broj poklapanja nego njihova ispravnost**: sa 65 posto na 95, a ne s pet tisuca na
+deset. I sada se to da mjeriti izravno, jer mjeraca ima.
+
 ### Sto jos nije rijeseno
 
 Jaz od 0.2 % do 4.4 % je jos dvadeset puta. Duljina traga je 3.7 kadra po tocki naspram
