@@ -224,33 +224,40 @@ rjesenje je svejedno zrcaljeno, i to ISTIM kutom kroz sve postavke. Ponovljeni 1
 razlicite postavke nije ugadjanje nego nesto sustavno u tom putu, i to je sljedece sto treba naci.
 Zadano je `useSift = false`.
 
-### Trecina nasih poklapanja je KRIVA, i to je prava meta
+### Nasa poklapanja su 97 posto tocna - meta je duljina traga
 
 Dvoprizorna geometrija propusta sve sto lezi na epipolarnoj crti, pa "prezivjelo geometriju" ne
 znaci "tocno". COLMAP-ov model zna koja su dva piksela ista tocka, i to je jedina istina koju
-imamo. Poklapanje je tocno ako u oba kadra postoji COLMAP-ovo opazanje blize od 6 px i ako su ta
-dva opazanja ISTA 3D tocka.
+imamo.
 
-Mjereno na kadrovima gdje istina ima cime suditi (COLMAP ondje ima oko 9800 opazanja po kadru,
-dakle razmak od tridesetak piksela - pridruzivanje unutar 6 px je jednoznacno):
+PRVO MJERENJE JE BILO KRIVO, i vrijedi zapisati zasto. Poklapanje se proglasavalo tocnim ako oba
+kraja padnu uz COLMAP-ovo opazanje ISTOG rednog broja tocke. Po toj mjeri je ispravnost ispala 60
+do 69 posto, pa je izgledalo da je svaki treci brid kriv.
 
-| par | potpis | poklapanja | s istinom | tocno | udio |
-|---|---|---|---|---|---|
-| 0091 + 0092 | binarni | 13378 | 2315 | 1599 | **69.1 %** |
-| 0091 + 0092 | SIFT | 15679 | 2652 | 1749 | 66.0 % |
-| 0091 + 0096 | binarni | 8030 | 1089 | 658 | **60.4 %** |
-| 0091 + 0096 | SIFT | 10504 | 1272 | 711 | 55.9 % |
+Ali razlicit redni broj ne znaci razlicito mjesto: COLMAP-ovi se tragovi lome, pa ista fizicka
+tocka kod njega postoji kao dvije. Kad se umjesto brojeva usporede 3D POLOZAJI tih tocaka:
 
-Geometrijsku provjeru prolazi 87 do 94 posto poklapanja, a tocno ih je 60 do 69. Dakle svaki treci
-brid u tragu je kriv.
+| potpis | s istinom | isti broj | razlicit broj, isto mjesto | stvarno krivo |
+|---|---|---|---|---|
+| binarni | 2315 | 1599 (69.1 %) | 656 (28.3 %) | **60 (2.6 %)** |
+| SIFT | 2652 | 1749 (66.0 %) | 827 (31.2 %) | **76 (2.9 %)** |
 
-**To objasnjava sve sto se danas dogodilo.** Suglasnost trojki je pomogla jer izbacuje bridove bez
-svjedoka, dakle krive. Labaviji prag omjera, siri prozor i SIFT su svi dodavali poklapanja i svi su
-skodili - jer dodaju kriva brze nego tocna. SIFT po paru daje vise poklapanja, ali mu je udio
-TOCNIH nizi od binarnog.
+Prag "isto mjesto" je 0.2 posto mjerila scene; medijan razmaka onih stvarno krivih je 0.3 posto,
+dakle i oni su uglavnom blizu.
 
-**Meta vise nije broj poklapanja nego njihova ispravnost**: sa 65 posto na 95, a ne s pet tisuca na
-deset. I sada se to da mjeriti izravno, jer mjeraca ima.
+**Poklapanja nisu problem.** Ni nasa ni SIFT-ova - oba su oko 97 posto tocna.
+
+I jos jedno mjerenje koje je time dobilo drugo znacenje: ispravnost po broju svjedoka u trecem
+kadru raste samo sa 62 na 75 posto (mjereno starom, krivom mjerom). Uz ispravljenu mjeru to znaci
+da svjedoci razlikuju uglavnom LOMLJENJE TRAGA, a ne krivo poklapanje.
+
+**Meta je duljina traga**: nasa je 5.16 kadrova, COLMAP-ova 8.7. Poklapanja su tocna, ali se ne
+spajaju u dovoljno duge lance - a upravo duljina traga daje siroku bazu.
+
+I `dropConflicting` time dobiva drugo lice: baca 27 posto opazanja kao "sukobljena", a ako su
+poklapanja 97 posto tocna, vecina tih sukoba nije greska nego posljedica GUSTIH uglova - dva
+susjedna ugla na tri piksela razmaka oba se poklope, i trag ih obojicu skupi u isti kadar. To nije
+krivo poklapanje nego dvostruko uzorkovanje iste tocke, i treba ga SPOJITI a ne baciti.
 
 ### Sto jos nije rijeseno
 
