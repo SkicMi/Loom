@@ -1,3 +1,4 @@
+#include "Engine/Bands.h"
 #include "Engine/Describe.h"
 
 #include <algorithm>
@@ -215,6 +216,96 @@ std::vector<Match> matchDescriptors(const std::vector<Descriptor>& from,
 }
 
 
+//=============================================================================================
+// POREDAK OBILASKA JE DIO REZULTATA, i zato je ovo napisano ovako.
+//
+// Udaljenosti su cijeli brojevi od 0 do 256, pa se izjednacenja dogadjaju stalno; tko je prvi
+// pregledan, taj pobjedjuje. Svako ubrzanje koje promijeni redoslijed mijenja i koja se znacajka
+// s kojom poklopila - dakle nije ubrzanje nego druga funkcija.
+//
+// Sto se smjelo promijeniti:
+//   gusta mreza umjesto rasprsivanja   isti raspored celija, samo bez trazenja po tablici
+//   bez prepisivanja kandidata          celije se obilaze na mjestu; prije se svaki put slagao
+//                                       vektor od tisuce indeksa, i to po znacajki
+//   dretve po znacajkama                svaka pise samo svoj izlaz, nista se ne zbraja
+//   rano napustanje                     kad djelomicni zbroj vec dosegne drugog po redu, ovaj
+//                                       kandidat ne moze promijeniti ni najboljeg ni drugog
+//
+// Sto se NIJE smjelo: sitnija mreza. Uzela bi manje kandidata, ali bi ih obisla drugim redom.
+//=============================================================================================
+
+namespace{
+
+//Hammingova udaljenost koja odustaje cim prijedje granicu. Vraca tocnu vrijednost kad je ispod
+//granice, a inace bilo sto >= granice - pozivatelj takav rezultat ionako samo odbacuje
+inline uint32_t distanceUnder(const Descriptor& a, const Descriptor& b, uint32_t limit){
+    uint32_t total = uint32_t(__builtin_popcountll(a.bits[0] ^ b.bits[0]));
+    total += uint32_t(__builtin_popcountll(a.bits[1] ^ b.bits[1]));
+    if(total >= limit) return total;
+    total += uint32_t(__builtin_popcountll(a.bits[2] ^ b.bits[2]));
+    total += uint32_t(__builtin_popcountll(a.bits[3] ^ b.bits[3]));
+    return total;
+}
+
+//Znacajke razvrstane po celijama mreze. Unutar celije ostaju u rastucem rednom broju, tocno kako
+//ih je slagala i tablica prije - poredak je dio rezultata
+struct CellGrid{
+    int32_t firstX = 0, firstY = 0;
+    int32_t countX = 1, countY = 1;
+    std::vector<uint32_t> start;    //countX*countY + 1
+    std::vector<uint32_t> items;
+
+    uint32_t at(int32_t cx, int32_t cy, uint32_t& count) const {
+        const int32_t x = cx - firstX, y = cy - firstY;
+        if(x < 0 || y < 0 || x >= countX || y >= countY){ count = 0; return 0; }
+        const size_t cell = size_t(y) * size_t(countX) + size_t(x);
+        count = start[cell + 1] - start[cell];
+        return start[cell];
+    }
+};
+
+CellGrid buildGrid(const std::vector<Descriptor>& set, const std::vector<glm::vec2>& pixels, float cell){
+    CellGrid grid;
+
+    std::vector<int32_t> cx(set.size(), 0), cy(set.size(), 0);
+    bool any = false;
+    for(size_t i = 0; i < set.size(); ++i){
+        if(!set[i].valid) continue;
+        cx[i] = int32_t(std::floor(double(pixels[i].x) / double(cell)));
+        cy[i] = int32_t(std::floor(double(pixels[i].y) / double(cell)));
+        if(!any){ grid.firstX = cx[i]; grid.firstY = cy[i]; grid.countX = cx[i]; grid.countY = cy[i]; any = true; }
+        grid.firstX = std::min(grid.firstX, cx[i]);
+        grid.firstY = std::min(grid.firstY, cy[i]);
+        grid.countX = std::max(grid.countX, cx[i]);
+        grid.countY = std::max(grid.countY, cy[i]);
+    }
+    if(!any){ grid.countX = grid.countY = 0; grid.start.assign(1, 0); return grid; }
+
+    grid.countX = grid.countX - grid.firstX + 1;
+    grid.countY = grid.countY - grid.firstY + 1;
+
+    const size_t cells = size_t(grid.countX) * size_t(grid.countY);
+    grid.start.assign(cells + 1, 0);
+    for(size_t i = 0; i < set.size(); ++i){
+        if(!set[i].valid) continue;
+        const size_t cellIndex = size_t(cy[i] - grid.firstY) * size_t(grid.countX) + size_t(cx[i] - grid.firstX);
+        ++grid.start[cellIndex + 1];
+    }
+    for(size_t cell = 0; cell < cells; ++cell) grid.start[cell + 1] += grid.start[cell];
+
+    //Drugi prolaz puni rastucim rednim brojem, pa unutar celije poredak ostaje isti
+    std::vector<uint32_t> cursor(grid.start.begin(), grid.start.end() - 1);
+    grid.items.assign(grid.start[cells], 0);
+    for(uint32_t i = 0; i < uint32_t(set.size()); ++i){
+        if(!set[i].valid) continue;
+        const size_t cellIndex = size_t(cy[i] - grid.firstY) * size_t(grid.countX) + size_t(cx[i] - grid.firstX);
+        grid.items[cursor[cellIndex]++] = i;
+    }
+    return grid;
+}
+
+}
+
 std::vector<Match> matchDescriptorsNear(const std::vector<Descriptor>& from,
                                         const std::vector<glm::vec2>& fromPixels,
                                         const std::vector<Descriptor>& to,
@@ -228,73 +319,80 @@ std::vector<Match> matchDescriptorsNear(const std::vector<Descriptor>& from,
     //Mreza celija velicine polumjera: kandidat je u istoj ili susjednoj celiji, pa se pretraga
     //svede na devet celija umjesto na cijeli drugi skup
     const float cell = std::max(1.0f, radius);
-    auto cellKey = [&](const glm::vec2& at){
-        const int64_t cx = int64_t(std::floor(double(at.x) / double(cell)));
-        const int64_t cy = int64_t(std::floor(double(at.y) / double(cell)));
-        return (uint64_t(uint32_t(int32_t(cx))) << 32) | uint64_t(uint32_t(int32_t(cy)));
-    };
-
-    auto buildBuckets = [&](const std::vector<Descriptor>& set, const std::vector<glm::vec2>& pixels){
-        std::unordered_map<uint64_t, std::vector<uint32_t>> buckets;
-        for(uint32_t i = 0; i < uint32_t(set.size()); ++i){
-            if(!set[i].valid) continue;
-            buckets[cellKey(pixels[i])].push_back(i);
-        }
-        return buckets;
-    };
-
-    const auto toBuckets = buildBuckets(to, toPixels);
-    const auto fromBuckets = buildBuckets(from, fromPixels);
+    const CellGrid toGrid = buildGrid(to, toPixels, cell);
+    const CellGrid fromGrid = buildGrid(from, fromPixels, cell);
     const float radiusSquared = radius * radius;
 
-    auto gather = [&](const std::unordered_map<uint64_t, std::vector<uint32_t>>& buckets,
-                      const glm::vec2& around, std::vector<uint32_t>& into){
-        into.clear();
-        const int64_t cx = int64_t(std::floor(double(around.x) / double(cell)));
-        const int64_t cy = int64_t(std::floor(double(around.y) / double(cell)));
-        for(int64_t dy = -1; dy <= 1; ++dy){
-            for(int64_t dx = -1; dx <= 1; ++dx){
-                const uint64_t k = (uint64_t(uint32_t(int32_t(cx + dx))) << 32) | uint64_t(uint32_t(int32_t(cy + dy)));
-                const auto found = buckets.find(k);
-                if(found == buckets.end()) continue;
-                into.insert(into.end(), found->second.begin(), found->second.end());
-            }
-        }
-    };
-
     std::vector<uint32_t> bestTo(from.size(), 0), bestDistance(from.size(), 257);
-    std::vector<uint32_t> candidates;
 
-    for(uint32_t i = 0; i < uint32_t(from.size()); ++i){
-        if(!from[i].valid) continue;
-        gather(toBuckets, fromPixels[i], candidates);
+    inBands(0, int(from.size()), [&](uint32_t, int firstItem, int lastItem){
+        for(uint32_t i = uint32_t(firstItem); i < uint32_t(lastItem); ++i){
+            if(!from[i].valid) continue;
 
-        uint32_t second = 257;
-        for(uint32_t j : candidates){
-            const glm::vec2 apart = toPixels[j] - fromPixels[i];
-            if(glm::dot(apart, apart) > radiusSquared) continue;
-            const uint32_t d = distance(from[i], to[j]);
-            if(d < bestDistance[i]){ second = bestDistance[i]; bestDistance[i] = d; bestTo[i] = j; }
-            else if(d < second){ second = d; }
+            const int32_t cx = int32_t(std::floor(double(fromPixels[i].x) / double(cell)));
+            const int32_t cy = int32_t(std::floor(double(fromPixels[i].y) / double(cell)));
+
+            uint32_t best = 257, second = 257, chosen = 0;
+
+            for(int32_t dy = -1; dy <= 1; ++dy){
+                for(int32_t dx = -1; dx <= 1; ++dx){
+                    uint32_t count = 0;
+                    const uint32_t offset = toGrid.at(cx + dx, cy + dy, count);
+
+                    for(uint32_t k = 0; k < count; ++k){
+                        const uint32_t j = toGrid.items[offset + k];
+                        const glm::vec2 apart = toPixels[j] - fromPixels[i];
+                        if(glm::dot(apart, apart) > radiusSquared) continue;
+
+                        //Granica je drugi po redu: sve iznad nje ne mijenja ni jedno ni drugo
+                        const uint32_t d = distanceUnder(from[i], to[j], second);
+                        if(d < best){ second = best; best = d; chosen = j; }
+                        else if(d < second){ second = d; }
+                    }
+                }
+            }
+
+            bestTo[i] = chosen;
+            bestDistance[i] = best;
+
+            if(bestDistance[i] > config.maxDistance) bestDistance[i] = 257;
+            else if(second < 257 && float(bestDistance[i]) > config.ratio * float(second)) bestDistance[i] = 257;
         }
-
-        if(bestDistance[i] > config.maxDistance) bestDistance[i] = 257;
-        else if(second < 257 && float(bestDistance[i]) > config.ratio * float(second)) bestDistance[i] = 257;
-    }
+    });
 
     //Uzajamnost: isti racun u suprotnom smjeru. Bez njega se deset znacajki preslika na istu jednu,
     //i triangulacija dobije deset imena za istu tocku
     std::vector<uint32_t> bestFrom(to.size(), UINT32_MAX), backDistance(to.size(), 257);
-    for(uint32_t j = 0; j < uint32_t(to.size()); ++j){
-        if(!to[j].valid) continue;
-        gather(fromBuckets, toPixels[j], candidates);
-        for(uint32_t i : candidates){
-            const glm::vec2 apart = toPixels[j] - fromPixels[i];
-            if(glm::dot(apart, apart) > radiusSquared) continue;
-            const uint32_t d = distance(from[i], to[j]);
-            if(d < backDistance[j]){ backDistance[j] = d; bestFrom[j] = i; }
+
+    inBands(0, int(to.size()), [&](uint32_t, int firstItem, int lastItem){
+        for(uint32_t j = uint32_t(firstItem); j < uint32_t(lastItem); ++j){
+            if(!to[j].valid) continue;
+
+            const int32_t cx = int32_t(std::floor(double(toPixels[j].x) / double(cell)));
+            const int32_t cy = int32_t(std::floor(double(toPixels[j].y) / double(cell)));
+
+            uint32_t best = 257, chosen = UINT32_MAX;
+
+            for(int32_t dy = -1; dy <= 1; ++dy){
+                for(int32_t dx = -1; dx <= 1; ++dx){
+                    uint32_t count = 0;
+                    const uint32_t offset = fromGrid.at(cx + dx, cy + dy, count);
+
+                    for(uint32_t k = 0; k < count; ++k){
+                        const uint32_t i = fromGrid.items[offset + k];
+                        const glm::vec2 apart = toPixels[j] - fromPixels[i];
+                        if(glm::dot(apart, apart) > radiusSquared) continue;
+
+                        const uint32_t d = distanceUnder(from[i], to[j], best);
+                        if(d < best){ best = d; chosen = i; }
+                    }
+                }
+            }
+
+            backDistance[j] = best;
+            bestFrom[j] = chosen;
         }
-    }
+    });
 
     for(uint32_t i = 0; i < uint32_t(from.size()); ++i){
         if(bestDistance[i] > 256) continue;

@@ -1,3 +1,4 @@
+#include "Engine/Bands.h"
 #include "Engine/Track.h"
 
 #include "Engine/Dense.h"
@@ -12,44 +13,7 @@
 namespace Engine{
 namespace{
 
-//=============================================================================================
-// Posao podijeljen po dretvama.
-//
-// Dva najskuplja dijela pracenja su nezavisna: svaki piksel u detektoru uglova i svaki trag u
-// pracenju racunaju se ne gledajuci nijedan drugi. Zato se dijele po pojasevima, a ne po nekakvom
-// redu koji bi trebalo cuvati.
-//
-// REZULTAT MORA OSTATI ISTI DO ZADNJEG BITA. Nigdje se ne zbraja preko pojaseva: svaka dretva pise
-// u svoj dio izlaza, a spajaju se redom. Zato se ne moze dogoditi da dvije pokrenutosti dadu dva
-// rezultata - a to je jedina vrsta ubrzanja koja ovdje ima smisla, jer bi inace testovi mjerili
-// raspored dretvi umjesto racuna
-uint32_t bandCount(int items, int minimumPerBand = 16){
-    const uint32_t cores = std::max(1u, std::thread::hardware_concurrency());
-    //Ispod ovoga pokretanje dretve stoji vise nego posao koji bi dobila
-    return std::max(1u, std::min(cores, uint32_t(std::max(1, items / minimumPerBand))));
-}
-
-//Tijelo dobiva REDNI BROJ pojasa, ne samo retke. Prva verzija ga je racunala natrag iz prvog
-//retka, pa su se dva pojasa mogla preslikati na isti broj i dvije dretve pisati u isti vektor -
-//greska koja se ne vidi u kodu nego tek kao srusen program. Ovako je broj zadan, a ne pogodjen
-template<typename Body>
-void inBands(int from, int to, const Body& body){
-    const int rows = to - from;
-    if(rows <= 0) return;
-
-    const uint32_t bands = bandCount(rows);
-    if(bands == 1){ body(0u, from, to); return; }
-
-    std::vector<std::thread> workers;
-    workers.reserve(bands);
-    for(uint32_t band = 0; band < bands; ++band){
-        const int start = from + int(uint64_t(rows) * band / bands);
-        const int stop  = from + int(uint64_t(rows) * (band + 1) / bands);
-        if(start >= stop) continue;
-        workers.emplace_back([&body, band, start, stop]{ body(band, start, stop); });
-    }
-    for(std::thread& worker : workers) worker.join();
-}
+//Pojasevi za dretve stoje u Engine/Bands.h - trebaju i poklapanju potpisa, pa su izdvojeni
 
 uint32_t strideOf(const GrayImage& image){
     return image.stride > 0 ? image.stride : image.width;
@@ -359,20 +323,54 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     const float threshold = candidates.front().score * config.quality;
     const float minDistanceSquared = config.minDistance * config.minDistance;
 
+    //RAZMAK SE PROVJERAVA PREKO MREZE, ne prolaskom kroz sve prihvacene.
+    //
+    //Prije je svaki kandidat usporedjivan sa svakim vec prihvacenim uglom - kvadratno u broju
+    //uglova. Dok ih je bilo sesto to se nije vidjelo; s dvadeset tisuca je to dvjesto milijuna
+    //usporedbi po kadru i 700 ms.
+    //
+    //Celija je velika tocno minDistance, pa ugao blizi od toga MORA biti u istoj ili susjednoj
+    //celiji - provjera je time ista provjera, samo nad devet celija umjesto nad svime. Poredak
+    //kandidata se ne dira, pa je i popis uglova isti do zadnjeg bita
+    const float cellSize = std::max(1.0f, config.minDistance);
+    const int32_t cellsX = int32_t(float(image.width) / cellSize) + 2;
+    const int32_t cellsY = int32_t(float(image.height) / cellSize) + 2;
+    std::vector<std::vector<uint32_t>> grid(size_t(cellsX) * size_t(cellsY));
+
+    auto cellOf = [&](const glm::vec2& at, int32_t& cx, int32_t& cy){
+        cx = std::max(0, std::min(cellsX - 1, int32_t(at.x / cellSize)));
+        cy = std::max(0, std::min(cellsY - 1, int32_t(at.y / cellSize)));
+    };
+
     for(const Candidate& candidate : candidates){
         if(candidate.score < threshold) break;
         if(corners.size() >= config.maxCorners) break;
 
         const glm::vec2 position(float(candidate.x), float(candidate.y));
+
+        int32_t cx = 0, cy = 0;
+        cellOf(position, cx, cy);
+
         bool farEnough = true;
-        for(const glm::vec2& accepted : corners){
-            const glm::vec2 difference = accepted - position;
-            if(glm::dot(difference, difference) < minDistanceSquared){
-                farEnough = false;
-                break;
+        for(int32_t dy = -1; dy <= 1 && farEnough; ++dy){
+            for(int32_t dx = -1; dx <= 1 && farEnough; ++dx){
+                const int32_t x = cx + dx, y = cy + dy;
+                if(x < 0 || y < 0 || x >= cellsX || y >= cellsY) continue;
+
+                for(uint32_t index : grid[size_t(y) * size_t(cellsX) + size_t(x)]){
+                    const glm::vec2 difference = corners[index] - position;
+                    if(glm::dot(difference, difference) < minDistanceSquared){
+                        farEnough = false;
+                        break;
+                    }
+                }
             }
         }
-        if(farEnough) corners.push_back(position);
+
+        if(farEnough){
+            grid[size_t(cy) * size_t(cellsX) + size_t(cx)].push_back(uint32_t(corners.size()));
+            corners.push_back(position);
+        }
     }
     return corners;
 }
