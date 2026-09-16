@@ -456,6 +456,34 @@ GrayImage Pyramid::level(uint32_t index) const {
     return GrayImage{step.pixels.data(), step.width, step.height, step.width};
 }
 
+bool refineToward(const GrayImage& reference, const GrayImage& image,
+                  const glm::vec2& at, glm::vec2& position,
+                  float maxShift, const TrackConfig& config){
+    if(!reference.pixels || !image.pixels) return false;
+
+    const float margin = float(config.window) + 2.0f;
+    if(!insideWithMargin(reference, at, margin)) return false;
+    if(!insideWithMargin(image, position, margin)) return false;
+
+    //Pocetni pomak je ono sto vec znamo: razlika dvaju poznatih polozaja. Lucas-Kanade odavde
+    //trazi samo ostatak, dakle kvantizaciju
+    glm::vec2 shift = position - at;
+    const glm::vec2 before = shift;
+
+    float residual = 0.0f;
+    if(!refine(reference, image, at, shift, config, residual)) return false;
+
+    const glm::vec2 moved = shift - before;
+    if(glm::length(moved) > maxShift) return false;
+
+    const glm::vec2 found = at + shift;
+    if(!insideWithMargin(image, found, margin)) return false;
+    if(residual > config.maxResidual) return false;
+
+    position = found;
+    return true;
+}
+
 bool trackPoint(const GrayImage& from, const GrayImage& to,
                 const glm::vec2& start, glm::vec2& end, const TrackConfig& config){
     if(!from.pixels || !to.pixels) return false;

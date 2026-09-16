@@ -159,6 +159,29 @@ glm::vec2 refineCorner(const GrayImage& image, const glm::vec2& start,
                        uint32_t window = 5, float maxShift = 4.0f, uint32_t iterations = 4);
 
 //=============================================================================================
+// ISTI DETALJ U DRUGOM KADRU, polazeci od vec poznatog polozaja.
+//
+// ZASTO OVO, KAD POSTOJI refineCorner. Onaj dotjeruje ugao SAM ZA SEBE, unutar jedne slike - i to
+// je izmjereno stetilo: na 4K su unutar cetiri piksela kvantizacije jos dva ili tri ugla, pa se
+// dva opazanja istog traga zalijepe na RAZLICITE. Trag koji je bio kvantiziran ali dosljedan
+// postane tocan ali nedosljedan, a triangulaciji treba ovo drugo.
+//
+// Ovdje se zakrpa iz referentnog kadra dotjeruje PREMA DRUGOM KADRU, pa svi clanovi traga opisuju
+// istu fizicku tocku - makar ona bila pola piksela pokraj vrha ugla. Za triangulaciju je vazna
+// dosljednost, ne poklapanje s vrhom.
+//
+// BEZ PIRAMIDE, I TO NAMJERNO. Polozaj je vec poznat na nekoliko piksela tocno; trazi se ostatak.
+// Grubi nivo piramide bi na toj skali otisao na susjedni ugao - isti kvar koji refineCorner ima.
+//
+// position ulazi kao procjena u drugoj slici i izlazi dotjeran. False znaci da se nije dalo:
+// zakrpa bez teksture, izlazak iz slike, ili pomak veci od maxShift - i tada position ostaje
+// nedirnut
+//=============================================================================================
+bool refineToward(const GrayImage& reference, const GrayImage& image,
+                  const glm::vec2& at, glm::vec2& position,
+                  float maxShift, const TrackConfig& config = {});
+
+//=============================================================================================
 // Koliko slika ima suma, u istim jedinicama u kojima su pikseli.
 //
 // ZASTO OVO TREBA PRACENJU. Afini warp ima sest parametara, a zakrpa ih ne odredjuje jednako

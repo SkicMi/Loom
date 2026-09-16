@@ -508,6 +508,74 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     }
     result.pointCount = next;
 
+    // ---------------------------------------------------------------------------------
+    // Dotjerivanje prema referentnom opazanju
+    // ---------------------------------------------------------------------------------
+    //
+    // Tek sada, nad onim sto je prezivjelo sva sita, i nad punom slikom. Mijenja se samo polozaj,
+    // ne pripadnost - pa poredak i brojevi tocaka ostaju kakvi jesu
+
+    if(config.refineToReference && shrink > 1 && result.pointCount > 0){
+        const float allowed = config.referenceMaxShift > 0.0f
+            ? config.referenceMaxShift : float(shrink);
+
+        //Opazanja jedne tocke zajedno. Poredak je onaj u kojem su izasla - po kadrovima rastuce -
+        //pa je prvo ujedno i ono iz najranijeg kadra, i izbor reference je time zadan
+        std::vector<std::vector<uint32_t>> ofPoint(result.pointCount);
+        for(uint32_t i = 0; i < uint32_t(result.observations.size()); ++i){
+            ofPoint[result.observations[i].point].push_back(i);
+        }
+
+        //Razlika izgleda je ovdje veca nego pri pracenju - usporedjuju se kadrovi udaljeni do
+        //cijelog prozora, ne susjedni
+        TrackConfig follow = config.detect;
+        if(config.referenceMaxResidual > 0.0f) follow.maxResidual = config.referenceMaxResidual;
+
+        std::vector<uint32_t> done(result.pointCount, 0), failed(result.pointCount, 0);
+        std::vector<uint8_t> gaveUp(result.pointCount, 0);
+
+        inBands(0, int(result.pointCount), [&](uint32_t, int firstItem, int lastItem){
+            std::vector<glm::vec2> found;
+            for(int index = firstItem; index < lastItem; ++index){
+                const std::vector<uint32_t>& list = ofPoint[size_t(index)];
+                if(list.size() < 2) continue;
+
+                //REFERENCA JE SREDNJI KADAR TRAGA, ne prvi. Iz prvog je najdalji clan udaljen
+                //cijelu duljinu traga, iz srednjeg polovicu - a sto su kadrovi dalji, to se zakrpa
+                //vise promijenila i to je cesci razlog da dotjerivanje odustane
+                const Observation reference = result.observations[list[list.size() / 2]];
+
+                found.assign(list.size(), glm::vec2(0.0f));
+                uint32_t ok = 0, missed = 0;
+                for(size_t k = 0; k < list.size(); ++k){
+                    const Observation& one = result.observations[list[k]];
+                    found[k] = one.pixel;
+                    if(one.camera == reference.camera) continue;
+
+                    if(refineToward(images[reference.camera], images[one.camera],
+                                    reference.pixel, found[k], allowed, follow)) ++ok;
+                    else ++missed;
+                }
+
+                if(missed > 0 && config.refineWholeTracks){
+                    gaveUp[size_t(index)] = 1;
+                    failed[size_t(index)] = uint32_t(list.size());
+                    continue;
+                }
+
+                for(size_t k = 0; k < list.size(); ++k) result.observations[list[k]].pixel = found[k];
+                done[size_t(index)] = ok;
+                failed[size_t(index)] = missed;
+            }
+        });
+
+        for(uint32_t point = 0; point < result.pointCount; ++point){
+            result.refinedObservations += done[point];
+            result.unrefinedObservations += failed[point];
+            result.unrefinedTracks += gaveUp[point];
+        }
+    }
+
     return result;
 }
 

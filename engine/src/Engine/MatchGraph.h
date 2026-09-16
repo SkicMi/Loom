@@ -219,6 +219,40 @@ struct MatchGraphConfig{
     float refineMaxShift = 0.0f;
 
     //=========================================================================================
+    // DOTJERIVANJE PREMA REFERENTNOM OPAZANJU, a ne svakog za sebe.
+    //
+    // refineAtFullResolution je pao jer je svako opazanje dotjerivao NEOVISNO: na 4K su unutar
+    // cetiri piksela kvantizacije jos dva ili tri ugla, pa se dva opazanja istog traga zalijepe na
+    // razlicite, i trag koji je bio kvantiziran ali dosljedan postane tocan ali nedosljedan.
+    //
+    // Ovdje je jedno opazanje traga REFERENTNO - ono iz najranijeg kadra - a ostala se Lucas-
+    // Kanadeom dotjeruju prema njegovoj zakrpi, na punoj slici, polazeci od vec poznatog polozaja.
+    // Time svi clanovi traga opisuju istu fizicku tocku. Referentno ostaje kvantizirano, i to ne
+    // smeta: zajednicki pomak cijelog traga znaci samo da tocka sjedi pola piksela pokraj vrha
+    // ugla, a triangulaciji je vazna dosljednost a ne vrh.
+    //
+    // Vidi Track::refineToward
+    //=========================================================================================
+    bool refineToReference = false;
+
+    //Koliko se opazanje smije pomaknuti pri tome, u pikselima pune slike. Nula znaci onoliko
+    //koliko je slika smanjena - dakle koliko kvantizacija najvise i moze promasiti
+    float referenceMaxShift = 0.0f;
+
+    //Kolika se razlika zakrpe jos prihvaca, u jedinicama piksela. Nula znaci onoliko koliko trazi
+    //pracenje. Ovdje se usporedjuju kadrovi udaljeni do cijelog prozora, pa je razlika izgleda
+    //vise nego pri pracenju susjednih - prestrog prag ovdje ne odbija krivo nego dobro
+    float referenceMaxResidual = 0.0f;
+
+    //SVE ILI NISTA PO TRAGU. Ako se ijedno opazanje traga ne da dotjerati, ostaju SVA kakva jesu.
+    //Mjesavina dotjeranih i kvantiziranih opazanja je gora od ujednaceno kvantiziranih: prva su
+    //tocna na desetinku, druga na cetiri piksela, i trag time opisuje dvije razlicite tocke.
+    //
+    //Izmjereno bez ovoga: 249 155 dotjeranih i 266 385 nedotjerenih, i rjesenje je palo sa 4.69 na
+    //123.57 st rotacije
+    bool refineWholeTracks = true;
+
+    //=========================================================================================
     // SUGLASNOST TROJKI: koliko trecih kadrova mora potvrditi jedan brid.
     //
     // Poklapanje A-B provjerava dvoprizorna geometrija, a ona propusta sve sto se slaze s JEDNIM
@@ -302,10 +336,12 @@ struct MatchGraphConfig{
     //     3         6.84      15.3 %   142.98 st    110.10 st
     //     4         6.84      25.7 %    78.80 st     96.51 st
     //
-    // Pad nije postupan nego se rusi, i to je isti potpis koji ima i SIFT-ov put: cim graf izgubi
-    // vezu preko slabog dijela snimke, rekonstrukcija skrene u zrcalnu granu i sve iza nje je
-    // krivo. To NIJE svojstvo ovog polja nego rekonstrukcije, koja nema provjeru koja bi takvu
-    // granu odbila - i to je sljedece sto treba rijesiti. Dotad je dvojka izmjerena granica
+    // Sve osim dvojke daje stotinjak stupnjeva, ali to NIJE skretanje u krivu granu nego nakupljeni
+    // drift: zaokret po koraku ide s 0.035 na 1.109 st, a najgori korak je tek dvostruko iznad tog
+    // medijana. Sto i nesto stupnjeva je zbroj sezdeset cetiri sitne greske.
+    //
+    // Zaustavlja se samo vezom koja seze dalje od prozora poklapanja - nista u grafu ne spaja kadar
+    // 5 s kadrom 60. Dotad je dvojka izmjerena granica
     //=========================================================================================
     uint32_t splitSupport = 2;
 };
@@ -353,6 +389,13 @@ struct MatchGraphResult{
 
     //Koliko je bridova u njima baceno jer nisu imali dovoljno svjedoka - vidi splitSupport
     uint32_t droppedWeakEdges = 0;
+
+    //Koliko je opazanja dotjerano prema referentnom, i koliko ih se nije dalo - vidi refineToReference
+    uint32_t refinedObservations = 0;
+    uint32_t unrefinedObservations = 0;
+
+    //Koliko je tragova odustalo jer se bar jedan njihov clan nije dao - vidi refineWholeTracks
+    uint32_t unrefinedTracks = 0;
 };
 
 MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,

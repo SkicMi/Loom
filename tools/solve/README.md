@@ -351,19 +351,32 @@ splat.
 Na 30 kadrova s pocetka snimke, koje COLMAP nije registrirao uopce: tocaka 938 -> 5074, baza
 1.55 -> 5.44 st.
 
-**Prozor je uzak i to treba znati.** Nula, tri i cetiri svjedoka sve ruse rjesenje, i to ne
-postupno nego naglo. To nije svojstvo ovog polja nego rekonstrukcije: cim graf izgubi vezu preko
-slabog dijela snimke, registracija skrene u krivu granu i sve iza nje je zrcaljeno ili zaokrenuto.
-Ista se granica vidi u SIFT-ovom putu (124 st kroz posve razlicite postavke) i u pragu svjedoka po
-bridu (dva svjedoka globalno = 86 st). **Rekonstrukcija nema provjeru koja bi takvu granu odbila, i
-to je sljedeca stvar.**
+**Prozor je uzak i to treba znati.** Nula, tri i cetiri svjedoka sve ruse rjesenje.
+
+Prvo sam to opisao kao skretanje u krivu granu. **Nije - to je nakupljeni drift**, i brojke to
+kazu jasno:
+
+| | zaokret po koraku | najgori korak | ukupna greska rotacije | 64 koraka x medijan |
+|---|---|---|---|---|
+| svjedoka 2 | 0.035 st | 0.354 | 4.69 st | 2.2 st |
+| svjedoka 0 | 1.109 st | 2.141 | 119.08 st | 71 st |
+| prozor 20, bez rastavljanja | 1.217 st | 7.404 | 139.98 st | 78 st |
+
+Da je rijec o jednom krivom skoku, medijan koraka bi ostao dobar a najgori bi bio golem. Umjesto
+toga je SVAKI korak losiji tridesetak puta, a najgori je tek dva do sest puta iznad medijana. Kut
+od stotinjak stupnjeva je zbroj sezdeset cetiri sitne greske, ne jedna velika.
+
+To mijenja i lijek. Ne treba provjera koja bi odbila granu, nego **veza koja seze dalje od deset
+kadrova**: nista u nasem grafu ne povezuje kadar 5 s kadrom 60, pa drift preko tog razmaka nema sto
+zaustaviti. COLMAP takve veze ima.
 
 ### Sto jos nije rijeseno
 
-**Rekonstrukcija nema obranu od krive grane.** Kad graf oslabi, registracija skrene i cijelo
-rjesenje se zaokrene za sto i nesto stupnjeva - vidjeno u tri neovisna puta (SIFT, dva svjedoka po
-bridu, rastavljanje bez praga). Reprojekcija to ne prijavi jer se poze slozu oko izmisljenih
-tocaka. Ovo je sada glavna prepreka: blokira SIFT-ov potpis i cini svaki dobitak krhkim.
+**Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u
+rekonstrukciji spaja kadrove udaljene deset. Preko tog razmaka drift nema sto zaustaviti, i kad
+korak oslabi rjesenje se zaokrene za stotinjak stupnjeva - zbroj sezdeset cetiri sitne greske, ne
+jedna velika (vidi tablicu gore). Reprojekcija to ne prijavi jer se poze slozu oko tocaka koje su
+i same odnesene driftom.
 
 **Jaz u decibelima je 1.71 dB** (30.29 naspram 32.00). Duljina traga je 7.77 naspram COLMAP-ovih
 8.7, baza 4.72 st naspram 7.93 - blize nego ikad, ali jos nije tu.
