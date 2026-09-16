@@ -370,6 +370,65 @@ To mijenja i lijek. Ne treba provjera koja bi odbila granu, nego **veza koja sez
 kadrova**: nista u nasem grafu ne povezuje kadar 5 s kadrom 60, pa drift preko tog razmaka nema sto
 zaustaviti. COLMAP takve veze ima.
 
+### Cetiri pokusaja da se drift smanji, i sto je svaki rekao
+
+Sve mjereno na istoj snimci, uz rastavljanje i dva svjedoka, dakle protiv 1.3 % / 4.69 st / 1.87 st.
+
+**Prozor poklapanja 20 umjesto 10.** Ideja je bila da veza preko dvadeset kadrova zaustavi drift
+koji preko deset nema sto zaustaviti.
+
+| | kamere | tocke | polozaj | rotacija | smjer koraka |
+|---|---|---|---|---|---|
+| prozor 20, bez rastavljanja | 101/101 | 19 279 | 33.4 % | 139.98 st | 137.13 st |
+| prozor 20, uz rastavljanje | 93/101 | 24 865 | 18.2 % | 152.94 st | 133.27 st |
+
+Oba se rusu. Binarni potpis ne prezivi dvadeset kadrova, pa siri prozor ne donosi vezu nego smece
+- a rastavljanje to smece sada CUVA umjesto da ga baci kao sukob. Prozor ostaje 10.
+
+**Radna sirina 1920 umjesto 960**, dakle kvantizacija 2 px umjesto 4:
+
+| | kamere | baza | polozaj | rotacija | zaokret medijan | najgori korak |
+|---|---|---|---|---|---|---|
+| 960 | 101/101 | 4.72 st | 1.3 % | 4.69 st | 0.035 st | 0.354 st |
+| 1920 | 100/101 | 5.17 st | 2.8 % | 10.06 st | **0.028 st** | **7.322 st** |
+
+Medijan koraka je ondje bolji, i baza sira - ali JEDAN korak promasi 7.3 st i odnese cijelo
+poravnanje. Nije kvantizacija ono sto drzi 960 na mjestu nego to sto na 1920 detektor opet pocinje
+hvatati sum. Ostaje 960.
+
+**Dotjerivanje prema referentnom kadru.** `refineCorner` dotjeruje ugao sam za sebe i time razdvaja
+trag (izmjereno ranije: monotona steta). Ispravna inacica je dotjerati zakrpu PREMA referentnom
+opazanju istog traga, Lucas-Kanadeom, na punoj slici - tada svi clanovi opisuju istu tocku.
+
+Napravljeno je (`Track::refineToward`) i na sintetici radi: kroz tri kadra rasap pada s 3.759 na
+0.156 px. Na pravoj snimci ne radi.
+
+Mjereno protiv COLMAP-ovih subpikselnih opazanja kao istine, na 12 pravih 4K kadrova. Mjera je
+RASAP UNUTAR TRAGA - koliko se opazanja jednog traga medjusobno razilaze nakon sto se svakom oduzme
+istinit polozaj. Koliki je zajednicki pomak, nevazno je; triangulaciji smeta samo razilazenje.
+
+| poluprozor LK | rasap prije | rasap poslije | dalo se | cijeli trag |
+|---|---|---|---|---|
+| 4 | 1.931 | 1.338 | 80 % | 45 % |
+| 5 | 1.914 | 1.379 | 81 % | 50 % |
+| 6 | 1.917 | 1.339 | 81 % | 49 % |
+| 8 | 1.961 | 1.338 | 83 % | 52 % |
+
+Trideset posto manje razilazenja, ali samo na tragovima koji su se CIJELI dali - a to je polovica.
+U punom lancu je to dalo 119 st: mjesavina subpikselnih i kvantiziranih clanova je gora od
+ujednaceno grubih, a pravilo "sve ili nista po tragu" tada baci sedamdeset posto tragova.
+
+**Referenca prethodno dotjerana na pravi ugao**, da zakrpa koju ostali prate sjedi na necemu
+prepoznatljivom. Gore: udio koji se dade pada s 81 na 70 posto, a odmak reference od COLMAP-ove
+tocke RASTE s 1.53 na 1.84 px.
+
+To je ujedno i objasnjenje: **COLMAP-ove znacajke nisu nasi uglovi**. Njegove su SIFT-ovi ekstremi
+u prostoru mjerila, nase su Shi-Tomasijevi uglovi - pa "dotjerati na pravi ugao" vodi na drugo
+mjesto, ne na tocnije. Isti razlog zbog kojeg je i `refineAtFullResolution` monotono stetio.
+
+Oba polja ostaju u kodu, zadano iskljucena. **Subpikselna tocnost se ne dobiva dotjerivanjem nego
+detekcijom u prostoru mjerila** - dakle SIFT-ovim putem, koji je jos zatvoren.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u

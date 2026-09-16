@@ -231,6 +231,24 @@ struct MatchGraphConfig{
     // smeta: zajednicki pomak cijelog traga znaci samo da tocka sjedi pola piksela pokraj vrha
     // ugla, a triangulaciji je vazna dosljednost a ne vrh.
     //
+    // ZADANO ISKLJUCENO, I TO JE IZMJERENO. Na sintetici radi (rasap kroz tri kadra 3.759 -> 0.156
+    // px), na pravoj snimci ne. Protiv COLMAP-ovih subpikselnih opazanja, na 12 pravih 4K kadrova,
+    // mjereno rasapom unutar traga:
+    //
+    //   poluprozor LK    4      5      6      8
+    //   rasap prije    1.931  1.914  1.917  1.961
+    //   rasap poslije  1.338  1.379  1.339  1.338
+    //   dalo se         80 %   81 %   81 %   83 %
+    //   cijeli trag     45 %   50 %   49 %   52 %
+    //
+    // Trideset posto manje razilazenja, ali samo na tragovima koji su se CIJELI dali - a to je
+    // polovica. U punom lancu 119 st naspram 4.69.
+    //
+    // Razlog je dublji od namjestanja: COLMAP-ove znacajke NISU nasi uglovi. Njegove su SIFT-ovi
+    // ekstremi u prostoru mjerila, nase Shi-Tomasijevi uglovi - pa prethodno dotjerivanje reference
+    // na "pravi ugao" odmakne je OD njegove tocke, s 1.53 na 1.84 px. Subpikselna tocnost se ne
+    // dobiva dotjerivanjem nego detekcijom u prostoru mjerila.
+    //
     // Vidi Track::refineToward
     //=========================================================================================
     bool refineToReference = false;
