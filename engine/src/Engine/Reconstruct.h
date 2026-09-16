@@ -165,6 +165,27 @@ struct ReconstructConfig{
     // se pise iznova
     //=========================================================================================
     bool visibilityScore = false;
+
+    //=========================================================================================
+    // ODBACIVANJE PROMASAJA PRI POSTAVLJANJU KAMERE.
+    //
+    // Nova kamera se postavlja iz tocaka koje su vec rijesene - a one nisu sve dobre: nastale su
+    // iz dosad postavljenih poza, pa je dio njih na krivoj dubini. Dosad su sve ulazile s punom
+    // tezinom, a Huber je promasaj samo pritegnuo umjesto da ga izbaci; kamera se zatim odbijala
+    // po medijanu preko SVIH tocaka, pa je dobra poza s petinom losih tocaka ispadala kao losa
+    // kamera.
+    //
+    // Sada se trazi najveci skup opazanja koji se slaze, poza se dotjera SAMO na njemu, i odluka
+    // se donosi po tom skupu. Vidi solvePoseRansac
+    //=========================================================================================
+    bool poseRansac = true;
+
+    //Koliko piksela smije promasiti opazanje da bi se racunalo kao slaganje. Siroko namjerno -
+    //ovo razlucuje promasaj od suma, ne dobru pozu od lose. Isti broj koji drzi COLMAP
+    double poseMaxError = 12.0;
+
+    //Najmanji udio opazanja koja se slazu. Ispod toga poza nije nadjena nego pogodjena
+    double poseMinInlierRatio = 0.25;
 };
 
 struct Reconstruction{
@@ -176,11 +197,35 @@ struct Reconstruction{
 
     uint32_t posedCameras = 0;
     uint32_t solvedPoints = 0;
-    double medianReprojection = 0.0;     //po opazanjima koja su usla u rekonstrukciju
+
+    //Koliko je opazanja zavrsilo U RJESENJU, i koliko ih je ciscenje izbacilo kao promasaje.
+    //Zbroj nije nuzno broj ulaznih opazanja: ona koja pripadaju nerijesenoj kameri ili
+    //netrianguliranoj tocki nisu ni jedno ni drugo
+    uint32_t usedObservations = 0;
+    uint32_t filteredObservations = 0;
+
+    //PO OPAZANJIMA KOJA SU U RJESENJU, dakle bez onih koja je ciscenje izbacilo.
+    //
+    //Dugo je ovdje stajao medijan preko SVIH opazanja rijesenih kamera i tocaka, ukljucujuci
+    //promasaje koje je rekonstrukcija namjerno odbacila - a to je mjerilo koliko je ulaz los, ne
+    //koliko je rjesenje dobro. Usporedba s COLMAP-om je time bila neposteno na nasu stetu: on
+    //svoje odbacene ni ne zapise u model, pa mu se mjeri samo ono sto je zadrzao
+    double medianReprojection = 0.0;
     double parallaxLimitDegrees = 0.0;   //kut izveden iz zarista i suma, onaj koji je stvarno vrijedio
     bool ok = false;
 };
 
+//OPAZANJA MORAJU BITI VEC ISPRAVLJENA ZA DISTORZIJU, a intrinsics predan ovamo mora biti cisti
+//pinhole (k1 = k2 = 0).
+//
+//Razlog je u tome sto jakobijani - i pozin i bundleov - racunaju derivaciju PINHOLE projekcije.
+//Ako intrinsics nosi k1, reprojekcija se mjeri s distorzijom a korak se racuna bez nje, pa
+//optimizacija ide u smjeru koji ne smanjuje ono sto mjeri. Izmjereno na COLMAP-ovim
+//korespondencijama: ispravljena opazanja uz pinhole daju 0.735 px, a neispravljena uz model s k1
+//daju 1.091 px i sedam posto odbacenih opazanja umjesto tri desetinke posto.
+//
+//VideoSolve to radi tocno - ispravi opazanja pa izricito nulira k1 i k2. Ovdje pise zato sto je
+//greska tiha: sve se prevede, sve se izvrti, i rezultat je samo losiji
 Reconstruction reconstruct(const std::vector<Observation>& observations,
                            size_t cameraCount,
                            size_t pointCount,

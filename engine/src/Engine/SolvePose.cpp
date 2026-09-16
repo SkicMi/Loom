@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 
 namespace Engine{
 namespace{
@@ -235,6 +236,136 @@ PoseSolveResult solvePose(const std::vector<glm::vec3>& points,
         }
         result.iterations = iteration + 1;
     }
+    return result;
+}
+
+
+PoseRansacResult solvePoseRansac(const std::vector<glm::vec3>& points,
+                                 const std::vector<PointObservation>& observations,
+                                 const Intrinsics& intrinsics,
+                                 const Pose& initial,
+                                 const PoseRansacConfig& config){
+    PoseRansacResult result;
+    result.pose = initial;
+    result.inlier.assign(observations.size(), 0);
+
+    if(observations.size() < config.minInliers || config.sampleSize < 4){
+        return result;
+    }
+
+    //Promasaj kamere nad opazanjem, u pikselima. Tocka iza kamere nije promasaj nego nemjerljiva,
+    //pa dobiva beskonacno i nikad ne ulazi u skup koji se slaze
+    auto errorOf = [&](const Pose& pose, const PointObservation& observation){
+        glm::vec2 pixel;
+        if(!project(pose, intrinsics, points[observation.point], pixel)){
+            return std::numeric_limits<double>::infinity();
+        }
+        return double(glm::length(pixel - observation.pixel));
+    };
+
+    auto countAgreement = [&](const Pose& pose, std::vector<uint8_t>& mark){
+        uint32_t agreed = 0;
+        for(size_t i = 0; i < observations.size(); ++i){
+            const bool inside = errorOf(pose, observations[i]) <= config.maxError;
+            mark[i] = inside ? 1 : 0;
+            if(inside) ++agreed;
+        }
+        return agreed;
+    };
+
+    //ODREDJEN GENERATOR. Isti ulaz mora dati isti izlaz - rekonstrukcija koja se mijenja izmedju
+    //dva pokretanja ne da se usporediti ni sa cim, pa ni sama sa sobom
+    uint64_t seed = 0x9E3779B97F4A7C15ull ^ uint64_t(observations.size());
+    auto nextRandom = [&seed](){
+        seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+        return seed;
+    };
+
+    std::vector<uint8_t> mark(observations.size(), 0);
+    std::vector<PointObservation> sample(config.sampleSize);
+    std::vector<size_t> chosen(config.sampleSize);
+
+    uint32_t needed = config.maxTrials;
+    uint32_t bestAgreed = 0;
+    Pose bestPose = initial;
+
+    for(uint32_t trial = 0; trial < config.maxTrials && trial < needed; ++trial){
+        ++result.trials;
+
+        //Uzorak bez ponavljanja. Kod osam od tisucu se sudar gotovo ne dogodi, ali ponovljena
+        //tocka bi tiho smanjila uzorak i sustav bi mogao postati singularan
+        for(uint32_t k = 0; k < config.sampleSize; ++k){
+            bool fresh = false;
+            while(!fresh){
+                chosen[k] = size_t(nextRandom() % observations.size());
+                fresh = true;
+                for(uint32_t earlier = 0; earlier < k; ++earlier){
+                    if(chosen[earlier] == chosen[k]) fresh = false;
+                }
+            }
+            sample[k] = observations[chosen[k]];
+        }
+
+        const PoseSolveResult hypothesis = solvePose(points, sample, intrinsics, initial, config.solve);
+        if(!hypothesis.solved) continue;
+
+        const uint32_t agreed = countAgreement(hypothesis.pose, mark);
+        if(agreed <= bestAgreed) continue;
+
+        bestAgreed = agreed;
+        bestPose = hypothesis.pose;
+        result.inlier = mark;
+
+        //Koliko jos pokusaja treba da bi se sa zadanom sigurnoscu naslo bar jedan uzorak bez
+        //promasaja, uz ovoliki udio slaganja. Cim se nadje velik skup, ostatak pokusaja otpada
+        const double share = double(agreed) / double(observations.size());
+        const double chance = std::pow(share, double(config.sampleSize));
+        if(chance > 0.0 && chance < 1.0){
+            const double trials = std::log(1.0 - config.confidence) / std::log(1.0 - chance);
+            if(trials >= 0.0 && trials < double(config.maxTrials)) needed = uint32_t(trials) + 1;
+        }else if(chance >= 1.0){
+            needed = result.trials;
+        }
+    }
+
+    if(bestAgreed < config.minInliers
+       || double(bestAgreed) < config.minInlierRatio * double(observations.size())){
+        return result;
+    }
+
+    //DOTJERIVANJE SAMO NA SKUPU KOJI SE SLAZE. U tome je cijela razlika: promasaji vise ne
+    //sudjeluju, pa poza ide onamo kamo je vode tocke koje su u pravu
+    std::vector<PointObservation> agreeing;
+    agreeing.reserve(bestAgreed);
+    for(size_t i = 0; i < observations.size(); ++i){
+        if(result.inlier[i]) agreeing.push_back(observations[i]);
+    }
+
+    const PoseSolveResult refined = solvePose(points, agreeing, intrinsics, bestPose, config.solve);
+    if(refined.solved){
+        //Dotjerana poza moze primiti jos opazanja, pa se skup prebroji jos jednom
+        const uint32_t agreed = countAgreement(refined.pose, mark);
+        if(agreed >= bestAgreed){
+            result.pose = refined.pose;
+            result.inlier = mark;
+            bestAgreed = agreed;
+        }else{
+            result.pose = bestPose;
+        }
+    }else{
+        result.pose = bestPose;
+    }
+
+    std::vector<double> errors;
+    errors.reserve(bestAgreed);
+    for(size_t i = 0; i < observations.size(); ++i){
+        if(result.inlier[i]) errors.push_back(errorOf(result.pose, observations[i]));
+    }
+    std::sort(errors.begin(), errors.end());
+
+    result.inliers = bestAgreed;
+    result.inlierMedian = errors.empty() ? 0.0 : errors[errors.size() / 2];
+    result.solved = true;
     return result;
 }
 

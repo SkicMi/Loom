@@ -16,11 +16,14 @@ double medianOf(std::vector<double> values){
     return values[values.size() / 2];
 }
 
-//Reprojekcija po opazanjima koja su usla u rekonstrukciju - dakle samo rijesene kamere i tocke
+//Reprojekcija po opazanjima koja su usla u rjesenje. keep, ako nije prazan, izuzima ona koja je
+//ciscenje odbacilo - vidi Reconstruction::medianReprojection
 double medianOver(const std::vector<Observation>& observations, const Reconstruction& state,
-                  const Intrinsics& intrinsics){
+                  const Intrinsics& intrinsics, const std::vector<uint8_t>& keep = {}){
     std::vector<double> errors;
-    for(const Observation& observation : observations){
+    for(size_t index = 0; index < observations.size(); ++index){
+        if(!keep.empty() && !keep[index]) continue;
+        const Observation& observation = observations[index];
         if(!state.posed[observation.camera] || !state.solved[observation.point]) continue;
         glm::vec2 pixel;
         if(!project(state.poses[observation.camera], intrinsics, state.points[observation.point], pixel)){
@@ -496,16 +499,41 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             if(state.solved[observation->point]) seen.push_back(PointObservation{observation->point, observation->pixel});
         }
 
-        PoseSolveConfig poseConfig;
-        poseConfig.huberPixels = config.huberPixels;
-        const PoseSolveResult pose = solvePose(state.points, seen, intrinsics, state.poses[nearest], poseConfig);
+        Pose placed;
+        bool placedOk = false;
+        double placedMedian = 0.0;
 
-        if(!pose.solved || pose.endMedian > config.acceptPixels){
+        if(config.poseRansac){
+            PoseRansacConfig poseConfig;
+            poseConfig.solve.huberPixels = config.huberPixels;
+            poseConfig.maxError = config.poseMaxError;
+            poseConfig.minInliers = config.minPointsForPose;
+            poseConfig.minInlierRatio = config.poseMinInlierRatio;
+
+            const PoseRansacResult pose = solvePoseRansac(state.points, seen, intrinsics,
+                                                          state.poses[nearest], poseConfig);
+            placed = pose.pose;
+            placedOk = pose.solved;
+
+            //MEDIJAN PO SKUPU KOJI SE SLAZE, ne preko svega. Preko svega bi ovdje mjerio koliko je
+            //tocaka lose triangulirano, a pitanje je je li POZA dobra
+            placedMedian = pose.inlierMedian;
+        }else{
+            PoseSolveConfig poseConfig;
+            poseConfig.huberPixels = config.huberPixels;
+            const PoseSolveResult pose = solvePose(state.points, seen, intrinsics,
+                                                   state.poses[nearest], poseConfig);
+            placed = pose.pose;
+            placedOk = pose.solved;
+            placedMedian = pose.endMedian;
+        }
+
+        if(!placedOk || placedMedian > config.acceptPixels){
             refused[best] = 1;
             continue;   //ova kamera ne ide; ostale se i dalje pokusavaju
         }
 
-        state.poses[best] = pose.pose;
+        state.poses[best] = placed;
         state.posed[best] = 1;
         ++state.posedCameras;
 
@@ -563,7 +591,16 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         }
     }
 
-    state.medianReprojection = medianOver(observations, state, intrinsics);
+    state.usedObservations = 0;
+    state.filteredObservations = 0;
+    for(size_t index = 0; index < observations.size(); ++index){
+        const Observation& observation = observations[index];
+        if(!state.posed[observation.camera] || !state.solved[observation.point]) continue;
+        if(usable[index]) ++state.usedObservations;
+        else              ++state.filteredObservations;
+    }
+
+    state.medianReprojection = medianOver(observations, state, intrinsics, usable);
     state.ok = state.posedCameras >= 2 && state.solvedPoints > 0;
     // ---------------------------------------------------------------------------------
     // Ishodiste je PRVA RIJESENA KAMERA, uvijek

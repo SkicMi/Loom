@@ -68,4 +68,62 @@ PoseSolveResult solvePose(const std::vector<glm::vec3>& points,
                           const Pose& initial,
                           const PoseSolveConfig& config = {});
 
+
+//=============================================================================================
+// ISTO, ALI S ODBACIVANJEM PROMASAJA.
+//
+// Zasto uopce: gornji solvePose uzima SVA opazanja s punom tezinom, a Huber promasaj samo
+// pritegne umjesto da ga izbaci. Tocke koje kamera vidi nisu sve dobre - one su triangulirane iz
+// dosad rijesenih poza, pa je dio njih na krivoj dubini. Kad ih je petina, poza se povuce za
+// njima, a medijan preko SVIH tocaka onda tu kameru i odbije - iako je poza mozda bila dobra.
+//
+// Ovdje se umjesto toga trazi NAJVECI SKUP KOJI SE SLAZE: nasumicni mali uzorak da pretpostavku,
+// prebroji se koliko je opazanja unutar praga, i najbolji skup se na kraju dotjera sam za sebe.
+// Odluka o kameri se onda donosi po TOM skupu, a ne po svemu sto je kamera vidjela.
+//
+// UZORAK SE DOTJERUJE, NE RJESAVA IZ NICEGA. Prava minimalna rjesavacica (P3P) daje pozu iz tri
+// tocke bez ikakve pretpostavke; ovdje se krece od zadane poze, sto je u nizu kadrova susjedni
+// kadar i time blizu. Za neuredjenu zbirku fotografija to ne bi bilo dovoljno i P3P bi trebao;
+// ovdje se najprije mjeri koliko donosi samo odbacivanje promasaja.
+//
+// NASUMICNOST JE ODREDJENA: isti ulaz daje isti izlaz, jer rekonstrukcija koja se mijenja izmedju
+// dva pokretanja nema se s cime usporediti
+//=============================================================================================
+struct PoseRansacConfig{
+    //Koliko piksela smije promasiti opazanje da bi se racunalo kao slaganje. Siroko namjerno:
+    //ovo razlucuje promasaj od suma, a ne dobru pozu od lose. COLMAP ovdje drzi 12 px
+    double maxError = 12.0;
+
+    //Najmanji broj i udio opazanja koja se slazu, da bi se poza uopce prihvatila
+    uint32_t minInliers = 12;
+    double minInlierRatio = 0.25;
+
+    //Koliko opazanja ide u jednu pretpostavku. Sest za sest nepoznanica bio bi minimum; osam daje
+    //malo zaliha protiv suma, a i dalje je uzorak koji vjerojatno nema promasaj
+    uint32_t sampleSize = 8;
+
+    //Gornja granica pokusaja. Stvarni broj se skracuje cim se nadje velik skup koji se slaze
+    uint32_t maxTrials = 100;
+
+    //Sigurnost s kojom se zeli bar jedan uzorak bez promasaja
+    double confidence = 0.99;
+
+    PoseSolveConfig solve;
+};
+
+struct PoseRansacResult{
+    Pose pose;
+    std::vector<uint8_t> inlier;   //po opazanju, istim redom kojim su dosla
+    uint32_t inliers = 0;
+    uint32_t trials = 0;
+    double inlierMedian = 0.0;     //medijan reprojekcije PO SKUPU KOJI SE SLAZE
+    bool solved = false;
+};
+
+PoseRansacResult solvePoseRansac(const std::vector<glm::vec3>& points,
+                                 const std::vector<PointObservation>& observations,
+                                 const Intrinsics& intrinsics,
+                                 const Pose& initial,
+                                 const PoseRansacConfig& config = {});
+
 }
