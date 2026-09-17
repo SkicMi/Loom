@@ -343,6 +343,11 @@ int main(int argc, char** argv){
     config.acceptPixels = std::max(6.0, 2.0 * double(graph.localizationPixels));
     config.minPointsForPose = 20;
 
+    //Svako deseto opazanje se izdvaja i sluzi kao provjera - ovdje se moze provjeriti i sama ta
+    //mjera, jer istinu znamo. Ako izdvojena reprojekcija prati stvarnu gresku, mjera vrijedi i
+    //ondje gdje istine nema
+    config.holdOutEvery = 10;
+
     const Engine::Reconstruction solved = Engine::reconstruct(graph.observations, frames,
                                                               graph.pointCount, intrinsics, config);
     const Error error = compare(solved, truth);
@@ -350,6 +355,10 @@ int main(int argc, char** argv){
     std::printf("  rijeseno %u od %u kamera, %u tocaka, reprojekcija %.3f px, baza %.2f st\n",
                 solved.posedCameras, frames, solved.solvedPoints,
                 solved.medianReprojection, solved.medianTriangulationAngle);
+    std::printf("  PROVJERA BEZ ISTINE: izdvojenih %u, reprojekcija na njima %.3f px "
+                "(na koristenima %.3f, omjer %.2f)\n",
+                solved.heldOutObservations, solved.heldOutReprojection, solved.medianReprojection,
+                solved.medianReprojection > 0.0 ? solved.heldOutReprojection / solved.medianReprojection : 0.0);
     std::printf("  GRESKA: polozaj %.3f %%, rotacija %.4f st, po koraku %.4f st, smjer %.3f st\n",
                 error.position, error.rotation, error.stepRotation, error.stepDirection);
     std::printf("  oblik putanje: drugi/prvi %.3f, treci/prvi %.3f%s\n",

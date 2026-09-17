@@ -371,6 +371,12 @@ int main(int argc, char** argv){
         if(!thorough){
             config.initialPairTrials = 1;
             config.seamFactor = 0.0;
+
+            //PROVJERA SE PLACA IZ ONOGA STO SE IONAKO RACUNA. Probna rjesenja sluze izboru zarisne
+            //i svejedno se grade, pa se u njima svako deseto opazanje izdvoji i posluzi kao
+            //provjera. Isporuceno rjesenje koristi SVE - omjer je svojstvo podatka i lanca, ne
+            //bas tog jednog rjesenja
+            config.holdOutEvery = 10;
         }
         return std::make_pair(Engine::reconstruct(solveObservations, cameraCount, pointCount,
                                                   intrinsics, config), intrinsics);
@@ -412,6 +418,8 @@ int main(int argc, char** argv){
     double bestFov = 0.0;
 
     std::vector<double> reprojectionOf;
+    uint32_t heldOutCount = 0;
+    double heldOutError = 0.0, heldOutAgainst = 0.0;
     for(double fov : candidates){
         const auto result = solveWith(fov, false);
         if(result.first.ok) reprojectionOf.push_back(result.first.medianReprojection);
@@ -425,6 +433,9 @@ int main(int argc, char** argv){
             best = state;
             bestIntrinsics = result.second;
             bestFov = fov;
+            heldOutCount = state.heldOutObservations;
+            heldOutError = state.heldOutReprojection;
+            heldOutAgainst = state.medianReprojection;
         }
     }
 
@@ -522,6 +533,35 @@ int main(int argc, char** argv){
     const auto shape = pathShape(best);
     std::printf("  putanja: medijan skretanja %.2f st po kadru, omjer brzina %.3f (glatko = malo i oko 1)\n",
                 shape.first, shape.second);
+
+    //=====================================================================================
+    // KOLIKO SE RJESENJU SMIJE VJEROVATI, bez ikakve istine.
+    //
+    // Reprojekcija nad opazanjima koja su rjesenje GRADILA kaze samo koliko se ono slaze sa sobom,
+    // a to je vise puta bila laz - krivo rjesenje se sa sobom slaze jednako dobro kao ispravno, i
+    // bundle je ta ista opazanja duzan objasniti jer ih minimizira.
+    //
+    // Izdvojena opazanja nisu usla ni u triangulaciju, ni u bundle, ni u ciscenje. Omjer je
+    // referentni broj.
+    //
+    // Izmjereno na nacrtanim snimkama gdje je istina poznata (TruthBench):
+    //
+    //   luk, ispravno rjesenje          omjer 1.42
+    //   prolaz, ispravno rjesenje       omjer 1.52
+    //   zaokret u mjestu, bez paralakse omjer 3.33, i samo 4 izdvojena opazanja prezive
+    //
+    // Dakle zdravo je oko jedan i pol; bitno vise znaci da je bundle upio sum umjesto scene
+    //=====================================================================================
+    if(heldOutCount > 0 && heldOutAgainst > 0.0){
+        const double ratio = heldOutError / heldOutAgainst;
+        std::printf("  provjera bez istine: %u izdvojenih opazanja, reprojekcija %.3f px "
+                    "naspram %.3f na koristenima - omjer %.2f\n",
+                    heldOutCount, heldOutError, heldOutAgainst, ratio);
+        if(ratio > 2.5){
+            std::printf("             UPOZORENJE: rjesenje se bitno slabije slaze s onim sto nije "
+                        "vidjelo (zdravo je oko 1.5).\n");
+        }
+    }
 
     //Isto rjesenje s zarisnom +-25 %: koliko se promijeni SMJER putanje
     for(double factor : {0.75, 1.25}){

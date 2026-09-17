@@ -147,6 +147,17 @@ struct ReconstructConfig{
     double stepOutlierFactor = 0.0;
 
     //=========================================================================================
+    // SVAKO KOLIKO SE OPAZANJE IZDVAJA IZ RACUNA, da posluzi kao provjera.
+    //
+    // Nula iskljucuje i rjesenje je tada bit po bit isto kao prije. Deset znaci da svako deseto
+    // opazanje ne ulazi u racun nego se na kraju njime rjesenje PROVJERAVA.
+    //
+    // Izdvaja se samo ono cija tocka i bez njega ostaje vidjena iz barem tri kadra - inace bi se
+    // umjesto provjere dobio kraci trag, a to je mijenjanje ulaza a ne mjerenje
+    //=========================================================================================
+    uint32_t holdOutEvery = 0;
+
+    //=========================================================================================
     // SAV: MJESTO NA KOJEM SE LANAC PRESIDRAO.
     //
     // Izmjereno na SIFT-ovom grafu: nas zaokret iz kadra u kadar je 0.101 st medijan, ali kod
@@ -405,6 +416,23 @@ struct Reconstruction{
     //Izmjereno na istoj snimci: rjesenja s bazom 4.7-4.9 st daju 4.7-6.8 st greske rotacije protiv
     //COLMAP-a, a ona s 2.9-3.1 st daju 119 st. Reprojekcija ih ne razlikuje - obje su oko 1.65 px
     double medianTriangulationAngle = 0.0;
+
+    //=========================================================================================
+    // KOLIKO SE RJESENJU SMIJE VJEROVATI, mjereno na opazanjima koja ga NISU gradila.
+    //
+    // Reprojekcija nad opazanjima koja su sudjelovala kaze koliko se rjesenje slaze samo sa sobom,
+    // a to je danas sest puta zaredom bila laz: krivo rjesenje se sa sobom slaze jednako dobro kao
+    // ispravno. Bundle k tome ta ista opazanja i minimizira, pa ih je duzan objasniti.
+    //
+    // Izdvojena opazanja nisu usla ni u triangulaciju, ni u bundle, ni u ciscenje. Ako je rjesenje
+    // pogodilo scenu, ona se reprojiciraju jednako dobro kao ostala; ako je bundle upio sum, ona to
+    // pokazu. Omjer to dvoje je referentni broj: blizu jedan znaci da rjesenje vrijedi i izvan
+    // onoga sto je vidjelo.
+    //
+    // Nula u brojacu znaci da se nije izdvajalo - vidi ReconstructConfig::holdOutEvery
+    //=========================================================================================
+    uint32_t heldOutObservations = 0;
+    double heldOutReprojection = 0.0;
 
     //Koliko je kamera dobilo drugo misljenje - vidi ReconstructConfig::rescueFactor
     uint32_t rescuedCameras = 0;

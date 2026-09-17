@@ -227,6 +227,26 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         byPoint[observation.point].push_back(&observation);
     }
 
+    //IZDVOJENA OPAZANJA - vidi ReconstructConfig::holdOutEvery. Vade se prije ikakvog racuna, pa
+    //ne ulaze ni u triangulaciju, ni u bundle, ni u ciscenje
+    std::vector<uint8_t> heldOut(observations.size(), 0);
+    if(config.holdOutEvery > 1){
+        std::vector<uint32_t> left(pointCount, 0);
+        for(size_t point = 0; point < pointCount; ++point) left[point] = uint32_t(byPoint[point].size());
+
+        for(size_t index = 0; index < observations.size(); index += config.holdOutEvery){
+            const Observation& one = observations[index];
+            if(one.camera >= cameraCount || one.point >= pointCount) continue;
+
+            //Tocka mora i bez njega ostati vidjena iz barem tri kadra - inace se mijenja ulaz
+            if(left[one.point] <= 3) continue;
+            --left[one.point];
+
+            heldOut[index] = 1;
+            usable[index] = 0;
+        }
+    }
+
     // ---------------------------------------------------------------------------------
     // Pocetni par: onaj koji NAJVISE TRIANGULIRA, a ne onaj koji slucajno sadrzi kameru 0
     // ---------------------------------------------------------------------------------
@@ -918,6 +938,22 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     }
 
     state.medianReprojection = medianOver(observations, state, intrinsics, usable);
+
+    //Provjera na onome sto rjesenje nije gradilo - vidi Reconstruction::heldOutReprojection
+    if(config.holdOutEvery > 1){
+        std::vector<double> errors;
+        for(size_t index = 0; index < observations.size(); ++index){
+            if(!heldOut[index]) continue;
+            const Observation& one = observations[index];
+            if(!state.posed[one.camera] || !state.solved[one.point]) continue;
+
+            glm::vec2 pixel;
+            if(!project(state.poses[one.camera], intrinsics, state.points[one.point], pixel)) continue;
+            errors.push_back(double(glm::length(pixel - one.pixel)));
+        }
+        state.heldOutObservations = uint32_t(errors.size());
+        state.heldOutReprojection = medianOf(errors);
+    }
 
     //BAZA KONACNOG RJESENJA. Racuna se ovdje, nad istim tockama koje su ostale - vidi
     //Reconstruction::medianTriangulationAngle. Ovo je mjera po kojoj se biraju pocetni parovi
