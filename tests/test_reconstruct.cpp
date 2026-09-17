@@ -12,6 +12,8 @@
 #include <Engine/Reconstruct.h>
 #include <Engine/SyntheticScene.h>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <random>
@@ -399,6 +401,75 @@ int main(){
             fmt("rotacija %.4f st i polozaj %.4f m, naspram %.4f i %.4f s jednim pokusajem",
                 result.medianRotation, result.medianPosition,
                 plain.medianRotation, plain.medianPosition));
+    }
+
+    //-- kamera koja je skocila -----------------------------------------------------------------
+    //
+    //Kamera se registrira nad tockama koje u tom trenutku postoje i tada moze sjesti u krivo
+    //rjesenje. Reprojekcija je NE prijavi - izmjereno na pravoj snimci: ondje gdje jedna kamera
+    //nosi 26 st greske, nijedna nema reprojekciju trostruko iznad opce. Zaglavljena kamera je
+    //samodosljedno kriva.
+    //
+    //Za snimku vrijedi nesto sto reprojekcija ne zna: kadrovi idu redom, pa se kamera izmedju dva
+    //susjedna pomakne malo. Kamera kojoj su OBA susjedna koraka izvan mjere je sumnjiva.
+    //
+    //Sto se brani:
+    //
+    //  ne dira cisto   na urednoj sceni ne smije promijeniti nijednu pozu
+    //  prepozna skok   kamera cija su opazanja zaokrenuta mora biti prepoznata
+    {
+        //PRAG JE OVDJE DRUGI NEGO NA SNIMCI, i to je svojstvo scene a ne postavke. Na snimci se
+        //kamera izmedju kadrova okrene 0.101 st pa je deseterostruki prag jos uvijek sitan kut;
+        //ovdje kamere stoje na luku od osamdesetak stupnjeva u osam koraka, dakle 11 st po koraku,
+        //i deseterostruki prag bi bio 114 st - vise nego cijeli luk
+        Engine::ReconstructConfig watching;
+        watching.stepOutlierFactor = 1.5;
+
+        const Engine::Reconstruction quiet = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                 scene.points.size(), scene.intrinsics,
+                                                                 watching);
+        const Engine::Reconstruction plain = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                 scene.points.size(), scene.intrinsics);
+
+        bool same = quiet.posedCameras == plain.posedCameras && quiet.rescuedCameras == 0;
+        for(size_t i = 0; same && i < plain.poses.size(); ++i){
+            if(!plain.posed[i]) continue;
+            same = plain.poses[i].position == quiet.poses[i].position
+                && plain.poses[i].orientation == quiet.poses[i].orientation;
+        }
+
+        report.check("na urednoj sceni nema sto spasavati",
+            same, fmt("%u spasenih, %u naspram %u kamera",
+                      quiet.rescuedCameras, quiet.posedCameras, plain.posedCameras));
+
+        //Jedna kamera dobiva opazanja iz ZAOKRENUTE poze: njezino je rjesenje time pomaknuto, a
+        //reprojekcija ga ne prijavi jer su opazanja medjusobno dosljedna
+        const size_t broken = scene.poses.size() / 2;
+        Engine::SyntheticScene twisted = scene;
+        {
+            Engine::Pose turned = scene.poses[broken];
+            turned.orientation = glm::normalize(turned.orientation
+                * glm::angleAxis(glm::radians(25.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
+
+            std::vector<Engine::Observation> kept;
+            kept.reserve(twisted.observations.size());
+            for(const Engine::Observation& one : twisted.observations){
+                if(one.camera != broken){ kept.push_back(one); continue; }
+
+                glm::vec2 pixel;
+                if(!Engine::project(turned, twisted.intrinsics, twisted.points[one.point], pixel)) continue;
+                kept.push_back(Engine::Observation{one.camera, one.point, pixel});
+            }
+            twisted.observations.swap(kept);
+        }
+
+        const Engine::Reconstruction caught = Engine::reconstruct(twisted.observations, twisted.poses.size(),
+                                                                  twisted.points.size(), twisted.intrinsics,
+                                                                  watching);
+
+        report.check("prepozna kameru koja je skocila",
+            caught.rescuedCameras >= 1,
+            fmt("%u prepoznatih od %u kamera", caught.rescuedCameras, caught.posedCameras));
     }
 
     return report.result();

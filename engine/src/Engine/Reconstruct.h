@@ -100,6 +100,52 @@ struct ReconstructConfig{
     //=========================================================================================
     uint32_t initialPairTrials = 4;
 
+    //=========================================================================================
+    // DRUGO MISLJENJE ZA KAMERU KOJA SE ZAGLAVILA.
+    //
+    // Kamera se registrira PnP-om nad tockama koje u tom trenutku postoje, i tada moze sjesti u
+    // krivo rjesenje - obicno kad su te tocke bile lose triangulirane. Globalni bundle je poslije
+    // ne izvlaci: on radi lokalne korake, a kriva poza je u drugom minimumu.
+    //
+    // Izmjereno: SIFT-ov graf daje zaokret iz kadra u kadar 0.101 st medijan, a NAJGORI korak
+    // 26.072 st - dakle jedna jedina kamera nosi cijelu gresku.
+    //
+    // Ovdje se takva kamera prepozna po tome sto joj je vlastita reprojekcija visestruko veca od
+    // opce, pa joj se poza racuna IZNOVA - i to polazeci od susjedne rijesene kamere, ne od
+    // vlastite, jer bi se inace vratila u isti minimum. Zamjena se prihvaca samo ako je bolja.
+    //
+    // ZADANO ISKLJUCENO, JER NE OKIDA. Na SIFT-ovom grafu gdje jedna kamera nosi 26 st greske,
+    // nijedna kamera nema reprojekciju trostruko iznad opce - zaglavljena kamera je SAMODOSLJEDNO
+    // kriva, jer je registrirana nad tockama koje su i same krive. Ista pouka kao svugdje danas:
+    // reprojekcija ne prijavi krivo rjesenje.
+    //
+    // Ostaje jer je detektor sam po sebi ispravan za drugu vrstu kvara - kameru koja je losa a to
+    // se na njoj i vidi. Broj je koliko puta veca od opce reprojekcije smije biti
+    //=========================================================================================
+    double rescueFactor = 0.0;
+
+    //=========================================================================================
+    // DETEKTOR KOJI OKIDA: NAGLI SKOK U NIZU.
+    //
+    // Za snimku vrijedi nesto sto reprojekcija ne zna - kadrovi idu redom, pa se kamera izmedju dva
+    // susjedna kadra pomakne malo. Zaglavljena kamera se time prepozna odmah: na SIFT-ovom grafu je
+    // zaokret iz kadra u kadar 0.101 st medijan, a najgori korak 26.072 st - dvjesto pedeset puta.
+    //
+    // Sumnjiva je kamera kroz koju je put DULJI nego preko nje: zbroj dvaju susjednih zaokreta
+    // naspram zaokreta izmedju njezinih susjeda. Za ispravnu kameru su ta dva gotovo jednaka, jer
+    // se zaokreti zbrajaju oko iste osi; za zaokrenutu je razlika dvostruki zaokret.
+    //
+    // Pravilo "oba susjedna koraka su velika" NE radi, i to je izmjereno: zaokret krive kamere se s
+    // jedne strane zbraja s gibanjem a s druge oduzima. Kamera zaokrenuta 25 st uz korak od 11.46
+    // daje susjedne korake 36.32 i 13.90 - jedan golem, drugi posve obican.
+    //
+    // Nula iskljucuje. Broj je koliko puta veci od medijana korak smije biti.
+    //
+    // VRIJEDI SAMO ZA NIZ. Kad redni brojevi kamera nisu redoslijed snimanja, ovo nema smisla i
+    // mora ostati iskljuceno
+    //=========================================================================================
+    double stepOutlierFactor = 0.0;
+
     //Parovi koje ne treba ponovno probati. Puni ga visestruki pokusaj sam; pozivatelj ga ne dira
     std::vector<std::pair<uint32_t, uint32_t>> skipInitialPairs;
 
@@ -302,6 +348,9 @@ struct Reconstruction{
     //Izmjereno na istoj snimci: rjesenja s bazom 4.7-4.9 st daju 4.7-6.8 st greske rotacije protiv
     //COLMAP-a, a ona s 2.9-3.1 st daju 119 st. Reprojekcija ih ne razlikuje - obje su oko 1.65 px
     double medianTriangulationAngle = 0.0;
+
+    //Koliko je kamera dobilo drugo misljenje - vidi ReconstructConfig::rescueFactor
+    uint32_t rescuedCameras = 0;
 
     uint32_t initialA = 0, initialB = 0;
     double initialAngle = 0.0;       //medijan kuta pod kojim se zrake tog para sijeku

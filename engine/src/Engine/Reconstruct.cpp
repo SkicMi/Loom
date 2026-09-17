@@ -637,6 +637,122 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     }
     refine(config.refineRounds);
 
+    //=================================================================================
+    // DRUGO MISLJENJE ZA KAMERU KOJA SE ZAGLAVILA - vidi ReconstructConfig::rescueFactor
+    //=================================================================================
+
+    if((config.rescueFactor > 0.0 || config.stepOutlierFactor > 0.0) && state.posedCameras > 2){
+        const double overall = currentMedian();
+        bool anyChanged = false;
+
+        //NAGLI SKOK U NIZU - vidi ReconstructConfig::stepOutlierFactor. Racuna se prije nego se
+        //ijedna poza dira, jer se svaka promjena vidi u susjednim koracima
+        std::vector<uint8_t> jumped(cameraCount, 0);
+        if(config.stepOutlierFactor > 0.0){
+            auto turnBetween = [&](size_t a, size_t b){
+                const glm::dmat3 first = glm::dmat3(glm::mat3_cast(state.poses[a].orientation));
+                const glm::dmat3 second = glm::dmat3(glm::mat3_cast(state.poses[b].orientation));
+                const glm::dmat3 difference = glm::transpose(first) * second;
+                const double cosine = std::max(-1.0, std::min(1.0,
+                    (difference[0][0] + difference[1][1] + difference[2][2] - 1.0) * 0.5));
+                return glm::degrees(std::acos(cosine));
+            };
+
+            std::vector<double> steps;
+            for(size_t camera = 0; camera + 1 < cameraCount; ++camera){
+                if(!state.posed[camera] || !state.posed[camera + 1]) continue;
+                steps.push_back(turnBetween(camera, camera + 1));
+            }
+
+            if(steps.size() >= 5){
+                const double middle = medianOf(steps);
+                const double limit = config.stepOutlierFactor * middle;
+
+                //PUT KROZ KAMERU NASPRAM PUTA PREKO NJE.
+                //
+                //Prvo sam trazio kameru kojoj su OBA susjedna koraka velika, i to ne radi: zaokret
+                //krive kamere se s jedne strane zbraja s gibanjem a s druge oduzima. Izmjereno na
+                //sintetici, kamera zaokrenuta 25 st uz korak od 11.46: susjedni koraci ispadnu
+                //36.32 i 13.90 - jedan golem, drugi posve obican.
+                //
+                //Ono sto je stvarno svojstvo krive kamere jest da je put KROZ nju dulji nego put
+                //PREKO nje. Za ispravnu kameru ta su dva gotovo jednaka, jer se zaokreti zbrajaju
+                //oko iste osi. Za zaokrenutu je razlika dvostruki zaokret
+                for(size_t camera = 1; camera + 1 < cameraCount; ++camera){
+                    if(!state.posed[camera] || !state.posed[camera - 1] || !state.posed[camera + 1]) continue;
+
+                    const double through = turnBetween(camera - 1, camera) + turnBetween(camera, camera + 1);
+                    const double across = turnBetween(camera - 1, camera + 1);
+                    if(through - across > limit) jumped[camera] = 1;
+                }
+            }
+        }
+
+        {
+            for(size_t camera = 0; camera < cameraCount; ++camera){
+                if(!state.posed[camera]) continue;
+
+                //Vlastita reprojekcija ove kamere, po opazanjima koja jos sudjeluju
+                std::vector<double> mine;
+                for(const Observation* observation : byCamera[camera]){
+                    if(!usable[indexOf(observation)] || !state.solved[observation->point]) continue;
+                    double error = 0.0;
+                    if(reprojectionOf(*observation, error)) mine.push_back(error);
+                }
+                if(mine.size() < config.minPointsForPose) continue;
+
+                const double own = medianOf(mine);
+                const bool byError = config.rescueFactor > 0.0 && overall > 0.0
+                                  && own > config.rescueFactor * overall;
+                if(!byError && !jumped[camera]) continue;
+
+                //POLAZI SE OD SUSJEDA, NE OD SEBE. Vlastita poza je upravo ono iz cega treba
+                //izaci; susjedna kamera je najbolja druga pretpostavka koju imamo
+                size_t nearest = cameraCount;
+                size_t nearestDistance = cameraCount + 1;
+                for(size_t other = 0; other < cameraCount; ++other){
+                    if(other == camera || !state.posed[other]) continue;
+                    const size_t distance = other > camera ? other - camera : camera - other;
+                    if(distance < nearestDistance){ nearestDistance = distance; nearest = other; }
+                }
+                if(nearest == cameraCount) continue;
+
+                std::vector<PointObservation> seen;
+                for(const Observation* observation : byCamera[camera]){
+                    if(!usable[indexOf(observation)] || !state.solved[observation->point]) continue;
+                    seen.push_back(PointObservation{observation->point, observation->pixel});
+                }
+
+                PoseRansacConfig poseConfig;
+                poseConfig.solve.huberPixels = config.huberPixels;
+                poseConfig.maxError = config.poseMaxError;
+                poseConfig.minInliers = config.minPointsForPose;
+                poseConfig.minInlierRatio = config.poseMinInlierRatio;
+
+                const PoseRansacResult again = solvePoseRansac(state.points, seen, intrinsics,
+                                                               state.poses[nearest], poseConfig);
+                if(!again.solved) continue;
+
+                //KAMERA KOJA JE SKOCILA PRIMA I JEDNAKO DOBRU POZU. Njezina stara poza nije losa po
+                //reprojekciji - u tome i jest kvar - pa bi uvjet "mora biti bolja" odbio popravak.
+                //Trazi se samo da ne bude bitno gora; sto je od dvije poza tocna, odlucuje niz
+                const double allowed = jumped[camera] ? 1.5 * own : own;
+                if(again.inlierMedian >= allowed) continue;
+
+                state.poses[camera] = again.pose;
+                ++state.rescuedCameras;
+                anyChanged = true;
+            }
+        }
+
+        //Tek kad su sve provjerene: tocke iznova iz novih poza, pa bundle
+        if(anyChanged){
+            triangulateVisible(true);
+            runBundle();
+            refine(config.refineRounds);
+        }
+    }
+
     // ---------------------------------------------------------------------------------
     // Zadnja rijec o tockama: paralaksa nad KONACNIM pozama
     //
