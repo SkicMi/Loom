@@ -385,7 +385,23 @@ koji preko deset nema sto zaustaviti.
 Oba se rusu. Binarni potpis ne prezivi dvadeset kadrova, pa siri prozor ne donosi vezu nego smece
 - a rastavljanje to smece sada CUVA umjesto da ga baci kao sukob. Prozor ostaje 10.
 
-**Radna sirina 1920 umjesto 960**, dakle kvantizacija 2 px umjesto 4:
+**Radna sirina 1920 umjesto 960**, dakle kvantizacija 2 px umjesto 4. PROBANO DVAPUT, drugi put sa
+svime sto je u medjuvremenu popravljeno (rastavljanje, cetiri pocetna para, savovi):
+
+| | kamere | tocke | baza rjesenja | rotacija bez poravnanja | smjer koraka |
+|---|---|---|---|---|---|
+| 960 | 101/101 | 63 048 | 4.27 st | **0.556 st** | **1.87 st** |
+| 1920, drugi pokusaj | 101/101 | 32 296 | 1.73 st | 8.701 st | 69.91 st |
+
+Gore nego prvi put, i gore od 960 po svakoj mjeri. Graf na 1920 ima 312 542 opazanja naspram
+540 040 na 960 - dakle vise piksela daje MANJE upotrebljivog, jer detektor ondje hvata sum koji se
+izmedju kadrova ne ponavlja. To je isti nalaz koji je i doveo do radne sirine 960.
+
+**Zakljucak koji iz toga slijedi**: do subpikselne tocnosti se ne dolazi vecom radnom sirinom.
+Detektor mora raditi u PROSTORU MJERILA - naci znacajku na mjerilu na kojem ona postoji, a ne na
+mjerilu na kojem je slika snimljena. To je SIFT-ov put i jedino sto je ostalo.
+
+Prvo mjerenje, prije tih popravaka:
 
 | | kamere | baza | polozaj | rotacija | zaokret medijan | najgori korak |
 |---|---|---|---|---|---|---|
