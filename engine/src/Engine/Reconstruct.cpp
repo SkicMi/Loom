@@ -782,10 +782,11 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
 
     state.usedObservations = 0;
     state.filteredObservations = 0;
+    state.observationUsed.assign(observations.size(), 0);
     for(size_t index = 0; index < observations.size(); ++index){
         const Observation& observation = observations[index];
         if(!state.posed[observation.camera] || !state.solved[observation.point]) continue;
-        if(usable[index]) ++state.usedObservations;
+        if(usable[index]){ ++state.usedObservations; state.observationUsed[index] = 1; }
         else              ++state.filteredObservations;
     }
 

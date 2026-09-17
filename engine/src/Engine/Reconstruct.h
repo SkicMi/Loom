@@ -330,6 +330,14 @@ struct Reconstruction{
     uint32_t usedObservations = 0;
     uint32_t filteredObservations = 0;
 
+    //KOJE JE OPAZANJE PREZIVJELO, usporedno s ulaznim nizom - 1 za ono koje je u rjesenju.
+    //
+    //Postoji zbog dijagnoze koju bez njega nije bilo moguce napraviti: ciscenje izbacuje cetvrtinu
+    //do trecine svih opazanja, a ako medju njima budu bas ona koja povezuju dva dijela snimke, veza
+    //puca i sve iza nje se zaokrene - a reprojekcija to ne prijavi jer se svaka polovica slaze sama
+    //sa sobom. Tko hoce znati je li se to dogodilo, mora moci prebrojati sto je ostalo
+    std::vector<uint8_t> observationUsed;
+
     //PO OPAZANJIMA KOJA SU U RJESENJU, dakle bez onih koja je ciscenje izbacilo.
     //
     //Dugo je ovdje stajao medijan preko SVIH opazanja rijesenih kamera i tocaka, ukljucujuci
