@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Describe.h"
+#include "Engine/ScaleSpace.h"
 #include "Engine/Sift.h"
 #include "Engine/TwoView.h"
 
@@ -50,6 +51,26 @@ struct MatchGraphConfig{
     // odredjuje tocnost poza
     //=========================================================================================
     bool useSift = false;
+
+    //=========================================================================================
+    // ZNACAJKE IZ PROSTORA MJERILA, na PUNOJ slici.
+    //
+    // Sve dosad je trazilo uglove na cetiri puta smanjenoj slici, jer na punoj Shi-Tomasijev
+    // detektor hvata sum senzora koji se izmedju kadrova ne ponavlja. Cijena je kvantizacija
+    // polozaja na cetiri piksela, a ona je izmjereno GLAVNI preostali jaz prema COLMAP-u: nase su
+    // tocke 7.9 posto opsega putanje od najblize njegove, dok su njegove medjusobno razmaknute
+    // 0.313 posto - dvadeset pet puta grublje.
+    //
+    // Ovdje se ne smanjuje nista. Znacajka se nalazi kao ekstrem razlike zagladjenja NIZ MJERILA,
+    // a vrh joj se odredi ispod piksela - izmjereno na crtanim mrljama, promasaj 0.027 px. Potpis
+    // se zatim racuna na mjerilu na kojem je znacajka nadjena, ne na fiksnoj zakrpi.
+    //
+    // Podrazumijeva SIFT-ov potpis: binarni nema pojam mjerila, pa bi ga se moralo racunati na
+    // jednoj zakrpi i cijeli dobitak bi otisao
+    //=========================================================================================
+    bool useScaleSpace = false;
+    ScaleSpaceConfig scaleSpace;
+
     RansacConfig ransac;
 
     //Koliko kadrova unaprijed se usporedjuje. COLMAP za video koristi deset

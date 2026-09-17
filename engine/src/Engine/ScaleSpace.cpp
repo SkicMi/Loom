@@ -108,7 +108,11 @@ std::vector<Keypoint> detectScaleSpace(const GrayImage& image, const ScaleSpaceC
         std::vector<float> sigmas;
         blurred.reserve(levels);
 
-        Plane running = blur(current, config.baseSigma);
+        //SLJEDECA OKTAVA VEC NOSI SVOJE ZAGLADJIVANJE. Ona krece od plohe koja je u prethodnoj
+        //oktavi zamucena na dvostruko mjerilo, pa je nakon prepolovljenja to tocno baseSigma u
+        //novim pikselima. Tko je ovdje jos jednom zamuti, dobije dvostruko - i tada vise oktave ne
+        //nadju nista. (Prvi put mi je tako ispalo 42 znacajke na 4K kadru, sve iz prve oktave.)
+        Plane running = octave == 0 ? blur(current, config.baseSigma) : current;
         blurred.push_back(running);
         sigmas.push_back(config.baseSigma);
 

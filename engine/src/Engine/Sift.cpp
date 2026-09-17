@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 
 namespace Engine{
 namespace{
@@ -248,6 +249,70 @@ bool describeSift(const GrayImage& image, const glm::vec2& point, SiftDescriptor
     const float angle = config.orient ? dominantAngle(gradients, point, config.patch) : 0.0f;
     buildDescriptor(gradients, point, angle, config, out);
     return out.valid;
+}
+
+std::vector<SiftDescriptor> describeSiftScaled(const GrayImage& image,
+                                               const std::vector<glm::vec2>& points,
+                                               const std::vector<float>& scales,
+                                               const SiftConfig& config){
+    std::vector<SiftDescriptor> out(points.size());
+    if(points.empty() || scales.size() != points.size()) return out;
+
+    //POJASEVI PO MJERILU. Zagladjivanje cijele slike je skupo, a znacajke se po mjerilu grupiraju
+    //same - pa se radi jednom po pojasu, a ne jednom po znacajki
+    const uint32_t bands = std::max(1u, config.scaleBands);
+    std::unordered_map<int, std::vector<uint32_t>> byBand;
+    for(uint32_t i = 0; i < uint32_t(points.size()); ++i){
+        if(!(scales[i] > 0.0f)) continue;
+        const int band = int(std::lround(std::log2(double(scales[i])) * double(bands)));
+        byBand[band].push_back(i);
+    }
+
+    //Poredak pojaseva je zadan, da izlaz ne ovisi o tablici
+    std::vector<int> order;
+    order.reserve(byBand.size());
+    for(const auto& entry : byBand) order.push_back(entry.first);
+    std::sort(order.begin(), order.end());
+
+    for(int band : order){
+        const float scale = float(std::pow(2.0, double(band) / double(bands)));
+
+        //SLIKA VEC NOSI NESTO ZAGLADJIVANJA. Senzorska slika ima oko pola piksela vlastitog, pa se
+        //dodaje samo ono sto nedostaje - dvije Gaussove se zbrajaju po kvadratu
+        const float already = 0.5f;
+        const float step = scale > already ? std::sqrt(scale * scale - already * already) : 0.0f;
+
+        uint32_t width = 0, height = 0;
+        const std::vector<uint8_t> soft = step > 0.0f
+            ? blurred(image, step, width, height)
+            : std::vector<uint8_t>();
+
+        GrayImage view = image;
+        if(step > 0.0f) view = GrayImage{soft.data(), width, height, width};
+
+        const Gradients gradients = gradientsOf(view);
+
+        const std::vector<uint32_t>& mine = byBand[band];
+        inBands(0, int(mine.size()), [&](uint32_t, int firstItem, int lastItem){
+            for(int index = firstItem; index < lastItem; ++index){
+                const uint32_t which = mine[size_t(index)];
+                const glm::vec2& point = points[which];
+
+                SiftConfig local = config;
+                local.patch = std::max(4u, uint32_t(std::lround(double(config.patchPerScale) * double(scales[which]))));
+                local.smoothing = scale;
+
+                const int reach = int(local.patch) + 1;
+                if(point.x < float(reach) || point.y < float(reach) ||
+                   point.x >= float(image.width) - float(reach) ||
+                   point.y >= float(image.height) - float(reach)) continue;
+
+                const float angle = local.orient ? dominantAngle(gradients, point, local.patch) : 0.0f;
+                buildDescriptor(gradients, point, angle, local, out[which]);
+            }
+        });
+    }
+    return out;
 }
 
 std::vector<SiftDescriptor> describeSiftAll(const GrayImage& image,

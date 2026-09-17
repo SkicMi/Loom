@@ -77,7 +77,12 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     //SIRINA NA KOJOJ SE RADI - vidi MatchGraphConfig::workingWidth. Cijeli djelitelj, jer prosjek
     //po kvadratu ne trazi interpolaciju ni odluku o njoj
     uint32_t shrink = 1;
-    if(config.workingWidth > 0 && images[0].width > config.workingWidth){
+    //PROSTOR MJERILA RADI NA PUNOJ SLICI - vidi MatchGraphConfig::useScaleSpace. Smanjenje ovdje
+    //nema smisla: ono postoji zato da detektor ne hvata sum, a detektor mjerila to rjesava sam,
+    //time sto znacajku trazi na mjerilu na kojem ona postoji
+    if(config.useScaleSpace){
+        // shrink ostaje 1
+    }else if(config.workingWidth > 0 && images[0].width > config.workingWidth){
         shrink = images[0].width / config.workingWidth;
         if(shrink < 1) shrink = 1;
     }
@@ -137,12 +142,21 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     if(config.patchFromWidth) sift.patch = describe.patch;
 
     for(uint32_t frame = 0; frame < frames; ++frame){
-        points[frame] = detectCorners(working[frame], detect);
-        if(config.useSift) siftSignatures[frame] = describeSiftAll(working[frame], points[frame], sift);
-        else               signatures[frame] = describeAll(working[frame], points[frame], describe);
+        if(config.useScaleSpace){
+            const std::vector<Keypoint> keys = detectScaleSpace(working[frame], config.scaleSpace);
+            points[frame].reserve(keys.size());
+            std::vector<float> scales;
+            scales.reserve(keys.size());
+            for(const Keypoint& one : keys){ points[frame].push_back(one.pixel); scales.push_back(one.scale); }
+            siftSignatures[frame] = describeSiftScaled(working[frame], points[frame], scales, sift);
+        }else{
+            points[frame] = detectCorners(working[frame], detect);
+            if(config.useSift) siftSignatures[frame] = describeSiftAll(working[frame], points[frame], sift);
+            else               signatures[frame] = describeAll(working[frame], points[frame], describe);
+        }
         offset[frame + 1] = offset[frame] + uint32_t(points[frame].size());
     }
-    result.localizationPixels = float(shrink);
+    result.localizationPixels = config.useScaleSpace ? 1.0f : float(shrink);
     result.featuresTotal = offset[frames];
     if(result.featuresTotal == 0) return result;
 
@@ -159,15 +173,16 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
         for(uint32_t step = 1; step <= config.window; ++step){
             const uint32_t b = a + step;
             if(b >= frames) break;
-            if(config.useSift){ if(siftSignatures[a].empty() || siftSignatures[b].empty()) continue; }
-            else              { if(signatures[a].empty() || signatures[b].empty()) continue; }
+            const bool bySift = config.useSift || config.useScaleSpace;
+            if(bySift){ if(siftSignatures[a].empty() || siftSignatures[b].empty()) continue; }
+            else      { if(signatures[a].empty() || signatures[b].empty()) continue; }
 
             ++result.comparedFrames;
 
             //Dva potpisa daju dva razlicita zapisa poklapanja; dalje ih zanima samo tko s kim
             std::vector<std::pair<uint32_t, uint32_t>> matches;
             std::vector<uint32_t> distances;
-            if(config.useSift){
+            if(bySift){
                 for(const SiftMatch& one : matchSiftNear(siftSignatures[a], points[a],
                                                           siftSignatures[b], points[b], radius, sift)){
                     matches.push_back({one.from, one.to});

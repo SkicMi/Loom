@@ -57,8 +57,18 @@ struct ScaleSpaceConfig{
 
     //ZASTO PRAG KONTRASTA, a ne najjacih N. Sum daje ekstreme svugdje, i to slabe; prag ih odbija
     //prije nego se uopce sortiraju. Mjeri se |DoG| nakon dotjerivanja, u jedinicama u kojima je
-    //slika 0..1
-    float contrast = 0.015f;
+    //slika 0..1.
+    //
+    //ZADANO 0.001, i to je izmjereno na pravom 4K kadru te snimke - ne preuzeto. Razlika
+    //zagladjenja je po iznosu mala jer je korak po mjerilu mali (2^(1/3)), pa pragovi iz literature
+    //ovdje ne vrijede: najjaca znacajka cijelog kadra ima |DoG| = 0.038.
+    //
+    //   prag     0.015   0.004   0.002   0.001   0.0005
+    //   znacajki    84    1802    3669    7213    10681
+    //
+    //COLMAP na istoj snimci ima oko 3500 opazanja po kadru, pa je 7000 znacajki red velicine koji
+    //treba - dio ih ionako otpadne na potpisu i na geometriji
+    float contrast = 0.001f;
 
     //RUB NIJE ZNACAJKA. Duz ruba je DoG jednako jak posvuda, pa je polozaj po rubu neodredjen - i
     //to je tocno ono sto trazenju najvise steti, jer se takva znacajka u drugom kadru nadje

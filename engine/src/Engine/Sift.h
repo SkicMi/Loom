@@ -50,6 +50,16 @@ struct SiftConfig{
     //Polumjer okoline u pikselima. Cijela okolina je 2r, a jedna celija r/2
     uint32_t patch = 16;
 
+    //KOLIKO JE POLUMJER OKOLINE VECI OD MJERILA ZNACAJKE - samo za describeSiftScaled.
+    //
+    //Izvorni SIFT uzima tri sigme po celiji, a celija je cetvrtina okoline: 2r/4 = 3*sigma daje
+    //r = 6*sigma. Manje od toga i potpis ne zahvati znacajku cijelu; vise i zahvati susjede
+    float patchPerScale = 6.0f;
+
+    //Koliko se razlicitih zagladjivanja uopce radi po oktavi mjerila - vidi describeSiftScaled.
+    //Vise ih znaci tocnije mjerilo po znacajki, ali i vise zamucivanja cijele slike
+    uint32_t scaleBands = 3;
+
     //ZAGLADJIVANJE PRIJE GRADIJENATA, u pikselima. Nula znaci izvedeno iz zakrpe.
     //
     //Izvorni SIFT gradijente racuna na slici zamucenoj na MJERILO znacajke, ne na sirovim
@@ -101,6 +111,28 @@ bool describeSift(const GrayImage& image, const glm::vec2& point, SiftDescriptor
                   const SiftConfig& config = {});
 
 //Potpisi za vise tocaka. Gradijenti se racunaju JEDNOM za cijelu sliku umjesto po tocki
+//=============================================================================================
+// POTPIS NA MJERILU ZNACAJKE.
+//
+// describeSiftAll racuna sve potpise na JEDNOM zagladjivanju i s jednom zakrpom. To je ispravno
+// kad znacajke dolaze od detektora koji ni sam ne zna mjerilo - kao sto je Shi-Tomasijev - ali je
+// krivo kad ga zna: krupna znacajka tada dobiva potpis koji opisuje samo njezinu sredinu, a sitna
+// potpis koji zahvaca i pola susjedstva.
+//
+// Ovdje svaka znacajka nosi svoje mjerilo (vidi Engine/ScaleSpace.h): gradijenti joj se racune na
+// slici zamucenoj na TO mjerilo, a okolina joj je toliko puta sira. Time je potpis isti bez obzira
+// na to koliko je scena daleko - a upravo to je ono sto binarni potpis nema i zbog cega pada na
+// velikim razmacima kadrova.
+//
+// Zagladjivanja ima onoliko koliko ima RAZLICITIH MJERILA, ne koliko ima znacajki: znacajke se
+// slozu u pojaseve po mjerilu i svaki se pojas zamuti jednom. Ista pouka koja je u trackeru
+// piramidu gradila po tragu i kostala 934 ms po kadru
+//=============================================================================================
+std::vector<SiftDescriptor> describeSiftScaled(const GrayImage& image,
+                                               const std::vector<glm::vec2>& points,
+                                               const std::vector<float>& scales,
+                                               const SiftConfig& config = {});
+
 std::vector<SiftDescriptor> describeSiftAll(const GrayImage& image,
                                             const std::vector<glm::vec2>& points,
                                             const SiftConfig& config = {});
