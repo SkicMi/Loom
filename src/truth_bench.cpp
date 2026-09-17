@@ -227,6 +227,21 @@ int main(int argc, char** argv){
     const uint32_t frames = argc > 2 ? uint32_t(std::atoi(argv[2])) : 40u;
     const float noiseLevel = argc > 3 ? float(std::atof(argv[3])) : 0.0f;
     const uint32_t width = argc > 4 ? uint32_t(std::atoi(argv[4])) : 1280u;
+
+    //=====================================================================================
+    // LAZNA STABILIZACIJA, u pikselima.
+    //
+    // Elektronicka stabilizacija na mobitelu ne pomice kameru nego SLIKU, i to ne jednoliko nego
+    // mrezasto - redak po redak, da uhvati i rolling shutter. Time kadar vise NE ODGOVARA nijednoj
+    // pozi krute kamere, pa nikakvo ugadjanje pragova ne pomaze.
+    //
+    // Ovdje se to oponasa izoblicenjem koje se mijenja po kadru i NIJE jednoliko preko slike -
+    // jednolik pomak bi se dao upiti u pozu i ne bi mjerio nista.
+    //
+    // Postoji da se prag upozorenja IZMJERI umjesto pogodi: treba znati kako izgleda udio parova
+    // koji prodju geometriju kad model ne vrijedi
+    //=====================================================================================
+    const float warp = argc > 5 ? float(std::atof(argv[5])) : 0.0f;
     const uint32_t height = width * 9 / 16;
 
     Loom::Scene scene(Loom::Preset::Offscreen);
@@ -293,12 +308,39 @@ int main(int argc, char** argv){
         truth.push_back(Engine::Pose{scene.camera().getPosition(), scene.camera().getOrientation()});
 
         const std::vector<uint8_t> pixels = scene.readPixels();
+
+        //Siva slika, pa tek onda izoblicenje - inace bi se uzorkovalo u boji bez potrebe
+        std::vector<float> gray(size_t(width) * height, 0.0f);
+        for(size_t i = 0; i < gray.size(); ++i){
+            gray[i] = 0.299f * float(pixels[i * 4 + 0]) + 0.587f * float(pixels[i * 4 + 1])
+                    + 0.114f * float(pixels[i * 4 + 2]);
+        }
+
         store[frame].assign(size_t(width) * height, 0);
-        for(size_t i = 0; i < store[frame].size(); ++i){
-            float value = 0.299f * float(pixels[i * 4 + 0]) + 0.587f * float(pixels[i * 4 + 1])
-                        + 0.114f * float(pixels[i * 4 + 2]);
-            if(noiseLevel > 0.0f) value += noiseLevel * 255.0f * noise.next();
-            store[frame][i] = uint8_t(std::max(0.0f, std::min(255.0f, value)));
+        const float phase = 0.7f * float(frame);
+        for(uint32_t y = 0; y < height; ++y){
+            for(uint32_t x = 0; x < width; ++x){
+                float value;
+                if(warp > 0.0f){
+                    //Pomak koji se mijenja PREKO SLIKE i po kadru. Jednolik bi se upio u pozu
+                    const float dx = warp * std::sin(6.2831853f * float(y) / float(height) + phase);
+                    const float dy = warp * std::cos(6.2831853f * float(x) / float(width) + phase * 1.3f);
+                    const float sx = std::max(0.0f, std::min(float(width) - 1.001f, float(x) + dx));
+                    const float sy = std::max(0.0f, std::min(float(height) - 1.001f, float(y) + dy));
+
+                    const uint32_t x0 = uint32_t(sx), y0 = uint32_t(sy);
+                    const float fx = sx - float(x0), fy = sy - float(y0);
+                    const float a = gray[size_t(y0) * width + x0];
+                    const float b = gray[size_t(y0) * width + x0 + 1];
+                    const float c = gray[size_t(y0 + 1) * width + x0];
+                    const float d = gray[size_t(y0 + 1) * width + x0 + 1];
+                    value = (a * (1.0f - fx) + b * fx) * (1.0f - fy) + (c * (1.0f - fx) + d * fx) * fy;
+                }else{
+                    value = gray[size_t(y) * width + x];
+                }
+                if(noiseLevel > 0.0f) value += noiseLevel * 255.0f * noise.next();
+                store[frame][size_t(y) * width + x] = uint8_t(std::max(0.0f, std::min(255.0f, value)));
+            }
         }
         images[frame] = Engine::GrayImage{store[frame].data(), width, height, width};
     }
@@ -314,8 +356,9 @@ int main(int argc, char** argv){
     intrinsics.width = width;
     intrinsics.height = height;
 
-    std::printf("%s: %u kadrova %ux%u, sum %.3f, f = %.1f px\n",
-                which.c_str(), frames, width, height, double(noiseLevel), double(intrinsics.fx));
+    std::printf("%s: %u kadrova %ux%u, sum %.3f, izoblicenje %.1f px, f = %.1f px\n",
+                which.c_str(), frames, width, height, double(noiseLevel), double(warp),
+                double(intrinsics.fx));
 
     //ISTI LANAC KOJI IMA I VideoSolve: uglovi za pokrivenost, prostor mjerila za tocnost, spojeno
     Engine::MatchGraphConfig cornerConfig;
@@ -332,6 +375,14 @@ int main(int argc, char** argv){
     const Engine::MatchGraphResult fine = Engine::buildMatchGraph(images, intrinsics, fineConfig);
     const Engine::MatchGraphResult graph = fine.pointCount > 0
         ? Engine::mergeGraphs(corners, fine) : corners;
+
+    //UDIO PAROVA KOJI PRODJU GEOMETRIJU. Bogato poklapanje uz slab prolaz znaci da deskriptori
+    //nalaze isto mjesto, a nijedna poza to ne objasni - dakle da kadar ne odgovara krutoj kameri
+    const double acceptance = corners.comparedFrames > 0
+        ? double(corners.acceptedFrames) / double(corners.comparedFrames) : 0.0;
+    std::printf("  geometrija: %u od %u parova proslo (%.0f %%), medijan %.0f parova po paru\n",
+                corners.acceptedFrames, corners.comparedFrames, 100.0 * acceptance,
+                corners.medianMatchesPerPair);
 
     std::printf("  graf: uglovi %u tocaka / %zu opazanja, mjerilo %u / %zu, spojeno %u / %zu\n",
                 corners.pointCount, corners.observations.size(),

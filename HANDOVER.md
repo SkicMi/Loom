@@ -182,7 +182,12 @@ Sve dolje je **izmjereno**, ne pretpostavljeno, i svaka je zamka jednom prevaril
 6. **Pokrivenost početnog oblaka ne objašnjava decibel** — COLMAP ima najgoru pokrivenost i najbolji
    splat.
 
-7. **Alat i sonda nisu isto.** Tri kvara u jednom danu bila su na putu do korisnika, nevidljiva
+7. **Blaga stabilizacija visestruko kvari poze, a nijedna mjera to ne prijavi.** Izmjereno: dva
+   piksela nejednolikog izoblicenja po kadru pomnoze gresku poze **jedanaest puta** (0,018 % ->
+   0,207 %), a udio parova koji prodju geometriju ostaje **100 %** i na deset piksela. Snimati s
+   **iskljucenom stabilizacijom**.
+
+8. **Alat i sonda nisu isto.** Tri kvara u jednom danu bila su na putu do korisnika, nevidljiva
    svakoj metrici: graf nije bio zadan, pretraga žarišne nije završavala, a izvoz je pisao opažanja
    iz trackera umjesto onih s kojima je riješeno (`ModelInfo` čitao 1314 px ondje gdje je solver
    javljao 1,312). **Pokreni alat i pročitaj izlaz natrag.**

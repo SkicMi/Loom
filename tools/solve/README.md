@@ -953,6 +953,35 @@ Sada se to javlja kao upozorenje i raspon ide do 110 st, ali to je zakrpa. **Pra
 samokalibracija u bundleu** - da se zarisna optimira zajedno s pozama. Bundle vec racuna pinhole
 jakobijane, pa je dodavanje derivacije po zaristu poznat i umjeren posao.
 
+### Sto radi lazna stabilizacija, i koji ju detektor NE vidi
+
+Elektronicka stabilizacija na mobitelu ne pomice kameru nego SLIKU, i to ne jednoliko nego mrezasto.
+Kadar time vise ne odgovara nijednoj pozi krute kamere. TruthBench to oponasa izoblicenjem koje se
+mijenja po kadru i nije jednoliko preko slike - jednoliko bi se upilo u pozu i ne bi mjerilo nista.
+
+Na luku od 30 kadrova, gdje je istina poznata:
+
+| izoblicenje | prolaz geometrije | omjer izdvojenih | reprojekcija | **prava greska polozaja** |
+|---|---|---|---|---|
+| 0 px | 100 % | 1.42 | 0.404 px | **0.018 %** |
+| 2 px | 100 % | 1.38 | 1.191 px | **0.207 %** |
+| 5 px | 100 % | 2.53 | 1.402 px | **0.828 %** |
+| 10 px | 100 % | 4.71 | 1.298 px | **1.934 %** |
+
+**Dva piksela izoblicenja pomnoze gresku poze jedanaest puta.**
+
+**Udio parova koji prodju geometriju NE OTKRIVA nista** - ostaje 100 posto i na deset piksela. To je
+opovrglo detektor koji je ovdje bio predlozen ("bogato poklapanje uz slab prolaz geometrije znaci da
+model ne vrijedi"): RANSAC nadje pozu koja objasni vecinu poklapanja i kad model NE vrijedi. Ista
+pouka po deseti put - sito koje propusti ne znaci da je model tocan.
+
+**Omjer izdvojenih opazanja radi, ali tek od pete piksela.** Prati pravu gresku monotono (1.42 ->
+2.53 -> 4.71 uz 0.018 -> 0.828 -> 1.934 %), ali na dva piksela je 1.38 - nizi nego na cistoj snimci
+- dok je greska vec jedanaest puta veca.
+
+**Zakljucak za snimanje: stabilizaciju iskljuciti.** Blaga stabilizacija visestruko kvari poze, a
+NIJEDNA mjera koju imamo to ne prijavi.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u

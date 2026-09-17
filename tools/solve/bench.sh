@@ -33,3 +33,20 @@ run(){
 for path in luk drhtaj prolaz zaokret; do run "$path" 30 0; done
 for noise in 0.01 0.03 0.08; do run luk 30 "$noise"; done
 for count in 15 60; do run luk "$count" 0; done
+
+#Lazna stabilizacija: izoblicenje koje se mijenja po kadru i nije jednoliko preko slike. Postoji
+#jer blaga stabilizacija visestruko kvari poze, a nijedna mjera koju imamo to ne prijavi
+printf "\n%-10s %7s %6s %8s %8s %8s %8s %9s %9s %9s\n" \
+  "izoblic." kadrova sum kamera tocaka "baza" "rep px" "polozaj%" "rotac st" "korak st"
+for w in 2 5 10; do
+  out=$("$BENCH" luk 30 0 1280 "$w" 2>/dev/null)
+  printf "%-10s %7s %6s %8s %8s %8s %8s %9s %9s %9s\n" \
+    "${w} px" 30 0 \
+    "$(sed -n 's/.*rijeseno \([0-9]*\) od \([0-9]*\) kamera.*/\1\/\2/p' <<<"$out")" \
+    "$(sed -n 's/.*kamera, \([0-9]*\) tocaka.*/\1/p' <<<"$out")" \
+    "$(sed -n 's/.*baza \([0-9.]*\) st.*/\1/p' <<<"$out")" \
+    "$(sed -n 's/.*reprojekcija \([0-9.]*\) px.*/\1/p' <<<"$out")" \
+    "$(sed -n 's/.*polozaj \(-\?[0-9.]*\) .*/\1/p' <<<"$out")" \
+    "$(sed -n 's/.*rotacija \([0-9.]*\) st.*/\1/p' <<<"$out")" \
+    "$(sed -n 's/.*po koraku \([0-9.]*\) st.*/\1/p' <<<"$out")"
+done
