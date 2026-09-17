@@ -697,6 +697,28 @@ Dvije stvari koje iz te tablice slijede:
   objasnjava onih 1.87 dB razlike medju njima
 - **SIFT-ovih 35 %** nije kakvoca tocaka nego sav: njegov je oblak razlomljen na odsjecke
 
+### Stanje na kraju ovog kruga
+
+Sto je ukljuceno kao zadano, i sto je svaki od toga donio:
+
+| | ucinak | cijena |
+|---|---|---|
+| rastavljanje sukobljenih komponenti, prag 2 svjedoka | tragovi 5.16 -> 7.77, **+1.00 dB** | nema |
+| cetiri pocetna para | SIFT 163.8 -> 10.7 st, rastavljanje bez praga 119.1 -> 4.65 st | cetverostruko vrijeme |
+| popravak sava | SIFT 56.9 -> 27.9 st | nema kad sava nema |
+| graf poklapanja u VideoSolve | bio je dostupan samo uz izricit argument | nema |
+
+Sva tri prva na glavnom putu ne mijenjaju nista ili ga popravljaju; nijedan ne moze pokvariti
+rjesenje, jer se svaki zadrzava samo ako je ishod bolji po mjeri koja bas to gleda.
+
+Sto je izmjereno i ODBACENO u ovom krugu: prozor poklapanja 20, radna sirina 1920 (dvaput),
+dotjerivanje prema referentnom kadru, referenca dotjerana na ugao, razmicanje pocetnih parova po
+snimci, spasavanje kamere po reprojekciji, rastavljanje bez praga svjedoka.
+
+I tri mjere koje su se pokazale krivima, pa ispravljene: poravnata rotacija (laze na ravnoj
+putanji), rotacija prema prvoj kameri (laze ako je bas ta kamera losa), i pokrivenost pocetnog
+oblaka kao objasnjenje razlike u decibelima (COLMAP je ima najgoru a splat najbolji).
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u

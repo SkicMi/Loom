@@ -166,10 +166,19 @@ struct ReconstructConfig{
     // Zadrzava se samo ako je ishod bolji, istom mjerom kao kod pocetnih parova.
     //
     // Nula iskljucuje. Broj je koliko puta veci od medijana NAS VLASTITI korak smije biti; ova
-    // provjera ne trazi nikakvu istinu izvana. Vrijedi samo kad su redni brojevi kamera redoslijed
-    // snimanja
+    // provjera ne trazi nikakvu istinu izvana.
+    //
+    // ZADANO DESET, i cijena je nula kad sava nema: trazenje se izvodi nad rjesenjem koje bi se
+    // ionako izgradilo, pa se dodatni racun placa samo kad se sav stvarno nadje. Izmjereno na
+    // glavnom putu prave snimke: nula savova i rezultat bit po bit isti kao bez ovoga. Na
+    // SIFT-ovom putu, gdje savova ima: rotacija bez poravnanja 56.900 -> 27.900 st.
+    //
+    // Krivo prepoznat sav kosta vrijeme a ne kakvocu, jer se popravak zadrzava samo ako savova
+    // bude MANJE.
+    //
+    // VRIJEDI SAMO ZA NIZ. Kad redni brojevi kamera nisu redoslijed snimanja, ovo treba ugasiti
     //=========================================================================================
-    double seamFactor = 0.0;
+    double seamFactor = 10.0;
 
     //=========================================================================================
     // KOJI SE DIO NIZA ZADRZAVA, a sve izvan njega gradi iznova. Puni ga popravak sava sam;
