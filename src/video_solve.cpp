@@ -411,8 +411,10 @@ int main(int argc, char** argv){
     Engine::Intrinsics bestIntrinsics;
     double bestFov = 0.0;
 
+    std::vector<double> reprojectionOf;
     for(double fov : candidates){
         const auto result = solveWith(fov, false);
+        if(result.first.ok) reprojectionOf.push_back(result.first.medianReprojection);
         const Engine::Reconstruction& state = result.first;
         std::printf("  vidno polje %5.1f st (f = %6.1f px): %2u/%u kamera, %4u tocaka, reprojekcija %6.3f px\n",
                     fov, double(result.second.fx), state.posedCameras, cameraCount, state.solvedPoints, state.medianReprojection);
@@ -441,12 +443,36 @@ int main(int argc, char** argv){
     // zarisna x1.25 od nje je davala jednaku reprojekciju i GLATKIJU putanju. Rjesenje se zato ne
     // smije citati kao izmjerena zarisna
     //=====================================================================================
-    if(fieldOfView <= 0.0 && candidates.size() > 1
-       && (bestFov <= candidates.front() + 1e-6 || bestFov >= candidates.back() - 1e-6)){
-        std::printf("  UPOZORENJE: najbolje vidno polje je na RUBU raspona (%.0f do %.0f st).\n",
-                    candidates.front(), candidates.back());
-        std::printf("             Zarisna time nije odredjena - reprojekcija se s njom trguje.\n");
-        std::printf("             Zadaj vidno polje cetvrtim argumentom ili predaj cameras.txt.\n");
+    //NE TRAZI SE SAMO RUB NEGO I PLATO. Na drugoj snimci je raspon prosiren do 110 st i pobjednik
+    //vise nije bio na rubu - ali 94, 102 i 110 st dali su 1.311, 1.312 i 1.312 px. Mjera je ondje
+    //RAVNA, pa je pobjednik izabran iz sest tisucinki piksela. Rub je poseban slucaj plato
+    if(fieldOfView <= 0.0 && reprojectionOf.size() > 2){
+        double lowest = reprojectionOf.front(), highest = reprojectionOf.front();
+        for(double one : reprojectionOf){
+            lowest = std::min(lowest, one);
+            highest = std::max(highest, one);
+        }
+
+        //Koliko ih je unutar jednog postotka od najboljeg - ako ih je vise, izbor nije mjerenje
+        size_t tied = 0;
+        for(double one : reprojectionOf) if(one <= 1.01 * lowest) ++tied;
+
+        const bool atEdge = bestFov <= candidates.front() + 1e-6 || bestFov >= candidates.back() - 1e-6;
+        if(atEdge || tied > 1){
+            std::printf("  UPOZORENJE: vidno polje NIJE ODREDJENO.\n");
+            if(tied > 1){
+                std::printf("             %zu kandidata je unutar jednog postotka od najboljeg "
+                            "(%.3f do %.3f px) - mjera je ondje ravna.\n",
+                            tied, lowest, highest);
+            }
+            if(atEdge){
+                std::printf("             Najbolji je na rubu raspona (%.0f do %.0f st).\n",
+                            candidates.front(), candidates.back());
+            }
+            std::printf("             Kriva zarisna se s reprojekcijom trguje: scena se izoblici "
+                        "tako da opazanja i dalje pasu.\n");
+            std::printf("             Zadaj vidno polje cetvrtim argumentom ili predaj cameras.txt.\n");
+        }
     }
 
     //Pobjednik dobiva punu obradu: vise pocetnih parova i popravak sava. Tek se tu placa ono sto

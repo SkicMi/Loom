@@ -88,6 +88,12 @@ struct Error{
     double rotation = 0.0;      //stupnjevi, bez poravnanja
     double stepRotation = 0.0;  //iz kadra u kadar
     double stepDirection = 0.0;
+
+    //OBLIK PUTANJE, omjeri rasapa polozaja. Kad je putanja pravac ili ravnina, poravnanje po
+    //polozajima je slabo odredjeno i greska polozaja koju ono daje nije mjera nego artefakt - to
+    //se danas izmjerilo na pravoj snimci i ovdje se mora VIDJETI, a ne tiho ulaziti u broj
+    double flatness = 0.0, straightness = 0.0;
+    bool degenerate = false;
 };
 
 Error compare(const Engine::Reconstruction& ours, const std::vector<Engine::Pose>& truth){
@@ -138,6 +144,37 @@ Error compare(const Engine::Reconstruction& ours, const std::vector<Engine::Pose
         misses.push_back(glm::length(centreTheirs + scale * (rotation * (mine[i] - centreMine)) - theirs[i]));
     }
     out.position = extent > 0.0 ? 100.0 * medianOf(misses) / extent : 0.0;
+    if(!std::isfinite(out.position)) out.position = -1.0;
+
+    //Oblik putanje preko svojstvenih brojeva rasapa - potencijskom metodom na deflaciji, dovoljno
+    //za omjer
+    {
+        glm::dmat3 work(0.0);
+        for(const glm::dvec3& one : theirs){
+            const glm::dvec3 d = one - centreTheirs;
+            for(int r = 0; r < 3; ++r) for(int c = 0; c < 3; ++c) work[c][r] += d[r] * d[c];
+        }
+        work /= double(theirs.size());
+
+        std::vector<double> values;
+        for(int k = 0; k < 3; ++k){
+            glm::dvec3 v(1.0, 0.7, 0.3);
+            double lambda = 0.0;
+            for(int step = 0; step < 200; ++step){
+                const glm::dvec3 next = work * v;
+                const double length = glm::length(next);
+                if(length < 1e-18) break;
+                v = next / length;
+                lambda = glm::dot(v, work * v);
+            }
+            values.push_back(std::fabs(lambda));
+            for(int r = 0; r < 3; ++r) for(int c = 0; c < 3; ++c) work[c][r] -= lambda * v[r] * v[c];
+        }
+        std::sort(values.rbegin(), values.rend());
+        out.straightness = values[0] > 0.0 ? std::sqrt(values[1] / values[0]) : 0.0;
+        out.flatness = values[0] > 0.0 ? std::sqrt(values[2] / values[0]) : 0.0;
+        out.degenerate = out.straightness < 0.05 || out.position < 0.0;
+    }
 
     //Zaokret koji preslikava njegov okvir u nas je za ispravno rjesenje isti za sve kamere; mjeri
     //se rasap oko najsredisnjeg od njih
@@ -315,6 +352,9 @@ int main(int argc, char** argv){
                 solved.medianReprojection, solved.medianTriangulationAngle);
     std::printf("  GRESKA: polozaj %.3f %%, rotacija %.4f st, po koraku %.4f st, smjer %.3f st\n",
                 error.position, error.rotation, error.stepRotation, error.stepDirection);
+    std::printf("  oblik putanje: drugi/prvi %.3f, treci/prvi %.3f%s\n",
+                error.straightness, error.flatness,
+                error.degenerate ? "  - PRAVAC ili TOCKA, greska polozaja ovdje nije mjera" : "");
 
     if(which == "zaokret"){
         std::printf("  (negativna kontrola: paralakse nema, pa je svaki uspjeh ovdje sumnjiv)\n");
