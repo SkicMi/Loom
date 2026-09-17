@@ -791,6 +791,43 @@ je prednost veca nego sto tablica kaze.
 A usporedba rastavljanja sa i bez praga svjedoka (59 879 naspram 60 198 tocaka) bila je postena od
 pocetka, pa onih 1.87 dB razlike i dalje stoji neobjasnjeno.
 
+### Tocke su sada COLMAP-ove tocnosti - a splat je losiji
+
+Oblak iz prostora mjerila, mjeren udaljenoscu do najblize COLMAP-ove tocke (njegove su medjusobno
+razmaknute 0.313 posto opsega putanje):
+
+| model | tocaka | medijan | 75% | 90% |
+|---|---|---|---|---|
+| uglovi na 960 px | 59 879 | 7.891 % | 10.559 | 14.080 |
+| **prostor mjerila** | 18 163 | **0.933 %** | 1.810 | 4.270 |
+
+**Osam i pol puta tocnije, i na tri puta vlastitog razmaka njegovih tocaka.** Jaz od dvadeset pet
+puta, koji je cijeli dan bio glavni nalaz, time je zatvoren.
+
+A splat je svejedno losiji: 27.82 dB naspram 30.40. Velicina modela nije razlog - COLMAP ogranicen
+na tocno istu velicinu (412 153 gaussiane) daje 32.12 dB, dakle i nesto bolje nego bez ogranicenja.
+
+Razlog je POKRIVENOST PO KADRU:
+
+| model | tocaka | po kadru | najprazniji kadar | PSNR |
+|---|---|---|---|---|
+| COLMAP | 26 761 | 1317 | **107** | 32.12 dB |
+| uglovi na 960 px | 59 879 | 5213 | 656 | 30.40 dB |
+| prostor mjerila | 18 163 | **670** | **32** | 27.82 dB |
+
+Kadar s tridesetak tocaka nema od cega poceti, i trener ga mora izmisliti.
+
+**I to nije detekcija nego poklapanje.** Detektor daje 18 084 znacajki po kadru; sto od njih prezivi
+na paru susjednih kadrova, uz polumjer pretrage i uzajamno najbolje:
+
+| prag omjera | 0.80 | 0.85 | 0.90 | 0.95 | 1.00 |
+|---|---|---|---|---|---|
+| poklopljeno | 626 | 940 | 1528 | 2467 | 3601 |
+
+Zadanih 0.80 odbaci osamdeset posto onoga sto bi se dalo poklopiti. Prag postoji zato sto
+pretpostavlja da je drugi po redu KRIVO poklapanje - a kod gustih znacajki na vise mjerila to ne
+stoji: drugi po redu je cesto ista tocka nadjena na susjednom mjerilu.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u
