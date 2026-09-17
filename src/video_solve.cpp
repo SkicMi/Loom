@@ -49,7 +49,8 @@ std::vector<uint8_t> toGray(const Spool::Image& image){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [bez-spajanja|graf]\n");
+        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [graf|spajanje|bez-spajanja]\n");
+        std::printf("  zadano je graf: znacajke se u svakom kadru nadju neovisno pa povezu\n");
         std::printf("  cameras.txt: COLMAP-ova kalibracija. Kad je zadana, zarista i distorzija se\n");
         std::printf("               NE pogadjaju nego citaju, a opazanja se isprave prije solvea\n");
         return 1;
@@ -64,12 +65,22 @@ int main(int argc, char** argv){
     const std::string outputDirectory = argc > 5 ? std::string(argv[5]) : std::string();
     const std::string calibrationFile = argc > 6 ? std::string(argv[6]) : std::string();
 
-    //Spajanje tragova se da iskljuciti, jer je jedini nacin da se izmjeri koliko donosi
-    //Sedmi argument bira kako nastaju korespondencije. Postoji da se razlika DA IZMJERITI:
-    //"bez-spajanja" je golo pracenje, zadano je spajanje pracenih tragova, "graf" ih trazi iznova
+    //=====================================================================================
+    // KAKO NASTAJU KORESPONDENCIJE. Sedmi argument, i ZADANO JE GRAF POKLAPANJA.
+    //
+    // Dugo je zadano bilo spajanje vec pracenih tragova, a graf se dobivao samo uz izricit
+    // argument - pa je sav rad na njemu bio nedostupan onome tko alat naprosto pokrene. Graf je
+    // mjereno bolji u redu velicine: pracenje je davalo oko 300 opazanja po kljucnom kadru, graf
+    // ih daje preko 3000, a i sve sto je poslije napravljeno (rastavljanje sukobljenih komponenti,
+    // vise pocetnih parova, savovi) vrijedi samo za njega.
+    //
+    //   graf           znacajke se u svakom kadru nadju NEOVISNO pa povezu - zadano
+    //   spajanje       stari put: prate se tragovi pa se naknadno spajaju
+    //   bez-spajanja   golo pracenje, za usporedbu
+    //=====================================================================================
     const std::string how = argc > 7 ? std::string(argv[7]) : std::string();
-    const bool mergeTracks = how != "bez-spajanja" && how != "graf";
-    const bool matchGraph = how == "graf";
+    const bool mergeTracks = how == "spajanje";
+    const bool matchGraph = how.empty() || how == "graf";
 
     Spool::VideoReader reader(path);
     const Spool::VideoInfo& info = reader.info();
