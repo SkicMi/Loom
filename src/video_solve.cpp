@@ -49,8 +49,8 @@ std::vector<uint8_t> toGray(const Spool::Image& image){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [graf|spajanje|bez-spajanja]\n");
-        std::printf("  zadano je graf: znacajke se u svakom kadru nadju neovisno pa povezu\n");
+        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [graf|graf-bez-mjerila|spajanje|bez-spajanja]\n");
+        std::printf("  zadano je graf: uglovi za pokrivenost i prostor mjerila za tocnost, spojeni\n");
         std::printf("  cameras.txt: COLMAP-ova kalibracija. Kad je zadana, zarista i distorzija se\n");
         std::printf("               NE pogadjaju nego citaju, a opazanja se isprave prije solvea\n");
         return 1;
@@ -80,7 +80,10 @@ int main(int argc, char** argv){
     //=====================================================================================
     const std::string how = argc > 7 ? std::string(argv[7]) : std::string();
     const bool mergeTracks = how == "spajanje";
-    const bool matchGraph = how.empty() || how == "graf";
+    const bool matchGraph = how.empty() || how == "graf" || how == "graf-bez-mjerila";
+
+    //Prostor mjerila uz uglove - zadano. "graf-bez-mjerila" ga gasi, za usporedbu
+    const bool scaleSpace = how.empty() || how == "graf";
 
     Spool::VideoReader reader(path);
     const Spool::VideoInfo& info = reader.info();
@@ -245,7 +248,32 @@ int main(int argc, char** argv){
                 graphConfig.describe.maxDistance = 96;
 
                 const auto started = std::chrono::steady_clock::now();
-                const Engine::MatchGraphResult graph = Engine::buildMatchGraph(keyframeImages, guess, graphConfig);
+                Engine::MatchGraphResult graph = Engine::buildMatchGraph(keyframeImages, guess, graphConfig);
+
+                //=================================================================
+                // I ZNACAJKE IZ PROSTORA MJERILA, uz uglove - vidi Engine::mergeGraphs.
+                //
+                // Uglovi na smanjenoj slici daju POKRIVENOST: 101 kameru i 5213 opazanja po kadru.
+                // Prostor mjerila daje TOCNOST: tocke na 0.933 posto opsega putanje od najblize
+                // COLMAP-ove, ondje gdje uglovi daju 7.891 - ali samo 64 kamere.
+                //
+                // Spojeno drzi punu pokrivenost i bolje je od samih uglova po svakoj mjeri
+                // tocnosti: reprojekcija 1.635 -> 1.289 px, baza 4.72 -> 5.01 st, smjer koraka
+                // 1.87 -> 1.27 st, a zaokret iz kadra u kadar se vise ne razlikuje od COLMAP-ovog
+                //=================================================================
+                if(scaleSpace){
+                    Engine::MatchGraphConfig fineConfig = graphConfig;
+                    fineConfig.useScaleSpace = true;
+                    fineConfig.scaleSpace.minDistance = 4.0f;
+
+                    const Engine::MatchGraphResult fine =
+                        Engine::buildMatchGraph(keyframeImages, guess, fineConfig);
+                    std::printf("  prostor mjerila: %u znacajki, %u tocaka, %zu opazanja\n",
+                                fine.featuresTotal, fine.pointCount, fine.observations.size());
+
+                    if(fine.pointCount > 0) graph = Engine::mergeGraphs(graph, fine);
+                }
+
                 const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
                 std::printf("  graf poklapanja: %u znacajki, %u tocaka, %zu opazanja (%.0f po kadru), "

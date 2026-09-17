@@ -447,4 +447,29 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
                                  const Intrinsics& intrinsics,
                                  const MatchGraphConfig& config = {});
 
+//=============================================================================================
+// DVA GRAFA U JEDNU SCENU.
+//
+// ZASTO. Tocnost i pokrivenost su izmjereno na razlicitim putovima i nijedna postavka ih ne spaja:
+//
+//   uglovi na 960 px   101 kamera, 5213 opazanja po kadru, ali tocke 7.891 posto opsega putanje od
+//                      najblize COLMAP-ove
+//   prostor mjerila    tocke 0.933 posto - dakle na tri puta razmaka njegovih vlastitih - ali 670
+//                      opazanja po kadru i 64 kamere
+//
+// Spojeno daje 101 kameru, 83 374 tocke i bolju tocnost od samih uglova po svakoj mjeri.
+//
+// TRAGOVI SE NE MIJESAJU. Svaki trag dolazi cijeli iz jednog grafa, pa unutar traga nema mjesavine
+// grubih i finih polozaja - a ta je mjesavina jednom vec srusila rjesenje na 119 stupnjeva (vidi
+// refineToReference). Mijesaju se samo tocke u istoj sceni, a to rekonstrukciji ne smeta: ona
+// ionako ne pretpostavlja da su sve tocke jednako dobre.
+//
+// TOCNOST SPOJENOG JE ONA GRUBLJA OD DVIJE. Prag prihvacanja kamere u reconstructu izvodi se iz
+// nje, a kamera vidi tocke iz oba grafa - pa prag mora podnijeti i grublje od njih.
+//
+// Kamere moraju biti iste u oba, i to po rednom broju: spajaju se scene istih kadrova, ne dvije
+// razlicite snimke
+//=============================================================================================
+MatchGraphResult mergeGraphs(const MatchGraphResult& first, const MatchGraphResult& second);
+
 }

@@ -48,6 +48,39 @@ struct FrameSets{
 
 }
 
+MatchGraphResult mergeGraphs(const MatchGraphResult& first, const MatchGraphResult& second){
+    MatchGraphResult out;
+    out.observations = first.observations;
+    out.observations.reserve(first.observations.size() + second.observations.size());
+    for(const Observation& one : second.observations){
+        out.observations.push_back(Observation{one.camera, one.point + first.pointCount, one.pixel});
+    }
+    out.pointCount = first.pointCount + second.pointCount;
+
+    //Tocnost je ona grublja - vidi zaglavlje
+    out.localizationPixels = std::max(first.localizationPixels, second.localizationPixels);
+
+    //Brojaci se zbrajaju, jer opisuju posao koji je stvarno napravljen u oba
+    out.comparedFrames = first.comparedFrames + second.comparedFrames;
+    out.acceptedFrames = first.acceptedFrames + second.acceptedFrames;
+    out.featuresTotal = first.featuresTotal + second.featuresTotal;
+    out.conflictingPoints = first.conflictingPoints + second.conflictingPoints;
+    out.conflictingObservations = first.conflictingObservations + second.conflictingObservations;
+    out.mergedObservations = first.mergedObservations + second.mergedObservations;
+    out.refusedEdges = first.refusedEdges + second.refusedEdges;
+    out.unwitnessedEdges = first.unwitnessedEdges + second.unwitnessedEdges;
+    out.splitPoints = first.splitPoints + second.splitPoints;
+    out.droppedWeakEdges = first.droppedWeakEdges + second.droppedWeakEdges;
+    out.refinedObservations = first.refinedObservations + second.refinedObservations;
+    out.unrefinedObservations = first.unrefinedObservations + second.unrefinedObservations;
+    out.unrefinedTracks = first.unrefinedTracks + second.unrefinedTracks;
+
+    //Medijan dvaju medijana nije medijan, pa se uzima veci od dvoje - to je barem broj koji je
+    //negdje stvarno izmjeren
+    out.medianMatchesPerPair = std::max(first.medianMatchesPerPair, second.medianMatchesPerPair);
+    return out;
+}
+
 MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
                                  const Intrinsics& intrinsics,
                                  const MatchGraphConfig& config){

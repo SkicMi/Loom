@@ -401,5 +401,53 @@ int main(){
                 quiet.splitPoints, quiet.refusedEdges));
     }
 
+    //-- dva grafa u jednu scenu ----------------------------------------------------------------
+    //
+    //Tocnost i pokrivenost su na pravoj snimci izmjereno na razlicitim putovima: uglovi daju 101
+    //kameru i 5213 opazanja po kadru ali tocke 7.891 posto opsega od najblize COLMAP-ove, a prostor
+    //mjerila tocke 0.933 posto ali 64 kamere. Spojeno daje oboje.
+    //
+    //Sto se brani:
+    //
+    //  nista se ne gubi   zbroj opazanja i tocaka mora biti tocno zbroj dvaju
+    //  tragovi se ne mijesaju  nijedna tocka drugog grafa ne smije zavrsiti pod brojem prvog
+    //  tocnost je grublja  prag prihvacanja kamere izvodi se iz nje, pa mora podnijeti i grublje
+    {
+        Engine::MatchGraphConfig full = config;
+        full.workingWidth = 0;          //tocnost 1 px
+        const Engine::MatchGraphResult fine = Engine::buildMatchGraph(images, intrinsics, full);
+
+        Engine::MatchGraphConfig small = config;
+        small.workingWidth = width / 4; //tocnost 4 px
+        const Engine::MatchGraphResult coarse = Engine::buildMatchGraph(images, intrinsics, small);
+
+        const Engine::MatchGraphResult both = Engine::mergeGraphs(fine, coarse);
+
+        report.check("spajanje nista ne gubi",
+            both.observations.size() == fine.observations.size() + coarse.observations.size()
+            && both.pointCount == fine.pointCount + coarse.pointCount,
+            fmt("%zu + %zu = %zu opazanja, %u + %u = %u tocaka",
+                fine.observations.size(), coarse.observations.size(), both.observations.size(),
+                fine.pointCount, coarse.pointCount, both.pointCount));
+
+        //Drugi graf mora cijeli biti iznad prvoga: inace bi mu se tragovi zalijepili za tudje
+        bool separated = true;
+        for(size_t i = fine.observations.size(); i < both.observations.size(); ++i){
+            if(both.observations[i].point < fine.pointCount){ separated = false; break; }
+        }
+        for(size_t i = 0; i < fine.observations.size() && separated; ++i){
+            if(both.observations[i].point >= fine.pointCount) separated = false;
+        }
+
+        report.check("tragovi se ne mijesaju",
+            separated, separated ? "svaki trag ostaje u svom grafu" : "brojevi tocaka se preklapaju");
+
+        report.check("tocnost je ona grublja",
+            both.localizationPixels == std::max(fine.localizationPixels, coarse.localizationPixels)
+            && both.localizationPixels == 4.0f,
+            fmt("%.1f px iz %.1f i %.1f", double(both.localizationPixels),
+                double(fine.localizationPixels), double(coarse.localizationPixels)));
+    }
+
     return report.result();
 }
