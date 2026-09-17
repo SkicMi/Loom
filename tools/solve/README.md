@@ -584,6 +584,47 @@ losije od naseg svega. Razlog je najvjerojatnije sam prijenos: oblak se prenosi 
 ostatak, pa u tudjem okviru sjedi malo pokraj. Ono sto se iz toga dade procitati jest da trener u
 7000 koraka NE popravi krivo postavljen oblak - a ne koliko vrijede nase poze same za sebe.
 
+### SIFT s ispravljenim pocetnim parom: najbolji graf, jedna pokvarena kamera
+
+Uz rastavljanje, prag dva svjedoka i cetiri pocetna para:
+
+| | tocaka | duljina traga | baza | reprojekcija |
+|---|---|---|---|---|
+| binarni | 63 048 | 7.77 | 4.72 st | 1.635 px |
+| **SIFT** | **88 464** | 7.49 | **5.23 st** | 1.663 px |
+| COLMAP | 26 761 | 8.7 | 7.93 st | 0.746 px |
+
+Vise tocaka nego COLMAP i najsira baza koju smo imali. Ali:
+
+```
+zaokret iz kadra u kadar: medijan 0.101 st, NAJGORI KORAK 26.072 st
+rotacija bez poravnanja: 56.900 st
+PSNR: 28.10 dB
+```
+
+Jedna kamera nosi sve. I to je ujedno prvi put da se vidi cemu sluzi mjera bez poravnanja: medijan
+koraka je odlican, poravnata rotacija kaze 26.57 st, a mjera u odnosu na prvu kameru kaze 56.9 -
+jer jedan krivi korak zaokrene sve iza sebe.
+
+**Reprojekcija takvu kameru ne prijavi.** Trazio sam je po tome sto bi joj vlastita reprojekcija
+trebala biti visestruko veca od opce - nijedna nema ni trostruko. Zaglavljena kamera je
+samodosljedno kriva, jer je registrirana nad tockama koje su i same krive.
+
+**Detektor koji okida koristi ono sto reprojekcija ne zna: kadrovi idu redom.** I tu je prvo
+pravilo bilo krivo. Trazio sam kameru kojoj su OBA susjedna koraka velika - a zaokret krive kamere
+se s jedne strane zbraja s gibanjem a s druge oduzima:
+
+```
+kamera zaokrenuta 25 st, korak 11.46 st  ->  susjedni koraci 36.32 i 13.90
+```
+
+Jedan golem, drugi posve obican. Ono sto jest svojstvo krive kamere: **put KROZ nju je dulji nego
+put PREKO nje**. Za ispravnu su ta dva gotovo jednaka jer se zaokreti zbrajaju oko iste osi; za
+zaokrenutu je razlika dvostruki zaokret.
+
+Takva kamera dobiva pozu iznova, polazeci od susjedne rijesene - ne od vlastite, jer bi se vratila
+u isti minimum.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u
