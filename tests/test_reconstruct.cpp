@@ -507,7 +507,8 @@ int main(){
 
         //Rep odbacen silom: mehanizam mora vratiti sve kamere i pogoditi istinu
         Engine::ReconstructConfig cutting;
-        cutting.dropTailFrom = uint32_t(scene.poses.size() / 2);
+        cutting.keepFrom = 0;
+        cutting.keepTo = uint32_t(scene.poses.size() / 2);
         const Engine::Reconstruction rebuilt = Engine::reconstruct(scene.observations, scene.poses.size(),
                                                                    scene.points.size(), scene.intrinsics,
                                                                    cutting);

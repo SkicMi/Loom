@@ -171,9 +171,20 @@ struct ReconstructConfig{
     //=========================================================================================
     double seamFactor = 0.0;
 
-    //Od koje se kamere rep odbacuje i gradi iznova. Puni ga popravak sava sam; pozivatelj ga ne
-    //dira. Nula znaci da se ne odbacuje nista
-    uint32_t dropTailFrom = 0;
+    //=========================================================================================
+    // KOJI SE DIO NIZA ZADRZAVA, a sve izvan njega gradi iznova. Puni ga popravak sava sam;
+    // pozivatelj ga ne dira. keepTo nula znaci bez ogranicenja.
+    //
+    // ZASTO RASPON A NE SAMO "ODBACI REP". Prvo sam odbacivao kamere od sava nadalje, i to je
+    // popravilo drugi sav ali ne i prvi - jer je SIDRO bilo u odbacenom dijelu. Pocetni par ovog
+    // rjesenja je 81-83, a savovi su kod 37 i 65; odbacivanjem repa od 37 ostane samo glava niza
+    // [0..36], a to je bas onaj tamni dio snimke koji COLMAP nije uspio registrirati uopce - pa se
+    // rep ponovno presidri na slabo.
+    //
+    // Ispravno je zadrzati dio koji SADRZI POCETNI PAR, jer je on jedini za koji se zna da je
+    // gradjen iz dobrog sjemena, i sve ostalo registrirati prema njemu
+    //=========================================================================================
+    uint32_t keepFrom = 0, keepTo = 0;
 
     //Parovi koje ne treba ponovno probati. Puni ga visestruki pokusaj sam; pozivatelj ga ne dira
     std::vector<std::pair<uint32_t, uint32_t>> skipInitialPairs;

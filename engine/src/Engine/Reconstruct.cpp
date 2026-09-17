@@ -56,7 +56,7 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     // i inace izgradilo, pa se u njemu potrazi sav; ako ga ima, gradi se jos jednom uz zadano
     // odbacivanje repa. Zadrzava se bolje od dvoga
     //=================================================================================
-    if(config.seamFactor > 0.0 && config.dropTailFrom == 0){
+    if(config.seamFactor > 0.0 && config.keepTo == 0){
         ReconstructConfig plain = config;
         plain.seamFactor = 0.0;
 
@@ -81,37 +81,77 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             stepAt.push_back(camera + 1);
         }
 
+        std::vector<size_t> seams;
         if(steps.size() >= 5){
             std::vector<double> sorted = steps;
             std::sort(sorted.begin(), sorted.end());
             const double middle = sorted[sorted.size() / 2];
             const double limit = config.seamFactor * middle;
 
-            //PRVI sav, gledano od pocetka niza. Rastavlja se najranije mjesto, jer sve iza njega
-            //ionako visi o njemu
             for(size_t i = 0; i < steps.size(); ++i){
                 if(steps[i] <= limit) continue;
-                ++first.seamsFound;
-                if(first.seamAt == 0) first.seamAt = uint32_t(stepAt[i]);
+                seams.push_back(stepAt[i]);
             }
         }
 
-        if(first.seamsFound == 0) return first;
+        first.seamsFound = uint32_t(seams.size());
+        if(!seams.empty()) first.seamAt = uint32_t(seams.front());
+        if(seams.empty()) return first;
+
+        //DIO KOJI SADRZI POCETNI PAR - vidi ReconstructConfig::keepFrom. Savovi dijele niz na
+        //odsjecke; zadrzava se onaj u kojem je sjeme, jer je jedino on gradjen od necega poznatog
+        size_t keepFrom = 0, keepTo = cameraCount;
+        for(size_t seam : seams){
+            if(seam <= size_t(first.initialA) && seam <= size_t(first.initialB)) keepFrom = seam;
+        }
+        for(size_t index = seams.size(); index-- > 0;){
+            const size_t seam = seams[index];
+            if(seam > size_t(first.initialA) && seam > size_t(first.initialB)) keepTo = seam;
+        }
+        if(keepTo <= keepFrom) return first;
 
         ReconstructConfig cut = config;
         cut.seamFactor = 0.0;
-        cut.dropTailFrom = first.seamAt;
+        cut.keepFrom = uint32_t(keepFrom);
+        cut.keepTo = uint32_t(keepTo);
+
+        //ISTI POCETNI PAR, jedan pokusaj. Ne mijenja se sjeme nego sto se oko njega gradi, pa bi
+        //ponovno biranje para samo trostruko produljilo racun i unijelo drugu promjenu u isti pokus
+        cut.forceInitialA = first.initialA;
+        cut.forceInitialB = first.initialB;
+        cut.initialPairTrials = 1;
+
         const Reconstruction again = reconstruct(observations, cameraCount, pointCount, intrinsics, cut);
 
+        //MJERA JE BROJ PREOSTALIH SAVOVA, pa tek onda kamere i baza. Sav je upravo ono sto se
+        //popravlja, a kamera i baza ne bi ga razlikovale - rjesenje s dva sava ima jednako kamera i
+        //cesto sirу bazu od onoga bez njih
+        auto seamsIn = [&](const Reconstruction& state){
+            std::vector<double> turns;
+            for(size_t camera = 0; camera + 1 < cameraCount; ++camera){
+                if(!state.posed[camera] || !state.posed[camera + 1]) continue;
+                turns.push_back(turnBetween(state, camera, camera + 1));
+            }
+            if(turns.size() < 5) return size_t(0);
+            std::vector<double> sorted = turns;
+            std::sort(sorted.begin(), sorted.end());
+            const double limit = config.seamFactor * sorted[sorted.size() / 2];
+            size_t count = 0;
+            for(double turn : turns) if(turn > limit) ++count;
+            return count;
+        };
+
         Reconstruction best = first;
-        if(again.ok && (again.posedCameras > first.posedCameras
-                     || (again.posedCameras == first.posedCameras
-                         && again.medianTriangulationAngle > first.medianTriangulationAngle))){
+        const size_t before = seams.size();
+        const size_t after = again.ok ? seamsIn(again) : before + 1;
+
+        if(again.ok && (after < before
+                     || (after == before && again.posedCameras > first.posedCameras))){
             best = again;
             best.seamRepaired = 1;
         }
-        best.seamAt = first.seamAt;
-        best.seamsFound = first.seamsFound;
+        best.seamAt = uint32_t(seams.front());
+        best.seamsFound = uint32_t(before);
         return best;
     }
 
@@ -699,9 +739,10 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     //REP SE ODBACUJE I GRADI IZNOVA - vidi ReconstructConfig::seamFactor. Kamere od sava nadalje
     //su registrirane dok su tocke ispred jos bile lose; sada su tocke bolje, pa dobivaju drugu
     //priliku. Tocke koje vise nitko ne vidi ispadaju same, jer se triangulira samo iz rijesenih
-    if(config.dropTailFrom > 0 && config.dropTailFrom < cameraCount){
-        for(size_t camera = config.dropTailFrom; camera < cameraCount; ++camera){
+    if(config.keepTo > 0 && config.keepTo <= cameraCount){
+        for(size_t camera = 0; camera < cameraCount; ++camera){
             if(!state.posed[camera]) continue;
+            if(camera >= config.keepFrom && camera < config.keepTo) continue;
             state.posed[camera] = 0;
             --state.posedCameras;
         }
