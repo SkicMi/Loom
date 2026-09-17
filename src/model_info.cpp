@@ -16,6 +16,8 @@
 //   pokrivenost      koliko kamera vidi koliko tocaka; rijetka veza znaci krhku rekonstrukciju
 #include <Engine/ColmapImport.h>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -87,10 +89,54 @@ int main(int argc, char** argv){
         steps.push_back(lengthB);
     }
 
+    //=================================================================================
+    // SAVOVI: mjesta na kojima se lanac presidrio.
+    //
+    // Rekonstrukcija se zna razlomiti na odsjecke koji su svaki uredan u sebi a medjusobno
+    // zaokrenuti za dvadesetak stupnjeva. Izmjereno na pravoj snimci: zaokret iz kadra u kadar
+    // 0.101 st medijan, a kod dva mjesta 22.977 i 24.093.
+    //
+    // REPROJEKCIJA TO NE PRIJAVI - i zato ovdje stoji. Svaki se odsjecak slaze sam sa sobom, pa
+    // model izgleda zdravo po svakoj mjeri koja gleda koliko rjesenje objasnjava opazanja.
+    //
+    // Mjeri se ZAOKRET KAMERE, ne skretanje putanje: putanja se smije prelomiti jer se snimatelj
+    // stvarno okrenuo, ali zaokret koji je dvadeset puta veci od uobicajenog nije snimanje
+    //=================================================================================
+
+    std::vector<double> cameraTurns;
+    std::vector<size_t> turnAt;
+    for(size_t i = 1; i < state.poses.size(); ++i){
+        if(!state.posed[i] || !state.posed[i - 1]) continue;
+        const glm::dmat3 before = glm::dmat3(glm::mat3_cast(state.poses[i - 1].orientation));
+        const glm::dmat3 now = glm::dmat3(glm::mat3_cast(state.poses[i].orientation));
+        const glm::dmat3 difference = glm::transpose(before) * now;
+        const double cosine = std::max(-1.0, std::min(1.0,
+            (difference[0][0] + difference[1][1] + difference[2][2] - 1.0) * 0.5));
+        cameraTurns.push_back(glm::degrees(std::acos(cosine)));
+        turnAt.push_back(i);
+    }
+
     std::printf("\n== PUTANJA ==\n");
     std::printf("  skretanje    %.2f st po kadru (medijan; glatko = malo)\n", medianOf(turns));
     std::printf("  omjer brzina %.3f (glatko = oko 1)\n", medianOf(speeds));
     std::printf("  korak        %.4f (mjerilo je slobodno, pa je ovo odnos a ne metri)\n", medianOf(steps));
+
+    if(cameraTurns.size() >= 5){
+        const double middle = medianOf(cameraTurns);
+        std::printf("  zaokret      %.3f st po kadru (medijan)\n", middle);
+
+        size_t seams = 0;
+        for(size_t i = 0; i < cameraTurns.size(); ++i){
+            if(cameraTurns[i] <= 10.0 * middle) continue;
+            ++seams;
+            if(seams <= 5){
+                std::printf("  SAV kod kadra %zu: zaokret %.2f st, dakle %.0f puta iznad medijana\n",
+                            turnAt[i], cameraTurns[i], cameraTurns[i] / std::max(1e-9, middle));
+            }
+        }
+        if(seams == 0) std::printf("  savova       nema (nijedan zaokret nije deseterostruko iznad medijana)\n");
+        else if(seams > 5) std::printf("  ...ukupno %zu savova\n", seams);
+    }
 
     // -------------------------------------------------------------------------------
     // Baza: pod kojim se kutom zrake sijeku

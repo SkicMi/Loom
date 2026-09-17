@@ -724,6 +724,22 @@ OverlayBox mapa_s_txt slike izlaz  # kocka na fiksnom mjestu, nacrtana preko pra
 pod kojim se zrake sijeku. Dubina iz uske baze ne postoji koliko god tocaka bilo, pa taj kut kaze
 koliko se rezultatu smije vjerovati.
 
+Drugi je **SAV**. Rekonstrukcija se zna razlomiti na odsjecke koji su svaki uredan u sebi a
+medjusobno zaokrenuti za dvadesetak stupnjeva, i **reprojekcija to ne prijavi** - svaki se odsjecak
+slaze sam sa sobom. Zato ModelInfo gleda zaokret kamere iz kadra u kadar i javlja svaki koji je
+deseterostruko iznad medijana:
+
+```
+zaokret      1.622 st po kadru (medijan)
+SAV kod kadra 1:  zaokret 22.98 st, dakle 14 puta iznad medijana
+SAV kod kadra 29: zaokret 24.09 st, dakle 15 puta iznad medijana
+```
+
+Na zdravom modelu pise "savova nema" - provjereno na COLMAP-ovom rjesenju i na nasa dva.
+
+Mjeri se ZAOKRET KAMERE, ne skretanje putanje: putanja se smije prelomiti jer se snimatelj stvarno
+okrenuo, ali zaokret dvadeset puta veci od uobicajenog nije snimanje.
+
 `OverlayBox` otvara krug koji reprojekcija ne otvara: ona mjeri slaganje rjesenja s tockama koje je
 **samo naslo**, a kocka se postavi na jedno mjesto u svijetu i crta iz svake poze redom. Ako poze
 valjaju, stoji zalijepljena za scenu.
