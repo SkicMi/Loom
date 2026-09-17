@@ -329,7 +329,18 @@ int main(int argc, char** argv){
                     double(measured.k1), double(measured.k2), worst);
     }
 
-    auto solveWith = [&](double fov){
+    //=====================================================================================
+    // TRAZENJE ZARISNE JE IZBOR, NE POLIRANJE.
+    //
+    // Sest kandidata puta puna rekonstrukcija znaci sest puta cetiri pocetna para i sest popravaka
+    // sava - tridesetak izgradnji scene da bi se izabrao JEDAN broj. Izmjereno: na 80 kadrova 4K
+    // snimke to je prelo sat vremena i nije doslo do kraja.
+    //
+    // A za izbor zarisne to nije potrebno: kriva zarisna se vidi po tome sto rjesenje ima manje
+    // kamera i vecu reprojekciju, a to se vidi i iz jednog pokusaja. Puna obrada ide tek na
+    // pobjednika
+    //=====================================================================================
+    auto solveWith = [&](double fov, bool thorough){
         Engine::Intrinsics intrinsics;
         if(calibrated){
             intrinsics = measured;
@@ -356,6 +367,11 @@ int main(int argc, char** argv){
         //prave snimke uz tocnost od 4 px: prag 4 daje 5 od 30 kamera, prag 8 daje 30 od 30
         config.acceptPixels = std::max(6.0, 2.0 * double(featurePixels));
         config.minPointsForPose = 20;
+
+        if(!thorough){
+            config.initialPairTrials = 1;
+            config.seamFactor = 0.0;
+        }
         return std::make_pair(Engine::reconstruct(solveObservations, cameraCount, pointCount,
                                                   intrinsics, config), intrinsics);
     };
@@ -396,7 +412,7 @@ int main(int argc, char** argv){
     double bestFov = 0.0;
 
     for(double fov : candidates){
-        const auto result = solveWith(fov);
+        const auto result = solveWith(fov, false);
         const Engine::Reconstruction& state = result.first;
         std::printf("  vidno polje %5.1f st (f = %6.1f px): %2u/%u kamera, %4u tocaka, reprojekcija %6.3f px\n",
                     fov, double(result.second.fx), state.posedCameras, cameraCount, state.solvedPoints, state.medianReprojection);
@@ -412,6 +428,23 @@ int main(int argc, char** argv){
 
     std::printf("\nNajbolje: vidno polje %.1f st, %u od %u kamera, %u tocaka, reprojekcija %.3f px\n",
                 bestFov, best.posedCameras, cameraCount, best.solvedPoints, best.medianReprojection);
+
+    //Pobjednik dobiva punu obradu: vise pocetnih parova i popravak sava. Tek se tu placa ono sto
+    //bi puta sest kandidata bilo neupotrebljivo
+    if(best.ok){
+        const auto polished = solveWith(bestFov, true);
+        if(polished.first.ok){
+            best = polished.first;
+            bestIntrinsics = polished.second;
+            std::printf("  nakon pune obrade: %u od %u kamera, %u tocaka, reprojekcija %.3f px, baza %.2f st\n",
+                        best.posedCameras, cameraCount, best.solvedPoints,
+                        best.medianReprojection, best.medianTriangulationAngle);
+            if(best.seamsFound){
+                std::printf("  savova nadjeno %u, prvi kod kadra %u, rastavljanje %s\n",
+                            best.seamsFound, best.seamAt, best.seamRepaired ? "pomoglo" : "nije pomoglo");
+            }
+        }
+    }
 
     //DVIJE PROVJERE KOJE RADE BEZ POZNATE ISTINE.
     //
@@ -446,7 +479,7 @@ int main(int argc, char** argv){
 
     //Isto rjesenje s zarisnom +-25 %: koliko se promijeni SMJER putanje
     for(double factor : {0.75, 1.25}){
-        const auto other = solveWith(bestFov * factor > 120.0 ? 120.0 : bestFov * factor);
+        const auto other = solveWith(bestFov * factor > 120.0 ? 120.0 : bestFov * factor, false);
         const auto otherShape = pathShape(other.first);
         std::printf("  zarisna x%.2f: %u kamera, reprojekcija %.3f px, skretanje %.2f st\n",
                     factor, other.first.posedCameras, other.first.medianReprojection, otherShape.first);
