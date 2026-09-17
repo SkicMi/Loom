@@ -354,12 +354,18 @@ struct MatchGraphConfig{
     //     3         6.84      15.3 %   142.98 st    110.10 st
     //     4         6.84      25.7 %    78.80 st     96.51 st
     //
-    // Sve osim dvojke daje stotinjak stupnjeva, ali to NIJE skretanje u krivu granu nego nakupljeni
-    // drift: zaokret po koraku ide s 0.035 na 1.109 st, a najgori korak je tek dvostruko iznad tog
-    // medijana. Sto i nesto stupnjeva je zbroj sezdeset cetiri sitne greske.
+    // TABLICA GORE JE MJERENA S JEDNIM POCETNIM PAROM, i uski prozor koji iz nje izlazi bio je
+    // posljedica drugog kvara - vidi ReconstructConfig::initialPairTrials. Uz cetiri pokusaja:
     //
-    // Zaustavlja se samo vezom koja seze dalje od prozora poklapanja - nista u grafu ne spaja kadar
-    // 5 s kadrom 60. Dotad je dvojka izmjerena granica
+    //   svjedoka   rotacija   baza    tragovi   PSNR
+    //     0          4.65 st   5.09     8.22    28.42 dB
+    //     2          4.69 st   4.72     7.77    30.29 dB
+    //     3        126.48 st   3.12     7.30      -
+    //     4          5.83 st   4.48     6.84      -
+    //
+    // NULA JE BOLJA PO SVAKOJ MJERI POZE - polozaj 1.2 naspram 1.3 %, baza sira za trecinu,
+    // tragovi duzi - A SPLAT JOJ JE LOSIJI ZA 1.87 dB. Cetvrti put da se to dogodi. Dvojka ostaje,
+    // jer se isporucuje splat a ne poza
     //=========================================================================================
     uint32_t splitSupport = 2;
 };

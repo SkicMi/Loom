@@ -259,13 +259,19 @@ int main(){
         //MUTACIJA MORA UGASITI OBA PRAGA. Provjera paralakse ima dva izvora - izvedeni iz
         //zarista i apsolutni pod - pa gasenje samo jednog ostavi drugi da radi, i detektor
         //prestane detektirati a da to nigdje ne pise
+        //JEDAN POCETNI PAR U OBA, i to je ovdje uvjet a ne postavka. Visestruki pokusaj bira izmedju
+        //gotovih rjesenja po broju kamera i po bazi, a te dvije postavke mijenjaju bas ono sto se u
+        //pokusaju mjeri - pa bi dva niza zavrsila na RAZLICITIM pocetnim parovima i usporedba vise
+        //ne bi mjerila provjeru paralakse nego izbor para
         Engine::ReconstructConfig without;
         without.maxRelativeDepthError = 0.0;
         without.minParallaxDegrees = 0.0;
+        without.initialPairTrials = 1;
 
         //A izvedeni prag se mjeri s ugasenim podom, inace se mjeri pod
         Engine::ReconstructConfig derivedOnly;
         derivedOnly.minParallaxDegrees = 0.0;
+        derivedOnly.initialPairTrials = 1;
 
         const Engine::Reconstruction guarded = Engine::reconstruct(narrow.observations, narrow.poses.size(),
                                                                    narrow.points.size(), narrow.intrinsics,

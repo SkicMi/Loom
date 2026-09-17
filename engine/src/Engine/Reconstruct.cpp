@@ -61,6 +61,8 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             ReconstructConfig probe = once;
             probe.skipInitialPairs = seen;
 
+            //POKUSAJI SE NE RAZMICU PO SNIMCI, i to je izmjereno - vidi initialPairSpread
+
             const Reconstruction attempt = reconstruct(observations, cameraCount, pointCount,
                                                        intrinsics, probe);
             if(!attempt.ok) break;
@@ -266,6 +268,13 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         for(const auto& pair : config.skipInitialPairs){
             if(pair.first == one.a && pair.second == one.b) return true;
             if(pair.first == one.b && pair.second == one.a) return true;
+
+            //I preblizu vec probanome je isto sto i probano - vidi initialPairSpread
+            if(config.initialPairSpread > 0){
+                const double here = 0.5 * (double(one.a) + double(one.b));
+                const double there = 0.5 * (double(pair.first) + double(pair.second));
+                if(std::fabs(here - there) < double(config.initialPairSpread)) return true;
+            }
         }
         return false;
     };

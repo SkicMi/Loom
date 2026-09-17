@@ -429,6 +429,109 @@ mjesto, ne na tocnije. Isti razlog zbog kojeg je i `refineAtFullResolution` mono
 Oba polja ostaju u kodu, zadano iskljucena. **Subpikselna tocnost se ne dobiva dotjerivanjem nego
 detekcijom u prostoru mjerila** - dakle SIFT-ovim putem, koji je jos zatvoren.
 
+### Kriv je bio pocetni par - i to objasnjava sve neuspjehe odjednom
+
+Sve sto je dosad rusilo rjesenje davalo je isti potpis: zaokret po koraku oko 1.1 st i ukupno sto
+i nesto stupnjeva. SIFT, dva svjedoka po bridu, rastavljanje bez praga, prozor 20 - sve isto.
+
+**Prvo mjerenje: je li kriv graf.** Iz spremljenih grafova je za svaki par susjednih kadrova
+rijesena dvoprizorna poza i njezina rotacija usporedjena s COLMAP-ovom. Ta usporedba ne ovisi ni o
+kakvom poravnanju, mjerilu ni ishodistu.
+
+| graf | parova | tocaka po paru | rotacija medijan |
+|---|---|---|---|
+| binarni, bacanje | 64 | 1653 | 0.847 st |
+| binarni, rastavljanje | 64 | 3724 | 0.792 st |
+| SIFT | 64 | 1501 | 0.792 st |
+| rastavljanje bez praga | 64 | 4042 | 0.778 st |
+
+**Sva cetiri jednaka.** Dakle graf nije kriv - ni SIFT-ov. Kvar je u rekonstrukciji.
+
+**Drugo mjerenje: koliko se kamera stvarno krece.** Zaokret po kadru je 1.654 st (medijan preko 64
+susjedna para COLMAP-ovog rjesenja). Nase neuspjele postavke grijese po koraku 1.1 st, dakle dvije
+trecine samog gibanja - to nije nakupljeni drift nego korak koji je sam po sebi kriv. **Time pada i
+jucerasnja formulacija o driftu**; ispravna je da je svaki korak los, a ne da se mali zbrajaju.
+
+**Nalaz.** Pocetni par se bira medju kandidatima poredanima po broju zajednickih tocaka, a gleda ih
+se samo prvih trideset. U gustom grafu su to redom SUSJEDNI kadrovi, dakle najuza baza - pa sto je
+graf bogatiji, to je izbor gori. Otud i to da je svako poboljsanje grafa rusilo poze.
+
+Izmjereno na istom grafu:
+
+| pocetni par | kut | tocaka | ishod |
+|---|---|---|---|
+| 86-89 | 1.65 st | 176 | **4.69 st** |
+| 80-89 | 3.43 st | 9742 | 119.94 st |
+
+Oba prolaze sve provjere koje izbor para ima. **Razlika se ne vidi dok se scena ne izgradi do
+kraja** - i reprojekcija je ne prijavi, jer je kod oba oko 1.65 px.
+
+**Popravak: ne bira se nego se pokusava.** Prvih nekoliko kandidata izgradi se do kraja i zadrzi
+najbolji, po broju kamera pa po medijanu kuta pod kojim se zrake sijeku. Reprojekcija se NE koristi.
+
+Uz cetiri pokusaja, na istim spremljenim grafovima:
+
+| graf | prije | poslije | smjer koraka |
+|---|---|---|---|
+| binarni, bacanje | 6.60 st | 6.60 st | 3.05 -> 3.05 |
+| binarni, rastavljanje svj. 2 | 4.69 st | 4.69 st | 1.87 -> 1.87 |
+| **SIFT** | **163.80 st** | **10.71 st** | 124.25 -> 5.64 |
+| **rastavljanje bez praga** | **119.08 st** | **4.65 st** | 132.56 -> 2.18 |
+
+Gdje je prvi izbor bio dobar, nista se ne mijenja. Gdje nije, razlika je dvadeset do trideset puta.
+
+**SIFT-ov put vise nije zatvoren**, a 124 st nikad nije ni bio njegov - bio je nas.
+
+I jos jedno: rastavljanje BEZ ikakvog praga svjedoka sada daje 4.65 st i bazu 5.09 st, dakle bolje
+od praga 2 (4.69 st, baza 4.72). Uski prozor praga opisan gore bio je posljedica ovog istog kvara,
+a ne svojstvo praga.
+
+Cijena: jedan pokusaj na 101 kadru je 325 s, cetiri su cetiri puta toliko. Zadano je cetiri.
+
+**Cetiri nije uvijek dosta.** Jedan od ta cetiri grafa - rastavljanje uz tri svjedoka - ostaje kriv
+i nakon cetiri pokusaja (126.48 st), a s osam padne na 5.75 st uz bazu 4.67 i smjer koraka 1.97.
+Kad rjesenje izgleda lose a baza mu je bitno uza nego sto graf dopusta, prvo sto vrijedi probati je
+vise pokusaja.
+
+**I jedna ideja uz to koja je pala.** Svi izabrani parovi bili su izmedju kadra 80 i 99 - cetiri
+pokusaja su probala jednu petinu snimke - pa je izgledalo da ih treba razmaknuti. Uz razmak od
+dvanaest kadrova:
+
+| | bez razmicanja | s razmicanjem |
+|---|---|---|
+| rastavljanje bez praga | **4.65 st** | 119.08 st |
+| rastavljanje, svjedoka 3 | 126.48 st | 142.98 st |
+| SIFT | 10.71 st | 9.71 st |
+
+Dobri parovi zive BAS u tom susjedstvu: najbolji je 90-92, a prvi izbor 82-85 - sredista su im
+sedam kadrova razmaknuta, pa ih razmicanje od dvanaest razdvoji. Bogato podrucje nije zamka nego
+mjesto gdje se scena stvarno dade rijesiti. Ostaje kao polje `initialPairSpread`, zadano nula.
+
+### Peti put: bolje poze, losiji splat
+
+S ispravljenim pocetnim parom rastavljanje BEZ ikakvog praga svjedoka je po svakoj mjeri poze bolje
+od praga 2 - pa je trebalo provjeriti daje li i bolji splat. Isti trener, ista naredba, isti
+izdvojeni kadrovi.
+
+| postavka | tragovi | baza | polozaj | rotacija | PSNR | SSIM |
+|---|---|---|---|---|---|---|
+| COLMAP | 8.7 | 7.93 st | - | - | **32.00 dB** | **0.907** |
+| rastavljanje, svjedoka 2 | 7.77 | 4.72 st | 1.3 % | 4.69 st | **30.29 dB** | **0.873** |
+| bacanje | 5.16 | 3.36 st | 1.6 % | 6.60 st | 29.29 dB | 0.860 |
+| rastavljanje bez praga | **8.22** | **5.09 st** | **1.2 %** | **4.65 st** | 28.42 dB | 0.840 |
+
+Zadnji redak je po SVAKOJ mjeri poze najbolji koji smo ikad imali, a splat mu je losiji za 1.87 dB.
+
+**To je peti put.** Prije njega: pod jacine ugla, stapanje po sredini, stapanje po prvom, i radna
+sirina 1920. Pravilo se vise ne moze zvati iznimkom:
+
+> Slaganje poza s COLMAP-om nije pokazatelj kvalitete splata. Jedina mjera je decibel, i svaka
+> izmjena mora zavrsiti njime.
+
+Zasto - jos ne znamo. Najizglednije je da duzi tragovi znace MANJE tocaka (62 002 naspram 63 048
+ovdje, ali 720 tisuca naspram 1.37 milijuna gaussiana u izlazu), a treneru pocetne tocke nisu samo
+geometrija nego i POKRIVENOST. Isti razlog zbog kojeg je i pod jacine ugla stetio.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u

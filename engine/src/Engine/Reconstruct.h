@@ -76,12 +76,56 @@ struct ReconstructConfig{
     // Reconstruction::medianTriangulationAngle. Reprojekcija se NE koristi, jer ona krivo rjesenje
     // ne prijavi: ono se samo sa sobom slaze jednako dobro kao ispravno.
     //
-    // Jedan znaci kao dosad - uzme se prvi izbor i s njim se ide do kraja
+    // ZADANO CETIRI. Izmjereno na cetiri razlicita grafa iste snimke, protiv COLMAP-ovog rjesenja:
+    //
+    //   graf                          jedan pokusaj   cetiri pokusaja
+    //   binarni, bacanje                  6.60 st          6.60 st
+    //   binarni, rastavljanje svj. 2      4.69 st          4.69 st
+    //   SIFT                            163.80 st         10.71 st
+    //   rastavljanje bez praga          119.08 st          4.65 st
+    //
+    // Gdje je prvi izbor bio dobar, ne mijenja nista - doslovno, jer izabere isti par. Gdje nije,
+    // razlika je dvadeset do trideset puta.
+    //
+    // CETIRI NIJE UVIJEK DOSTA. Jedan od ta cetiri grafa (rastavljanje uz tri svjedoka) ostaje
+    // kriv i nakon cetiri pokusaja - 126.48 st - a s OSAM padne na 5.75 st, uz bazu 4.67 i smjer
+    // koraka 1.97. Kad rjesenje izgleda lose a medianTriangulationAngle je bitno uzi nego sto graf
+    // dopusta, prvo sto vrijedi probati je vise pokusaja.
+    //
+    // CIJENA JE CETVEROSTRUKO VRIJEME: 325 s po pokusaju na 101 kadru 4K snimke. To je svjesna
+    // razmjena - solver koji tiho vrati putanju krivu 119 stupnjeva nije upotrebljiv ni koliko god
+    // brz bio.
+    //
+    // Jedan znaci kao prije - uzme se prvi izbor i s njim se ide do kraja
     //=========================================================================================
-    uint32_t initialPairTrials = 1;
+    uint32_t initialPairTrials = 4;
 
     //Parovi koje ne treba ponovno probati. Puni ga visestruki pokusaj sam; pozivatelj ga ne dira
     std::vector<std::pair<uint32_t, uint32_t>> skipInitialPairs;
+
+    //=========================================================================================
+    // KOLIKO DALEKO MORA BITI SLJEDECI POKUSAJ od onih koji su vec probani, u kadrovima.
+    //
+    // Zamisao je bila da svi pokusaji ne zavrse u istom dijelu snimke: kandidati su poredani po
+    // broju zajednickih tocaka, a to je svojstvo PODRUCJA - gdje je tekstura bogata, ondje svi
+    // parovi dijele mnogo. Na 101 kadru su sva cetiri izabrana para bila izmedju kadra 80 i 99.
+    //
+    // ZADANO NULA, DAKLE ISKLJUCENO - i to je izmjereno. Uz razmak od 12 kadrova (101 podijeljeno
+    // na osam):
+    //
+    //                          bez razmicanja   s razmicanjem
+    //   rastavljanje bez praga     4.65 st        119.08 st
+    //   rastavljanje, svjedoka 3 126.48 st        142.98 st
+    //   SIFT                      10.71 st          9.71 st
+    //
+    // Razlog je jednostavan kad se vidi: dobri parovi zive BAS u tom susjedstvu. Na ovoj snimci je
+    // najbolji par 90-92, a prvi izbor 82-85 - sredista su im sedam kadrova razmaknuta, dakle
+    // razmicanje od dvanaest ga izbaci. Bogato podrucje nije zamka nego mjesto gdje se scena
+    // stvarno dade rijesiti.
+    //
+    // Mjeri se razmak sredista para
+    //=========================================================================================
+    uint32_t initialPairSpread = 0;
 
     //PARALAKSA. Koliko se dubini smije vjerovati ne odlucuje kut sam po sebi nego kut zajedno sa
     //zaristem i sumom, pa se prag ne zadaje nego IZVODI:
