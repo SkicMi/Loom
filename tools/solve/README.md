@@ -522,11 +522,36 @@ izdvojeni kadrovi.
 
 Zadnji redak je po SVAKOJ mjeri poze najbolji koji smo ikad imali, a splat mu je losiji za 1.87 dB.
 
-**To je peti put.** Prije njega: pod jacine ugla, stapanje po sredini, stapanje po prvom, i radna
-sirina 1920. Pravilo se vise ne moze zvati iznimkom:
+**A onda se pokazalo da mjera laze.** Greska rotacije se dosad racunala tako da se nase poze
+slicnoscu poklope s COLMAP-ovima pa se usporede orijentacije. Ta se slicnost racuna IZ POLOZAJA
+KAMERA - a kad putanja lezi gotovo u ravnini, zaokret oko osi te ravnine njome nije odredjen:
+polozaji se njime jedva pomaknu, a orijentacije se sve zaokrenu.
 
-> Slaganje poza s COLMAP-om nije pokazatelj kvalitete splata. Jedina mjera je decibel, i svaka
-> izmjena mora zavrsiti njime.
+Ova putanja je bas takva: omjeri svojstvenih brojeva rasapa polozaja su 1 : 0.349 : 0.100. Dakle
+izduzena i gotovo ravna.
+
+Mjereno bez ikakvog poravnanja - svaka kamera u odnosu na PRVU zajednicku, u oba modela:
+
+| postavka | rotacija poravnata | rotacija bez poravnanja | PSNR |
+|---|---|---|---|
+| bacanje | 6.60 st | **1.497 st** | 29.29 dB |
+| rastavljanje, svjedoka 2 | 4.69 st | 1.601 st | **30.29 dB** |
+| rastavljanje bez praga | **4.65 st** | 2.879 st | 28.42 dB |
+
+Poravnata mjera kaze da je zadnji redak najbolji; neporavnata kaze da je dvostruko gori od ostalih
+- i ona se slaze s decibelima.
+
+**Peti "paradoks" dakle nije bio paradoks nego kriva mjera.** Poze bez praga svjedoka NISU bolje,
+nego losije.
+
+Ostaje pravilo, ali u tocnijem obliku:
+
+> Poravnata greska rotacije se ne smije citati na ravnoj ili izduzenoj putanji. Mjere koje vrijede
+> su one bez poravnanja: zaokret iz kadra u kadar i rotacija u odnosu na referentnu kameru. I dalje
+> vrijedi da svaka izmjena mora zavrsiti decibelom.
+
+Ranija cetiri slucaja (pod jacine ugla, stapanje po sredini, stapanje po prvom, radna sirina 1920)
+mjerena su ISTOM poravnatom mjerom i treba ih ponoviti prije nego se na njih pozove.
 
 Zasto - jos ne znamo, ali jedno objasnjenje je vec palo. Napisao sam da je vjerojatno u
 POKRIVENOSTI: da duzi tragovi znace manje i zgusnutijih pocetnih tocaka, a treneru one nisu samo
@@ -542,6 +567,22 @@ geometrija. Izmjereno na izvezenim modelima koji su i trenirani:
 **COLMAP ima najgoru pokrivenost od svih** - upola manje zauzetih celija, cetvrtinu tocaka po
 kadru, najprazniji kadar sa 107 tocaka naspram nasih 635 - i najbolji splat. Pokrivenost pocetnog
 oblaka dakle nije to.
+
+**Presadjivanje oblaka.** Trener iz `points3D.txt` cita samo polozaje i boje - dvodimenzionalna
+opazanja preskace - pa se dade sastaviti model s tudjim pozama i nasim tockama, i obrnuto. Tocke se
+pritom prenose slicnoscu koja poklopi kamere.
+
+| poze | tocke | PSNR | SSIM |
+|---|---|---|---|
+| COLMAP | COLMAP | **32.00 dB** | 0.907 |
+| nase | COLMAP | 30.38 dB | 0.890 |
+| nase | nase | 30.29 dB | 0.873 |
+| COLMAP | nase | 28.99 dB | 0.863 |
+
+Zanimljivo je sto NIJEDNA zamjena ne prenosi kakvocu. COLMAP-ove poze s nasim tockama daju 28.99 -
+losije od naseg svega. Razlog je najvjerojatnije sam prijenos: oblak se prenosi slicnoscu koja ima
+ostatak, pa u tudjem okviru sjedi malo pokraj. Ono sto se iz toga dade procitati jest da trener u
+7000 koraka NE popravi krivo postavljen oblak - a ne koliko vrijede nase poze same za sebe.
 
 ### Sto jos nije rijeseno
 
