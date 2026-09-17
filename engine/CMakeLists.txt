@@ -33,6 +33,7 @@ add_library(Engine STATIC
     src/Engine/Bundle.cpp
     src/Engine/TwoView.cpp
     src/Engine/Reconstruct.cpp
+    src/Engine/ScaleSpace.cpp
     src/Engine/ColmapExport.cpp
     src/Engine/ColmapImport.cpp
     src/Engine/Describe.cpp
