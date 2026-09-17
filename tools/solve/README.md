@@ -855,6 +855,34 @@ refineToReference). Mijesaju se samo tocke u istoj sceni, a to rekonstrukciji ne
 Spojeno drzi punu pokrivenost i pritom je bolje od samih uglova po SVAKOJ mjeri tocnosti. Nije
 tocno kao sam prostor mjerila, ali taj ima trecinu kamera.
 
+### Boje tocaka: nas izvoz ih nije imao, i to je kostalo svaku usporedbu
+
+Trener iz `points3D.txt` cita polozaj I BOJU, a boja postaje pocetna boja gaussiane. Nas je izvoz
+dosad pisao `200 200 200` za sve, pa je svaka nasa scena kretala jednolicno siva i trener ju je
+morao cijelu prebojiti - dok COLMAP-ova krece s priblizno tocnim bojama:
+
+```
+nase   4384  0.0548 -0.6447 -1.3599   200 200 200
+njegov 23548 10.3422 -3.4090 14.5321   41  17   5
+```
+
+To se ne vidi ni u jednoj mjeri poza ni tocaka, a ulazi ravno u decibel - dakle **svaka usporedba
+zapisana gore mjerena je kroz taj handicap**.
+
+Boja tocke je sada medijan po kanalu preko kadrova koji ju vide, ne prosjek: tocku u jednom kadru
+moze zakloniti nesto prolazno, a prosjek bi to razmazao preko svih.
+
+Do te tocke su tri druga objasnjenja izmjerena i pala. Spojeni graf je davao 29.36 dB naspram 30.40
+za same uglove, unatoc boljoj reprojekciji, bazi i driftu:
+
+| sumnja | mjerenje | ishod |
+|---|---|---|
+| velicina modela | COLMAP na istoj velicini daje 32.12 dB | ne |
+| tocnost oblaka | spojeni 5.542 % naspram 7.891 % - bolji | ne |
+| pocetna velicina gaussiane | COLMAP ima najgusci oblak (0.4319 %), ne najrjedji | ne |
+
+Cetvrta je bila prava, i nije bila u solveru nego u izvozu.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u
