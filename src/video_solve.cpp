@@ -404,7 +404,7 @@ int main(int argc, char** argv){
         const double centre = hints.horizontalFieldOfView;
         candidates = {centre * 0.85, centre * 0.93, centre, centre * 1.07, centre * 1.15};
     }else{
-        candidates = {50.0, 60.0, 70.0, 78.0, 86.0, 94.0};
+        candidates = {40.0, 50.0, 60.0, 70.0, 78.0, 86.0, 94.0, 102.0, 110.0};
     }
 
     Engine::Reconstruction best;
@@ -428,6 +428,26 @@ int main(int argc, char** argv){
 
     std::printf("\nNajbolje: vidno polje %.1f st, %u od %u kamera, %u tocaka, reprojekcija %.3f px\n",
                 bestFov, best.posedCameras, cameraCount, best.solvedPoints, best.medianReprojection);
+
+    //=====================================================================================
+    // POBJEDNIK NA RUBU RASPONA ZNACI DA ZARISNA NIJE ODREDJENA.
+    //
+    // Mjera po kojoj se bira je reprojekcija, a kriva zarisna se s njom TRGUJE: rjesenje pobjegne
+    // od istine i pritom smanji reprojekciju, jer scenu izobliči tako da se opazanja i dalje
+    // objasnjavaju. Kad najbolji ispadne bas na kraju raspona, to je znak da se mjera nije okrenula
+    // - dakle da minimum nije nadjen nego da smo stali na ogradi.
+    //
+    // Izmjereno na drugoj snimci: raspon je zavrsavao na 94 st i pobjednik je bio 94 st, a i
+    // zarisna x1.25 od nje je davala jednaku reprojekciju i GLATKIJU putanju. Rjesenje se zato ne
+    // smije citati kao izmjerena zarisna
+    //=====================================================================================
+    if(fieldOfView <= 0.0 && candidates.size() > 1
+       && (bestFov <= candidates.front() + 1e-6 || bestFov >= candidates.back() - 1e-6)){
+        std::printf("  UPOZORENJE: najbolje vidno polje je na RUBU raspona (%.0f do %.0f st).\n",
+                    candidates.front(), candidates.back());
+        std::printf("             Zarisna time nije odredjena - reprojekcija se s njom trguje.\n");
+        std::printf("             Zadaj vidno polje cetvrtim argumentom ili predaj cameras.txt.\n");
+    }
 
     //Pobjednik dobiva punu obradu: vise pocetnih parova i popravak sava. Tek se tu placa ono sto
     //bi puta sest kandidata bilo neupotrebljivo
@@ -547,11 +567,24 @@ int main(int argc, char** argv){
         }
         std::printf("Zapisano %u slika u %s\n", written, imageDirectory.string().c_str());
 
-        //Tek sada tekst, jer su boje tocaka poznate tek nakon prolaza kroz kadrove
+        //=================================================================================
+        // IZVOZE SE OPAZANJA S KOJIMA JE RIJESENO, ne ona iz trackera.
+        //
+        // Ovdje je stajalo keys.observations - tragovi iz pracenja - dok je rjesenje nastalo iz
+        // GRAFA POKLAPANJA, a on ima posve druge brojeve tocaka. points3D.txt se pise tako da se
+        // za svaku tocku skupe kadrovi koji ju vide; s krivim brojevima to znaci da se polozaj
+        // jedne tocke spoji s tragom druge.
+        //
+        // Ne vidi se u ispisu solvea, jer on javlja svoju reprojekciju - a ta je tocna. Vidi se
+        // tek kad se izvezeni model procita natrag: ModelInfo je na ovoj snimci javio reprojekciju
+        // od 1314 px ondje gdje je solver javio 1.312, i duljinu traga 1.0 kadar.
+        //
+        // Distorzija: izvozi se pinhole, pa idu ISPRAVLJENA opazanja - ista ona s kojima se racunalo
+        //=================================================================================
         const std::vector<glm::u8vec3> colours =
-            Engine::pointColours(best, keys.observations, colourImages, shrinkColour);
+            Engine::pointColours(best, solveObservations, colourImages, shrinkColour);
 
-        if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, keys.observations, {}, colours)){
+        if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours)){
             std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
         }
     }
