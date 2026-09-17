@@ -757,6 +757,32 @@ Dvije greske u detektoru koje su izasle tek na pravom kadru:
   0.038, pa prag 0.015 propusti 84 znacajke. Izmjereno: 0.004 -> 1802, 0.001 -> 7213, 0.0005 ->
   10 681. Zadano 0.001
 
+### Velicina modela ovisi o OBLAKU, ne o kartici - i to kvari usporedbe
+
+Broj gaussiana u izlazu, naspram broja pocetnih tocaka:
+
+| model | pocetnih tocaka | gaussiana | omjer | PSNR |
+|---|---|---|---|---|
+| prostor mjerila | 18 163 | 412 153 | 22.7 | 27.82 dB |
+| bacanje | 28 869 | 655 247 | 22.7 | 29.29 dB |
+| COLMAP | 26 761 | 607 390 | 22.7 | **32.00 dB** |
+| rastavljanje, svjedoka 2 | 59 879 | 1 359 310 | 22.7 | 30.29 dB |
+| rastavljanje bez praga | 60 198 | 1 366 592 | 22.7 | 28.42 dB |
+
+**Omjer je 22.7 u svakom pokusu.** MCMC raste razmjerno i u 7000 koraka ne stigne do granice koju
+mu zadaje memorija kartice - pa konacnu velicinu modela odredjuje POCETNI OBLAK.
+
+Iz toga slijedi da se dva modela s razlicitim brojem tocaka ne smiju usporedjivati decibelom bez
+ograde, jer veci model ima prednost koja nema veze s pozama. To dira dvije stvari zapisane gore:
+
+- **+1.00 dB za rastavljanje naspram bacanja** (30.29 naspram 29.29) usporedjivalo je 1.36 milijuna
+  gaussiana s 655 tisuca. Ponavlja se uz jednaku velicinu
+- **COLMAP-ovih 32.00 dB** dobiveno je s upola manje gaussiana nego nasih 30.29 - dakle njegova je
+  prednost VECA nego sto tablica kaze, ne manja
+
+A usporedba rastavljanja sa i bez praga svjedoka (59 879 naspram 60 198 tocaka) bila je postena, pa
+onih 1.87 dB razlike i dalje stoji neobjasnjeno.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u
