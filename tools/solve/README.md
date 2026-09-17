@@ -719,6 +719,44 @@ I tri mjere koje su se pokazale krivima, pa ispravljene: poravnata rotacija (laz
 putanji), rotacija prema prvoj kameri (laze ako je bas ta kamera losa), i pokrivenost pocetnog
 oblaka kao objasnjenje razlike u decibelima (COLMAP je ima najgoru a splat najbolji).
 
+### Prostor mjerila: reprojekcija ispod COLMAP-ove, ali trecina kamera manje
+
+Znacajka se trazi kao ekstrem razlike zagladjenja NIZ MJERILA, na punoj slici, a vrh joj se odredi
+ispod piksela kvadratnim fitom u sve tri osi. Potpis se zatim racuna na mjerilu na kojem je
+znacajka nadjena.
+
+Na crtanim mrljama: promasaj vrha **0.027 px**, mjerila 3.88 / 6.09 / 12.51 za mrlje sirine 3/6/12.
+
+Na 101 kadru prave snimke, protiv COLMAP-ovog rjesenja:
+
+| | uglovi na 960 px | **prostor mjerila** | COLMAP |
+|---|---|---|---|
+| kamere | **101/101** | 64/101 | 65/101 |
+| tocke | **63 048** | 18 163 | 26 761 |
+| opazanja | **540 040** | 123 640 | - |
+| reprojekcija | 1.635 px | **0.653 px** | 0.746 px |
+| baza | 4.72 st | **5.45 st** | 7.93 st |
+| polozaj | 1.3 % | **0.6 %** | - |
+| rotacija bez poravnanja | 1.601 st | **1.054 st** | - |
+| zaokret po kadru | 0.035 st | **0.000 st** | - |
+| smjer koraka | 1.87 st | **1.23 st** | - |
+
+**Reprojekcija je prvi put ispod COLMAP-ove**, a greska polozaja i rotacije su prepolovljene.
+Zaokret iz kadra u kadar se vise ne razlikuje od njegovog na tri decimale.
+
+Cijena je pokrivenost: 64 kamere umjesto 101, i trostruko manje tocaka. I to nije slucajno - 64 je
+gotovo tocno COLMAP-ovih 65, jer tamni dio snimke ne daje znacajke ni na jednom mjerilu. Uglovi su
+ondje nalazili nesto, ali to nesto je bilo kvantizirano na cetiri piksela.
+
+Dvije greske u detektoru koje su izasle tek na pravom kadru:
+
+- **dvostruko zagladjivanje**: oktave nakon prve krecu od plohe koja vec nosi baseSigma u novim
+  pikselima, pa ih je ponovno zamucivanje gusilo. 42 znacajke na cijelom 4K kadru, sve iz prve
+  oktave
+- **prag kontrasta iz literature ovdje ne vrijedi**: najjaca znacajka cijelog kadra ima |DoG|
+  0.038, pa prag 0.015 propusti 84 znacajke. Izmjereno: 0.004 -> 1802, 0.001 -> 7213, 0.0005 ->
+  10 681. Zadano 0.001
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u
