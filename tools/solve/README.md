@@ -4,18 +4,27 @@ Loomov vlastiti solver je ono sto se razvija; COLMAP je ovdje **mjerilo** i radn
 jos ne stize. Oba zavrsavaju u istom formatu, pa se citaju istim alatom i usporedjuju istim
 brojkama.
 
-## Zasto oba
+## Gdje smo
 
-Na istom isjecku snimke (Sony 4K 50p, soba, gimbal), 101 kadar:
+Na istom isjecku snimke (Sony 4K 50p, soba, gimbal), 101 kadar. Splatovi trenirani istom naredbom,
+na istim ispravljenim slikama, istih 7000 koraka, isti izdvojeni kadrovi, ista granica velicine
+modela:
 
-| | COLMAP | Loom, rujan 2026. |
+| | COLMAP | **Loom** |
 |---|---|---|
+| **PSNR** | 32.00 - 32.12 dB | **32.89 dB** |
+| **SSIM** | 0.905 - 0.907 | **0.910** |
 | rijesene kamere | 65 / 101 | **101 / 101** |
-| tocaka | 26 761 | 51 778 |
-| opazanja po kameri | 3 564 | 3 398 |
-| reprojekcija | 0.75 px | 1.25 px |
+| tocaka | 26 761 | **83 374** |
+| baza | **7.93 st** | 5.01 st |
+| reprojekcija | **0.746 px** | 1.289 px |
 
-Broj kamera i gustoca opazanja vise nisu problem. Ostalo ih je dvoje, i oba se mjere.
+**Splat je prvi put bolji od njegovog.** Nije zbog vece rekonstrukcije - gaussiana imamo 655 247
+naspram njegovih 607 390, a izmjereno je da u tom rasponu broj gaussiana ne odlucuje nista (isti
+oblak s dvostruko vise njih daje 0.11 dB MANJE, a COLMAP s trecinom manje njih daje 0.12 dB VISE).
+
+Ostaje zaostatak u dvije mjere: baza je uza (5.01 naspram 7.93 st) i reprojekcija grublja (1.289
+naspram 0.746 px), jer polovica nasih tocaka i dalje dolazi s kvantizacijom od cetiri piksela.
 
 ### Sto je rijeseno
 
@@ -882,6 +891,23 @@ za same uglove, unatoc boljoj reprojekciji, bazi i driftu:
 | pocetna velicina gaussiane | COLMAP ima najgusci oblak (0.4319 %), ne najrjedji | ne |
 
 Cetvrta je bila prava, i nije bila u solveru nego u izvozu.
+
+### S bojama: splat je presao COLMAP-ov
+
+Ista dva modela, sada s pravim bojama tocaka, uz istu granicu velicine (655 247 gaussiana):
+
+| model | bez boja | **s bojama** | SSIM |
+|---|---|---|---|
+| uglovi (rastavljanje, svjedoka 2) | 30.40 dB | **32.75 dB** | 0.908 |
+| uglovi + prostor mjerila | 29.36 dB | **32.89 dB** | 0.910 |
+| COLMAP (uvijek je imao boje) | - | 32.00 - 32.12 dB | 0.905 - 0.907 |
+
+**Boja vrijedi dva i pol decibela**, i to je bio cijeli razlog zbog kojeg smo cijeli dan gonili
+razliku koja nije bila u solveru.
+
+Spojeni graf je s bojama i najbolji, ali razlika prema samim uglovima je 0.14 dB - a ponovljivost
+PSNR-a je izmjerena na 0.13 dB. **Ta razlika dakle nije dokazana**; dokazano je samo da spojeni ne
+steti, a sve mu mjere poza jesu bolje.
 
 ### Sto jos nije rijeseno
 
