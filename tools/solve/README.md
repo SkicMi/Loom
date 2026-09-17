@@ -625,6 +625,24 @@ zaokrenutu je razlika dvostruki zaokret.
 Takva kamera dobiva pozu iznova, polazeci od susjedne rijesene - ne od vlastite, jer bi se vratila
 u isti minimum.
 
+**Na sintetici radi, na snimci ne okida - i to je opet poucno.** Ondje nije jedna kamera iskocila
+pa se vratila, nego je CIJELI REP niza zaokrenut za 26 st u odnosu na pocetak, a medjusobno se
+slaze. Put kroz takvu kameru nije dulji od puta preko nje - jer i put preko nje prelazi isti lom.
+To nije iskocena kamera nego LOM LANCA.
+
+Prva sumnja je bila da lom nastaje ondje gdje malo toga prelazi preko reza. Izmjereno, za svaki
+moguci rez u nizu, koliko tocaka ima opazanja s obje strane:
+
+| graf | najuzi most | kod kadra | medijan |
+|---|---|---|---|
+| binarni, rastavljanje | 910 | 36 | 2503 |
+| SIFT, rastavljanje | **1189** | 35 | **4991** |
+| binarni, bacanje | 463 | 59 | 1989 |
+
+SIFT-ov je most SIRI od binarnog, dakle ni to nije. Najuzi je kod kadra 35-36 u oba - tocno ondje
+gdje snimka prelazi s tamnog parketa na teksturirani zid, i tocno odakle COLMAP uopce pocinje
+registrirati.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u
