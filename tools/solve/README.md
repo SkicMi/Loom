@@ -772,16 +772,24 @@ Broj gaussiana u izlazu, naspram broja pocetnih tocaka:
 **Omjer je 22.7 u svakom pokusu.** MCMC raste razmjerno i u 7000 koraka ne stigne do granice koju
 mu zadaje memorija kartice - pa konacnu velicinu modela odredjuje POCETNI OBLAK.
 
-Iz toga slijedi da se dva modela s razlicitim brojem tocaka ne smiju usporedjivati decibelom bez
-ograde, jer veci model ima prednost koja nema veze s pozama. To dira dvije stvari zapisane gore:
+Zbog toga je **+1.00 dB za rastavljanje naspram bacanja** trebalo ponoviti: ono je usporedjivalo
+1.36 milijuna gaussiana s 655 tisuca. Ponovljeno uz JEDNAKU velicinu modela:
 
-- **+1.00 dB za rastavljanje naspram bacanja** (30.29 naspram 29.29) usporedjivalo je 1.36 milijuna
-  gaussiana s 655 tisuca. Ponavlja se uz jednaku velicinu
-- **COLMAP-ovih 32.00 dB** dobiveno je s upola manje gaussiana nego nasih 30.29 - dakle njegova je
-  prednost VECA nego sto tablica kaze, ne manja
+| | gaussiana | PSNR | SSIM |
+|---|---|---|---|
+| bacanje | 655 247 | 29.29 dB | 0.860 |
+| rastavljanje, svjedoka 2 | 655 247 | **30.40 dB** | **0.869** |
+| rastavljanje, bez ogranicenja | 1 359 310 | 30.29 dB | 0.873 |
 
-A usporedba rastavljanja sa i bez praga svjedoka (59 879 naspram 60 198 tocaka) bila je postena, pa
-onih 1.87 dB razlike i dalje stoji neobjasnjeno.
+**Dobitak prezivi, i vise je nego prije: +1.11 dB.** A usput se vidi i da vise gaussiana samo po
+sebi ne pomaze - isti oblak s dvostruko vecim modelom daje 0.11 dB MANJE.
+
+Time se i strah od te pristranosti smanjuje: velicina modela nije ono sto je vodilo razlike. Ostaje
+ograda da **COLMAP-ovih 32.00 dB dolazi s upola manje gaussiana nego nasih 30.29**, dakle njegova
+je prednost veca nego sto tablica kaze.
+
+A usporedba rastavljanja sa i bez praga svjedoka (59 879 naspram 60 198 tocaka) bila je postena od
+pocetka, pa onih 1.87 dB razlike i dalje stoji neobjasnjeno.
 
 ### Sto jos nije rijeseno
 
