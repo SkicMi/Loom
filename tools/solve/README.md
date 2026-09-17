@@ -828,6 +828,33 @@ Zadanih 0.80 odbaci osamdeset posto onoga sto bi se dalo poklopiti. Prag postoji
 pretpostavlja da je drugi po redu KRIVO poklapanje - a kod gustih znacajki na vise mjerila to ne
 stoji: drugi po redu je cesto ista tocka nadjena na susjednom mjerilu.
 
+### Oba grafa zajedno: uglovi za pokrivenost, mjerilo za tocnost
+
+Tocnost i pokrivenost su izmjereno na razlicitim putovima, i nijedan prag ih ne spaja - labaviji
+prag omjera na prostoru mjerila daje najtocnije poze koje smo imali (0.2 posto polozaja, 0.28 st
+rotacije) ali na 41 kameri umjesto 64.
+
+Pa su spojeni izravno: opazanja oba grafa u jednoj sceni, uz pomak brojeva tocaka.
+
+**Tragovi se pritom NE mijesaju** - svaki trag dolazi cijeli iz jednog grafa, pa unutar traga nema
+mjesavine grubih i finih polozaja. Ta je mjesavina jednom vec srusila rjesenje na 119 st (vidi
+refineToReference). Mijesaju se samo tocke u istoj sceni, a to rekonstrukciji ne smeta.
+
+| | uglovi | prostor mjerila | **spojeno** | COLMAP |
+|---|---|---|---|---|
+| kamere | 101/101 | 64/101 | **101/101** | 65/101 |
+| tocke | 63 048 | 18 163 | **83 374** | 26 761 |
+| reprojekcija | 1.635 px | **0.653 px** | 1.289 px | 0.746 px |
+| baza | 4.72 st | **5.45 st** | 5.01 st | 7.93 st |
+| polozaj | 1.3 % | **0.6 %** | 1.2 % | - |
+| rotacija bez poravnanja | 1.601 st | **1.054 st** | 1.471 st | - |
+| zaokret po kadru | 0.035 st | **0.000 st** | **0.000 st** | - |
+| najgori korak | 0.354 st | 0.562 st | **0.337 st** | - |
+| smjer koraka | 1.87 st | **1.23 st** | 1.27 st | - |
+
+Spojeno drzi punu pokrivenost i pritom je bolje od samih uglova po SVAKOJ mjeri tocnosti. Nije
+tocno kao sam prostor mjerila, ali taj ima trecinu kamera.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u
