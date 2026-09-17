@@ -528,9 +528,20 @@ sirina 1920. Pravilo se vise ne moze zvati iznimkom:
 > Slaganje poza s COLMAP-om nije pokazatelj kvalitete splata. Jedina mjera je decibel, i svaka
 > izmjena mora zavrsiti njime.
 
-Zasto - jos ne znamo. Najizglednije je da duzi tragovi znace MANJE tocaka (62 002 naspram 63 048
-ovdje, ali 720 tisuca naspram 1.37 milijuna gaussiana u izlazu), a treneru pocetne tocke nisu samo
-geometrija nego i POKRIVENOST. Isti razlog zbog kojeg je i pod jacine ugla stetio.
+Zasto - jos ne znamo, ali jedno objasnjenje je vec palo. Napisao sam da je vjerojatno u
+POKRIVENOSTI: da duzi tragovi znace manje i zgusnutijih pocetnih tocaka, a treneru one nisu samo
+geometrija. Izmjereno na izvezenim modelima koji su i trenirani:
+
+| model | tocaka | trag | zauzetih celija (32^3) | po kadru | najprazniji kadar | PSNR |
+|---|---|---|---|---|---|---|
+| COLMAP | 26 761 | 6.00 | **1336** | **1317** | **107** | **32.00 dB** |
+| rastavljanje, svjedoka 2 | 59 879 | 6.00 | 2170 | 5213 | 656 | 30.29 dB |
+| rastavljanje bez praga | 60 198 | 7.00 | 2201 | 5726 | 635 | 28.42 dB |
+| bacanje | 28 869 | 4.00 | 2063 | 2289 | 676 | 29.29 dB |
+
+**COLMAP ima najgoru pokrivenost od svih** - upola manje zauzetih celija, cetvrtinu tocaka po
+kadru, najprazniji kadar sa 107 tocaka naspram nasih 635 - i najbolji splat. Pokrivenost pocetnog
+oblaka dakle nije to.
 
 ### Sto jos nije rijeseno
 
