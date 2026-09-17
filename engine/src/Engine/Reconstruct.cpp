@@ -49,6 +49,72 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     // pokusajem, pa se ovdje samo bira izmedju gotovih rjesenja. Time se ne udvaja nijedan korak
     // gradnje i nijedan uvjet ne moze se razici izmedju dva puta
     //=================================================================================
+    //=================================================================================
+    // SAV U LANCU - vidi ReconstructConfig::seamFactor.
+    //
+    // Izvodi se, kao i visestruki pocetni par, preko obicnog poziva: rjesenje se izgradi kako bi se
+    // i inace izgradilo, pa se u njemu potrazi sav; ako ga ima, gradi se jos jednom uz zadano
+    // odbacivanje repa. Zadrzava se bolje od dvoga
+    //=================================================================================
+    if(config.seamFactor > 0.0 && config.dropTailFrom == 0){
+        ReconstructConfig plain = config;
+        plain.seamFactor = 0.0;
+
+        Reconstruction first = reconstruct(observations, cameraCount, pointCount, intrinsics, plain);
+        if(!first.ok) return first;
+
+        //NAS VLASTITI korak, bez ikakve istine izvana
+        auto turnBetween = [&](const Reconstruction& state, size_t a, size_t b){
+            const glm::dmat3 one = glm::dmat3(glm::mat3_cast(state.poses[a].orientation));
+            const glm::dmat3 two = glm::dmat3(glm::mat3_cast(state.poses[b].orientation));
+            const glm::dmat3 difference = glm::transpose(one) * two;
+            const double cosine = std::max(-1.0, std::min(1.0,
+                (difference[0][0] + difference[1][1] + difference[2][2] - 1.0) * 0.5));
+            return glm::degrees(std::acos(cosine));
+        };
+
+        std::vector<double> steps;
+        std::vector<size_t> stepAt;
+        for(size_t camera = 0; camera + 1 < cameraCount; ++camera){
+            if(!first.posed[camera] || !first.posed[camera + 1]) continue;
+            steps.push_back(turnBetween(first, camera, camera + 1));
+            stepAt.push_back(camera + 1);
+        }
+
+        if(steps.size() >= 5){
+            std::vector<double> sorted = steps;
+            std::sort(sorted.begin(), sorted.end());
+            const double middle = sorted[sorted.size() / 2];
+            const double limit = config.seamFactor * middle;
+
+            //PRVI sav, gledano od pocetka niza. Rastavlja se najranije mjesto, jer sve iza njega
+            //ionako visi o njemu
+            for(size_t i = 0; i < steps.size(); ++i){
+                if(steps[i] <= limit) continue;
+                ++first.seamsFound;
+                if(first.seamAt == 0) first.seamAt = uint32_t(stepAt[i]);
+            }
+        }
+
+        if(first.seamsFound == 0) return first;
+
+        ReconstructConfig cut = config;
+        cut.seamFactor = 0.0;
+        cut.dropTailFrom = first.seamAt;
+        const Reconstruction again = reconstruct(observations, cameraCount, pointCount, intrinsics, cut);
+
+        Reconstruction best = first;
+        if(again.ok && (again.posedCameras > first.posedCameras
+                     || (again.posedCameras == first.posedCameras
+                         && again.medianTriangulationAngle > first.medianTriangulationAngle))){
+            best = again;
+            best.seamRepaired = 1;
+        }
+        best.seamAt = first.seamAt;
+        best.seamsFound = first.seamsFound;
+        return best;
+    }
+
     if(config.initialPairTrials > 1 && config.forceInitialA == config.forceInitialB){
         ReconstructConfig once = config;
         once.initialPairTrials = 1;
@@ -629,6 +695,26 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     //acceptPixels nije nuzno losa kamera - mozda su bile lose tocke koje je vidjela. Nakon
     //ciscenja i ponovne triangulacije te su tocke drugdje, pa ista kamera dobiva drugi racun
     addCameras();
+
+    //REP SE ODBACUJE I GRADI IZNOVA - vidi ReconstructConfig::seamFactor. Kamere od sava nadalje
+    //su registrirane dok su tocke ispred jos bile lose; sada su tocke bolje, pa dobivaju drugu
+    //priliku. Tocke koje vise nitko ne vidi ispadaju same, jer se triangulira samo iz rijesenih
+    if(config.dropTailFrom > 0 && config.dropTailFrom < cameraCount){
+        for(size_t camera = config.dropTailFrom; camera < cameraCount; ++camera){
+            if(!state.posed[camera]) continue;
+            state.posed[camera] = 0;
+            --state.posedCameras;
+        }
+        std::fill(state.solved.begin(), state.solved.end(), uint8_t(0));
+        state.solvedPoints = 0;
+        std::fill(usable.begin(), usable.end(), uint8_t(1));
+
+        triangulateVisible(false);
+        runBundle();
+        refine(config.refineRounds);
+        addCameras();
+    }
+
     for(uint32_t sweep = 0; sweep < 2 && config.refineRounds > 0; ++sweep){
         const uint32_t before = state.posedCameras;
         refine(config.refineRounds);

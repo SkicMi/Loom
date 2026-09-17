@@ -472,5 +472,53 @@ int main(){
             fmt("%u prepoznatih od %u kamera", caught.rescuedCameras, caught.posedCameras));
     }
 
+    //-- sav u lancu ----------------------------------------------------------------------------
+    //
+    //Na pravoj snimci se lanac zna presidriti: SIFT-ov graf daje zaokret iz kadra u kadar 0.101 st
+    //medijan, a kod kadra 37 iznosi 22.977 i kod 65 jos 24.093 - tri dijela snimke, svaki uredan u
+    //sebi, spojena dvama zaokretima. Reprojekcija to ne prijavi jer se svaki dio slaze sam sa
+    //sobom.
+    //
+    //Popravak odbacuje poze od sava nadalje i gradi rep iznova, nad tockama koje su u medjuvremenu
+    //postale bitno bolje. Ovdje se brani da:
+    //
+    //  ne dira cisto   na urednoj sceni ne nalazi sav i ne mijenja nijednu pozu
+    //  rep se vrati    kad se rep odbaci silom, rekonstrukcija ga mora ponovno rijesiti
+    {
+        Engine::ReconstructConfig watching;
+        watching.seamFactor = 10.0;
+
+        const Engine::Reconstruction quiet = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                 scene.points.size(), scene.intrinsics,
+                                                                 watching);
+        const Engine::Reconstruction plain = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                 scene.points.size(), scene.intrinsics);
+
+        bool same = quiet.seamsFound == 0 && quiet.posedCameras == plain.posedCameras;
+        for(size_t i = 0; same && i < plain.poses.size(); ++i){
+            if(!plain.posed[i]) continue;
+            same = plain.poses[i].position == quiet.poses[i].position
+                && plain.poses[i].orientation == quiet.poses[i].orientation;
+        }
+
+        report.check("na urednoj sceni nema sava",
+            same, fmt("%u savova, %u naspram %u kamera",
+                      quiet.seamsFound, quiet.posedCameras, plain.posedCameras));
+
+        //Rep odbacen silom: mehanizam mora vratiti sve kamere i pogoditi istinu
+        Engine::ReconstructConfig cutting;
+        cutting.dropTailFrom = uint32_t(scene.poses.size() / 2);
+        const Engine::Reconstruction rebuilt = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                   scene.points.size(), scene.intrinsics,
+                                                                   cutting);
+        const Comparison result = compare(rebuilt, scene);
+
+        report.check("odbaceni rep se vrati",
+            rebuilt.ok && rebuilt.posedCameras == plain.posedCameras
+            && result.medianRotation < 2.0 * std::max(0.01, compare(plain, scene).medianRotation),
+            fmt("%u naspram %u kamera, rotacija %.4f st",
+                rebuilt.posedCameras, plain.posedCameras, result.medianRotation));
+    }
+
     return report.result();
 }

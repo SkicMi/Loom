@@ -146,6 +146,35 @@ struct ReconstructConfig{
     //=========================================================================================
     double stepOutlierFactor = 0.0;
 
+    //=========================================================================================
+    // SAV: MJESTO NA KOJEM SE LANAC PRESIDRAO.
+    //
+    // Izmjereno na SIFT-ovom grafu: nas zaokret iz kadra u kadar je 0.101 st medijan, ali kod
+    // kadra 37 iznosi 22.977 st a kod kadra 65 jos 24.093 - dok je stvarni oko 2 st. Izmedju tih
+    // mjesta se sve slaze. Snimka je time razlomljena na tri dijela, svaki uredan u sebi, spojena
+    // dvama zaokretima od po dvadesetak stupnjeva.
+    //
+    // NIJE ISKOCENA KAMERA - ta bi dala dva losa koraka zaredom, a ovdje je los samo jedan pa se
+    // sve iza njega nastavlja uredno. Nije ni uzak most: preko kadra 65 prelazi 2026 tocaka, od
+    // kojih 1039 prezivi ciscenje. Nije ni izbor pocetnog para: osam pokusaja daje isto.
+    //
+    // Ono sto ostaje jest da su kamere iza sava registrirane dok su tocke ispred jos bile lose, pa
+    // su sjele krivo i povukle svoje tocke za sobom. Ovdje se to rastavlja: pozе od sava nadalje se
+    // odbacuju, tocke se slozu iznova samo iz glave niza, i rep se registrira ponovno - sada nad
+    // tockama koje su bitno bolje nego kad je prvi put pokusao.
+    //
+    // Zadrzava se samo ako je ishod bolji, istom mjerom kao kod pocetnih parova.
+    //
+    // Nula iskljucuje. Broj je koliko puta veci od medijana NAS VLASTITI korak smije biti; ova
+    // provjera ne trazi nikakvu istinu izvana. Vrijedi samo kad su redni brojevi kamera redoslijed
+    // snimanja
+    //=========================================================================================
+    double seamFactor = 0.0;
+
+    //Od koje se kamere rep odbacuje i gradi iznova. Puni ga popravak sava sam; pozivatelj ga ne
+    //dira. Nula znaci da se ne odbacuje nista
+    uint32_t dropTailFrom = 0;
+
     //Parovi koje ne treba ponovno probati. Puni ga visestruki pokusaj sam; pozivatelj ga ne dira
     std::vector<std::pair<uint32_t, uint32_t>> skipInitialPairs;
 
@@ -359,6 +388,11 @@ struct Reconstruction{
 
     //Koliko je kamera dobilo drugo misljenje - vidi ReconstructConfig::rescueFactor
     uint32_t rescuedCameras = 0;
+
+    //Kod koje je kamere nadjen sav i je li rastavljanje pomoglo - vidi ReconstructConfig::seamFactor
+    uint32_t seamAt = 0;
+    uint32_t seamsFound = 0;
+    uint8_t seamRepaired = 0;
 
     uint32_t initialA = 0, initialB = 0;
     double initialAngle = 0.0;       //medijan kuta pod kojim se zrake tog para sijeku
