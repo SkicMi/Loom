@@ -33,10 +33,49 @@ namespace Engine{
 //jer se imena nisu ni citala. Cim rezultat treba PROCI DALJE, nije: trener splatova model i slike
 //spaja bas po imenu, pa je nas solver sve do sada mogao dati poze koje se ne mogu nahraniti
 //nicim. Lanac od snimke do scene je ondje bio prekinut, a nigdje to nije pisalo
+//=============================================================================================
+// Slika u boji, onoliko koliko treba za uzimanje boje tocke. Cetiri bajta po pikselu (RGBA), jer
+// je to ono sto dekoder i citac slika vec daju; stride je u PIKSELIMA, ne u bajtovima.
+//
+// Smije biti i smanjena: boja tocke ne treba punu razlucivost, a 101 kadar 4K u boji je 3.3 GB.
+// Tko ju smanji, mora reci koliko - vidi shrink
+//=============================================================================================
+struct ColourImage{
+    const uint8_t* pixels = nullptr;
+    uint32_t width = 0, height = 0, stride = 0;
+};
+
+//=============================================================================================
+// BOJA TOCKE IZ KADROVA KOJI JU VIDE.
+//
+// MEDIJAN PO KANALU, ne prosjek: tocku u jednom kadru moze zakloniti nesto prolazno, a prosjek bi
+// to razmazao preko svih. Medijan jedan takav kadar naprosto ne izabere.
+//
+// shrink kaze koliko su slike manje od onih u kojima su izmjerena opazanja. Jedan znaci iste
+//=============================================================================================
+std::vector<glm::u8vec3> pointColours(const Reconstruction& reconstruction,
+                                      const std::vector<Observation>& observations,
+                                      const std::vector<ColourImage>& images,
+                                      uint32_t shrink = 1);
+
+//=============================================================================================
+// BOJE TOCAKA NISU UKRAS.
+//
+// Trener splatova iz points3D.txt cita polozaj I BOJU, a boja postaje pocetna boja gaussiane.
+// Dugo je ovdje stajalo "200 200 200" za sve, pa je svaka nasa scena kretala jednolicno siva i
+// trener ju je morao cijelu prebojiti - dok COLMAP-ova krece s priblizno tocnim bojama.
+//
+// To je tiho kostalo SVAKU usporedbu koju smo napravili, jer se nije vidjelo ni u jednoj mjeri
+// poza ni tocaka.
+//
+// Prazan niz znaci kao prije, siva. Inace mora imati onoliko clanova koliko rekonstrukcija ima
+// tocaka; tko nema boju, dobiva sivu
+//=============================================================================================
 bool writeColmapText(const std::string& directory,
                      const Reconstruction& reconstruction,
                      const Intrinsics& intrinsics,
                      const std::vector<Observation>& observations,
-                     const std::vector<std::string>& imageNames = {});
+                     const std::vector<std::string>& imageNames = {},
+                     const std::vector<glm::u8vec3>& colours = {});
 
 }

@@ -463,9 +463,6 @@ int main(int argc, char** argv){
 
     if(!outputDirectory.empty() && best.ok){
         std::filesystem::create_directories(outputDirectory);
-        if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, keys.observations)){
-            std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
-        }
 
         const std::filesystem::path imageDirectory = std::filesystem::path(outputDirectory) / "images";
         std::filesystem::create_directories(imageDirectory);
@@ -477,6 +474,14 @@ int main(int argc, char** argv){
         for(uint32_t place = 0; place < cameraCount; ++place){
             if(best.posed[place]) placeOfFrame[keys.frames[place]] = place;
         }
+
+        //BOJE TOCAKA SE SKUPLJAJU U ISTOM PROLAZU. Trener iz points3D.txt cita i boju, a ona
+        //postaje pocetna boja gaussiane - bez nje scena krece jednolicno siva i trener ju mora
+        //cijelu prebojiti. Kadrovi se pamte smanjeni cetiri puta: boja ne treba punu razlucivost,
+        //a stotinu 4K kadrova u boji je gigabajta i pol
+        constexpr uint32_t shrinkColour = 4;
+        std::vector<std::vector<uint8_t>> colourStore(cameraCount);
+        std::vector<Engine::ColourImage> colourImages(cameraCount);
 
         Spool::VideoReader again(path);
         uint32_t fileIndex = 0, trackedIndex = 0, written = 0;
@@ -494,8 +499,28 @@ int main(int argc, char** argv){
             Spool::savePng((imageDirectory / name).string(),
                            Spool::imageFromPixels(frame.pixels.data(), frame.width, frame.height));
             ++written;
+
+            const uint32_t w = frame.width / shrinkColour, h = frame.height / shrinkColour;
+            colourStore[place].assign(size_t(w) * h * 4, 0);
+            for(uint32_t y = 0; y < h; ++y){
+                for(uint32_t x = 0; x < w; ++x){
+                    const uint8_t* from = frame.pixels.data()
+                        + (size_t(y * shrinkColour) * frame.width + size_t(x * shrinkColour)) * 4;
+                    uint8_t* to = colourStore[place].data() + (size_t(y) * w + x) * 4;
+                    to[0] = from[0]; to[1] = from[1]; to[2] = from[2]; to[3] = 255;
+                }
+            }
+            colourImages[place] = Engine::ColourImage{colourStore[place].data(), w, h, w};
         }
         std::printf("Zapisano %u slika u %s\n", written, imageDirectory.string().c_str());
+
+        //Tek sada tekst, jer su boje tocaka poznate tek nakon prolaza kroz kadrove
+        const std::vector<glm::u8vec3> colours =
+            Engine::pointColours(best, keys.observations, colourImages, shrinkColour);
+
+        if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, keys.observations, {}, colours)){
+            std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
+        }
     }
     return 0;
 }

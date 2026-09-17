@@ -1,6 +1,7 @@
 #include "Engine/ColmapExport.h"
 
 #include <cstdio>
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <string>
@@ -8,11 +9,58 @@
 
 namespace Engine{
 
+std::vector<glm::u8vec3> pointColours(const Reconstruction& reconstruction,
+                                      const std::vector<Observation>& observations,
+                                      const std::vector<ColourImage>& images,
+                                      uint32_t shrink){
+    std::vector<glm::u8vec3> out(reconstruction.points.size(), glm::u8vec3(200, 200, 200));
+    if(images.empty() || shrink == 0) return out;
+
+    //Uzorci po tocki. Ogranicen broj po tocki: dulji trag ne daje bolju boju, a 946 tisuca
+    //opazanja puta tri bajta je posao koji se ne mora raditi
+    constexpr size_t mostSamples = 9;
+    std::vector<std::vector<glm::u8vec3>> samples(reconstruction.points.size());
+
+    for(const Observation& one : observations){
+        if(one.point >= samples.size() || one.camera >= images.size()) continue;
+        if(samples[one.point].size() >= mostSamples) continue;
+
+        const ColourImage& image = images[one.camera];
+        if(!image.pixels) continue;
+
+        const int x = int(one.pixel.x / float(shrink) + 0.5f);
+        const int y = int(one.pixel.y / float(shrink) + 0.5f);
+        if(x < 0 || y < 0 || x >= int(image.width) || y >= int(image.height)) continue;
+
+        const uint32_t stride = image.stride ? image.stride : image.width;
+        const uint8_t* pixel = image.pixels + (size_t(y) * stride + size_t(x)) * 4;
+        samples[one.point].push_back(glm::u8vec3(pixel[0], pixel[1], pixel[2]));
+    }
+
+    for(size_t point = 0; point < samples.size(); ++point){
+        std::vector<glm::u8vec3>& mine = samples[point];
+        if(mine.empty()) continue;
+
+        //Medijan po kanalu zasebno - vidi zaglavlje
+        glm::u8vec3 middle(200, 200, 200);
+        for(int channel = 0; channel < 3; ++channel){
+            std::vector<uint8_t> values;
+            values.reserve(mine.size());
+            for(const glm::u8vec3& one : mine) values.push_back(one[channel]);
+            std::sort(values.begin(), values.end());
+            middle[channel] = values[values.size() / 2];
+        }
+        out[point] = middle;
+    }
+    return out;
+}
+
 bool writeColmapText(const std::string& directory,
                      const Reconstruction& reconstruction,
                      const Intrinsics& intrinsics,
                      const std::vector<Observation>& observations,
-                     const std::vector<std::string>& imageNames){
+                     const std::vector<std::string>& imageNames,
+                     const std::vector<glm::u8vec3>& colours){
     std::ofstream cameras(directory + "/cameras.txt");
     std::ofstream images(directory + "/images.txt");
     std::ofstream points(directory + "/points3D.txt");
@@ -92,8 +140,12 @@ bool writeColmapText(const std::string& directory,
         if(!reconstruction.solved[point] || tracks[point].empty()) continue;
         const glm::vec3& position = reconstruction.points[point];
 
+        //Boja iz slike ako ju je pozivatelj dao; inace siva kao prije - vidi zaglavlje
+        glm::u8vec3 colour(200, 200, 200);
+        if(point < colours.size()) colour = colours[point];
+
         points << (point + 1) << " " << position.x << " " << position.y << " " << position.z
-               << " 200 200 200 0";
+               << " " << int(colour.r) << " " << int(colour.g) << " " << int(colour.b) << " 0";
         for(const auto& entry : tracks[point]) points << " " << entry.first << " " << entry.second;
         points << "\n";
     }
