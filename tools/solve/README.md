@@ -530,25 +530,37 @@ polozaji se njime jedva pomaknu, a orijentacije se sve zaokrenu.
 Ova putanja je bas takva: omjeri svojstvenih brojeva rasapa polozaja su 1 : 0.349 : 0.100. Dakle
 izduzena i gotovo ravna.
 
-Mjereno bez ikakvog poravnanja - svaka kamera u odnosu na PRVU zajednicku, u oba modela:
+Prva zamjena je bila mjeriti svaku kameru u odnosu na PRVU zajednicku. To je bolje, ali ima
+vlastitu zamku: ako je bas ta kamera losa, cijela se mjera pomakne za njezinu gresku - a ovdje je
+prva zajednicka kamera kadar 36, tocno na rubu tamnog dijela snimke.
 
-| postavka | rotacija poravnata | rotacija bez poravnanja | PSNR |
-|---|---|---|---|
-| bacanje | 6.60 st | **1.497 st** | 29.29 dB |
-| rastavljanje, svjedoka 2 | 4.69 st | 1.601 st | **30.29 dB** |
-| rastavljanje bez praga | **4.65 st** | 2.879 st | 28.42 dB |
+**Prava mjera ne bira referencu.** Ako je nase rjesenje njegovo zaokrenuto za G, onda je za svaku
+kameru G = nasa_orijentacija * njegova_orijentacija^T; ti su zaokreti jednaki kad je rjesenje
+ispravno, pa se mjeri njihov rasap oko najsredisnjeg.
 
-Poravnata mjera kaze da je zadnji redak najbolji; neporavnata kaze da je dvostruko gori od ostalih
-- i ona se slaze s decibelima.
+(I tu sam jednom pogrijesio: obrnuti poredak, njegova^T * nasa, daje G konjugiran kamerom - broj
+koji se mijenja od kamere do kamere i izmjerio mi je 16 st ondje gdje je greska 0.6.)
 
-**Peti "paradoks" dakle nije bio paradoks nego kriva mjera.** Poze bez praga svjedoka NISU bolje,
-nego losije.
+| postavka | poravnata | prema prvoj kameri | **oko najsredisnjeg** | PSNR |
+|---|---|---|---|---|
+| bacanje | 6.60 st | 1.497 st | 0.738 st | 29.29 dB |
+| rastavljanje, svjedoka 2 | 4.69 st | 1.601 st | **0.556 st** | **30.29 dB** |
+| rastavljanje bez praga | 4.65 st | 2.879 st | 0.595 st | 28.42 dB |
+| SIFT | 26.57 st | 56.900 st | 1.092 st (90% **31.9**) | 28.10 dB |
 
-Ostaje pravilo, ali u tocnijem obliku:
+Zadnja mjera kaze nesto sto prve dvije nisu mogle: poze prva tri rjesenja su gotovo jednake, a
+SIFT-ova je po medijanu dobra ali joj 90. postotak ode na 32 st - tocno potpis odsjecka koji je
+zaokrenut u odnosu na ostatak.
 
-> Poravnata greska rotacije se ne smije citati na ravnoj ili izduzenoj putanji. Mjere koje vrijede
-> su one bez poravnanja: zaokret iz kadra u kadar i rotacija u odnosu na referentnu kameru. I dalje
-> vrijedi da svaka izmjena mora zavrsiti decibelom.
+**I time se peti "paradoks" vraca u drugom obliku.** Rastavljanje bez praga ima poze jednake onima
+s pragom (0.595 naspram 0.556 st) i jednako tocne tocke (vidi nize), a splat mu je losiji za 1.87
+dB. Nije "bolje poze, losiji splat" nego "jednake poze, losiji splat", i ostaje neobjasnjeno.
+
+Pravilo u tocnijem obliku:
+
+> Poravnata greska rotacije se ne smije citati na ravnoj ili izduzenoj putanji, a ni ona bez
+> poravnanja ako bira jednu referentnu kameru. Vrijedi rasap zaokreta oko najsredisnjeg, i zaokret
+> iz kadra u kadar. I dalje vrijedi da svaka izmjena mora zavrsiti decibelom.
 
 Ranija cetiri slucaja (pod jacine ugla, stapanje po sredini, stapanje po prvom, radna sirina 1920)
 mjerena su ISTOM poravnatom mjerom i treba ih ponoviti prije nego se na njih pozove.
@@ -642,6 +654,32 @@ moguci rez u nizu, koliko tocaka ima opazanja s obje strane:
 SIFT-ov je most SIRI od binarnog, dakle ni to nije. Najuzi je kod kadra 35-36 u oba - tocno ondje
 gdje snimka prelazi s tamnog parketa na teksturirani zid, i tocno odakle COLMAP uopce pocinje
 registrirati.
+
+### Koliko su nase TOCKE daleko od njegovih
+
+Poza nije jedino sto trener dobiva - dobiva i oblak, a njegova se tocnost pozama ne mjeri: greska
+pojedine tocke se u pozi usrednji preko tisuca drugih, a u splatu ostane ondje gdje jest.
+
+Mjereno kao udaljenost do najblize COLMAP-ove tocke, nakon prijenosa u njegov okvir, u postocima
+opsega putanje (11.625 jedinica). Prag same mjere: njegove su tocke medjusobno razmaknute **0.313
+posto** po medijanu, pa ispod toga mjera ne razlikuje nista.
+
+| model | tocaka | medijan | 75% | 90% |
+|---|---|---|---|---|
+| rastavljanje, svjedoka 2 | 59 879 | **7.891 %** | 10.559 | 14.080 |
+| rastavljanje bez praga | 60 198 | 8.084 % | 10.861 | 14.428 |
+| bacanje | 28 869 | 12.553 % | 15.910 | 19.400 |
+| SIFT | 74 983 | 35.073 % | 40.397 | 44.655 |
+
+**Nase su tocke dvadeset pet puta dalje od njegovih nego sto su njegove medjusobno razmaknute.** To
+je najjasniji broj koji imamo o tome gdje je jaz, i slaze se s racunom: uz zarisnu od 5285 px,
+kvantizaciju od 4 px i bazu od 4.7 st, greska dubine izlazi oko procenta dubine.
+
+Dvije stvari koje iz te tablice slijede:
+
+- **rastavljanje sa i bez praga daju jednako tocne tocke** (7.891 naspram 8.084 %), pa ni oblak ne
+  objasnjava onih 1.87 dB razlike medju njima
+- **SIFT-ovih 35 %** nije kakvoca tocaka nego sav: njegov je oblak razlomljen na odsjecke
 
 ### Sto jos nije rijeseno
 
