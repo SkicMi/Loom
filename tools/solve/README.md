@@ -909,6 +909,50 @@ Spojeni graf je s bojama i najbolji, ali razlika prema samim uglovima je 0.14 dB
 PSNR-a je izmjerena na 0.13 dB. **Ta razlika dakle nije dokazana**; dokazano je samo da spojeni ne
 steti, a sve mu mjere poza jesu bolje.
 
+### Tri kvara koje je nasla druga snimka, i sto im je zajednicko
+
+Cijeli dan je mjeren solver, sondom koja Engine zove izravno. Kad se alat prvi put pokrenuo od
+.MP4 do kraja, na drugoj snimci, nasla su se tri kvara - i nijedan od njih nijedna mjera solvera
+nije mogla vidjeti:
+
+| kvar | posljedica | kako se nasao |
+|---|---|---|
+| `VideoSolve` nije po zadanom koristio graf poklapanja | sav rad na grafu nedostupan onome tko alat pokrene | citanjem koda |
+| pretraga vidnog polja nosila punu obradu | sest kandidata puta cetiri pocetna para - alat nije zavrsavao | pokretanjem |
+| **izvoz je pisao opazanja iz trackera** | **oblak tocaka besmislen, poze ispravne** | citanjem izlaza NATRAG |
+
+Treci je najgori i vrijedi ga opisati tocno. Rjesenje nastaje iz grafa poklapanja, a izvoz je pisao
+`keys.observations` - tragove iz pracenja, s posve drugim brojevima tocaka. `points3D.txt` se pise
+tako da se za svaku tocku skupe kadrovi koji ju vide; s krivim brojevima se polozaj jedne tocke
+spoji s tragom druge.
+
+```
+solver javlja      reprojekcija    1.312 px
+ModelInfo cita     reprojekcija 1314.377 px, duljina traga 1.0 kadar
+```
+
+**Solver je cijelo vrijeme javljao istinu o sebi.** Zato `VideoSolve` sada svoj izlaz cita natrag i
+usporedjuje - greska nije bila u knjiznici nego u tome sto joj je predano, a to nijedan test
+knjiznice ne vidi.
+
+### Zarisna nije odredjena kad je snimka ne kaze
+
+Na drugoj snimci vidno polje nije zadano, pa ga solver trazi po reprojekciji. Rezultat:
+
+```
+50 st  1.402 px      78 st  1.437 px
+60 st  1.485 px      86 st  1.385 px
+70 st  1.492 px      94 st  1.311 px   <- najbolje, i RUB raspona
+```
+
+Pobjednik na rubu znaci da se mjera nije okrenula - a i zarisna x1.25 od njega davala je jednaku
+reprojekciju i GLATKIJU putanju. Kriva zarisna se s reprojekcijom trguje: scena se izoblici tako da
+opazanja i dalje pasu.
+
+Sada se to javlja kao upozorenje i raspon ide do 110 st, ali to je zakrpa. **Pravo rjesenje je
+samokalibracija u bundleu** - da se zarisna optimira zajedno s pozama. Bundle vec racuna pinhole
+jakobijane, pa je dodavanje derivacije po zaristu poznat i umjeren posao.
+
 ### Sto jos nije rijeseno
 
 **Nista u grafu ne seze dalje od deset kadrova.** Prozor poklapanja je deset, pa najduza veza u

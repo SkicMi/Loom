@@ -586,6 +586,45 @@ int main(int argc, char** argv){
 
         if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours)){
             std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
+
+            //=============================================================================
+            // IZLAZ SE CITA NATRAG I PROVJERAVA.
+            //
+            // Solver javlja SVOJU reprojekciju, i ona je tocna ma sto se poslije zapisalo. Kad je
+            // izvoz pisao opazanja iz trackera umjesto onih s kojima je rijeseno, ispis solvea je
+            // i dalje pokazivao 1.312 px dok je zapisani model imao 1314 px - i to se vidjelo tek
+            // kad je netko procitao izlaz natrag.
+            //
+            // Zato ovo stoji ovdje, a ne u testu: greska nije bila u knjiznici nego u tome STO joj
+            // je predano, a to nijedan test knjiznice ne vidi
+            //=============================================================================
+            Engine::ColmapModel written;
+            if(Engine::readColmapText(outputDirectory, written)){
+                std::vector<double> errors;
+                errors.reserve(written.observations.size());
+                for(const Engine::Observation& one : written.observations){
+                    if(one.camera >= written.reconstruction.poses.size()) continue;
+                    if(one.point >= written.reconstruction.points.size()) continue;
+                    if(!written.reconstruction.posed[one.camera]) continue;
+                    if(!written.reconstruction.solved[one.point]) continue;
+
+                    glm::vec2 pixel;
+                    if(!Engine::project(written.reconstruction.poses[one.camera], written.intrinsics,
+                                        written.reconstruction.points[one.point], pixel)) continue;
+                    errors.push_back(double(glm::length(pixel - one.pixel)));
+                }
+                std::sort(errors.begin(), errors.end());
+                const double readBack = errors.empty() ? 0.0 : errors[errors.size() / 2];
+
+                std::printf("  provjera zapisanog: %zu opazanja, reprojekcija %.3f px "
+                            "(solver je javio %.3f)\n",
+                            errors.size(), readBack, best.medianReprojection);
+
+                if(errors.empty() || readBack > 2.0 * std::max(1.0, best.medianReprojection)){
+                    std::printf("  UPOZORENJE: zapisani model se ne slaze sa solverom. "
+                                "Poze su vjerojatno u redu, oblak tocaka nije.\n");
+                }
+            }
         }
     }
     return 0;

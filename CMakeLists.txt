@@ -431,6 +431,12 @@ target_link_libraries(VideoInfo PRIVATE Spool Engine)
 
 # ModelInfo - sto vrijedi jedna rekonstrukcija, bez poznate istine. Isti racun za nas model i za
 # COLMAP-ov, jer se inace usporedjuju dvije definicije umjesto dva rjesenja
+# TruthBench - apsolutna greska solvera na snimci koju sami nacrtamo. Loom vodi kameru poznatim
+# putem, solver dobije samo piksele, greska se mjeri protiv istine a ne protiv drugog alata
+add_executable(TruthBench src/truth_bench.cpp)
+target_link_libraries(TruthBench PRIVATE LoomPreset Engine)
+add_dependencies(TruthBench LoomShaders)
+
 add_executable(ModelInfo src/model_info.cpp)
 target_link_libraries(ModelInfo PRIVATE Engine)
 
