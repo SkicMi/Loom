@@ -523,9 +523,64 @@ int main(int argc, char** argv){
         printReconstructTiming(automatic.reconstruction);
     }
 
+    Engine::SourceFacts facts;
+    facts.width = info.width;
+    facts.height = info.height;
+    facts.frameRate = info.frameRate();
+    facts.rotation = info.rotation;
+
+    //PRATECA DATOTEKA. Sonyjev XAVC ne pise ime kamere ni objektiva u samu snimku - provjereno na
+    //tri klipa sa ZV-E10M2: kontejner nosi samo major_brand=XAVC, vrijeme i timecode. Sve je u
+    //XML-u koji lezi pokraj, i ondje pise i uredjaj i objektiv
+    for(const auto& entry : Spool::readSidecarMetadata(path)){
+        facts.metadata.push_back(Engine::MetadataEntry{entry.first, entry.second});
+    }
+    facts.pixelAspect = info.pixelAspect;
+    facts.codec = info.codec;
+    for(const auto& entry : info.metadata) facts.metadata.push_back(Engine::MetadataEntry{entry.first, entry.second});
+    for(const Spool::VideoInfo::StreamNote& stream : info.streams){
+        facts.streams.push_back(stream.kind + " " + stream.codec + " (" + stream.handler + ")");
+    }
+    const Engine::CameraHints hints = Engine::hintsFrom(facts);
+
+    std::printf("  kamera: %s%s, vidno polje %.1f st (%s)\n",
+                hints.make.empty() ? "nepoznata" : hints.make.c_str(),
+                hints.model.empty() ? "" : (" " + hints.model).c_str(),
+                hints.horizontalFieldOfView, Engine::sourceName(hints.focalSource));
+    if(hints.hasTelemetry) std::printf("  telemetrija postoji (%s) - jos je ne citamo\n", hints.telemetryNote.c_str());
+
+
+    //=====================================================================================
+    // OGRADA OBJEKTIVA STOJI NA PUTU KOJIM REZULTAT PROLAZI, ne samo na zamjenskom.
+    //
+    // Ogradu sam prvo primijenio samo na zamjensku pretragu vidnog polja - a kad samokalibracija
+    // uspije, ta se pretraga preskoci i ograda s njom. Na snimci joysticka je samokalibracija dala
+    // 75.4 st, dok objektiv 18-50 mm na APS-C senzoru fizicki ne moze preko 66. Rezultat je izasao
+    // izvan fizike, a nitko ga nije zaustavio.
+    //
+    // Procjena izvan onoga sto objektiv moze NIJE procjena nego dijagnoza: znaci da je geometrija
+    // bila preslaba da ju odredi. Zato se odbija i ide se na ogradjenu pretragu
+    //=====================================================================================
+    bool focalOutsideLens = false;
+    if(automatic.determined && hints.hasFieldOfViewRange){
+        const double estimated = 2.0 * std::atan(0.5 * double(info.width) /
+                                                 double(automatic.measuredIntrinsics.fx)) *
+                                 180.0 / 3.14159265358979;
+        const double slack = 1.05;   //senzor se u videu izrezuje, pa ograda ima malo zraka
+        if(estimated > hints.widestFieldOfView * slack ||
+           estimated < hints.narrowestFieldOfView / slack){
+            focalOutsideLens = true;
+            std::printf("  SAMOKALIBRACIJA ODBIJENA: procijenjeno vidno polje %.2f st je izvan "
+                        "onoga sto objektiv moze (%.0f do %.0f st).\n",
+                        estimated, hints.narrowestFieldOfView, hints.widestFieldOfView);
+            std::printf("             To nije procjena nego dijagnoza: geometrija je bila "
+                        "preslaba da odredi zariste.\n");
+        }
+    }
+
     //OPAZANJA SE ISPRAVE JEDNOM, na ulazu. Ista fizicka leca kasnije ispravlja i izlazne slike;
     //inace bi cameras.txt tvrdio PINHOLE dok bi PNG-ovi ostali zakrivljeni.
-    const bool automaticallyCalibrated = automatic.determined;
+    const bool automaticallyCalibrated = automatic.determined && !focalOutsideLens;
     const bool havePhysicalLens = calibrated || automaticallyCalibrated;
     const Engine::Intrinsics physicalLens = calibrated ? measured : automatic.measuredIntrinsics;
     std::vector<Engine::Observation> solveObservations = automaticallyCalibrated
@@ -578,32 +633,6 @@ int main(int argc, char** argv){
 
     //STO SNIMKA KAZE O SEBI. Kad je kamera prepoznata, ne pogadja se od nule nego se provjeri uski
     //pojas oko onoga sto pise - a kad nije, sirok raspon i uz to jasno receno da je to pogadjanje
-    Engine::SourceFacts facts;
-    facts.width = info.width;
-    facts.height = info.height;
-    facts.frameRate = info.frameRate();
-    facts.rotation = info.rotation;
-
-    //PRATECA DATOTEKA. Sonyjev XAVC ne pise ime kamere ni objektiva u samu snimku - provjereno na
-    //tri klipa sa ZV-E10M2: kontejner nosi samo major_brand=XAVC, vrijeme i timecode. Sve je u
-    //XML-u koji lezi pokraj, i ondje pise i uredjaj i objektiv
-    for(const auto& entry : Spool::readSidecarMetadata(path)){
-        facts.metadata.push_back(Engine::MetadataEntry{entry.first, entry.second});
-    }
-    facts.pixelAspect = info.pixelAspect;
-    facts.codec = info.codec;
-    for(const auto& entry : info.metadata) facts.metadata.push_back(Engine::MetadataEntry{entry.first, entry.second});
-    for(const Spool::VideoInfo::StreamNote& stream : info.streams){
-        facts.streams.push_back(stream.kind + " " + stream.codec + " (" + stream.handler + ")");
-    }
-    const Engine::CameraHints hints = Engine::hintsFrom(facts);
-
-    std::printf("  kamera: %s%s, vidno polje %.1f st (%s)\n",
-                hints.make.empty() ? "nepoznata" : hints.make.c_str(),
-                hints.model.empty() ? "" : (" " + hints.model).c_str(),
-                hints.horizontalFieldOfView, Engine::sourceName(hints.focalSource));
-    if(hints.hasTelemetry) std::printf("  telemetrija postoji (%s) - jos je ne citamo\n", hints.telemetryNote.c_str());
-
     std::vector<double> candidates;
     if(fieldOfView > 0.0){
         candidates.push_back(fieldOfView);
