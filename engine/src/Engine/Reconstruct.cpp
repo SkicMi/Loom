@@ -189,6 +189,24 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         //MJERA JE BROJ PREOSTALIH SAVOVA, pa tek onda kamere i baza. Sav je upravo ono sto se
         //popravlja, a kamera i baza ne bi ga razlikovale - rjesenje s dva sava ima jednako kamera i
         //cesto sirу bazu od onoga bez njih
+        auto seamPositions = [&](const Reconstruction& state){
+            std::vector<size_t> found;
+            std::vector<double> turns;
+            std::vector<size_t> at;
+            for(size_t camera = 0; camera + 1 < cameraCount; ++camera){
+                if(!state.posed[camera] || !state.posed[camera + 1]) continue;
+                turns.push_back(turnBetween(state, camera, camera + 1));
+                at.push_back(camera + 1);
+            }
+            if(turns.size() < 5) return found;
+
+            std::vector<double> sorted = turns;
+            std::sort(sorted.begin(), sorted.end());
+            const double limit = config.seamFactor * sorted[sorted.size() / 2];
+            for(size_t i = 0; i < turns.size(); ++i) if(turns[i] > limit) found.push_back(at[i]);
+            return found;
+        };
+
         auto seamsIn = [&](const Reconstruction& state){
             std::vector<double> turns;
             for(size_t camera = 0; camera + 1 < cameraCount; ++camera){
@@ -215,7 +233,70 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         }
         best.seamAt = uint32_t(seams.front());
         best.seamsFound = uint32_t(before);
-        return best;
+
+        //=============================================================================
+        // NAJVECI ZDRAVI ODSJECAK - vidi ReconstructConfig::keepLargestHealthySegment.
+        //
+        // Ako sav i nakon popravka ostane, rjesenje se proteze preko loma: dva dijela koja se
+        // medjusobno ne slazu, a svaki je u sebi uredan. Umjesto takvog rjesenja zadrzi se
+        // najdulji niz kadrova bez sava unutar sebe.
+        //
+        // Odsjecak se ne odreze na gotovom rjesenju nego se gradi IZNOVA samo iz njega: tocke
+        // koje su nastale pod utjecajem pokvarenog dijela tako ispadnu same, a sve brojke -
+        // reprojekcija, baza, izdvojena opazanja - izracunaju se nad onim sto se stvarno
+        // isporucuje
+        //=============================================================================
+        if(!config.keepLargestHealthySegment) return best;
+
+        const std::vector<size_t> remaining = seamPositions(best);
+        if(remaining.empty()) return best;
+
+        //Granice odsjecaka: pocetak, svaki sav, kraj
+        std::vector<size_t> edges;
+        edges.push_back(0);
+        for(size_t seam : remaining) edges.push_back(seam);
+        edges.push_back(cameraCount);
+
+        size_t bestFrom = 0, bestTo = cameraCount, bestCount = 0;
+        for(size_t i = 0; i + 1 < edges.size(); ++i){
+            size_t count = 0;
+            for(size_t camera = edges[i]; camera < edges[i + 1]; ++camera){
+                if(best.posed[camera]) ++count;
+            }
+            if(count > bestCount){ bestCount = count; bestFrom = edges[i]; bestTo = edges[i + 1]; }
+        }
+
+        //Odsjecak koji ni sam nema dovoljno kamera nije rjesenje nego ostatak
+        if(bestCount < 4 || bestCount == best.posedCameras) return best;
+
+        ReconstructConfig trim = config;
+        trim.seamFactor = 0.0;
+        trim.keepLargestHealthySegment = false;
+        trim.keepFrom = uint32_t(bestFrom);
+        trim.keepTo = uint32_t(bestTo);
+        trim.reAddAfterTrim = false;
+        trim.forceInitialA = best.initialA;
+        trim.forceInitialB = best.initialB;
+        trim.initialPairTrials = 1;
+
+        //Sjeme mora biti U odsjecku; inace se bira kao i inace
+        if(best.initialA < bestFrom || best.initialA >= bestTo ||
+           best.initialB < bestFrom || best.initialB >= bestTo){
+            trim.forceInitialA = 0;
+            trim.forceInitialB = 0;
+            trim.initialPairTrials = config.initialPairTrials;
+        }
+
+        Reconstruction healthy = reconstruct(observations, cameraCount, pointCount, intrinsics, trim);
+        if(!healthy.ok || seamPositions(healthy).size() >= remaining.size()) return best;
+
+        healthy.seamAt = best.seamAt;
+        healthy.seamsFound = best.seamsFound;
+        healthy.seamRepaired = best.seamRepaired;
+        healthy.healthyFrom = uint32_t(bestFrom);
+        healthy.healthyTo = uint32_t(bestTo);
+        healthy.camerasDroppedBySeam = best.posedCameras - healthy.posedCameras;
+        return healthy;
     }
 
     if(config.initialPairTrials > 1 && config.forceInitialA == config.forceInitialB){
@@ -922,10 +1003,16 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         triangulateVisible(false);
         runBundle();
         refine(config.refineRounds);
-        addCameras();
+
+        //Popravak sava gradi rep iznova - to mu je svrha. Odrezivanje na zdravi odsjecak ga NE
+        //gradi, jer bi vratilo ono sto je upravo odrezano
+        if(config.reAddAfterTrim) addCameras();
+
+        state.healthyFrom = config.keepFrom;
+        state.healthyTo = config.keepTo;
     }
 
-    for(uint32_t sweep = 0; sweep < 2 && config.refineRounds > 0; ++sweep){
+    for(uint32_t sweep = 0; sweep < 2 && config.reAddAfterTrim && config.refineRounds > 0; ++sweep){
         const uint32_t before = state.posedCameras;
         refine(config.refineRounds);
         addCameras();

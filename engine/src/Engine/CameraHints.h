@@ -70,6 +70,26 @@ struct CameraHints{
 
     int rotation = 0;
 
+    //=========================================================================================
+    // RASPON MOGUCEG VIDNOG POLJA, kad se znaju senzor i objektiv.
+    //
+    // Ovo nije procjena zarista nego OGRADA oko njega, i vrijedi vise od procjene: kad se zarisna
+    // trazi po reprojekciji, ona se s njom trguje i pretraga zna odlutati. Izmjereno na ZV-E10M2:
+    // kandidati 94, 102 i 110 st dali su 1.311, 1.312 i 1.312 px - ravan plato, izbor iz sest
+    // tisucinki piksela. A objektiv 18-50 mm na APS-C senzoru fizicki NE MOZE dati vise od
+    // sezdesetak stupnjeva, pa je pola tog raspona bilo izvan mogucega.
+    //
+    // Senzor se zna iz modela, zariste iz imena objektiva - oboje iz pratece datoteke, jer Sonyjev
+    // XAVC to ne pise u samu snimku.
+    //
+    // OGRADA JE SIRA NEGO STO IZGLEDA: u videu se senzor obicno izrezuje, a zoom se tijekom kadra
+    // moze pomaknuti. Zato se uzima cijeli raspon objektiva, ne jedna vrijednost
+    //=========================================================================================
+    bool hasFieldOfViewRange = false;
+    double widestFieldOfView = 0.0;      //kod najkraceg zarista
+    double narrowestFieldOfView = 0.0;   //kod najduljeg
+    std::string lens;
+
     //Izvjestaj je DIO REZULTATA, ne ispis sa strane: solver koji ne zna odakle mu zarisna ne moze
     //reci koliko vrijedi njegov odgovor
     std::vector<std::string> notes;

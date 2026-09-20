@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 extern "C"{
@@ -471,6 +473,65 @@ TranscodeResult videoToSequence(const std::string& videoPath, const TranscodeCon
     }
 
     return result;
+}
+
+
+//=============================================================================================
+// PRATECA DATOTEKA
+//=============================================================================================
+
+namespace{
+
+//Vrijednost atributa unutar zadane oznake. Bez XML knjiznice: trazi se oznaka, pa atribut unutar
+//nje. Dovoljno za nekoliko poznatih polja, a ne uvodi ovisnost zbog cetiri niza
+std::string attributeIn(const std::string& text, const std::string& tag, const std::string& attribute){
+    const size_t open = text.find("<" + tag);
+    if(open == std::string::npos) return {};
+
+    const size_t close = text.find('>', open);
+    if(close == std::string::npos) return {};
+
+    const std::string inside = text.substr(open, close - open);
+    const size_t at = inside.find(attribute + "=\"");
+    if(at == std::string::npos) return {};
+
+    const size_t from = at + attribute.size() + 2;
+    const size_t to = inside.find('"', from);
+    if(to == std::string::npos) return {};
+    return inside.substr(from, to - from);
+}
+
+}
+
+std::vector<std::pair<std::string, std::string>> readSidecarMetadata(const std::string& videoPath){
+    std::vector<std::pair<std::string, std::string>> out;
+
+    //Ime bez nastavka, pa poznati oblici imena pratece datoteke. Sony pise <ime>M01.XML
+    const size_t dot = videoPath.find_last_of('.');
+    const std::string base = dot == std::string::npos ? videoPath : videoPath.substr(0, dot);
+
+    const std::string candidates[] = {base + "M01.XML", base + "M01.xml", base + ".XML", base + ".xml"};
+
+    std::string text;
+    for(const std::string& path : candidates){
+        std::ifstream file(path, std::ios::binary);
+        if(!file) continue;
+        text.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        if(!text.empty()) break;
+    }
+    if(text.empty()) return out;
+
+    auto add = [&](const std::string& key, const std::string& value){
+        if(!value.empty()) out.push_back({key, value});
+    };
+
+    add("sidecar.device.manufacturer", attributeIn(text, "Device", "manufacturer"));
+    add("sidecar.device.model",        attributeIn(text, "Device", "modelName"));
+    add("sidecar.device.serial",       attributeIn(text, "Device", "serialNo"));
+    add("sidecar.lens.model",          attributeIn(text, "Lens", "modelName"));
+    add("sidecar.capture.fps",         attributeIn(text, "VideoFrame", "captureFps"));
+    add("sidecar.video.codec",         attributeIn(text, "VideoFrame", "videoCodec"));
+    return out;
 }
 
 }

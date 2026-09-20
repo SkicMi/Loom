@@ -324,7 +324,24 @@ int main(int argc, char** argv){
                 //puno vise nego pri pracenju; a razmak se u MatchGraphu jos dijeli smanjenjem, pa
                 //12 na 4K postane 3 na radnoj sirini od 960. Izmjereno na dva prava kadra: razmak
                 //8 daje 598 provjerenih parova, razmak 3 daje 2928
-                graphConfig.detect.maxCorners = 20000;
+                //=================================================================
+                // KOLIKO ZNACAJKI PO KADRU, IZVEDENO IZ POVRSINE SLIKE.
+                //
+                // Dvadeset tisuca je bio apsolutan broj i na 4K se pokazao kao gornja granica koja
+                // se STVARNO dosegne: na kamenom zidu su oba grafa udarila u svoj strop i dala
+                // 15 822 opazanja po kadru, dok COLMAP na slicnom materijalu radi s oko 3500.
+                //
+                // Cijena nije linearna - poklapanje je na toj snimci uzelo 2914 CPU-sekundi, vise
+                // od polovice cijelog posla. A konstanta koja je razumna na jednoj razlucivosti je
+                // besmislena na drugoj; ista pouka kao kod zakrpe potpisa i prozora pracenja.
+                //
+                // Jedna znacajka na otprilike tisucu piksela: na 4K to je oko 8000 po kadru, na
+                // 1080p oko 2000. Strop od 20 000 ostaje kao gornja ograda
+                //=================================================================
+                const double megapixels = double(info.width) * double(info.height) / 1.0e6;
+                const uint32_t perFrame = std::min(20000u, uint32_t(megapixels * 1000.0));
+
+                graphConfig.detect.maxCorners = perFrame;
                 graphConfig.detect.minDistance = 12.0f;
                 graphConfig.describe.ratio = 0.9f;        //vidi mjerenje u MatchGraph.cpp
                 graphConfig.describe.maxDistance = 96;
@@ -347,6 +364,7 @@ int main(int argc, char** argv){
                     Engine::MatchGraphConfig fineConfig = graphConfig;
                     fineConfig.useScaleSpace = true;
                     fineConfig.scaleSpace.minDistance = 4.0f;
+                    fineConfig.scaleSpace.maxKeypoints = perFrame;
 
                     const Engine::MatchGraphResult fine =
                         Engine::buildMatchGraph(keyframeImages, guess, fineConfig);
@@ -439,6 +457,14 @@ int main(int argc, char** argv){
         config.huberPixels = 2.0;
         config.acceptPixels = std::max(6.0, 2.0 * double(featurePixels));
         config.minPointsForPose = 20;
+
+        //NAJVECI ZDRAVI ODSJECAK UMJESTO SVE-ILI-NISTA. Rjesenje koje se proteze preko loma je
+        //tiho krivo: dva dijela snimke koja se medjusobno ne slazu, a svaki je u sebi uredan.
+        //Pedeset ispravnih kamera je upotrebljivo, osamdeset preko loma nije.
+        //
+        //Knjiznica ovo ne radi sama od sebe - ovdje se pali jer alat isporucuje rezultat, a ne
+        //samo racuna
+        config.keepLargestHealthySegment = true;
 
         if(!thorough){
             config.initialPairTrials = 1;
@@ -538,6 +564,13 @@ int main(int argc, char** argv){
     facts.height = info.height;
     facts.frameRate = info.frameRate();
     facts.rotation = info.rotation;
+
+    //PRATECA DATOTEKA. Sonyjev XAVC ne pise ime kamere ni objektiva u samu snimku - provjereno na
+    //tri klipa sa ZV-E10M2: kontejner nosi samo major_brand=XAVC, vrijeme i timecode. Sve je u
+    //XML-u koji lezi pokraj, i ondje pise i uredjaj i objektiv
+    for(const auto& entry : Spool::readSidecarMetadata(path)){
+        facts.metadata.push_back(Engine::MetadataEntry{entry.first, entry.second});
+    }
     facts.pixelAspect = info.pixelAspect;
     facts.codec = info.codec;
     for(const auto& entry : info.metadata) facts.metadata.push_back(Engine::MetadataEntry{entry.first, entry.second});
@@ -562,6 +595,16 @@ int main(int argc, char** argv){
     }else if(hints.focalSource == Engine::HintSource::ModelTable || hints.focalSource == Engine::HintSource::Metadata){
         const double centre = hints.horizontalFieldOfView;
         candidates = {centre * 0.85, centre * 0.93, centre, centre * 1.07, centre * 1.15};
+    }else if(hints.hasFieldOfViewRange){
+        //OGRADA IZ OBJEKTIVA - vidi CameraHints::hasFieldOfViewRange. Kandidati izvan onoga sto
+        //objektiv fizicki moze dati nisu kandidati. Bez ove ograde je ista kamera na prijasnjoj
+        //snimci dala plato na 94-110 st, dakle birala je iz sest tisucinki piksela izvan fizike
+        const double lowest = hints.narrowestFieldOfView;
+        const double highest = hints.widestFieldOfView;
+        for(int step = 0; step < 7; ++step){
+            candidates.push_back(lowest + (highest - lowest) * double(step) / 6.0);
+        }
+        std::printf("  vidno polje ograniceno objektivom na %.0f-%.0f st\n", lowest, highest);
     }else{
         candidates = {40.0, 50.0, 60.0, 70.0, 78.0, 86.0, 94.0, 102.0, 110.0};
     }
@@ -726,6 +769,13 @@ int main(int argc, char** argv){
     //
     // Dakle zdravo je oko jedan i pol; bitno vise znaci da je bundle upio sum umjesto scene
     //=====================================================================================
+    if(best.camerasDroppedBySeam > 0){
+        std::printf("  ODREZANO NA ZDRAVI ODSJECAK: zadrzani kadrovi %u do %u, odbaceno %u kamera.\n",
+                    best.healthyFrom, best.healthyTo, best.camerasDroppedBySeam);
+        std::printf("             Lanac se ondje presidrio i popravak ga nije pomirio, pa bi "
+                    "rjesenje preko loma bilo tiho krivo.\n");
+    }
+
     if(heldOutCount > 0 && heldOutAgainst > 0.0){
         const double ratio = heldOutError / heldOutAgainst;
         std::printf("  provjera bez istine: %u izdvojenih opazanja, reprojekcija %.3f px "

@@ -212,6 +212,25 @@ struct ReconstructConfig{
     //=========================================================================================
     uint32_t keepFrom = 0, keepTo = 0;
 
+    //Gradi li se rep iznova nakon sto se odsjecak zadrzi. Popravak sava ga gradi - to mu je svrha;
+    //odrezivanje na zdravi odsjecak ga NE gradi, jer bi time vratilo ono sto je upravo odrezano
+    bool reAddAfterTrim = true;
+
+    //=========================================================================================
+    // NAJVECI ZDRAVI ODSJECAK UMJESTO SVE-ILI-NISTA.
+    //
+    // Kad se lanac presidri i popravak ne uspije, rjesenje se proteze preko loma: dva dijela
+    // snimke koja se medjusobno ne slazu za dvadesetak stupnjeva, a svaki je u sebi uredan.
+    // Isporuciti takvo rjesenje znaci isporuciti nesto sto je tiho krivo.
+    //
+    // Ovdje se umjesto toga zadrzi NAJDULJI niz kadrova bez sava unutar sebe, i to se jasno
+    // prijavi. Pedeset ispravnih kamera je upotrebljivo; osamdeset kamera preko loma nije.
+    //
+    // Ne pali se sam od sebe jer mijenja sto alat isporucuje - tko ga upali, mora znati da izlaz
+    // moze imati manje kamera nego sto je snimka imala kadrova
+    //=========================================================================================
+    bool keepLargestHealthySegment = false;
+
     //Parovi koje ne treba ponovno probati. Puni ga visestruki pokusaj sam; pozivatelj ga ne dira
     std::vector<std::pair<uint32_t, uint32_t>> skipInitialPairs;
 
@@ -475,6 +494,11 @@ struct Reconstruction{
     uint32_t seamAt = 0;
     uint32_t seamsFound = 0;
     uint8_t seamRepaired = 0;
+
+    //Koji je odsjecak zadrzan kad se rjesenje odrezalo na zdravi dio - vidi
+    //ReconstructConfig::keepLargestHealthySegment. Jednaki kad se nista nije rezalo
+    uint32_t healthyFrom = 0, healthyTo = 0;
+    uint32_t camerasDroppedBySeam = 0;
 
     uint32_t initialA = 0, initialB = 0;
     double initialAngle = 0.0;       //medijan kuta pod kojim se zrake tog para sijeku

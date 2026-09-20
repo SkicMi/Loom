@@ -646,5 +646,74 @@ int main(){
                 rebuilt.posedCameras, plain.posedCameras, result.medianRotation));
     }
 
+    //-- najveci zdravi odsjecak ----------------------------------------------------------------
+    //
+    //Kad se lanac presidri i popravak ne uspije, rjesenje se proteze preko loma: dva dijela koja
+    //se medjusobno ne slazu za dvadesetak stupnjeva, a svaki je u sebi uredan. Isporuciti takvo
+    //rjesenje znaci isporuciti nesto sto je tiho krivo.
+    //
+    //Ovdje se lom pravi namjerno: kamerama od trecine nadalje daju se opazanja iz ZAOKRENUTIH
+    //poza. Podatak time stvarno kaze da su dva dijela razlicita, pa ih popravak ne moze pomiriti -
+    //i to je bas slucaj u kojem odrezivanje ima smisla.
+    //
+    //Sto se brani:
+    //
+    //  ne dira cisto   na urednoj sceni ne smije odrezati nijednu kameru
+    //  odreze lom      na slomljenoj mora zadrzati VECI dio i imati manje savova
+    {
+        Engine::ReconstructConfig trimming;
+        trimming.seamFactor = 1.5;                  //vidi zasto je prag ovdje drugi, gore
+        trimming.keepLargestHealthySegment = true;
+
+        const Engine::Reconstruction quiet = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                 scene.points.size(), scene.intrinsics,
+                                                                 trimming);
+        const Engine::Reconstruction plain = Engine::reconstruct(scene.observations, scene.poses.size(),
+                                                                 scene.points.size(), scene.intrinsics);
+
+        report.check("na urednoj sceni ne reze nista",
+            quiet.posedCameras == plain.posedCameras && quiet.camerasDroppedBySeam == 0,
+            fmt("%u naspram %u kamera, odrezano %u",
+                quiet.posedCameras, plain.posedCameras, quiet.camerasDroppedBySeam));
+
+        //Slomljena scena: dvanaest kamera, lom na cetvrtoj, pa su odsjecci 4 i 8
+        Engine::SyntheticConfig brokenConfig = config;
+        brokenConfig.cameraCount = 12;
+        const Engine::SyntheticScene whole = Engine::makeSyntheticScene(brokenConfig);
+
+        const size_t breakAt = 4;
+        Engine::SyntheticScene broken = whole;
+        {
+            std::vector<Engine::Pose> turned = whole.poses;
+            for(size_t c = breakAt; c < turned.size(); ++c){
+                turned[c].orientation = glm::normalize(turned[c].orientation
+                    * glm::angleAxis(glm::radians(20.0f), glm::vec3(0.0f, 1.0f, 0.0f)));
+            }
+
+            std::vector<Engine::Observation> kept;
+            kept.reserve(broken.observations.size());
+            for(const Engine::Observation& one : broken.observations){
+                if(one.camera < breakAt){ kept.push_back(one); continue; }
+                glm::vec2 pixel;
+                if(!Engine::project(turned[one.camera], broken.intrinsics, broken.points[one.point], pixel)) continue;
+                kept.push_back(Engine::Observation{one.camera, one.point, pixel});
+            }
+            broken.observations.swap(kept);
+        }
+
+        const Engine::Reconstruction spanning = Engine::reconstruct(broken.observations, broken.poses.size(),
+                                                                    broken.points.size(), broken.intrinsics);
+        const Engine::Reconstruction trimmed = Engine::reconstruct(broken.observations, broken.poses.size(),
+                                                                   broken.points.size(), broken.intrinsics,
+                                                                   trimming);
+
+        report.check("odreze lom i zadrzi veci dio",
+            trimmed.posedCameras < spanning.posedCameras && trimmed.posedCameras >= 4
+            && trimmed.healthyTo > trimmed.healthyFrom,
+            fmt("%u kamera naspram %u, zadrzan raspon [%u, %u), odrezano %u",
+                trimmed.posedCameras, spanning.posedCameras,
+                trimmed.healthyFrom, trimmed.healthyTo, trimmed.camerasDroppedBySeam));
+    }
+
     return report.result();
 }

@@ -144,6 +144,24 @@ struct TranscodeResult{
     VideoInfo info;
 };
 
+//=============================================================================================
+// METAPODACI IZ PRATECE DATOTEKE.
+//
+// ZASTO OVO POSTOJI. Sonyjev XAVC ne pise ime kamere ni objektiva U SAMU snimku - provjereno na tri
+// klipa sa ZV-E10M2: kontejner nosi samo `major_brand=XAVC`, vrijeme i timecode. Sve ostalo je u
+// XML-u koji lezi pokraj: `C0257.MP4` -> `C0257M01.XML`, i ondje pise i uredjaj i objektiv.
+//
+// To nije sitnica nego jedini nacin da se zna koje je zariste uopce MOGUCE. Objektiv 18-50 mm na
+// APS-C senzoru daje vodoravno vidno polje izmedju 26 i 66 stupnjeva; bez toga je pretraga
+// zarista lutala do 110 st, dakle izvan fizike te kamere.
+//
+// GRANICA OSTAJE ISTA: ovdje se samo cita sto pise, kljuc po kljuc. Sto to znaci za kameru tumaci
+// Engine::CameraHints.
+//
+// Prazan niz kad pratece datoteke nema ili se ne da procitati - to nije greska nego obicno stanje
+//=============================================================================================
+std::vector<std::pair<std::string, std::string>> readSidecarMetadata(const std::string& videoPath);
+
 //Snimka -> niz slika na disku.
 //
 //Ovo je put kojim snimka dolazi do modela za procjenu dubine: oni rade nad slikama, ne nad
