@@ -495,6 +495,25 @@ int main(int argc, char** argv){
                         double(automatic.measuredIntrinsics.k1), fov,
                         automatic.reconstruction.posedCameras, cameraCount,
                         automatic.reconstruction.medianReprojection);
+
+            //=================================================================
+            // DISTORZIJA U PIKSELIMA, NE U k1.
+            //
+            // "k1 = 0.326" covjeku ne znaci nista, a "kut se pomice 116 px" znaci sve. Izmjereno
+            // na kamenom zidu: procjena je dala bas tih 5.26 posto pomaka u kutu, a Sigma 18-50
+            // f/2.8 na tom zaristu ima daleko ispod jedan posto. Dakle u k1 je upijeno nesto drugo
+            // - ondje je scena bila gotovo ravna, baza 2.05 st, sto je degeneriran slucaj za
+            // samokalibraciju.
+            //
+            // Prag se NE postavlja jer bi bio pogodjen: objektivi se razlikuju, a riblje oko je
+            // izvan ovog modela ionako. Broj se ispisuje da se o njemu dade suditi
+            //=================================================================
+            const double halfDiagonal = std::hypot(0.5 * double(info.width), 0.5 * double(info.height));
+            const double normalised = halfDiagonal / double(automatic.measuredIntrinsics.fx);
+            const double shift = halfDiagonal * double(automatic.measuredIntrinsics.k1) * normalised * normalised;
+            std::printf("    distorzija pomice kut za %.1f px (%.2f %% polumjera); "
+                        "ispravljeni objektiv je obicno ispod jednog posto\n",
+                        shift, 100.0 * shift / halfDiagonal);
         }else{
             std::printf("  samokalibracija nije odredjena (%s; view-graph %s). "
                         "Koristim stari FOV sweep kao fallback.\n",
