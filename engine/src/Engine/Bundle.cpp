@@ -1,4 +1,5 @@
 #include "Engine/Bundle.h"
+#include "Engine/Bands.h"
 #include "Engine/Dense.h"
 
 #include <algorithm>
@@ -300,47 +301,77 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
             }
         }
 
+        //=================================================================================
+        // SCHUR PO DRETVAMA, BIT PO BIT ISTO.
+        //
+        // Zbrajanje u pokretnom zarezu nije asocijativno, pa se posao NE smije podijeliti po
+        // tockama: svaka tocka dodaje u iste celije S-a i rhs-a, a podijeljen zbroj daje drugi
+        // broj. Zlatni hash bi pao, i to s pravom.
+        //
+        // Zato se ne dijeli ULAZ nego IZLAZ. Redak S-a i clan rhs-a odredjeni su PRVOM kamerom
+        // para; kad dretva dobije svoj skup kamera, u njezine celije ne pise nitko drugi, a
+        // doprinosi u njih i dalje stizu redom tocaka i redom blokova - dakle tocno onim
+        // redoslijedom kojim su stizali sekvencijalno.
+        //
+        // Cijena je da svaka dretva prodje sve tocke i preskoci tudje blokove, ali to je usporedba
+        // cijelog broja naspram 36 mnozenja koja preskace
+        //=================================================================================
+
         std::vector<std::array<double, 9>> inverseC(pointCount);
         std::vector<uint8_t> pointUsable(pointCount, 0);
 
-        for(size_t p = 0; p < pointCount; ++p){
-            double m[3][3], inverse[3][3];
-            for(int i = 0; i < 3; ++i) for(int j = 0; j < 3; ++j) m[i][j] = C[p * 9 + size_t(i * 3 + j)];
-            if(!invert3(m, inverse)) continue;
+        //Inverz je po tocki i nista ne dijeli, pa ide ravno po dretvama
+        inBands(0, int(pointCount), [&](uint32_t, int firstItem, int lastItem){
+            for(int index = firstItem; index < lastItem; ++index){
+                const size_t p = size_t(index);
+                double m[3][3], inverse[3][3];
+                for(int i = 0; i < 3; ++i) for(int j = 0; j < 3; ++j) m[i][j] = C[p * 9 + size_t(i * 3 + j)];
+                if(!invert3(m, inverse)) continue;
 
-            pointUsable[p] = 1;
-            for(int i = 0; i < 3; ++i) for(int j = 0; j < 3; ++j) inverseC[p][size_t(i * 3 + j)] = inverse[i][j];
+                pointUsable[p] = 1;
+                for(int i = 0; i < 3; ++i) for(int j = 0; j < 3; ++j) inverseC[p][size_t(i * 3 + j)] = inverse[i][j];
+            }
+        });
 
-            const size_t begin = blockOffset[p];
-            const size_t end = begin + blockCount[p];
-            for(size_t firstIndex = begin; firstIndex < end; ++firstIndex){
-                const CameraBlock& first = E[firstIndex];
-                //W = E * C^-1 (6x3)
-                double W[6][3] = {};
-                for(int i = 0; i < 6; ++i){
-                    for(int j = 0; j < 3; ++j){
-                        double sum = 0.0;
-                        for(int k = 0; k < 3; ++k) sum += first.e[size_t(i * 3 + k)] * inverse[k][j];
-                        W[i][j] = sum;
-                    }
-                }
-                for(int i = 0; i < 6; ++i){
-                    double sum = 0.0;
-                    for(int k = 0; k < 3; ++k) sum += W[i][k] * gPoint[p * 3 + size_t(k)];
-                    rhs[size_t(first.camera * 6 + i)] += sum;
-                }
-                for(size_t secondIndex = begin; secondIndex < end; ++secondIndex){
-                    const CameraBlock& second = E[secondIndex];
+        inBands(0, freeCameras, [&](uint32_t, int firstCamera, int lastCamera){
+            for(size_t p = 0; p < pointCount; ++p){
+                if(!pointUsable[p]) continue;
+
+                const double* inverse = inverseC[p].data();
+                const size_t begin = blockOffset[p];
+                const size_t end = begin + blockCount[p];
+
+                for(size_t firstIndex = begin; firstIndex < end; ++firstIndex){
+                    const CameraBlock& first = E[firstIndex];
+                    if(first.camera < firstCamera || first.camera >= lastCamera) continue;
+
+                    //W = E * C^-1 (6x3)
+                    double W[6][3] = {};
                     for(int i = 0; i < 6; ++i){
-                        for(int j = 0; j < 6; ++j){
+                        for(int j = 0; j < 3; ++j){
                             double sum = 0.0;
-                            for(int k = 0; k < 3; ++k) sum += W[i][k] * second.e[size_t(j * 3 + k)];
-                            S[size_t((first.camera * 6 + i) * n + second.camera * 6 + j)] -= sum;
+                            for(int k = 0; k < 3; ++k) sum += first.e[size_t(i * 3 + k)] * inverse[size_t(k * 3 + j)];
+                            W[i][j] = sum;
+                        }
+                    }
+                    for(int i = 0; i < 6; ++i){
+                        double sum = 0.0;
+                        for(int k = 0; k < 3; ++k) sum += W[i][k] * gPoint[p * 3 + size_t(k)];
+                        rhs[size_t(first.camera * 6 + i)] += sum;
+                    }
+                    for(size_t secondIndex = begin; secondIndex < end; ++secondIndex){
+                        const CameraBlock& second = E[secondIndex];
+                        for(int i = 0; i < 6; ++i){
+                            for(int j = 0; j < 6; ++j){
+                                double sum = 0.0;
+                                for(int k = 0; k < 3; ++k) sum += W[i][k] * second.e[size_t(j * 3 + k)];
+                                S[size_t((first.camera * 6 + i) * n + second.camera * 6 + j)] -= sum;
+                            }
                         }
                     }
                 }
             }
-        }
+        }, 1);
         result.timing.schurSeconds += elapsed(schurStarted);
 
         const auto denseStarted = Clock::now();
