@@ -102,8 +102,8 @@ void VulkanSwapchain::createSwapchain(){
     readbackAvailable = false;
     if(config.allowReadback){
         const vk::SurfaceCapabilitiesKHR capabilities = device.getPhysicalDevice().getSurfaceCapabilitiesKHR(*instance.getSurface());
-        if(capabilities.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferSrc){
-            usage |= vk::ImageUsageFlagBits::eTransferSrc;
+        if(capabilities.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferDst){
+            usage |= vk::ImageUsageFlagBits::eTransferDst;
             readbackAvailable = true;
         }
     }

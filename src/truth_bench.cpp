@@ -30,6 +30,7 @@
 
 #include <Engine/MatchGraph.h>
 #include <Engine/Reconstruct.h>
+#include <Engine/ResidualField.h>
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -402,6 +403,8 @@ int main(int argc, char** argv){
     const Engine::Reconstruction solved = Engine::reconstruct(graph.observations, frames,
                                                               graph.pointCount, intrinsics, config);
     const Error error = compare(solved, truth);
+    const Engine::ResidualFieldResult residualField = Engine::analyzeResidualField(
+        graph.observations, solved.poses, solved.points, intrinsics, {}, solved.observationUsed);
 
     std::printf("  rijeseno %u od %u kamera, %u tocaka, reprojekcija %.3f px, baza %.2f st\n",
                 solved.posedCameras, frames, solved.solvedPoints,
@@ -415,6 +418,13 @@ int main(int argc, char** argv){
     std::printf("  oblik putanje: drugi/prvi %.3f, treci/prvi %.3f%s\n",
                 error.straightness, error.flatness,
                 error.degenerate ? "  - PRAVAC ili TOCKA, greska polozaja ovdje nije mjera" : "");
+    std::printf("  POLJE OSTATAKA: %s; prostorni signal %.3f px, staticko %.3f px, "
+                "promjenjivi signal %.3f px (sum sredine %.3f, prag %.3f; %u/%u kadrova)\n",
+                Engine::residualDiagnosisName(residualField.diagnosis),
+                residualField.spatialSignalRms, residualField.staticRms,
+                residualField.temporalSignalRms,
+                residualField.meanNoiseRms, residualField.decisionThreshold,
+                residualField.evaluatedFrames, frames);
 
     if(which == "zaokret"){
         std::printf("  (negativna kontrola: paralakse nema, pa je svaki uspjeh ovdje sumnjiv)\n");

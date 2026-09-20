@@ -68,6 +68,45 @@ glm::vec2 undistort(const Intrinsics& intrinsics, const glm::vec2& pixel){
     return glm::vec2(intrinsics.cx + intrinsics.fx * nx, intrinsics.cy + intrinsics.fy * ny);
 }
 
+std::vector<uint8_t> undistortRgba(const uint8_t* pixels,
+                                   uint32_t width,
+                                   uint32_t height,
+                                   uint32_t stride,
+                                   const Intrinsics& intrinsics){
+    if(!pixels || width == 0 || height == 0 || stride < width ||
+       intrinsics.fx == 0.0f || intrinsics.fy == 0.0f) return {};
+
+    std::vector<uint8_t> output(size_t(width) * height * 4, 0);
+    for(uint32_t y = 0; y < height; ++y){
+        for(uint32_t x = 0; x < width; ++x){
+            const float nx = (float(x) - intrinsics.cx) / intrinsics.fx;
+            const float ny = (float(y) - intrinsics.cy) / intrinsics.fy;
+            const float radiusSquared = nx * nx + ny * ny;
+            const float factor = 1.0f + radiusSquared *
+                (intrinsics.k1 + radiusSquared * intrinsics.k2);
+            const float sourceX = intrinsics.cx + intrinsics.fx * nx * factor;
+            const float sourceY = intrinsics.cy + intrinsics.fy * ny * factor;
+            if(sourceX < 0.0f || sourceY < 0.0f ||
+               sourceX > float(width - 1) || sourceY > float(height - 1)) continue;
+
+            const uint32_t x0 = uint32_t(sourceX), y0 = uint32_t(sourceY);
+            const uint32_t x1 = std::min(x0 + 1, width - 1);
+            const uint32_t y1 = std::min(y0 + 1, height - 1);
+            const float tx = sourceX - float(x0), ty = sourceY - float(y0);
+            uint8_t* destination = output.data() + (size_t(y) * width + x) * 4;
+            for(uint32_t channel = 0; channel < 4; ++channel){
+                const float top = (1.0f - tx) * pixels[(size_t(y0) * stride + x0) * 4 + channel] +
+                                  tx * pixels[(size_t(y0) * stride + x1) * 4 + channel];
+                const float bottom = (1.0f - tx) * pixels[(size_t(y1) * stride + x0) * 4 + channel] +
+                                     tx * pixels[(size_t(y1) * stride + x1) * 4 + channel];
+                destination[channel] = uint8_t(std::clamp((1.0f - ty) * top + ty * bottom,
+                                                          0.0f, 255.0f) + 0.5f);
+            }
+        }
+    }
+    return output;
+}
+
 bool project(const Pose& pose, const Intrinsics& intrinsics, const glm::vec3& point, glm::vec2& pixel){
     if(!projectUnbounded(pose, intrinsics, point, pixel)){
         return false;

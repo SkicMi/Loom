@@ -94,6 +94,14 @@ bool project(const Pose& pose, const Intrinsics& intrinsics, const glm::vec3& po
 //je i previse za k reda stotinke, a divergirati ne moze jer je preslikavanje monotono blizu osi
 glm::vec2 undistort(const Intrinsics& intrinsics, const glm::vec2& pixel);
 
+//Ispravlja cijelu RGBA sliku u istu pinhole ravninu kao undistort(). Za svaki izlazni piksel
+//racuna gdje se on nalazi u zakrivljenom ulazu i uzorkuje bilinearno. stride je u pikselima.
+std::vector<uint8_t> undistortRgba(const uint8_t* pixels,
+                                   uint32_t width,
+                                   uint32_t height,
+                                   uint32_t stride,
+                                   const Intrinsics& intrinsics);
+
 //Ista scena za isto sjeme, do zadnjeg bita
 SyntheticScene makeSyntheticScene(const SyntheticConfig& config = {});
 

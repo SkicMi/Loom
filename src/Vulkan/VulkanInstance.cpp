@@ -124,16 +124,26 @@ VKAPI_ATTR VkBool32 VKAPI_CALL VulkanInstance::debugCallback(
     const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData)
 {
-    (void)type;
+    //Loaderove opce dijagnostike (npr. neispravan opcionalni gfxstream ICD) nisu
+    //greske Vulkan validation sloja nad nasim pozivima. I dalje ih ispisujemo, ali
+    //testni brojac cuva samo validation/performance poruke koje se mogu pripisati
+    //aplikaciji ili njezinim resursima.
+    const vk::DebugUtilsMessageTypeFlagsEXT checkedTypes =
+        vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+        vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
+    const bool countsAsValidation = (type & checkedTypes) != vk::DebugUtilsMessageTypeFlagsEXT{};
+
     (void)pUserData;
 
     //severity je jedan bit, ne maska, pa je usporedba jasnija od bitovnog i
-    if(severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning ||
-       severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError){
+    if(countsAsValidation &&
+       (severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning ||
+        severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError)){
         ++validationMessages;
     }
 
-    std::cerr << "[validation] " << pCallbackData->pMessage << std::endl;
+    std::cerr << (countsAsValidation ? "[validation] " : "[vulkan-loader] ")
+              << pCallbackData->pMessage << std::endl;
     return VK_FALSE;
 }
 

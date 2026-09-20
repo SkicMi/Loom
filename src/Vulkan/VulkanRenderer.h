@@ -205,6 +205,15 @@ class VulkanRenderer{
     std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
     std::vector<vk::raii::Fence> inFlightFences;
 
+    //Swapchain images are not VulkanImage objects, so their layout cannot be queried from
+    //the image itself.  The acquire operation may return either a freshly created image
+    //(UNDEFINED) or one that has already been presented (PRESENT_SRC_KHR); recording every
+    //transition with UNDEFINED would be invalid for the latter.
+    std::vector<vk::ImageLayout> swapchainImageLayouts;
+    std::vector<std::optional<VulkanImage>> windowReadbackImages;
+    vk::Extent2D windowReadbackExtent{};
+    bool windowColorWritten = false;
+
     //One pool per frame in flight: resetting a pool the other frame is still writing into
     //would lose its marks. The labels live on the CPU, the ticks on the GPU
     std::vector<vk::raii::QueryPool> timestampPools;
@@ -283,6 +292,3 @@ class VulkanRenderer{
     const ShadingRateMap* shadingRateMap = nullptr;
 
 };
-
-
-  

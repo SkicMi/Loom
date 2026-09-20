@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 
 namespace Engine{
@@ -10,7 +11,10 @@ namespace{
 
 double medianOf(std::vector<double> values){
     if(values.empty()) return 0.0;
-    std::sort(values.begin(), values.end());
+    //Treba samo srednji element, ne cijeli poredak. std::sort je na 808 tisuca opazanja radio
+    //O(n log n) poslije svakog kandidata; nth_element vraca isti gornji medijan u O(n), a niz je
+    //ionako lokalna kopija koja se odmah odbaci.
+    std::nth_element(values.begin(), values.begin() + values.size() / 2, values.end());
     return values[values.size() / 2];
 }
 
@@ -25,6 +29,21 @@ double huberCost(double length, double delta){
     return 2.0 * delta * length - delta * delta;
 }
 
+bool reprojectionResidual(const Pose& pose,
+                          const Intrinsics& intrinsics,
+                          const glm::vec3& point,
+                          const glm::vec2& observed,
+                          double residual[2]){
+    const glm::vec3 inCamera = glm::conjugate(pose.orientation) * (point - pose.position);
+    const double depth = -double(inCamera.z);
+    if(depth <= 0.0) return false;
+    residual[0] = double(intrinsics.cx) + double(intrinsics.fx) * double(inCamera.x) / depth
+                - double(observed.x);
+    residual[1] = double(intrinsics.cy) - double(intrinsics.fy) * double(inCamera.y) / depth
+                - double(observed.y);
+    return true;
+}
+
 double costOf(const std::vector<Pose>& poses, const std::vector<glm::vec3>& points,
               const Intrinsics& intrinsics, const std::vector<Observation>& observations,
               double delta,
@@ -35,8 +54,9 @@ double costOf(const std::vector<Pose>& poses, const std::vector<glm::vec3>& poin
 
     for(const Observation& observation : observations){
         if(observation.camera >= poses.size() || observation.point >= points.size()) continue;
-        double residual[2], jacobian[2][3];
-        if(!pointJacobian(poses[observation.camera], intrinsics, points[observation.point], observation.pixel, residual, jacobian)){
+        double residual[2];
+        if(!reprojectionResidual(poses[observation.camera], intrinsics,
+                                 points[observation.point], observation.pixel, residual)){
             cost += double(intrinsics.width) * double(intrinsics.width);
             lengths.push_back(double(intrinsics.width));
             continue;
@@ -54,6 +74,56 @@ struct CameraBlock{
     int camera = 0;
     std::array<double, 18> e{};
 };
+
+//Oba javna Jacobiana namjerno ostaju zasebna i nepromijenjena, jer ih koriste S2 i testovi.
+//Bundleu trebaju OBA za isto opazanje. Pozivati pointJacobian pa poseJacobian znaci dvaput
+//rotirati istu tocku u kameru, dvaput projicirati i dvaput graditi isti duv. Ovdje se zajednicki
+//dio racuna jednom, a oba izlaza koriste tocno iste formule i red operacija kao javne funkcije.
+bool bundleJacobians(const Pose& pose,
+                     const Intrinsics& intrinsics,
+                     const glm::vec3& point,
+                     const glm::vec2& observed,
+                     double residual[2],
+                     double pointPart[2][3],
+                     double cameraPart[2][6]){
+    const glm::vec3 inCamera = glm::conjugate(pose.orientation) * (point - pose.position);
+    const double depth = -double(inCamera.z);
+    if(depth <= 0.0) return false;
+
+    const double fx = intrinsics.fx, fy = intrinsics.fy;
+    const double x = inCamera.x, y = inCamera.y;
+    residual[0] = double(intrinsics.cx) + fx * x / depth - double(observed.x);
+    residual[1] = double(intrinsics.cy) - fy * y / depth - double(observed.y);
+
+    const double duv[2][3] = {
+        { fx / depth,        0.0,        fx * x / (depth * depth) },
+        { 0.0,        -fy / depth,      -fy * y / (depth * depth) }
+    };
+
+    const glm::mat3 rotation = glm::mat3_cast(glm::conjugate(pose.orientation));
+    for(int row = 0; row < 2; ++row){
+        for(int column = 0; column < 3; ++column){
+            pointPart[row][column] = duv[row][0] * double(rotation[column][0])
+                                   + duv[row][1] * double(rotation[column][1])
+                                   + duv[row][2] * double(rotation[column][2]);
+        }
+    }
+
+    const double px = x, py = y, pz = double(inCamera.z);
+    const double dp[3][6] = {
+        { -1.0,  0.0,  0.0,   0.0,  -pz,   py },
+        {  0.0, -1.0,  0.0,   pz,   0.0,  -px },
+        {  0.0,  0.0, -1.0,  -py,   px,   0.0 }
+    };
+    for(int row = 0; row < 2; ++row){
+        for(int column = 0; column < 6; ++column){
+            cameraPart[row][column] = duv[row][0] * dp[0][column]
+                                    + duv[row][1] * dp[1][column]
+                                    + duv[row][2] * dp[2][column];
+        }
+    }
+    return true;
+}
 
 }
 
@@ -98,11 +168,18 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
                           const std::vector<glm::vec3>& points,
                           const Intrinsics& intrinsics,
                           const BundleConfig& config){
+    using Clock = std::chrono::steady_clock;
+    const auto totalStarted = Clock::now();
+    auto elapsed = [](Clock::time_point started){
+        return std::chrono::duration<double>(Clock::now() - started).count();
+    };
+
     BundleResult result;
     result.poses = poses;
     result.points = points;
 
     if(observations.empty() || poses.empty() || points.empty()){
+        result.timing.totalSeconds = elapsed(totalStarted);
         return result;
     }
 
@@ -118,8 +195,28 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
     }
     const int n = 6 * freeCameras;
 
+    //E je prije bio vector<vector<CameraBlock>>: svaka tocka je u svakoj iteraciji zasebno
+    //alocirala svoj sitni niz blokova. Na pravom grafu to je stotine tisuca malloc/free poziva po
+    //bundle iteraciji. Kapacitet po tocki ovisi samo o ulaznim opazanjima, pa se jednom izracuna
+    //prefix-sum i svi blokovi drze u jednom ravnom polju. blockCount kaze koliko ih je u ovoj
+    //iteraciji stvarno proslo projekciju. Punjenje ide redom opazanja, a Schur redom tocaka i
+    //blokova kao prije, pa se red zbrajanja ne mijenja ni za jedan double.
+    std::vector<size_t> blockOffset(pointCount + 1, 0);
+    for(const Observation& observation : observations){
+        if(observation.camera >= cameraCount || observation.point >= pointCount) continue;
+        if(freeIndex[observation.camera] < 0) continue;
+        ++blockOffset[observation.point + 1];
+    }
+    for(size_t point = 0; point < pointCount; ++point){
+        blockOffset[point + 1] += blockOffset[point];
+    }
+    std::vector<CameraBlock> E(blockOffset.back());
+    std::vector<size_t> blockCount(pointCount, 0);
+
     double median = 0.0;
+    const auto initialCostStarted = Clock::now();
     double cost = costOf(result.poses, result.points, intrinsics, observations, config.huberPixels, median);
+    result.timing.costSeconds += elapsed(initialCostStarted);
     result.startMedian = median;
     result.endMedian = median;
     result.solved = true;
@@ -127,11 +224,12 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
     double lambda = config.lambda;
 
     for(uint32_t iteration = 0; iteration < config.maxIterations; ++iteration){
+        const auto linearizeStarted = Clock::now();
         std::vector<double> B(size_t(freeCameras) * 36, 0.0);
         std::vector<double> gCamera(size_t(freeCameras) * 6, 0.0);
         std::vector<double> C(pointCount * 9, 0.0);
         std::vector<double> gPoint(pointCount * 3, 0.0);
-        std::vector<std::vector<CameraBlock>> E(pointCount);
+        std::fill(blockCount.begin(), blockCount.end(), size_t(0));
 
         uint32_t used = 0;
         for(const Observation& observation : observations){
@@ -140,8 +238,9 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
             const Pose& pose = result.poses[observation.camera];
             const glm::vec3& point = result.points[observation.point];
 
-            double residual[2], pointPart[2][3];
-            if(!pointJacobian(pose, intrinsics, point, observation.pixel, residual, pointPart)) continue;
+            double residual[2], pointPart[2][3], cameraPart[2][6];
+            if(!bundleJacobians(pose, intrinsics, point, observation.pixel,
+                                residual, pointPart, cameraPart)) continue;
             ++used;
 
             //Tezina pod Huberom mnozi i rezidual i jakobijan, pa ulazi u sve tri strane odjednom
@@ -159,9 +258,6 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
             //Fiksna kamera nema nepoznanica, ali njezina opazanja i dalje drze tocke
             if(freeIndex[observation.camera] < 0) continue;
 
-            double cameraResidual[2], cameraPart[2][6];
-            if(!poseJacobian(pose, intrinsics, point, observation.pixel, cameraResidual, cameraPart)) continue;
-
             const size_t camera = size_t(freeIndex[observation.camera]);
             for(int i = 0; i < 6; ++i){
                 for(int row = 0; row < 2; ++row) gCamera[camera * 6 + size_t(i)] += weightSquared * cameraPart[row][i] * residual[row];
@@ -177,7 +273,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
                     for(int row = 0; row < 2; ++row) block.e[size_t(i * 3 + j)] += weightSquared * cameraPart[row][i] * pointPart[row][j];
                 }
             }
-            E[observation.point].push_back(block);
+            E[blockOffset[observation.point] + blockCount[observation.point]++] = block;
         }
 
         if(used < 4){
@@ -191,8 +287,10 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
         for(size_t p = 0; p < pointCount; ++p){
             for(int i = 0; i < 3; ++i) C[p * 9 + size_t(i * 3 + i)] += lambda * C[p * 9 + size_t(i * 3 + i)] + 1e-12;
         }
+        result.timing.linearizeSeconds += elapsed(linearizeStarted);
 
         //SCHUR: svaka tocka se izbaci iz sustava, i ostane samo sustav po kamerama
+        const auto schurStarted = Clock::now();
         std::vector<double> S(size_t(n) * size_t(n), 0.0);
         std::vector<double> rhs(size_t(n), 0.0);
         for(int c = 0; c < freeCameras; ++c){
@@ -213,7 +311,10 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
             pointUsable[p] = 1;
             for(int i = 0; i < 3; ++i) for(int j = 0; j < 3; ++j) inverseC[p][size_t(i * 3 + j)] = inverse[i][j];
 
-            for(const CameraBlock& first : E[p]){
+            const size_t begin = blockOffset[p];
+            const size_t end = begin + blockCount[p];
+            for(size_t firstIndex = begin; firstIndex < end; ++firstIndex){
+                const CameraBlock& first = E[firstIndex];
                 //W = E * C^-1 (6x3)
                 double W[6][3] = {};
                 for(int i = 0; i < 6; ++i){
@@ -228,7 +329,8 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
                     for(int k = 0; k < 3; ++k) sum += W[i][k] * gPoint[p * 3 + size_t(k)];
                     rhs[size_t(first.camera * 6 + i)] += sum;
                 }
-                for(const CameraBlock& second : E[p]){
+                for(size_t secondIndex = begin; secondIndex < end; ++secondIndex){
+                    const CameraBlock& second = E[secondIndex];
                     for(int i = 0; i < 6; ++i){
                         for(int j = 0; j < 6; ++j){
                             double sum = 0.0;
@@ -239,13 +341,18 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
                 }
             }
         }
+        result.timing.schurSeconds += elapsed(schurStarted);
 
+        const auto denseStarted = Clock::now();
         std::vector<double> cameraStep(size_t(n), 0.0);
         if(n > 0 && !solveDense(S, rhs, n, cameraStep)){
+            result.timing.denseSolveSeconds += elapsed(denseStarted);
             break;   //singularan sustav: dalje bi bilo nagadjanje
         }
+        result.timing.denseSolveSeconds += elapsed(denseStarted);
 
         //Tocke se vrate uvrstavanjem: dp = C^-1 (-g - E' dc)
+        const auto backSubstituteStarted = Clock::now();
         std::vector<glm::vec3> pointStep(pointCount, glm::vec3(0.0f));
         double stepLength = 0.0;
         for(double value : cameraStep) stepLength += value * value;
@@ -253,7 +360,10 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
         for(size_t p = 0; p < pointCount; ++p){
             if(!pointUsable[p]) continue;
             double right[3] = { -gPoint[p * 3 + 0], -gPoint[p * 3 + 1], -gPoint[p * 3 + 2] };
-            for(const CameraBlock& block : E[p]){
+            const size_t begin = blockOffset[p];
+            const size_t end = begin + blockCount[p];
+            for(size_t blockIndex = begin; blockIndex < end; ++blockIndex){
+                const CameraBlock& block = E[blockIndex];
                 for(int j = 0; j < 3; ++j){
                     double sum = 0.0;
                     for(int i = 0; i < 6; ++i) sum += block.e[size_t(i * 3 + j)] * cameraStep[size_t(block.camera * 6 + i)];
@@ -269,6 +379,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
         }
 
         if(std::sqrt(stepLength) < config.minStep){
+            result.timing.backSubstituteSeconds += elapsed(backSubstituteStarted);
             break;
         }
 
@@ -291,9 +402,12 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
                 glm::quat(1.0f, 0.5f * rotation.x, 0.5f * rotation.y, 0.5f * rotation.z));
         }
         for(size_t p = 0; p < pointCount; ++p) candidate.points[p] += pointStep[p];
+        result.timing.backSubstituteSeconds += elapsed(backSubstituteStarted);
 
         double candidateMedian = 0.0;
+        const auto candidateCostStarted = Clock::now();
         const double candidateCost = costOf(candidate.poses, candidate.points, intrinsics, observations, config.huberPixels, candidateMedian);
+        result.timing.costSeconds += elapsed(candidateCostStarted);
 
         if(candidateCost < cost){
             result.poses = candidate.poses;
@@ -307,6 +421,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
         }
         result.iterations = iteration + 1;
     }
+    result.timing.totalSeconds = elapsed(totalStarted);
     return result;
 }
 

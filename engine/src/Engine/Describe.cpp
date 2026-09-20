@@ -254,6 +254,7 @@ struct CellGrid{
     int32_t countX = 1, countY = 1;
     std::vector<uint32_t> start;    //countX*countY + 1
     std::vector<uint32_t> items;
+    std::vector<uint32_t> rankInCell;
 
     uint32_t at(int32_t cx, int32_t cy, uint32_t& count) const {
         const int32_t x = cx - firstX, y = cy - firstY;
@@ -296,9 +297,11 @@ CellGrid buildGrid(const std::vector<Descriptor>& set, const std::vector<glm::ve
     //Drugi prolaz puni rastucim rednim brojem, pa unutar celije poredak ostaje isti
     std::vector<uint32_t> cursor(grid.start.begin(), grid.start.end() - 1);
     grid.items.assign(grid.start[cells], 0);
+    grid.rankInCell.assign(set.size(), 0);
     for(uint32_t i = 0; i < uint32_t(set.size()); ++i){
         if(!set[i].valid) continue;
         const size_t cellIndex = size_t(cy[i] - grid.firstY) * size_t(grid.countX) + size_t(cx[i] - grid.firstX);
+        grid.rankInCell[i] = cursor[cellIndex] - grid.start[cellIndex];
         grid.items[cursor[cellIndex]++] = i;
     }
     return grid;
@@ -325,7 +328,17 @@ std::vector<Match> matchDescriptorsNear(const std::vector<Descriptor>& from,
 
     std::vector<uint32_t> bestTo(from.size(), 0), bestDistance(from.size(), 257);
 
-    inBands(0, int(from.size()), [&](uint32_t, int firstItem, int lastItem){
+    struct ReverseChoice{
+        uint32_t distance;
+        uint32_t from;
+        uint64_t order;
+    };
+    const uint32_t matchingBands = bandCount(int(from.size()));
+    std::vector<ReverseChoice> reverse(size_t(matchingBands) * to.size(),
+                                       ReverseChoice{257, UINT32_MAX, UINT64_MAX});
+
+    inBands(0, int(from.size()), [&](uint32_t band, int firstItem, int lastItem){
+        ReverseChoice* reverseHere = reverse.data() + size_t(band) * to.size();
         for(uint32_t i = uint32_t(firstItem); i < uint32_t(lastItem); ++i){
             if(!from[i].valid) continue;
 
@@ -344,10 +357,18 @@ std::vector<Match> matchDescriptorsNear(const std::vector<Descriptor>& from,
                         const glm::vec2 apart = toPixels[j] - fromPixels[i];
                         if(glm::dot(apart, apart) > radiusSquared) continue;
 
-                        //Granica je drugi po redu: sve iznad nje ne mijenja ni jedno ni drugo
-                        const uint32_t d = distanceUnder(from[i], to[j], second);
+                        //Udaljenost se racuna jednom i koristi u oba smjera. Cetiri popcounta su
+                        //isti cjelobrojni racun koji su prije radila dva prolaza po dva bloka.
+                        const uint32_t d = distanceUnder(from[i], to[j], 257);
                         if(d < best){ second = best; best = d; chosen = j; }
                         else if(d < second){ second = d; }
+
+                        ReverseChoice& backward = reverseHere[j];
+                        const uint32_t reverseCell = uint32_t((-dy + 1) * 3 + (-dx + 1));
+                        const uint64_t order = (uint64_t(reverseCell) << 32) | fromGrid.rankInCell[i];
+                        if(d < backward.distance || (d == backward.distance && order < backward.order)){
+                            backward = ReverseChoice{d, i, order};
+                        }
                     }
                 }
             }
@@ -360,37 +381,21 @@ std::vector<Match> matchDescriptorsNear(const std::vector<Descriptor>& from,
         }
     });
 
-    //Uzajamnost: isti racun u suprotnom smjeru. Bez njega se deset znacajki preslika na istu jednu,
-    //i triangulacija dobije deset imena za istu tocku
-    std::vector<uint32_t> bestFrom(to.size(), UINT32_MAX), backDistance(to.size(), 257);
+    //Uzajamnost: pojasevi se spoje redom starog obilaska. Bez uzajamnosti se deset znacajki
+    //preslika na istu jednu, i triangulacija dobije deset imena za istu tocku.
+    std::vector<uint32_t> bestFrom(to.size(), UINT32_MAX);
 
     inBands(0, int(to.size()), [&](uint32_t, int firstItem, int lastItem){
         for(uint32_t j = uint32_t(firstItem); j < uint32_t(lastItem); ++j){
-            if(!to[j].valid) continue;
-
-            const int32_t cx = int32_t(std::floor(double(toPixels[j].x) / double(cell)));
-            const int32_t cy = int32_t(std::floor(double(toPixels[j].y) / double(cell)));
-
-            uint32_t best = 257, chosen = UINT32_MAX;
-
-            for(int32_t dy = -1; dy <= 1; ++dy){
-                for(int32_t dx = -1; dx <= 1; ++dx){
-                    uint32_t count = 0;
-                    const uint32_t offset = fromGrid.at(cx + dx, cy + dy, count);
-
-                    for(uint32_t k = 0; k < count; ++k){
-                        const uint32_t i = fromGrid.items[offset + k];
-                        const glm::vec2 apart = toPixels[j] - fromPixels[i];
-                        if(glm::dot(apart, apart) > radiusSquared) continue;
-
-                        const uint32_t d = distanceUnder(from[i], to[j], best);
-                        if(d < best){ best = d; chosen = i; }
-                    }
+            ReverseChoice best{257, UINT32_MAX, UINT64_MAX};
+            for(uint32_t band = 0; band < matchingBands; ++band){
+                const ReverseChoice& candidate = reverse[size_t(band) * to.size() + j];
+                if(candidate.distance < best.distance ||
+                   (candidate.distance == best.distance && candidate.order < best.order)){
+                    best = candidate;
                 }
             }
-
-            backDistance[j] = best;
-            bestFrom[j] = chosen;
+            bestFrom[j] = best.from;
         }
     });
 

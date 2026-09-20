@@ -19,8 +19,9 @@ struct SwapchainConfig {
     };
     vk::ImageUsageFlags imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
 
-    //Lets the window be read back. Added only if the surface supports it, and it is what
-    //makes a window-level regression test possible at all
+    //Lets the window be read back. When the surface can be a transfer destination, the
+    //renderer keeps a stable readable colour image and copies it into the acquired image
+    //for presentation. That avoids touching a swapchain image after it was presented.
     bool allowReadback = true;
     uint32_t preferredImageCount = 0; //0 = use minImageCount + 1 heuristics
 };

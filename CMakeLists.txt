@@ -526,4 +526,24 @@ if(LOOM_BUILD_TESTS)
 
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endforeach()
+
+    # Polje ostataka mora proci i kroz STVARNI put do korisnika, ne samo kroz cisti racun u
+    # test_residual_field: Loom nacrta kadrove, oba grafa ih ponovno pronadju, rekonstrukcija
+    # procijeni poze i tek se nad njezinim prezivjelim opazanjima donese dijagnoza.
+    #
+    # Namjerno su spori i nisu iskljuceni iz obicnog ctesta. Test koji se nikad ne vrti ne brani
+    # alat. Ovo su tocno dva unaprijed zapisana kriterija iz HANDOVER-a.
+    add_test(NAME test_residual_field_truthbench_clean
+        COMMAND TruthBench luk 30 0 1280 0)
+    set_tests_properties(test_residual_field_truthbench_clean PROPERTIES
+        PASS_REGULAR_EXPRESSION "POLJE OSTATAKA: bijelo"
+        TIMEOUT 600
+        LABELS "slow;integration")
+
+    add_test(NAME test_residual_field_truthbench_warp
+        COMMAND TruthBench luk 30 0 1280 5)
+    set_tests_properties(test_residual_field_truthbench_warp PROPERTIES
+        PASS_REGULAR_EXPRESSION "POLJE OSTATAKA: polje se mijenja po kadru"
+        TIMEOUT 600
+        LABELS "slow;integration")
 endif()

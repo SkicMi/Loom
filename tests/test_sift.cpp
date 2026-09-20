@@ -134,5 +134,40 @@ int main(){
             many.size() == 2 ? fmt("razlika %.0f", double(Engine::distance(many[0], here))) : "kriv broj");
     }
 
+    //-- pripremljena prostorna mreza ne mijenja poklapanje -----------------------------------
+    {
+        const std::vector<glm::vec2> places{
+            glm::vec2(52.0f, 52.0f), glm::vec2(91.0f, 61.0f), glm::vec2(139.0f, 75.0f),
+            glm::vec2(67.0f, 128.0f), glm::vec2(121.0f, 146.0f), glm::vec2(177.0f, 169.0f)
+        };
+        const std::vector<Engine::SiftDescriptor> descriptors =
+            Engine::describeSiftAll(view(plain), places, config);
+        const float radius = 80.0f;
+
+        //Stari poziv namjerno ostaje referenca: on mreze gradi iznova unutar matchera.
+        const std::vector<Engine::SiftMatch> reference =
+            Engine::matchSiftNear(descriptors, places, descriptors, places, radius, config);
+        const Engine::SiftMatchGrid grid = Engine::prepareSiftMatchGrid(descriptors, places, radius);
+        const std::vector<Engine::SiftMatch> prepared =
+            Engine::matchSiftNear(descriptors, places, grid, descriptors, places, grid, radius, config);
+
+        bool exactlyEqual = reference.size() == prepared.size();
+        for(size_t i = 0; exactlyEqual && i < reference.size(); ++i){
+            exactlyEqual = reference[i].from == prepared[i].from &&
+                           reference[i].to == prepared[i].to &&
+                           reference[i].distance == prepared[i].distance;
+        }
+        report.check("pripremljena mreza daje bit-identican rezultat",
+            !reference.empty() && exactlyEqual,
+            fmt("referenca %zu, pripremljeno %zu", reference.size(), prepared.size()));
+
+        //Mreza napravljena za drugi radijus ne smije se tiho upotrijebiti s krivim celijama.
+        const std::vector<Engine::SiftMatch> mismatched =
+            Engine::matchSiftNear(descriptors, places, grid, descriptors, places, grid,
+                                  radius * 0.5f, config);
+        report.check("mreza krivog radijusa se odbija", mismatched.empty(),
+            mismatched.empty() ? "odbijena" : "PRIHVACENA");
+    }
+
     return report.result();
 }

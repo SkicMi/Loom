@@ -30,6 +30,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <map>
 #include <vector>
 
@@ -139,6 +141,29 @@ Agreement compare(const Engine::MatchGraphResult& graph, glm::vec2 trueShift){
     return out;
 }
 
+uint64_t exactGraphHash(const Engine::MatchGraphResult& graph){
+    uint64_t hash = 1469598103934665603ull;
+    auto add = [&](uint32_t value){
+        for(uint32_t byte = 0; byte < 4; ++byte){
+            hash ^= uint8_t(value >> (byte * 8));
+            hash *= 1099511628211ull;
+        }
+    };
+    add(graph.pointCount);
+    add(uint32_t(graph.observations.size()));
+    for(const Engine::Observation& observation : graph.observations){
+        uint32_t pixelX = 0, pixelY = 0;
+        static_assert(sizeof(pixelX) == sizeof(observation.pixel.x), "float mora imati 32 bita");
+        std::memcpy(&pixelX, &observation.pixel.x, sizeof(pixelX));
+        std::memcpy(&pixelY, &observation.pixel.y, sizeof(pixelY));
+        add(observation.camera);
+        add(observation.point);
+        add(pixelX);
+        add(pixelY);
+    }
+    return hash;
+}
+
 }
 
 int main(){
@@ -188,6 +213,12 @@ int main(){
         small.workingWidth = width / 4;
         const Engine::MatchGraphResult graph = Engine::buildMatchGraph(images, intrinsics, small);
         const Agreement agreement = compare(graph, shift);
+
+        report.check("graf je bit-identican zlatnom izlazu",
+            exactGraphHash(graph) == 11197454592418299683ull,
+            fmt("hash %llu, %u tocaka, %zu opazanja",
+                static_cast<unsigned long long>(exactGraphHash(graph)),
+                graph.pointCount, graph.observations.size()));
 
         report.check("smanjenje se javlja",
             graph.localizationPixels == 4.0f, fmt("%.1f px", double(graph.localizationPixels)));
@@ -244,6 +275,27 @@ int main(){
             alongX.size() > 50 && std::fabs(offsetX) < 1.0 && std::fabs(offsetY) < 1.0,
             fmt("%zu tocaka, srednjak odmaka (%.2f, %.2f) px - bez pola bloka bio bi (1.5, 1.5)",
                 alongX.size(), offsetX, offsetY));
+    }
+
+    //-- prostor mjerila ---------------------------------------------------------------------
+    //
+    // Brzi graf gore koristi binarni potpis. Produkcijski put mu dodaje zaseban graf znacajki
+    // s mjerilom i SIFT-ovim potpisom, pa optimizacija njegova matchera mora imati vlastitu
+    // bit-identicnu branu. Ogranicenje broja znacajki drzi test kratkim; racun i poredak su isti
+    // kao na 4K snimci.
+    {
+        Engine::MatchGraphConfig scaled = config;
+        scaled.useScaleSpace = true;
+        scaled.scaleSpace.maxKeypoints = 1500;
+        scaled.scaleSpace.minDistance = 4.0f;
+        const Engine::MatchGraphResult graph = Engine::buildMatchGraph(images, intrinsics, scaled);
+
+        report.check("graf prostora mjerila je bit-identican zlatnom izlazu",
+            exactGraphHash(graph) == 2453899824703454841ull,
+            fmt("hash %llu, %u tocaka, %zu opazanja",
+                static_cast<unsigned long long>(exactGraphHash(graph)),
+                graph.pointCount, graph.observations.size()));
+
     }
 
     //-- ciscenje ne smije jesti zdravo ------------------------------------------------------

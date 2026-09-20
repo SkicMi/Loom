@@ -949,9 +949,23 @@ Pobjednik na rubu znaci da se mjera nije okrenula - a i zarisna x1.25 od njega d
 reprojekciju i GLATKIJU putanju. Kriva zarisna se s reprojekcijom trguje: scena se izoblici tako da
 opazanja i dalje pasu.
 
-Sada se to javlja kao upozorenje i raspon ide do 110 st, ali to je zakrpa. **Pravo rjesenje je
-samokalibracija u bundleu** - da se zarisna optimira zajedno s pozama. Bundle vec racuna pinhole
-jakobijane, pa je dodavanje derivacije po zaristu poznat i umjeren posao.
+Sada se to javlja kao upozorenje i raspon ide do 110 st, ali to je zakrpa. Prvi pokusaj da se
+zarisna samo doda bundleu takoder nije bio rjesenje: geometrija je upila krivo `f`, RMS je pao, a
+zarisna ostala pogresna.
+
+Novi genericki put zato prvo procjenjuje `f+k1` iz view-grapha, bez poznatih poza i 3D tocaka, pa
+tek onda radi zajednicki bundle. Sinteticki end-to-end test vraca `f=934,66` za istinu 920 px i
+`k1=-0,04154` za istinu -0,045, uz RMS 3,896 -> 0,160 px. Cista rotacija i kriticni look-at luk
+vracaju neodredjeno. Put je sada spojen u `VideoSolve`; FOV sweep ostaje samo jasno ispisani
+fallback za neodredjenu geometriju. Isti `k1` ispravlja opazanja i izlazne PNG-ove, pa se uz
+`PINHOLE` vise ne izvozi zakrivljena slika.
+
+Stvarni Sony smoke (8 ulaznih, 6 kljucnih kadrova, bez prostora mjerila) dokazao je cijeli
+.MP4 -> solve -> ispravljene slike -> COLMAP -> ponovno citanje put: 6/6 kamera, 15 192 tocke,
+71 280 ponovno procitanih opazanja i medijan 1,553 px naspram 1,387 px u solveru. Procijenjeno je
+`f=2963,02 px`, `k1=-0,17860`, ali rezultat **nije prihvacen kao dobra kalibracija**: omjer
+izdvojenih opazanja je 2,64, a polje ostataka mijenja se po kadru. To je smoke integracije, ne
+zamjena za pune S1/S2/S3/M1 release snimke.
 
 ### Sto radi lazna stabilizacija, i koji ju detektor NE vidi
 
@@ -979,8 +993,148 @@ pouka po deseti put - sito koje propusti ne znaci da je model tocan.
 2.53 -> 4.71 uz 0.018 -> 0.828 -> 1.934 %), ali na dva piksela je 1.38 - nizi nego na cistoj snimci
 - dok je greska vec jedanaest puta veca.
 
-**Zakljucak za snimanje: stabilizaciju iskljuciti.** Blaga stabilizacija visestruko kvari poze, a
-NIJEDNA mjera koju imamo to ne prijavi.
+**Tadasnji zakljucak za snimanje:** stabilizaciju iskljuciti. Blaga stabilizacija visestruko kvari
+poze, a nijedna mjera koju smo u tom trenutku imali to nije prijavljivala. Sljedeci odjeljak uvodi
+mjeru koja jest.
+
+### Polje ostataka vidi ono sto prolaz geometrije i izdvojena opazanja ne vide
+
+Prethodni zakljucak vise nije zadnja rijec. Uveden je detektor koji sliku dijeli na 8x8 i po
+celiji, po kadru racuna **srednji VEKTOR reprojekcijskog ostatka**. Jednolik pomak kadra uklanja se
+jer ga poza moze upiti. Rasap opazanja unutar celije daje varijancu njezine sredine; ta se energija
+suma oduzima od energije polja, a statisticki dokaz skuplja se preko svih celija.
+
+Prvi pokusaj bio je pogresan: zahtijevao je da polje bude vece od cetiri puta RMS suma sredine
+jedne celije. Na punom warpu od 5 px polje je bilo 1.087 px, sum 0.301 px, pa je lazni prag ispao
+1.205 px i detektor je rekao "bijelo". Celija medjutim ne odlucuje sama — bilo ih je 1920. Nakon
+oduzimanja energije suma ostaje koherentan signal od 1.045 px.
+
+Puni lanac, isti `TruthBench` i ista rekonstrukcija kao gore:
+
+| izoblicenje | omjer izdvojenih | polje | prostorni signal | promjenjivi signal | prava greska polozaja |
+|---|---|---|---|---|---|
+| 0 px | 1.38 | **bijelo** | 0.075 px | 0.073 px | 0.025 % |
+| 2 px | **1.39** | **mijenja se po kadru** | 1.089 px | 1.088 px | 0.197 % |
+| 5 px | 2.46 | **mijenja se po kadru** | 1.045 px | 1.039 px | 0.782 % |
+
+Najvazniji je redak od dva piksela: omjer izdvojenih i dalje tvrdi da je rjesenje zdravo, a novo
+polje ga prijavi. Signal nije procjena broja piksela stabilizacije — bundle dio warpa pretvori u
+krive poze i tocke — nego provjera hipoteze "ostatak je bijel".
+
+Test nije samo nad rucno zadanim vektorima. Dva spora CTesta svaki put nacrtaju 30 kadrova, izgrade
+oba grafa i cijelu rekonstrukciju: cisti mora zavrsiti s `bijelo`, a warp 5 px s `mijenja se po
+kadru`. Uz njih `test_residual_field` brani prazne podatke, tocnu projekciju, bijeli sum, jednolik
+pomak cijelog kadra, staticno polje, promjenjivo polje i koherentan signal slabiji od lokalnog
+4-sigma praga. Tadasnji paket nakon izmjene: **86/86**; nakon samokalibracije paket ima 87 testova.
+
+### Poklapanje bez ponovnog racunanja iste udaljenosti
+
+Fazna telemetrija na Sony 4K snimci pokazala je da 80 ulaznih / 78 kljucnih kadrova trosi 269,7 s
+samo na poklapanje. Oba matchera su istu cjelobrojnu udaljenost racunala ponovo u suprotnom smjeru
+radi uzajamno najboljeg susjeda; SIFT ju je treci put racunao radi drugog najboljeg.
+
+Sada svaki pojas uz prednji prolaz vodi svoj najbolji povratni kandidat, a pojasevi se nakon toga
+spajaju u tocno starom redoslijedu celija i indeksa. SIFT udaljenosti jedne znacajke kratko se
+zadrze i ponovno koriste za ratio test. Nema atomika ni ovisnosti o rasporedu dretvi. Dva zlatna
+hasha brane cijeli brzi i scale-space graf do bitova.
+
+Na istom ulazu izlaz je ostao 2 339 952 znacajke, 118 507 tocaka, 808 021 opazanje, 1116/1450
+geometrijskih parova i medijan 1070. Matching je pao **269,7 -> 149,5 s**, a graf **448,7 ->
+337,8 s**. Rucni SSE2 i trajni skup dretvi izmjereni su i uklonjeni jer nisu ubrzali. Cijeli alat
+jos ne prolazi prag od 600 s: nakon 81,9 s pracenja i 337,8 s grafa timeout ga je uhvatio u
+rekonstrukciji. Sljedeci profil zato mora odvojeno mjeriti scale-space znacajke i rekonstrukciju.
+Zavrsni `Release` CTest na stvarnom RTX 5070 uredjaju prolazi **87/87** za 155,32 s; pokretanje u
+sandboxu nije valjano GPU mjerenje jer ondje XCB i NVIDIA ICD nisu dostupni pa se bira llvmpipe.
+
+### Cache grafa i profil rekonstrukcije
+
+Osmi argument je put do cachea grafa:
+
+```bash
+./build-release/VideoSolve snimka.mp4 10 80 0 '' '' graf /tmp/loom-graf.bin
+```
+
+Ako datoteke nema, tracking i graf se izgrade pa zapisu prije rekonstrukcije. Ako postoji i
+odgovara snimci, rezoluciji, koraku, broju kadrova i nacinu gradnje, ucita se i oba skupa koraka
+se preskoce. Format je verzioniran i little-endian, ima duljinu i checksum, ogranicava broj
+elemenata i sprema floatove po bitovima. Test brani bit-identican round-trip, ostecen payload i
+prekinut zapis. Sony smoke je ponovio isti izlaz i pao s 30,77 na 15,76 s.
+
+Cache punog 80/78 ulaza ima 12 928 740 bajtova, 118 507 tocaka i 808 021 opazanje. Na njemu je
+rekonstrukcijska telemetrija izmjerila 202,6 s ukupno: **198,9 s u 98 globalnih bundleova**, dok
+sve ostale klasificirane faze zajedno uzmu 3,7 s.
+
+Rjedi bundle postoji kao `ReconstructConfig::incrementalBundleGrowth`; test na 16 kamera s
+poznatom istinom daje 16/16, 0,0262 stupnja, 0,0037 m i 0,559 px uz 9 umjesto 23 poziva. Nije
+zadan u `VideoSolveu`: 1,25 na pravom grafu ostavlja 61/78 kamera, a 1,10 uz dobru pokrivenost
+jos daje held-out omjer 2,57. Brzina bez potvrdene geometrije nije napredak.
+
+Sam bundle je zato ubrzan bez prorjedivanja. `CameraBlockovi` su jedan ravni prefix-sum niz umjesto
+stotina tisuca malih alokacija po iteraciji; point/camera Jacobian dijele projekciju; medijan koristi
+`nth_element`; cost racuna samo rezidual umjesto cijelog Jacobiana. Zlatni hash cijelog izlaza
+(`4084565953268247014`) brani bit-identicnost. Na punom cacheu ostaju f=3307,24 px,
+k1=-0,19276, 78/78 kamera i 1,328 px, uz svih 97 bundle poziva, a vrijeme pada:
+
+| faza | prije | sada |
+|---|---:|---:|
+| cijeli solve | 194,0 s | **101,3 s** |
+| bundle | 190,4 s | **97,7 s** |
+| linearizacija | 60,7 s | **32,6 s** |
+| Schur | 73,3 s | **46,0 s** |
+| uvrstavanje | 11,3 s | **5,2 s** |
+| evaluacija troska | 37,3 s | **10,5 s** |
+
+Ponovljeni probni solve nakon uspjesne samokalibracije sada je uklonjen. Samokalibracija vec vraca
+isti brzi kandidat na konacnom `f+k1`; VideoSolve ga preuzima, dok puna obrada pobjednika i dalje
+krece iz nule s istim FOV-om i istom thorough konfiguracijom. Prije ponovne uporabe osvjezavaju se
+reprojekcija, held-out medijan i triangulacijska baza nad pozama i tockama nakon joint bundlea.
+Test held-out skup bira neovisno od produkcijskog helpera i dobiva tocno `496/496` opazanja te isti
+medijan do zadnjeg bita (`0,152370274 px`). Time se na punom Sony grafu uklanja jedan cijeli solve
+izmjeren na `101,3 s`, bez prorjedjivanja njegovih 97 bundle poziva i bez diranja zavrsnog poliranja.
+Puni sekvencijalni `Release` CTest na stvarnom RTX/X okruzenju nakon paralelizacije prolazi
+**88/88**; zadnji run traje 96,55 s (prethodni 230,28 s zbog varijacije GPU testova), a zahvaceni
+testovi prolaze i pod ASan+UBSan bez prijava.
+
+Dvije `f x 0,75/1,25` dijagnostike sada se izvode paralelno. Oba solvea samo citaju graf i imaju
+vlastiti lokalni RANSAC RNG. Test ih prvo izvodi sekvencijalno, zatim paralelno, te bit-po-bit
+usporeduje cijelo rjesenje osim stoperice; `test_reconstruct` prolazi 25/25 u Releaseu i pod
+ASan+UBSan. TSan binary se preveo, ali runtime ovog hosta pada prije `main()` s `unexpected memory
+mapping`, pa taj pokusaj nije proglasen prolazom.
+
+Cetiri thorough kandidata sada se takoder grade paralelno. Njihov izbor nije naprosto proglasen
+neovisnim: prvo se samo jeftina faza izbora ponovi uz isti rastuci `skipInitialPairs`, a zatim se
+cetiri puna solvea pokrenu s tocno zadanim parovima. Sekvencijalni referentni put ostaje u testu;
+cijeli pobjednik je bit-identican (isti par 5-6 i `0,530486047 px`). `test_reconstruct` prolazi
+26/26 u Releaseu i pod ASan+UBSan.
+
+Stvarni Sony cache benchmark cuva 78/78, 111 187 tocaka, 1,358 px i bazu 4,47 st. Thorough faza
+pada **459,2 -> 150,2 s**, a cijeli cache run **701,65 -> 397,54 s**, odnosno 304,11 s / 43,3 %.
+Dijagnostike ostaju 1,383 i 1,249 px. Cijena je peak RSS `548 704 -> 901 452 KiB` (oko 880 MiB),
+bez OOM-a i bitno ispod dostupne memorije stroja.
+
+Cache run je sada ispod deset minuta, ali hladni alat jos nije: tracking i graf su zadnje izmjereni
+na oko 419,7 s, pa zbroj stvarno izmjerenih faza daje oko 817 s. To nije novi end-to-end prolaz i
+ne smije se tako zvati. Sljedece veliko usko grlo je gradnja grafa, osobito scale-space znacajke i
+matching; nakon njih treba ponoviti puni run bez cachea.
+
+Profil scale-space znacajki sada dodatno razdvaja detekciju, blur, gradijente i samu gradnju SIFT
+potpisa. Na 8 ulaznih / 6 kljucnih Sony 4K kadrova blur je uzimao 9,4 od 12,1 s potpisa. Odvojiva
+Gaussova konvolucija sada obradi osam susjednih izlaza zajedno i preskace clamp u unutrasnjosti,
+ali svaki izlaz i dalje zbraja isti kernel istim redom. Oba zlatna hasha ostaju bit-identicna.
+Na tom isjecku blur pada **9,4 -> 3,8 s**, znacajke **15,5 -> 9,3 s**, a graf **20,9 -> 14,7 s**
+uz istih 238 378 znacajki, 19 434 tocaka i 87 600 opazanja. Rano prekidanje SIFT udaljenosti je
+izmjereno, usporilo matching 4,8 -> 6,3 s i uklonjeno. Cijeli Release paket prolazi **88/88** na
+stvarnom GPU-u, a graph test prolazi ASan+UBSan 19/19; puni hladni run ostaje obavezna potvrda.
+
+Puna potvrda bez cachea zatim daje graf **337,8 -> 281,1 s** i znacajke **175,8 -> 100,6 s**.
+Novi i stari puni cache prolaze `cmp` byte-for-byte i imaju isti SHA-256
+`9a8c7ea228493c46f299f4445aa7c319baefbeda655feb141674b3eaea32122a`. Cijeli hladni alat ipak
+traje **14:06,02**, pa prag `<600 s` jos pada za 246 s.
+Izlaz ostaje 78/78 kamera, 111 187 tocaka, 1,358 px i baza 4,47 st; peak RSS je 1 806 604 KiB,
+bez swapa. Samokalibracijska i thorough rekonstrukcija u tom toplom, punom procesu traju 115,4 i
+173,8 s. Prosjecna zauzetost je samo 687 % CPU-a uz dostupnih 28 logickih CPU-a. Sljedeci kandidat
+nije jos jedna aproksimacija grafa, nego deterministicka paralelizacija sekvencijalnih bundle
+linearizacije i Schura po tockama, uz postojeci bit-identicni referentni test.
 
 ### Sto jos nije rijeseno
 

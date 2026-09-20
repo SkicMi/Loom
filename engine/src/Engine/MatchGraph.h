@@ -400,6 +400,19 @@ struct MatchGraphResult{
     uint32_t featuresTotal = 0;
     double medianMatchesPerPair = 0.0;
 
+    //Fazna telemetrija. Ne ulazi ni u jednu odluku grafa; sluzi samo da optimizacija pogodi dio
+    //koji stvarno trosi vrijeme, uz bit-identican izlaz.
+    double preprocessSeconds = 0.0;
+    double featureSeconds = 0.0;
+    double detectionSeconds = 0.0;
+    double descriptorSeconds = 0.0;
+    double descriptorSmoothingSeconds = 0.0;
+    double descriptorGradientSeconds = 0.0;
+    double descriptorBuildSeconds = 0.0;
+    double matchingSeconds = 0.0;
+    double geometrySeconds = 0.0;
+    double assemblySeconds = 0.0;
+
     //KOLIKO JE POLOZAJ ZNACAJKE TOCAN, u pikselima slike koju je pozivatelj dao. Jedan kad se
     //radilo na izvornoj sirini; inace onoliko koliko je slika smanjena.
     //

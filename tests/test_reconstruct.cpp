@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <future>
 #include <random>
 #include <string>
 #include <vector>
@@ -87,6 +88,35 @@ Comparison compare(const Engine::Reconstruction& state, const Engine::SyntheticS
     return out;
 }
 
+//Telemetrija namjerno nije dio usporedbe: wall-time se smije razlikovati. Sve sto opisuje
+//rjesenje mora ostati tocno jednako, ukljucujuci maske i dijagnosticke medijane.
+bool sameSolution(const Engine::Reconstruction& first, const Engine::Reconstruction& second){
+    if(first.poses.size() != second.poses.size() || first.points.size() != second.points.size())
+        return false;
+    for(size_t i = 0; i < first.poses.size(); ++i){
+        if(first.poses[i].position != second.poses[i].position ||
+           first.poses[i].orientation != second.poses[i].orientation) return false;
+    }
+    for(size_t i = 0; i < first.points.size(); ++i)
+        if(first.points[i] != second.points[i]) return false;
+
+    return first.posed == second.posed && first.solved == second.solved &&
+        first.observationUsed == second.observationUsed &&
+        first.posedCameras == second.posedCameras && first.solvedPoints == second.solvedPoints &&
+        first.usedObservations == second.usedObservations &&
+        first.filteredObservations == second.filteredObservations &&
+        first.medianReprojection == second.medianReprojection &&
+        first.parallaxLimitDegrees == second.parallaxLimitDegrees &&
+        first.medianTriangulationAngle == second.medianTriangulationAngle &&
+        first.heldOutObservations == second.heldOutObservations &&
+        first.heldOutReprojection == second.heldOutReprojection &&
+        first.rescuedCameras == second.rescuedCameras && first.seamAt == second.seamAt &&
+        first.seamsFound == second.seamsFound && first.seamRepaired == second.seamRepaired &&
+        first.initialA == second.initialA && first.initialB == second.initialB &&
+        first.initialAngle == second.initialAngle && first.initialPoints == second.initialPoints &&
+        first.ok == second.ok;
+}
+
 }
 
 int main(){
@@ -126,6 +156,90 @@ int main(){
         report.check("reprojekcija je na razini suma",
             state.medianReprojection > 0.2 && state.medianReprojection < 0.60,
             fmt("%.3f px", state.medianReprojection));
+    }
+
+    //Dvije VideoSolve dijagnostike rade nad istim read-only grafom. Ovaj test prvo racuna obje
+    //sekvencijalno, zatim ih pokrece istodobno i usporedjuje cijelo rjesenje bit-po-bit (osim
+    //stoperice). Time testira upravo thread-safety i deterministiku, a ne samo da se future vrati.
+    {
+        Engine::ReconstructConfig diagnosticConfig;
+        diagnosticConfig.initialPairTrials = 1;
+        diagnosticConfig.seamFactor = 0.0;
+        diagnosticConfig.holdOutEvery = 10;
+        Engine::Intrinsics lowerIntrinsics = scene.intrinsics;
+        lowerIntrinsics.fx *= 0.85f;
+        lowerIntrinsics.fy *= 0.85f;
+        Engine::Intrinsics upperIntrinsics = scene.intrinsics;
+        upperIntrinsics.fx *= 1.15f;
+        upperIntrinsics.fy *= 1.15f;
+
+        const Engine::Reconstruction lowerSequential = Engine::reconstruct(
+            scene.observations, scene.poses.size(), scene.points.size(), lowerIntrinsics,
+            diagnosticConfig);
+        const Engine::Reconstruction upperSequential = Engine::reconstruct(
+            scene.observations, scene.poses.size(), scene.points.size(), upperIntrinsics,
+            diagnosticConfig);
+
+        auto lowerFuture = std::async(std::launch::async, [&]{
+            return Engine::reconstruct(scene.observations, scene.poses.size(), scene.points.size(),
+                                       lowerIntrinsics, diagnosticConfig);
+        });
+        auto upperFuture = std::async(std::launch::async, [&]{
+            return Engine::reconstruct(scene.observations, scene.poses.size(), scene.points.size(),
+                                       upperIntrinsics, diagnosticConfig);
+        });
+        const Engine::Reconstruction lowerParallel = lowerFuture.get();
+        const Engine::Reconstruction upperParallel = upperFuture.get();
+
+        report.check("paralelne dijagnoze su bit-identicne",
+            sameSolution(lowerSequential, lowerParallel) &&
+                sameSolution(upperSequential, upperParallel),
+            fmt("donja %u/%u kamera i %.9f/%.9f px; gornja %u/%u i %.9f/%.9f px",
+                lowerSequential.posedCameras, lowerParallel.posedCameras,
+                lowerSequential.medianReprojection, lowerParallel.medianReprojection,
+                upperSequential.posedCameras, upperParallel.posedCameras,
+                upperSequential.medianReprojection, upperParallel.medianReprojection));
+    }
+
+    // -------------------------------------------------------------------------------
+    // Globalni bundle ne mora slijediti bas svaku novu kameru
+    // -------------------------------------------------------------------------------
+    //Ovo nije test stoperice. Broj poziva je deterministicka posljedica kadence, a kvaliteta se
+    //mjeri prema poznatoj istini. Tako spor stroj ne moze lazno pasti, niti brz sakriti kvar.
+    {
+        Engine::SyntheticConfig longerConfig = config;
+        //Dovoljno dugo da geometrijska kadenca preskoci vise poziva, ali ne 24 kamere: puni
+        //dense Schur u Debug+ASan buildu tada sam uzme vise minuta i uspori svaki razvojni run.
+        longerConfig.cameraCount = 16;
+        longerConfig.pointCount = 300;
+        const Engine::SyntheticScene longer = Engine::makeSyntheticScene(longerConfig);
+
+        Engine::ReconstructConfig everyConfig;
+        everyConfig.initialPairTrials = 1;
+        everyConfig.seamFactor = 0.0;
+        const Engine::Reconstruction every = Engine::reconstruct(
+            longer.observations, longer.poses.size(), longer.points.size(), longer.intrinsics,
+            everyConfig);
+
+        Engine::ReconstructConfig growingConfig = everyConfig;
+        growingConfig.incrementalBundleGrowth = 1.25;
+        const Engine::Reconstruction growing = Engine::reconstruct(
+            longer.observations, longer.poses.size(), longer.points.size(), longer.intrinsics,
+            growingConfig);
+        const Comparison result = compare(growing, longer);
+
+        report.check("rjedji bundle cuva poznatu geometriju",
+            growing.ok && growing.posedCameras == longer.poses.size() &&
+            result.medianRotation < 0.08 && result.medianPosition < 0.015 &&
+            growing.medianReprojection < 0.65,
+            fmt("%u/%zu kamera, rotacija %.4f st, polozaj %.4f m, reprojekcija %.3f px",
+                growing.posedCameras, longer.poses.size(), result.medianRotation,
+                result.medianPosition, growing.medianReprojection));
+
+        report.check("rjedji bundle stvarno uklanja pozive",
+            growing.timing.bundleCalls * 2 < every.timing.bundleCalls,
+            fmt("%u naspram %u globalnih bundleova",
+                growing.timing.bundleCalls, every.timing.bundleCalls));
     }
 
     // -------------------------------------------------------------------------------
@@ -382,8 +496,19 @@ int main(){
 
         Engine::ReconstructConfig many;
         many.initialPairTrials = 3;
-        const Engine::Reconstruction best = Engine::reconstruct(scene.observations, scene.poses.size(),
-                                                                scene.points.size(), scene.intrinsics, many);
+        Engine::ReconstructConfig sequential = many;
+        sequential.parallelInitialPairTrials = false;
+        const Engine::Reconstruction reference = Engine::reconstruct(
+            scene.observations, scene.poses.size(), scene.points.size(), scene.intrinsics,
+            sequential);
+        const Engine::Reconstruction best = Engine::reconstruct(
+            scene.observations, scene.poses.size(), scene.points.size(), scene.intrinsics, many);
+
+        report.check("paralelni pocetni parovi su bit-identicni",
+            sameSolution(reference, best),
+            fmt("par %u-%u, %u kamera, %u tocaka, reprojekcija %.9f/%.9f px",
+                best.initialA, best.initialB, best.posedCameras, best.solvedPoints,
+                reference.medianReprojection, best.medianReprojection));
 
         report.check("vise pokusaja ne kvari",
             best.ok && best.posedCameras >= once.posedCameras

@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <future>
 #include <limits>
 #include <unordered_map>
 
@@ -37,11 +39,72 @@ double medianOver(const std::vector<Observation>& observations, const Reconstruc
 
 }
 
-Reconstruction reconstruct(const std::vector<Observation>& observations,
-                           size_t cameraCount,
-                           size_t pointCount,
-                           const Intrinsics& intrinsics,
-                           const ReconstructConfig& config){
+void refreshReconstructionDiagnostics(const std::vector<Observation>& observations,
+                                      const Intrinsics& intrinsics,
+                                      const ReconstructConfig& config,
+                                      Reconstruction& state){
+    state.medianReprojection = medianOver(observations, state, intrinsics,
+                                          state.observationUsed);
+    state.heldOutObservations = 0;
+    state.heldOutReprojection = 0.0;
+
+    std::vector<std::vector<const Observation*>> byPoint(state.points.size());
+    for(const Observation& observation : observations){
+        if(observation.camera >= state.poses.size() || observation.point >= state.points.size())
+            continue;
+        byPoint[observation.point].push_back(&observation);
+    }
+
+    if(config.holdOutEvery > 1){
+        std::vector<uint32_t> left(byPoint.size(), 0);
+        for(size_t point = 0; point < byPoint.size(); ++point)
+            left[point] = uint32_t(byPoint[point].size());
+
+        std::vector<double> errors;
+        for(size_t index = 0; index < observations.size(); index += config.holdOutEvery){
+            const Observation& observation = observations[index];
+            if(observation.camera >= state.poses.size() || observation.point >= state.points.size())
+                continue;
+            if(left[observation.point] <= 3) continue;
+            --left[observation.point];
+            if(!state.posed[observation.camera] || !state.solved[observation.point]) continue;
+
+            glm::vec2 pixel;
+            if(!project(state.poses[observation.camera], intrinsics,
+                        state.points[observation.point], pixel)) continue;
+            errors.push_back(double(glm::length(pixel - observation.pixel)));
+        }
+        state.heldOutObservations = uint32_t(errors.size());
+        state.heldOutReprojection = medianOf(errors);
+    }
+
+    std::vector<double> angles;
+    angles.reserve(state.points.size());
+    for(size_t point = 0; point < state.points.size(); ++point){
+        if(!state.solved[point]) continue;
+        std::vector<View> views;
+        for(const Observation* observation : byPoint[point]){
+            const size_t index = size_t(observation - observations.data());
+            if(index >= state.observationUsed.size() || !state.observationUsed[index]) continue;
+            if(state.posed[observation->camera])
+                views.push_back(View{observation->camera, observation->pixel});
+        }
+        if(views.size() < 2) continue;
+        angles.push_back(parallaxDegrees(state.poses, intrinsics, views));
+    }
+    state.medianTriangulationAngle = medianOf(angles);
+}
+
+Reconstruction reconstructImpl(const std::vector<Observation>& observations,
+                               size_t cameraCount,
+                               size_t pointCount,
+                               const Intrinsics& intrinsics,
+                               const ReconstructConfig& config,
+                               bool selectInitialPairOnly = false){
+    using Clock = std::chrono::steady_clock;
+    auto elapsed = [](Clock::time_point start){
+        return std::chrono::duration<double>(Clock::now() - start).count();
+    };
     //=================================================================================
     // VISE POCETNIH PAROVA, svaki do kraja - vidi ReconstructConfig::initialPairTrials.
     //
@@ -162,28 +225,72 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         Reconstruction best;
         std::vector<std::pair<uint32_t, uint32_t>> seen;
 
-        for(uint32_t trial = 0; trial < config.initialPairTrials; ++trial){
-            //Sljedeci po redu izbor: isti racun kao inace, ali bez parova koji su vec probani
-            ReconstructConfig probe = once;
-            probe.skipInitialPairs = seen;
-
-            //POKUSAJI SE NE RAZMICU PO SNIMCI, i to je izmjereno - vidi initialPairSpread
-
-            const Reconstruction attempt = reconstruct(observations, cameraCount, pointCount,
-                                                       intrinsics, probe);
-            if(!attempt.ok) break;
-
-            const std::pair<uint32_t, uint32_t> pair{attempt.initialA, attempt.initialB};
-            if(std::find(seen.begin(), seen.end(), pair) != seen.end()) break;
-            seen.push_back(pair);
-
+        auto keepIfBetter = [&](Reconstruction attempt){
             //BROJ KAMERA PRVO, PA BAZA. Rjesenje s manje kamera nije bolje ma kako siroku bazu
             //imalo - ono naprosto nije rijesilo snimku
             const bool better = !best.ok
                 || attempt.posedCameras > best.posedCameras
                 || (attempt.posedCameras == best.posedCameras
                     && attempt.medianTriangulationAngle > best.medianTriangulationAngle);
-            if(better) best = attempt;
+            if(better) best = std::move(attempt);
+        };
+
+        if(config.parallelInitialPairTrials){
+            //Izbor sljedeceg para ovisi samo o prethodno IZABRANIM parovima, ne o ostatku njihove
+            //rekonstrukcije. Zato se prvo jeftino ponovi samo pocetna faza i dobije tocno isti niz
+            //parova kao u sekvencijalnom putu. Tek tada se puna, medusobno neovisna rjesenja grade
+            //istodobno. Redoslijed get() i izbora pobjednika ostaje stari, pa su i tie-breakovi isti.
+            std::vector<std::pair<uint32_t, uint32_t>> selected;
+            for(uint32_t trial = 0; trial < config.initialPairTrials; ++trial){
+                ReconstructConfig probe = once;
+                probe.skipInitialPairs = seen;
+                const Reconstruction choice = reconstructImpl(
+                    observations, cameraCount, pointCount, intrinsics, probe, true);
+                if(!choice.ok) break;
+
+                const std::pair<uint32_t, uint32_t> pair{choice.initialA, choice.initialB};
+                if(std::find(seen.begin(), seen.end(), pair) != seen.end()) break;
+                seen.push_back(pair);
+                selected.push_back(pair);
+            }
+
+            std::vector<std::future<Reconstruction>> attempts;
+            attempts.reserve(selected.size());
+            for(const auto& pair : selected){
+                ReconstructConfig forced = once;
+                forced.forceInitialA = pair.first;
+                forced.forceInitialB = pair.second;
+                forced.skipInitialPairs.clear();
+                attempts.push_back(std::async(std::launch::async,
+                    [&, forced]{
+                        return reconstruct(observations, cameraCount, pointCount,
+                                           intrinsics, forced);
+                    }));
+            }
+
+            for(auto& future : attempts){
+                Reconstruction attempt = future.get();
+                if(!attempt.ok) break;
+                keepIfBetter(std::move(attempt));
+            }
+        }else{
+            for(uint32_t trial = 0; trial < config.initialPairTrials; ++trial){
+                //Sljedeci po redu izbor: isti racun kao inace, ali bez parova koji su vec probani
+                ReconstructConfig probe = once;
+                probe.skipInitialPairs = seen;
+
+                //POKUSAJI SE NE RAZMICU PO SNIMCI, i to je izmjereno - vidi initialPairSpread
+
+                Reconstruction attempt = reconstruct(observations, cameraCount, pointCount,
+                                                     intrinsics, probe);
+                if(!attempt.ok) break;
+
+                const std::pair<uint32_t, uint32_t> pair{attempt.initialA, attempt.initialB};
+                if(std::find(seen.begin(), seen.end(), pair) != seen.end()) break;
+                seen.push_back(pair);
+
+                keepIfBetter(std::move(attempt));
+            }
         }
 
         if(best.ok) return best;
@@ -229,7 +336,6 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
 
     //IZDVOJENA OPAZANJA - vidi ReconstructConfig::holdOutEvery. Vade se prije ikakvog racuna, pa
     //ne ulaze ni u triangulaciju, ni u bundle, ni u ciscenje
-    std::vector<uint8_t> heldOut(observations.size(), 0);
     if(config.holdOutEvery > 1){
         std::vector<uint32_t> left(pointCount, 0);
         for(size_t point = 0; point < pointCount; ++point) left[point] = uint32_t(byPoint[point].size());
@@ -242,7 +348,6 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             if(left[one.point] <= 3) continue;
             --left[one.point];
 
-            heldOut[index] = 1;
             usable[index] = 0;
         }
     }
@@ -263,6 +368,7 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     // stvarno triangulirati - ispred obje kamere i s dovoljno paralakse. To je jedina mjera koja
     // ne zavarava: par moze dijeliti tisucu tocaka a nemati bazu, i tada ne vrijedi nista.
 
+    const auto initialPairStarted = Clock::now();
     std::unordered_map<uint64_t, uint32_t> shared;
     {
         std::vector<uint32_t> seeing;
@@ -435,6 +541,11 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     state.posed[first] = 1;
     state.posed[partner] = 1;
     state.posedCameras = 2;
+    state.timing.initialPairSeconds += elapsed(initialPairStarted);
+    if(selectInitialPairOnly){
+        state.ok = true;
+        return state;
+    }
 
     // ---------------------------------------------------------------------------------
     // Triangulacija svega sto vide dvije rijesene kamere, pa nova kamera, pa opet
@@ -448,6 +559,8 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     //bundle tocku moze samo lokalno pomaknuti. Tisuce takvih tocaka onda drze poze u lososu
     //minimumu iz kojeg bundle ne izlazi
     auto triangulateVisible = [&](bool redoSolved){
+        const auto phaseStarted = Clock::now();
+        ++state.timing.triangulationCalls;
         for(size_t point = 0; point < pointCount; ++point){
             if(state.solved[point] && !redoSolved) continue;
 
@@ -475,9 +588,12 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
                 ++state.solvedPoints;
             }
         }
+        state.timing.triangulationSeconds += elapsed(phaseStarted);
     };
 
     auto runBundle = [&](){
+        const auto phaseStarted = Clock::now();
+        ++state.timing.bundleCalls;
         std::vector<Observation> kept;
         kept.reserve(observations.size());
         for(size_t index = 0; index < observations.size(); ++index){
@@ -485,16 +601,26 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             const Observation& observation = observations[index];
             if(state.posed[observation.camera] && state.solved[observation.point]) kept.push_back(observation);
         }
-        if(kept.empty()) return;
+        if(kept.empty()){
+            state.timing.bundleSeconds += elapsed(phaseStarted);
+            return;
+        }
 
         BundleConfig bundleConfig;
         bundleConfig.huberPixels = config.huberPixels;
         bundleConfig.maxIterations = config.bundleIterations;
 
         const BundleResult result = bundleAdjust(kept, state.poses, state.points, intrinsics, bundleConfig);
-        if(!result.solved) return;
-        state.poses = result.poses;
-        state.points = result.points;
+        state.timing.bundleCostSeconds += result.timing.costSeconds;
+        state.timing.bundleLinearizeSeconds += result.timing.linearizeSeconds;
+        state.timing.bundleSchurSeconds += result.timing.schurSeconds;
+        state.timing.bundleDenseSolveSeconds += result.timing.denseSolveSeconds;
+        state.timing.bundleBackSubstituteSeconds += result.timing.backSubstituteSeconds;
+        if(result.solved){
+            state.poses = result.poses;
+            state.points = result.points;
+        }
+        state.timing.bundleSeconds += elapsed(phaseStarted);
     };
 
     //=================================================================================
@@ -527,8 +653,12 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     };
 
     auto filterObservations = [&](double maxPixels){
+        const auto phaseStarted = Clock::now();
         size_t dropped = 0;
-        if(maxPixels <= 0.0) return dropped;
+        if(maxPixels <= 0.0){
+            state.timing.filteringSeconds += elapsed(phaseStarted);
+            return dropped;
+        }
 
         for(size_t index = 0; index < observations.size(); ++index){
             if(!usable[index]) continue;
@@ -554,10 +684,12 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
                 --state.solvedPoints;
             }
         }
+        state.timing.filteringSeconds += elapsed(phaseStarted);
         return dropped;
     };
 
     auto currentMedian = [&](){
+        const auto phaseStarted = Clock::now();
         std::vector<double> errors;
         errors.reserve(observations.size());
         for(size_t index = 0; index < observations.size(); ++index){
@@ -567,7 +699,9 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             double error = 0.0;
             if(reprojectionOf(observation, error)) errors.push_back(error);
         }
-        return medianOf(errors);
+        const double result = medianOf(errors);
+        state.timing.filteringSeconds += elapsed(phaseStarted);
+        return result;
     };
 
     //USPUT LAGANO, NA KRAJU TEMELJITO. Puni ciklus usred gradnje bio bi na 634 kamere oko
@@ -654,6 +788,9 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     size_t nextRefine = config.refineGrowth > 1.0
         ? size_t(double(state.posedCameras) * config.refineGrowth) + 1
         : size_t(-1);
+    size_t nextBundle = config.incrementalBundleGrowth > 1.0
+        ? size_t(double(state.posedCameras) * config.incrementalBundleGrowth) + 1
+        : state.posedCameras + 1;
 
     for(size_t attempt = 0; attempt < 8 * cameraCount + 64; ++attempt){
         size_t best = cameraCount;
@@ -701,6 +838,8 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         Pose placed;
         bool placedOk = false;
         double placedMedian = 0.0;
+        const auto poseStarted = Clock::now();
+        ++state.timing.poseCalls;
 
         if(config.poseRansac){
             PoseRansacConfig poseConfig;
@@ -726,6 +865,7 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
             placedOk = pose.solved;
             placedMedian = pose.endMedian;
         }
+        state.timing.poseSeconds += elapsed(poseStarted);
 
         if(!placedOk || placedMedian > config.acceptPixels){
             refused[best] = 1;
@@ -737,11 +877,20 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         ++state.posedCameras;
 
         triangulateVisible(false);
-        runBundle();
+        const bool refinementDue = state.posedCameras >= nextRefine;
+        const bool bundleDue = config.incrementalBundleGrowth <= 1.0 ||
+                               state.posedCameras >= nextBundle;
 
-        if(state.posedCameras >= nextRefine){
+        //Uz zadanu vrijednost 1.0 ostaje tocno stari redoslijed, ukljucujuci bundle neposredno
+        //prije refinea. Rjedja kadenca ga na granici ne duplira jer refine vec zavrsava bundleom.
+        if(bundleDue && (!refinementDue || config.incrementalBundleGrowth <= 1.0)) runBundle();
+
+        if(refinementDue){
             refine(1);
             nextRefine = size_t(double(state.posedCameras) * config.refineGrowth) + 1;
+        }
+        if(bundleDue){
+            nextBundle = size_t(double(state.posedCameras) * config.incrementalBundleGrowth) + 1;
         }
 
         //Uspjeh znaci da je nastalo novih tocaka, pa odbijene vrijedi jos jednom pokusati - ali
@@ -912,6 +1061,7 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
     // reprojicira ma gdje po njima bila
     // ---------------------------------------------------------------------------------
 
+    const auto diagnosticsStarted = Clock::now();
     if(finalParallax > 0.0){
         for(size_t point = 0; point < pointCount; ++point){
             if(!state.solved[point]) continue;
@@ -937,41 +1087,9 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         else              ++state.filteredObservations;
     }
 
-    state.medianReprojection = medianOver(observations, state, intrinsics, usable);
-
-    //Provjera na onome sto rjesenje nije gradilo - vidi Reconstruction::heldOutReprojection
-    if(config.holdOutEvery > 1){
-        std::vector<double> errors;
-        for(size_t index = 0; index < observations.size(); ++index){
-            if(!heldOut[index]) continue;
-            const Observation& one = observations[index];
-            if(!state.posed[one.camera] || !state.solved[one.point]) continue;
-
-            glm::vec2 pixel;
-            if(!project(state.poses[one.camera], intrinsics, state.points[one.point], pixel)) continue;
-            errors.push_back(double(glm::length(pixel - one.pixel)));
-        }
-        state.heldOutObservations = uint32_t(errors.size());
-        state.heldOutReprojection = medianOf(errors);
-    }
-
-    //BAZA KONACNOG RJESENJA. Racuna se ovdje, nad istim tockama koje su ostale - vidi
-    //Reconstruction::medianTriangulationAngle. Ovo je mjera po kojoj se biraju pocetni parovi
-    {
-        std::vector<double> angles;
-        angles.reserve(pointCount);
-        for(size_t point = 0; point < pointCount; ++point){
-            if(!state.solved[point]) continue;
-            std::vector<View> views;
-            for(const Observation* observation : byPoint[point]){
-                if(!usable[indexOf(observation)]) continue;
-                if(state.posed[observation->camera]) views.push_back(View{observation->camera, observation->pixel});
-            }
-            if(views.size() < 2) continue;
-            angles.push_back(parallaxDegrees(state.poses, intrinsics, views));
-        }
-        state.medianTriangulationAngle = medianOf(angles);
-    }
+    //Sve tri mjere dolaze iz istog puta koji se moze pozvati i nakon vanjskog bundlea. Time se
+    //samokalibrirani kandidat ne mora ponovno graditi samo da bi dobio svjezu dijagnostiku.
+    refreshReconstructionDiagnostics(observations, intrinsics, config, state);
 
     state.ok = state.posedCameras >= 2 && state.solvedPoints > 0;
     // ---------------------------------------------------------------------------------
@@ -1011,7 +1129,21 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
         }
     }
 
+    state.timing.diagnosticsSeconds += elapsed(diagnosticsStarted);
     return state;
+}
+
+Reconstruction reconstruct(const std::vector<Observation>& observations,
+                           size_t cameraCount,
+                           size_t pointCount,
+                           const Intrinsics& intrinsics,
+                           const ReconstructConfig& config){
+    const auto started = std::chrono::steady_clock::now();
+    Reconstruction result = reconstructImpl(observations, cameraCount, pointCount, intrinsics,
+                                            config);
+    result.timing.totalSeconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    return result;
 }
 
 }

@@ -60,6 +60,7 @@ struct SiftConfig{
     //Vise ih znaci tocnije mjerilo po znacajki, ali i vise zamucivanja cijele slike
     uint32_t scaleBands = 3;
 
+
     //ZAGLADJIVANJE PRIJE GRADIJENATA, u pikselima. Nula znaci izvedeno iz zakrpe.
     //
     //Izvorni SIFT gradijente racuna na slici zamucenoj na MJERILO znacajke, ne na sirovim
@@ -106,6 +107,13 @@ struct SiftConfig{
     bool orient = true;
 };
 
+//Samo profiliranje; nijedna vrijednost ne sudjeluje u odluci ni u izlazu potpisa.
+struct SiftTiming{
+    double smoothingSeconds = 0.0;
+    double gradientSeconds = 0.0;
+    double descriptorSeconds = 0.0;
+};
+
 //Potpis okoline zadane tocke. False kad okolina ne stane u sliku
 bool describeSift(const GrayImage& image, const glm::vec2& point, SiftDescriptor& out,
                   const SiftConfig& config = {});
@@ -131,7 +139,8 @@ bool describeSift(const GrayImage& image, const glm::vec2& point, SiftDescriptor
 std::vector<SiftDescriptor> describeSiftScaled(const GrayImage& image,
                                                const std::vector<glm::vec2>& points,
                                                const std::vector<float>& scales,
-                                               const SiftConfig& config = {});
+                                               const SiftConfig& config = {},
+                                               SiftTiming* timing = nullptr);
 
 std::vector<SiftDescriptor> describeSiftAll(const GrayImage& image,
                                             const std::vector<glm::vec2>& points,
@@ -146,11 +155,37 @@ struct SiftMatch{
     float distance = 0.0f;
 };
 
+//Prostorni indeks jednog kadra za zadani radijus. MatchGraph ga cuva jer se isti kadar usporedjuje
+//s do dvadeset susjeda; ponovna gradnja ne mijenja rezultat, samo uzalud ponavlja raspored celija.
+struct SiftMatchGrid{
+    int32_t firstX = 0, firstY = 0;
+    int32_t countX = 1, countY = 1;
+    float cellSize = 1.0f;
+    std::vector<uint32_t> start;
+    std::vector<uint32_t> items;
+    std::vector<uint32_t> rankInCell;
+
+    uint32_t at(int32_t cx, int32_t cy, uint32_t& count) const;
+};
+
+SiftMatchGrid prepareSiftMatchGrid(const std::vector<SiftDescriptor>& set,
+                                   const std::vector<glm::vec2>& pixels,
+                                   float cell);
+
 //Uzajamno najbolji parovi uz prag omjera, ograniceni na kandidate blize od radius piksela
 std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
                                      const std::vector<glm::vec2>& fromPixels,
                                      const std::vector<SiftDescriptor>& to,
                                      const std::vector<glm::vec2>& toPixels,
+                                     float radius,
+                                     const SiftConfig& config = {});
+
+std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
+                                     const std::vector<glm::vec2>& fromPixels,
+                                     const SiftMatchGrid& fromGrid,
+                                     const std::vector<SiftDescriptor>& to,
+                                     const std::vector<glm::vec2>& toPixels,
+                                     const SiftMatchGrid& toGrid,
                                      float radius,
                                      const SiftConfig& config = {});
 

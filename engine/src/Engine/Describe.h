@@ -46,6 +46,7 @@ struct DescribeConfig{
 
     //Najveca dopustena udaljenost potpisa, u bitovima od 256
     uint32_t maxDistance = 64;
+
 };
 
 struct Descriptor{

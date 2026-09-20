@@ -1,6 +1,7 @@
 #include "VulkanRenderer.h"
 #include "Barriers.h"
 #include <glm/glm.hpp>
+#include <algorithm>
 
 VulkanRenderer::VulkanRenderer(
     const VulkanDevice& device,
@@ -18,6 +19,9 @@ VulkanRenderer::VulkanRenderer(
     rendererConfig(rendererConfig),
     descriptorPool(descriptorPool){
 
+        if(this->swapchain){
+            swapchainImageLayouts.assign(this->swapchain->getImages().size(), vk::ImageLayout::eUndefined);
+        }
         createSyncObjects();
         createTimestampPools();
         createShadowPlaceholder();
@@ -348,18 +352,31 @@ void VulkanRenderer::startPass(vk::Image colorImage, vk::ImageView colorView, co
 const auto& commandBuffer = command.getCommandBuffers()[currentFrame];
 
 //A tracked image is transitioned out of the layout it is really in, so whatever it holds
-//survives. A swapchain image is not tracked, and eUndefined says its contents are free
+//survives. Swapchain layouts live in their own per-image table because those images are not
+//VulkanImage objects.
 //A depth only pass has no colour view to hand over. Nothing here is skipped for the
 //window, which always has one
 const bool hasColor = colorView != vk::ImageView(nullptr);
 
-const VulkanImage* trackedColor = (currentTarget && currentTarget->hasColor()) ? &currentTarget->getColorImage() : nullptr;
-const vk::ImageLayout colorFrom = trackedColor ? trackedColor->getCurrentLayout() : vk::ImageLayout::eUndefined;
+const VulkanImage* trackedColor = (currentTarget && currentTarget->hasColor())
+    ? &currentTarget->getColorImage()
+    : ((!currentTarget && swapchain && swapchain->canReadback() &&
+        currentFrame < windowReadbackImages.size() && windowReadbackImages[currentFrame])
+        ? &*windowReadbackImages[currentFrame]
+        : nullptr);
+const vk::ImageLayout colorFrom = trackedColor
+    ? trackedColor->getCurrentLayout()
+    : (swapchain && !currentTarget
+        ? swapchainImageLayouts.at(currentImageIndex)
+        : vk::ImageLayout::eUndefined);
 
 if(hasColor){
     recordBarrier(commandBuffer, imageBarrier(colorImage, colorFrom, vk::ImageLayout::eColorAttachmentOptimal));
     if(trackedColor){
         trackedColor->setCurrentLayout(vk::ImageLayout::eColorAttachmentOptimal);
+    }
+    else if(swapchain && !currentTarget){
+        swapchainImageLayouts.at(currentImageIndex) = vk::ImageLayout::eColorAttachmentOptimal;
     }
 }
 
@@ -554,13 +571,30 @@ void VulkanRenderer::endPass(){
     const VulkanImage* depthOfThisPass = currentTarget ? currentTarget->getDepthImage() : depthImage;
 
     if(hasColor){
-        vk::Image colorImage = currentTarget ? *currentTarget->getColorImage().getImage() : swapchain->getImages()[currentImageIndex];
-        vk::ImageLayout finalLayout = currentTarget ? currentTarget->getFinalLayout() : vk::ImageLayout::ePresentSrcKHR;
+        const bool capturedWindow = !currentTarget && swapchain && swapchain->canReadback();
+        vk::Image colorImage = currentTarget
+            ? *currentTarget->getColorImage().getImage()
+            : (capturedWindow
+                ? *windowReadbackImages[currentFrame]->getImage()
+                : swapchain->getImages()[currentImageIndex]);
+        vk::ImageLayout finalLayout = currentTarget
+            ? currentTarget->getFinalLayout()
+            : (capturedWindow
+                ? vk::ImageLayout::eTransferSrcOptimal
+                : vk::ImageLayout::ePresentSrcKHR);
 
         recordBarrier(commandBuffer, imageBarrier(colorImage, vk::ImageLayout::eColorAttachmentOptimal, finalLayout));
 
         if(currentTarget){
             currentTarget->getColorImage().setCurrentLayout(finalLayout);
+        }
+        else if(capturedWindow){
+            windowReadbackImages[currentFrame]->setCurrentLayout(finalLayout);
+            windowColorWritten = true;
+        }
+        else if(swapchain){
+            swapchainImageLayouts.at(currentImageIndex) = finalLayout;
+            windowColorWritten = true;
         }
     }
 
@@ -643,6 +677,7 @@ bool VulkanRenderer::beginFrame(){
 
     passIndex = 0;
     windowDepthWritten = false;   //dubina proslog framea ne vrijedi za ovaj
+    windowColorWritten = false;
 
     //The camera has probably moved since last frame, so a fitted box has to be refitted
     updateShadowMatrices();
@@ -748,6 +783,27 @@ void VulkanRenderer::endFrame(){
     if(passActive){
         throw std::runtime_error("endFrame : a pass is still active ( missing endPass)");
     }
+
+    //The readable colour image is the stable source. The swapchain image is only the
+    //presentation destination, so readLastFrame never has to reacquire a presented image.
+    if(swapchain && swapchain->canReadback() && windowColorWritten){
+        const vk::Extent2D extent = swapchain->getExtent();
+        const vk::Image image = swapchain->getImages()[currentImageIndex];
+        recordBarrier(commandBuffer, imageBarrier(image,
+            swapchainImageLayouts.at(currentImageIndex), vk::ImageLayout::eTransferDstOptimal));
+        vk::ImageCopy region;
+        region.srcSubresource = vk::ImageSubresourceLayers{
+            vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+        region.dstSubresource = region.srcSubresource;
+        region.extent = vk::Extent3D{extent.width, extent.height, 1};
+        commandBuffer.copyImage(*windowReadbackImages[currentFrame]->getImage(),
+                                vk::ImageLayout::eTransferSrcOptimal,
+                                image, vk::ImageLayout::eTransferDstOptimal, region);
+
+        recordBarrier(commandBuffer, imageBarrier(image,
+            vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR));
+        swapchainImageLayouts.at(currentImageIndex) = vk::ImageLayout::ePresentSrcKHR;
+    }
     commandBuffer.end();
 
     //Submit via sync2. The two semaphores exist only to hand an image between the acquire
@@ -758,10 +814,16 @@ void VulkanRenderer::endFrame(){
 
     if(swapchain){
         waitInfo.semaphore = *imageAvailableSemaphores[currentFrame];
-        waitInfo.stageMask = vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
+        waitInfo.stageMask = swapchain->canReadback()
+            ? vk::PipelineStageFlagBits2KHR::eCopy
+            : vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
 
         signalInfo.semaphore = *renderFinishedSemaphores[currentImageIndex];
-        signalInfo.stageMask = vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
+        //A readable window appends the copy into the acquired presentation image, so the
+        //present semaphore must cover the complete submission.
+        signalInfo.stageMask = swapchain->canReadback()
+            ? vk::PipelineStageFlagBits2KHR::eAllCommands
+            : vk::PipelineStageFlagBits2KHR::eColorAttachmentOutput;
     }
 
     vk::CommandBufferSubmitInfo commandBufferInfo;
@@ -851,6 +913,7 @@ void VulkanRenderer::recreateSwapchain(){
     }
 
     swapchain->recreateSwapchain();
+    swapchainImageLayouts.assign(swapchain->getImages().size(), vk::ImageLayout::eUndefined);
     if(depthImage){
         depthImage->recreate(swapchain->getExtent());
     }
@@ -950,8 +1013,34 @@ void VulkanRenderer::beginPass(){
     currentTarget = nullptr;
     passLight = nullptr;
     passUsesColor = true;
-    startPass(swapchain->getImages()[currentImageIndex],
-                *swapchain->getImageViews()[currentImageIndex],
+    if(swapchain->canReadback()){
+        const vk::Extent2D extent = swapchain->getExtent();
+        if(windowReadbackImages.size() != command.getCommandBuffers().size()){
+            windowReadbackImages.resize(command.getCommandBuffers().size());
+        }
+        std::optional<VulkanImage>& capture = windowReadbackImages[currentFrame];
+        if(!capture){
+            ImageConfig captureConfig;
+            captureConfig.format = swapchain->getSurfaceFormat().format;
+            captureConfig.usage = vk::ImageUsageFlagBits::eColorAttachment |
+                                  vk::ImageUsageFlagBits::eTransferSrc;
+            capture.emplace(device, extent, captureConfig);
+        }
+        else{
+            const vk::Extent2D capacity = capture->getExtent();
+            if(extent.width > capacity.width || extent.height > capacity.height){
+                capture->recreate({
+                    std::max(extent.width, capacity.width),
+                    std::max(extent.height, capacity.height)});
+            }
+        }
+        windowReadbackExtent = extent;
+    }
+
+    startPass(swapchain->canReadback() ? *windowReadbackImages[currentFrame]->getImage()
+                                       : swapchain->getImages()[currentImageIndex],
+                swapchain->canReadback() ? *windowReadbackImages[currentFrame]->getImageView()
+                                         : *swapchain->getImageViews()[currentImageIndex],
                 depthImage,
                 swapchain->getExtent());
 
@@ -1296,20 +1385,25 @@ ImageData VulkanRenderer::readLastFrame() const{
         throw std::runtime_error("readLastFrame: the swapchain was not created for readback (SwapchainConfig::allowReadback, or the surface does not support it)");
     }
 
-    device.getDevice().waitIdle();
+    if(lastEndedFrame >= windowReadbackImages.size() ||
+       !windowReadbackImages[lastEndedFrame] || !windowColorWritten){
+        throw std::runtime_error("readLastFrame: no rendered window frame is available");
+    }
 
-    const vk::Image image = swapchain->getImages()[currentImageIndex];
-    const vk::Extent2D extent = swapchain->getExtent();
+    const vk::Result fenceResult = device.getDevice().waitForFences(
+        *inFlightFences[lastEndedFrame], VK_TRUE, UINT64_MAX);
+    if(fenceResult != vk::Result::eSuccess){
+        throw std::runtime_error("readLastFrame: failed waiting for the last rendered frame");
+    }
+
+    const vk::Extent2D extent = windowReadbackExtent;
     const vk::Format format = swapchain->getSurfaceFormat().format;
     const vk::DeviceSize bytes = vk::DeviceSize(extent.width) * extent.height * bytesPerPixel(format);
 
-    //the image was left ready for presentation, so it is borrowed and put back
-    command.transitionImageLayout(image, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferSrcOptimal);
-
-    VulkanBuffer staging(device, bytes, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::GPU_TO_CPU);
-    command.copyImageToBuffer(image, staging.getBuffer(), extent);
-
-    command.transitionImageLayout(image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);
+    VulkanBuffer staging(device, bytes, vk::BufferUsageFlagBits::eTransferDst,
+                         MemoryUsage::GPU_TO_CPU);
+    command.copyImageToBuffer(windowReadbackImages[lastEndedFrame]->getImage(),
+                              staging.getBuffer(), extent);
 
     ImageData out;
     out.extent = extent;

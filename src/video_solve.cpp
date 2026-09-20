@@ -7,21 +7,22 @@
 // Nijedna ne kaze da je rekonstrukcija tocna - kazu da je konzistentna, i to je sve sto se bez
 // istine moze tvrditi.
 //
-// VIDNO POLJE SE NE ZNA. Snimka ne nosi zarisnu duljinu, a kriva zarisna se trguje s geometrijom -
-// izmjereno u S9: rjesenje pobjegne od istine i pritom SMANJI reprojekciju. Zato se, kad se vidno
-// polje ne zada, proba nekoliko vrijednosti i uzme ona s najmanjom reprojekcijom. To je gruba
-// samokalibracija: mjerljiva, ali ne i dokaz - ravna scena zna dati nisku reprojekciju uz krivu
-// zarisnu.
+// VIDNO POLJE SE NE ZNA. Kad korisnik ne preda ni FOV ni cameras.txt, zajednicki f+k1 prvo se
+// procijene iz view-grapha pa zajedno s pozama i tockama. Ako geometrija to ne moze odrediti,
+// rezultat se NE izmisli: ispisuje se razlog i tek tada se koristi stari FOV sweep kao fallback.
 #include <Spool/ImageFile.h>
 #include <Spool/VideoFile.h>
 
 #include <Engine/CameraHints.h>
+#include <Engine/ResidualField.h>
 #include <Engine/ColmapExport.h>
 #include <Engine/ColmapImport.h>
 #include <Engine/MatchGraph.h>
 #include <Engine/MergeTracks.h>
 #include <Engine/Keyframes.h>
 #include <Engine/Reconstruct.h>
+#include <Engine/SelfCalibration.h>
+#include <Engine/SolveCache.h>
 #include <Engine/Track.h>
 
 #include <algorithm>
@@ -29,7 +30,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <future>
 #include <string>
 #include <vector>
 
@@ -45,11 +48,49 @@ std::vector<uint8_t> toGray(const Spool::Image& image){
     return gray;
 }
 
+void printReconstructTiming(const Engine::Reconstruction& state, const char* indent = "    "){
+    const Engine::ReconstructTiming& time = state.timing;
+    const double classified = time.initialPairSeconds + time.poseSeconds +
+        time.triangulationSeconds + time.bundleSeconds + time.filteringSeconds +
+        time.diagnosticsSeconds;
+    const double other = std::max(0.0, time.totalSeconds - classified);
+    std::printf("%sfaze rekonstrukcije: par %.1f, PnP %.1f (%u), triangulacija %.1f (%u), "
+                "bundle %.1f (%u), filter %.1f, dijagnoza %.1f, ostalo %.1f; ukupno %.1f s\n",
+                indent, time.initialPairSeconds, time.poseSeconds, time.poseCalls,
+                time.triangulationSeconds, time.triangulationCalls,
+                time.bundleSeconds, time.bundleCalls, time.filteringSeconds,
+                time.diagnosticsSeconds, other, time.totalSeconds);
+    const double bundleClassified = time.bundleCostSeconds + time.bundleLinearizeSeconds +
+        time.bundleSchurSeconds + time.bundleDenseSolveSeconds +
+        time.bundleBackSubstituteSeconds;
+    std::printf("%s  bundle: linearizacija %.1f, Schur %.1f, dense solve %.1f, "
+                "uvrstavanje %.1f, trosak %.1f, ostalo %.1f s\n",
+                indent, time.bundleLinearizeSeconds, time.bundleSchurSeconds,
+                time.bundleDenseSolveSeconds, time.bundleBackSubstituteSeconds,
+                time.bundleCostSeconds, std::max(0.0, time.bundleSeconds - bundleClassified));
+}
+
+uint64_t cacheSignature(const std::string& mode, double fieldOfView){
+    //FNV nad stvarnim ulazima u gradnju grafa. Prazan mode i "graf" namjerno su isti jer vode
+    //istim kodom; promjena FOV-a nije ista jer dvoprizorno geometrijsko sito koristi tu zarisnu.
+    const std::string normalized = mode.empty() ? "graf" : mode;
+    uint64_t hash = 1469598103934665603ull;
+    auto add = [&](const void* data, size_t size){
+        const uint8_t* bytes = static_cast<const uint8_t*>(data);
+        for(size_t i = 0; i < size; ++i){ hash ^= bytes[i]; hash *= 1099511628211ull; }
+    };
+    add(normalized.data(), normalized.size());
+    uint64_t fovBits = 0;
+    std::memcpy(&fovBits, &fieldOfView, sizeof(fovBits));
+    add(&fovBits, sizeof(fovBits));
+    return hash;
+}
+
 }
 
 int main(int argc, char** argv){
     if(argc < 2){
-        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [graf|graf-bez-mjerila|spajanje|bez-spajanja]\n");
+        std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [graf|graf-bez-mjerila|spajanje|bez-spajanja] [graph-cache.bin]\n");
         std::printf("  zadano je graf: uglovi za pokrivenost i prostor mjerila za tocnost, spojeni\n");
         std::printf("  cameras.txt: COLMAP-ova kalibracija. Kad je zadana, zarista i distorzija se\n");
         std::printf("               NE pogadjaju nego citaju, a opazanja se isprave prije solvea\n");
@@ -84,15 +125,58 @@ int main(int argc, char** argv){
 
     //Prostor mjerila uz uglove - zadano. "graf-bez-mjerila" ga gasi, za usporedbu
     const bool scaleSpace = how.empty() || how == "graf";
+    const std::filesystem::path cacheFile = argc > 8 ? std::filesystem::path(argv[8]) : std::filesystem::path();
 
     Spool::VideoReader reader(path);
     const Spool::VideoInfo& info = reader.info();
     std::printf("Snimka %ux%u, %.2f fps, %s\n", info.width, info.height, info.frameRate(), info.codec.c_str());
     std::printf("  uzimam svaki %u. kadar, najvise %u\n", step, wanted);
 
+    std::error_code fileError;
+    const uint64_t sourceBytes = std::filesystem::file_size(path, fileError);
+    const int64_t sourceWriteTime = fileError ? 0 : int64_t(
+        std::filesystem::last_write_time(path, fileError).time_since_epoch().count());
+    const uint64_t buildSignature = cacheSignature(how, fieldOfView);
+
+    uint32_t used = 0;
+    std::vector<uint32_t> keyframeFrames;
+    uint32_t cameraCount = 0;
+    float featurePixels = 1.0f;
+    std::vector<Engine::Observation> observations;
+    uint32_t pointCount = 0;
+    bool cacheLoaded = false;
+
+    if(!cacheFile.empty() && std::filesystem::exists(cacheFile)){
+        Engine::SolveCache cache;
+        std::string error;
+        if(Engine::readSolveCache(cacheFile, cache, &error)){
+            const bool sameInput = cache.width == info.width && cache.height == info.height &&
+                cache.step == step && cache.requestedFrames == wanted &&
+                cache.sourceBytes == sourceBytes && cache.sourceWriteTime == sourceWriteTime &&
+                cache.buildSignature == buildSignature;
+            if(sameInput){
+                used = cache.usedFrames;
+                keyframeFrames = std::move(cache.keyframes);
+                cameraCount = uint32_t(keyframeFrames.size());
+                observations = std::move(cache.observations);
+                pointCount = cache.pointCount;
+                featurePixels = cache.localizationPixels;
+                cacheLoaded = true;
+                std::printf("  cache grafa ucitan: %u kljucnih kadrova, %u tocaka, %zu opazanja\n",
+                            cameraCount, pointCount, observations.size());
+            }else{
+                std::printf("  cache grafa ne pripada ovoj snimci ili postavkama; gradim ga ponovo\n");
+            }
+        }else{
+            std::printf("  cache grafa nije valjan (%s); gradim ga ponovo\n", error.c_str());
+        }
+    }
+
     // -------------------------------------------------------------------------------
     // Kadrovi -> tragovi
     // -------------------------------------------------------------------------------
+
+    if(!cacheLoaded){
 
     Engine::TrackConfig trackConfig;
 
@@ -136,7 +220,6 @@ int main(int argc, char** argv){
     Engine::Tracker tracker(trackConfig);
 
     const auto started = std::chrono::steady_clock::now();
-    uint32_t used = 0;
     uint32_t index = 0;
 
     while(!reader.atEnd() && used < wanted){
@@ -173,13 +256,14 @@ int main(int argc, char** argv){
 
     //Kljucni kadrovi - vidi Engine/Keyframes.h. Izbor ne ovisi o zarisnoj pa se radi jednom
     const Engine::KeyframeSelection keys = Engine::chooseKeyframes(tracker.observations(), used, info.width);
+    keyframeFrames = keys.frames;
     std::printf("  kljucnih kadrova %zu od %u (medijan paralakse %.1f px)\n",
-                keys.frames.size(), used, keys.medianParallaxPixels);
-    if(keys.frames.size() < 3){
+                keyframeFrames.size(), used, keys.medianParallaxPixels);
+    if(keyframeFrames.size() < 3){
         std::printf("Premalo kljucnih kadrova.\n");
         return 1;
     }
-    const uint32_t cameraCount = uint32_t(keys.frames.size());
+    cameraCount = uint32_t(keyframeFrames.size());
 
     // ---------------------------------------------------------------------------------
     // Spajanje tragova preko potpisa
@@ -195,10 +279,8 @@ int main(int argc, char** argv){
     //Koliko su polozaji znacajki tocni, u pikselima izvorne slike. Pracenje radi na punoj slici,
     //graf poklapanja na smanjenoj - a prag prihvacanja kamere mora znati o kojem se od to dvoje
     //radi, inace odbija kamere koje su tocne koliko podatak dopusta
-    float featurePixels = 1.0f;
-
-    std::vector<Engine::Observation> observations = keys.observations;
-    uint32_t pointCount = tracker.trackCount();
+    observations = keys.observations;
+    pointCount = tracker.trackCount();
 
     //GRAF POKLAPANJA umjesto spajanja vec pracenih tragova. Spajanje popravlja tocke, ovo stvara
     //nove veze - znacajke se u svakom kljucnom kadru nadju NEOVISNO pa se povezu. Vidi
@@ -214,9 +296,9 @@ int main(int argc, char** argv){
             if(frame.pixels.empty()) break;
             if(step > 1 && (index++ % step) != 0) continue;
 
-            //keys.frames nosi redne brojeve KORISTENIH kadrova, istim redom kojim su prosli kroz
+            //keyframeFrames nosi redne brojeve KORISTENIH kadrova, istim redom kojim su prosli kroz
             //tracker - pa se broji isto kako se brojalo tada
-            if(taken < cameraCount && keys.frames[taken] == seen){
+            if(taken < cameraCount && keyframeFrames[taken] == seen){
                 keyframeGray[taken] = toGray(frame);
                 keyframeImages[taken] = Engine::GrayImage{keyframeGray[taken].data(),
                                                           frame.width, frame.height, frame.width};
@@ -268,8 +350,15 @@ int main(int argc, char** argv){
 
                     const Engine::MatchGraphResult fine =
                         Engine::buildMatchGraph(keyframeImages, guess, fineConfig);
-                    std::printf("  prostor mjerila: %u znacajki, %u tocaka, %zu opazanja\n",
-                                fine.featuresTotal, fine.pointCount, fine.observations.size());
+                    std::printf("  prostor mjerila: %u znacajki, %u tocaka, %zu opazanja "
+                                "(priprema %.1f, znacajke %.1f [detekcija %.1f, potpisi %.1f: blur %.1f, gradijenti %.1f, gradnja %.1f], poklapanje %.1f, "
+                                "geometrija %.1f, slaganje %.1f s)\n",
+                                fine.featuresTotal, fine.pointCount, fine.observations.size(),
+                                fine.preprocessSeconds, fine.featureSeconds,
+                                fine.detectionSeconds, fine.descriptorSeconds,
+                                fine.descriptorSmoothingSeconds, fine.descriptorGradientSeconds,
+                                fine.descriptorBuildSeconds, fine.matchingSeconds,
+                                fine.geometrySeconds, fine.assemblySeconds);
 
                     if(fine.pointCount > 0) graph = Engine::mergeGraphs(graph, fine);
                 }
@@ -277,10 +366,17 @@ int main(int argc, char** argv){
                 const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
                 std::printf("  graf poklapanja: %u znacajki, %u tocaka, %zu opazanja (%.0f po kadru), "
-                            "%u od %u parova proslo geometriju, medijan %.0f parova, %.1f s\n",
+                            "%u od %u parova proslo geometriju, medijan %.0f parova, %.1f s\n"
+                            "    faze: priprema %.1f, znacajke %.1f [detekcija %.1f, potpisi %.1f: blur %.1f, gradijenti %.1f, gradnja %.1f], poklapanje %.1f, "
+                            "geometrija %.1f, slaganje %.1f s\n",
                             graph.featuresTotal, graph.pointCount, graph.observations.size(),
                             double(graph.observations.size()) / double(cameraCount),
-                            graph.acceptedFrames, graph.comparedFrames, graph.medianMatchesPerPair, seconds);
+                            graph.acceptedFrames, graph.comparedFrames, graph.medianMatchesPerPair, seconds,
+                            graph.preprocessSeconds, graph.featureSeconds,
+                            graph.detectionSeconds, graph.descriptorSeconds,
+                            graph.descriptorSmoothingSeconds, graph.descriptorGradientSeconds,
+                            graph.descriptorBuildSeconds, graph.matchingSeconds,
+                            graph.geometrySeconds, graph.assemblySeconds);
 
                 if(graph.pointCount > 0){
                     observations = graph.observations;
@@ -303,6 +399,30 @@ int main(int argc, char** argv){
         }
     }
 
+    if(!cacheFile.empty()){
+        Engine::SolveCache cache;
+        cache.width = info.width;
+        cache.height = info.height;
+        cache.step = step;
+        cache.requestedFrames = wanted;
+        cache.usedFrames = used;
+        cache.pointCount = pointCount;
+        cache.localizationPixels = featurePixels;
+        cache.sourceBytes = sourceBytes;
+        cache.sourceWriteTime = sourceWriteTime;
+        cache.buildSignature = buildSignature;
+        cache.keyframes = keyframeFrames;
+        cache.observations = observations;
+        std::string error;
+        if(Engine::writeSolveCache(cacheFile, cache, &error)){
+            std::printf("  cache grafa zapisan u %s (%zu opazanja)\n",
+                        cacheFile.string().c_str(), observations.size());
+        }else{
+            std::printf("  UPOZORENJE: cache grafa nije zapisan (%s)\n", error.c_str());
+        }
+    }
+    }
+
     //KALIBRACIJA, kad je zadana. Jednom izmjerena za tijelo i objektiv vrijedi za svaku sljedecu
     //snimku istom kamerom, pa je nema smisla pogadjati iz vidnog polja u svakoj
     Engine::Intrinsics measured;
@@ -314,19 +434,67 @@ int main(int argc, char** argv){
         return 1;
     }
 
-    //OPAZANJA SE ISPRAVE JEDNOM, na ulazu. Solver racuna s ravnom lecom - triangulacija, PnP i
-    //bundle svi pretpostavljaju ravnu zraku - pa je jedino mjesto gdje distorzija smije postojati
-    //ovdje, izmedju mjerenja i racuna. Da se nosi kroz svaki korak, svaki bi ju morao znati
-    std::vector<Engine::Observation> solveObservations = observations;
-    if(calibrated && (measured.k1 != 0.0f || measured.k2 != 0.0f)){
+    auto reconstructionConfig = [&](bool thorough){
+        Engine::ReconstructConfig config;
+        config.huberPixels = 2.0;
+        config.acceptPixels = std::max(6.0, 2.0 * double(featurePixels));
+        config.minPointsForPose = 20;
+
+        if(!thorough){
+            config.initialPairTrials = 1;
+            config.seamFactor = 0.0;
+            config.holdOutEvery = 10;
+        }
+        return config;
+    };
+
+    //Kad korisnik nije dao ni kalibraciju ni FOV, genericki put prvo mjeri f+k1 samo iz 2D veza,
+    //zatim ih zajedno dotjera s pozama i tockama. Poznata kalibracija i rucno zadani FOV imaju
+    //prednost: eksplicitna informacija se ne smije tiho zamijeniti procjenom.
+    Engine::SelfCalibratedReconstruction automatic;
+    if(!calibrated && fieldOfView <= 0.0){
+        Engine::Intrinsics unknown;
+        unknown.width = info.width; unknown.height = info.height;
+        unknown.cx = 0.5f * float(info.width); unknown.cy = 0.5f * float(info.height);
+        unknown.fx = unknown.fy = 0.5f * float(info.width); //samo predlozak; odgovor dolazi iz grafa
+        automatic = Engine::reconstructSelfCalibrated(
+            observations, cameraCount, pointCount, unknown, reconstructionConfig(false));
+        if(automatic.determined){
+            const double fov = 2.0 * std::atan(0.5 * double(info.width) /
+                                               double(automatic.measuredIntrinsics.fx)) *
+                               180.0 / 3.14159265358979;
+            std::printf("  samokalibracija: f %.2f px, k1 %.5f, vidno polje %.2f st; "
+                        "%u/%u kamera, reprojekcija %.3f px\n",
+                        double(automatic.measuredIntrinsics.fx),
+                        double(automatic.measuredIntrinsics.k1), fov,
+                        automatic.reconstruction.posedCameras, cameraCount,
+                        automatic.reconstruction.medianReprojection);
+        }else{
+            std::printf("  samokalibracija nije odredjena (%s; view-graph %s). "
+                        "Koristim stari FOV sweep kao fallback.\n",
+                        Engine::selfCalibrationStatusName(automatic.status),
+                        Engine::viewGraphCalibrationStatusName(automatic.graphStatus));
+        }
+        printReconstructTiming(automatic.reconstruction);
+    }
+
+    //OPAZANJA SE ISPRAVE JEDNOM, na ulazu. Ista fizicka leca kasnije ispravlja i izlazne slike;
+    //inace bi cameras.txt tvrdio PINHOLE dok bi PNG-ovi ostali zakrivljeni.
+    const bool automaticallyCalibrated = automatic.determined;
+    const bool havePhysicalLens = calibrated || automaticallyCalibrated;
+    const Engine::Intrinsics physicalLens = calibrated ? measured : automatic.measuredIntrinsics;
+    std::vector<Engine::Observation> solveObservations = automaticallyCalibrated
+        ? automatic.flatObservations : observations;
+    if(!automaticallyCalibrated && havePhysicalLens &&
+       (physicalLens.k1 != 0.0f || physicalLens.k2 != 0.0f)){
         double worst = 0.0;
         for(Engine::Observation& one : solveObservations){
-            const glm::vec2 fixed = Engine::undistort(measured, one.pixel);
+            const glm::vec2 fixed = Engine::undistort(physicalLens, one.pixel);
             worst = std::max(worst, double(glm::length(fixed - one.pixel)));
             one.pixel = fixed;
         }
         std::printf("  ispravljena distorzija k1 %.5f k2 %.5f - najveci pomak %.2f px\n",
-                    double(measured.k1), double(measured.k2), worst);
+                    double(physicalLens.k1), double(physicalLens.k2), worst);
     }
 
     //=====================================================================================
@@ -358,26 +526,7 @@ int main(int argc, char** argv){
             intrinsics.fy = float(focal);
         }
 
-        Engine::ReconstructConfig config;
-        config.huberPixels = 2.0;
-
-        //PRAG PRATI TOCNOST ZNACAJKE. Graf poklapanja radi na smanjenoj slici, pa su polozaji
-        //tocni na onoliko piksela koliko je smanjenje - i prag mora biti veci od toga, inace se
-        //odbijaju kamere koje su tocne koliko podatak uopce dopusta. Izmjereno na 30 kadrova
-        //prave snimke uz tocnost od 4 px: prag 4 daje 5 od 30 kamera, prag 8 daje 30 od 30
-        config.acceptPixels = std::max(6.0, 2.0 * double(featurePixels));
-        config.minPointsForPose = 20;
-
-        if(!thorough){
-            config.initialPairTrials = 1;
-            config.seamFactor = 0.0;
-
-            //PROVJERA SE PLACA IZ ONOGA STO SE IONAKO RACUNA. Probna rjesenja sluze izboru zarisne
-            //i svejedno se grade, pa se u njima svako deseto opazanje izdvoji i posluzi kao
-            //provjera. Isporuceno rjesenje koristi SVE - omjer je svojstvo podatka i lanca, ne
-            //bas tog jednog rjesenja
-            config.holdOutEvery = 10;
-        }
+        const Engine::ReconstructConfig config = reconstructionConfig(thorough);
         return std::make_pair(Engine::reconstruct(solveObservations, cameraCount, pointCount,
                                                   intrinsics, config), intrinsics);
     };
@@ -406,6 +555,10 @@ int main(int argc, char** argv){
     std::vector<double> candidates;
     if(fieldOfView > 0.0){
         candidates.push_back(fieldOfView);
+    }else if(automaticallyCalibrated){
+        candidates.push_back(2.0 * std::atan(0.5 * double(info.width) /
+                                             double(automatic.measuredIntrinsics.fx)) *
+                             180.0 / 3.14159265358979);
     }else if(hints.focalSource == Engine::HintSource::ModelTable || hints.focalSource == Engine::HintSource::Metadata){
         const double centre = hints.horizontalFieldOfView;
         candidates = {centre * 0.85, centre * 0.93, centre, centre * 1.07, centre * 1.15};
@@ -420,22 +573,42 @@ int main(int argc, char** argv){
     std::vector<double> reprojectionOf;
     uint32_t heldOutCount = 0;
     double heldOutError = 0.0, heldOutAgainst = 0.0;
-    for(double fov : candidates){
-        const auto result = solveWith(fov, false);
-        if(result.first.ok) reprojectionOf.push_back(result.first.medianReprojection);
-        const Engine::Reconstruction& state = result.first;
+    if(automaticallyCalibrated){
+        //Samokalibracija je vec izgradila tocno onaj brzi kandidat koji bi solveWith ovdje ponovno
+        //gradio. Nakon joint bundlea osvjezila je i reprojekciju, held-out mjeru i bazu, pa ga se
+        //moze izravno preuzeti. Puna obrada ispod i dalje krece iz nule s istim konacnim FOV-om.
+        best = automatic.reconstruction;
+        bestIntrinsics = automatic.flatIntrinsics;
+        bestFov = candidates.front();
+        reprojectionOf.push_back(best.medianReprojection);
+        heldOutCount = best.heldOutObservations;
+        heldOutError = best.heldOutReprojection;
+        heldOutAgainst = best.medianReprojection;
         std::printf("  vidno polje %5.1f st (f = %6.1f px): %2u/%u kamera, %4u tocaka, reprojekcija %6.3f px\n",
-                    fov, double(result.second.fx), state.posedCameras, cameraCount, state.solvedPoints, state.medianReprojection);
+                    bestFov, double(bestIntrinsics.fx), best.posedCameras, cameraCount,
+                    best.solvedPoints, best.medianReprojection);
+        std::printf("    ponovno koristen samokalibracijski kandidat; nema duplog solvea\n");
+    }else{
+        for(double fov : candidates){
+            const auto result = solveWith(fov, false);
+            if(result.first.ok) reprojectionOf.push_back(result.first.medianReprojection);
+            const Engine::Reconstruction& state = result.first;
+            std::printf("  vidno polje %5.1f st (f = %6.1f px): %2u/%u kamera, %4u tocaka, reprojekcija %6.3f px\n",
+                        fov, double(result.second.fx), state.posedCameras, cameraCount,
+                        state.solvedPoints, state.medianReprojection);
+            printReconstructTiming(state);
 
-        const bool better = state.posedCameras > best.posedCameras ||
-                            (state.posedCameras == best.posedCameras && state.medianReprojection < best.medianReprojection);
-        if(!best.ok || better){
-            best = state;
-            bestIntrinsics = result.second;
-            bestFov = fov;
-            heldOutCount = state.heldOutObservations;
-            heldOutError = state.heldOutReprojection;
-            heldOutAgainst = state.medianReprojection;
+            const bool better = state.posedCameras > best.posedCameras ||
+                                (state.posedCameras == best.posedCameras &&
+                                 state.medianReprojection < best.medianReprojection);
+            if(!best.ok || better){
+                best = state;
+                bestIntrinsics = result.second;
+                bestFov = fov;
+                heldOutCount = state.heldOutObservations;
+                heldOutError = state.heldOutReprojection;
+                heldOutAgainst = state.medianReprojection;
+            }
         }
     }
 
@@ -457,7 +630,7 @@ int main(int argc, char** argv){
     //NE TRAZI SE SAMO RUB NEGO I PLATO. Na drugoj snimci je raspon prosiren do 110 st i pobjednik
     //vise nije bio na rubu - ali 94, 102 i 110 st dali su 1.311, 1.312 i 1.312 px. Mjera je ondje
     //RAVNA, pa je pobjednik izabran iz sest tisucinki piksela. Rub je poseban slucaj plato
-    if(fieldOfView <= 0.0 && reprojectionOf.size() > 2){
+    if(fieldOfView <= 0.0 && !automaticallyCalibrated && reprojectionOf.size() > 2){
         double lowest = reprojectionOf.front(), highest = reprojectionOf.front();
         for(double one : reprojectionOf){
             lowest = std::min(lowest, one);
@@ -496,6 +669,7 @@ int main(int argc, char** argv){
             std::printf("  nakon pune obrade: %u od %u kamera, %u tocaka, reprojekcija %.3f px, baza %.2f st\n",
                         best.posedCameras, cameraCount, best.solvedPoints,
                         best.medianReprojection, best.medianTriangulationAngle);
+            printReconstructTiming(best);
             if(best.seamsFound){
                 std::printf("  savova nadjeno %u, prvi kod kadra %u, rastavljanje %s\n",
                             best.seamsFound, best.seamAt, best.seamRepaired ? "pomoglo" : "nije pomoglo");
@@ -563,12 +737,52 @@ int main(int argc, char** argv){
         }
     }
 
-    //Isto rjesenje s zarisnom +-25 %: koliko se promijeni SMJER putanje
-    for(double factor : {0.75, 1.25}){
-        const auto other = solveWith(bestFov * factor > 120.0 ? 120.0 : bestFov * factor, false);
+    //PROSTORNI OSTACI. Jedan medijan reprojekcije ne vidi razliku izmedju bijelog suma i polja
+    //koje pinhole kamera nikako ne moze objasniti. Stabilizacija i rolling shutter daju polje
+    //koje se mijenja po kadru; neispravljena leca daje isto polje kroz cijelu snimku.
+    if(best.ok){
+        const Engine::ResidualFieldResult field = Engine::analyzeResidualField(
+            solveObservations, best.poses, best.points, bestIntrinsics, {}, best.observationUsed);
+        std::printf("  polje ostataka: %s; prostorni signal %.3f px, staticko %.3f px, "
+                    "promjenjivi signal %.3f px (sum sredine %.3f, prag %.3f; %u/%u kadrova)\n",
+                    Engine::residualDiagnosisName(field.diagnosis), field.spatialSignalRms,
+                    field.staticRms, field.temporalSignalRms, field.meanNoiseRms,
+                    field.decisionThreshold, field.evaluatedFrames, cameraCount);
+        if(field.diagnosis == Engine::ResidualDiagnosis::Static){
+            std::printf("             UPOZORENJE: ostatak ovisi o mjestu u slici i ponavlja se "
+                        "kroz kadrove. Provjeri distorziju objektiva.\n");
+        }else if(field.diagnosis == Engine::ResidualDiagnosis::Changing){
+            std::printf("             UPOZORENJE: polje ostataka mijenja se po kadru. "
+                        "Pinhole model ne vrijedi; moguca stabilizacija ili rolling shutter.\n");
+        }else if(field.diagnosis == Engine::ResidualDiagnosis::InsufficientData){
+            std::printf("             Polje nema dovoljno popunjenih celija za dijagnozu.\n");
+        }
+    }
+
+    //Isto rjesenje s zarisnom +-25 %: koliko se promijeni SMJER putanje. Dva solvea nemaju
+    //zajednicko promjenjivo stanje: samo citaju opazanja, a svaki RANSAC ima svoj lokalni RNG s
+    //fiksnim seedem. Zato krecu istodobno, ali se rezultati uzimaju i ispisuju starim redom.
+    auto diagnosticSolve = [&](double factor){
+        return std::async(std::launch::async, [&, factor]{
+            const double fov = std::min(120.0, bestFov * factor);
+            return solveWith(fov, false);
+        });
+    };
+    auto lowerDiagnostic = diagnosticSolve(0.75);
+    auto upperDiagnostic = diagnosticSolve(1.25);
+
+    auto printDiagnostic = [&](double factor, const auto& other){
         const auto otherShape = pathShape(other.first);
         std::printf("  zarisna x%.2f: %u kamera, reprojekcija %.3f px, skretanje %.2f st\n",
                     factor, other.first.posedCameras, other.first.medianReprojection, otherShape.first);
+    };
+    {
+        const auto lower = lowerDiagnostic.get();
+        printDiagnostic(0.75, lower);
+    }
+    {
+        const auto upper = upperDiagnostic.get();
+        printDiagnostic(1.25, upper);
     }
 
     // -------------------------------------------------------------------------------
@@ -591,7 +805,7 @@ int main(int argc, char** argv){
         //padne, ta se dva reda raziđu i trener bi ucio krive slike uz prave poze
         std::vector<uint32_t> placeOfFrame(used, uint32_t(-1));
         for(uint32_t place = 0; place < cameraCount; ++place){
-            if(best.posed[place]) placeOfFrame[keys.frames[place]] = place;
+            if(best.posed[place]) placeOfFrame[keyframeFrames[place]] = place;
         }
 
         //BOJE TOCAKA SE SKUPLJAJU U ISTOM PROLAZU. Trener iz points3D.txt cita i boju, a ona
@@ -615,15 +829,26 @@ int main(int argc, char** argv){
 
             char name[64];
             std::snprintf(name, sizeof(name), "frame_%04u.png", place);
+            std::vector<uint8_t> flatPixels;
+            const uint8_t* exportPixels = frame.pixels.data();
+            if(havePhysicalLens && (physicalLens.k1 != 0.0f || physicalLens.k2 != 0.0f)){
+                flatPixels = Engine::undistortRgba(frame.pixels.data(), frame.width, frame.height,
+                                                   frame.width, physicalLens);
+                if(flatPixels.empty()){
+                    std::printf("Ne mogu ispraviti distorziju izlazne slike %s\n", name);
+                    return 1;
+                }
+                exportPixels = flatPixels.data();
+            }
             Spool::savePng((imageDirectory / name).string(),
-                           Spool::imageFromPixels(frame.pixels.data(), frame.width, frame.height));
+                           Spool::imageFromPixels(exportPixels, frame.width, frame.height));
             ++written;
 
             const uint32_t w = frame.width / shrinkColour, h = frame.height / shrinkColour;
             colourStore[place].assign(size_t(w) * h * 4, 0);
             for(uint32_t y = 0; y < h; ++y){
                 for(uint32_t x = 0; x < w; ++x){
-                    const uint8_t* from = frame.pixels.data()
+                    const uint8_t* from = exportPixels
                         + (size_t(y * shrinkColour) * frame.width + size_t(x * shrinkColour)) * 4;
                     uint8_t* to = colourStore[place].data() + (size_t(y) * w + x) * 4;
                     to[0] = from[0]; to[1] = from[1]; to[2] = from[2]; to[3] = 255;

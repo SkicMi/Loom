@@ -43,6 +43,9 @@ add_library(Engine STATIC
     src/Engine/Track.cpp
     src/Engine/CameraHints.cpp
     src/Engine/Keyframes.cpp
+    src/Engine/ResidualField.cpp
+    src/Engine/SelfCalibration.cpp
+    src/Engine/SolveCache.cpp
 )
 
 target_include_directories(Engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

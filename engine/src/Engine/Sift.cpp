@@ -3,6 +3,7 @@
 #include "Engine/Bands.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <unordered_map>
@@ -39,9 +40,41 @@ std::vector<uint8_t> blurred(const GrayImage& image, float sigma, uint32_t& widt
     std::vector<float> across(size_t(width) * height, 0.0f);
     inBands(0, int(height), [&](uint32_t, int firstRow, int lastRow){
         for(int y = firstRow; y < lastRow; ++y){
-            for(int x = 0; x < int(width); ++x){
+            const uint8_t* row = image.pixels + size_t(y) * strideOf(image);
+            int x = 0;
+            const int interiorBegin = std::min(reach, int(width));
+            const int interiorEnd = std::max(interiorBegin, int(width) - reach);
+            for(; x < interiorBegin; ++x){
                 float sum = 0.0f;
-                for(int d = -reach; d <= reach; ++d) sum += kernel[size_t(d + reach)] * at(image, x + d, y);
+                for(int d = -reach; d <= reach; ++d){
+                    sum += kernel[size_t(d + reach)] * at(image, x + d, y);
+                }
+                across[size_t(y) * width + size_t(x)] = sum;
+            }
+            //Osam susjednih izlaza prolazi isti kernel istim redom. Time svaka suma ostaje
+            //bit-identicna, a prevoditelj smije paralelno obraditi osam neovisnih stupaca.
+            for(; x + 7 < interiorEnd; x += 8){
+                float sums[8] = {};
+                for(int d = -reach; d <= reach; ++d){
+                    const float weight = kernel[size_t(d + reach)];
+                    for(int lane = 0; lane < 8; ++lane) sums[lane] += weight * float(row[x + lane + d]);
+                }
+                for(int lane = 0; lane < 8; ++lane){
+                    across[size_t(y) * width + size_t(x + lane)] = sums[lane];
+                }
+            }
+            for(; x < interiorEnd; ++x){
+                float sum = 0.0f;
+                for(int d = -reach; d <= reach; ++d){
+                    sum += kernel[size_t(d + reach)] * float(row[x + d]);
+                }
+                across[size_t(y) * width + size_t(x)] = sum;
+            }
+            for(; x < int(width); ++x){
+                float sum = 0.0f;
+                for(int d = -reach; d <= reach; ++d){
+                    sum += kernel[size_t(d + reach)] * at(image, x + d, y);
+                }
                 across[size_t(y) * width + size_t(x)] = sum;
             }
         }
@@ -50,11 +83,32 @@ std::vector<uint8_t> blurred(const GrayImage& image, float sigma, uint32_t& widt
     std::vector<uint8_t> out(size_t(width) * height, 0);
     inBands(0, int(height), [&](uint32_t, int firstRow, int lastRow){
         for(int y = firstRow; y < lastRow; ++y){
-            for(int x = 0; x < int(width); ++x){
+            int x = 0;
+            if(y >= reach && y + reach < int(height)){
+                for(; x + 7 < int(width); x += 8){
+                    float sums[8] = {};
+                    for(int d = -reach; d <= reach; ++d){
+                        const float weight = kernel[size_t(d + reach)];
+                        const float* source = across.data() + size_t(y + d) * width + size_t(x);
+                        for(int lane = 0; lane < 8; ++lane) sums[lane] += weight * source[lane];
+                    }
+                    for(int lane = 0; lane < 8; ++lane){
+                        out[size_t(y) * width + size_t(x + lane)] =
+                            uint8_t(std::max(0.0f, std::min(255.0f, sums[lane])));
+                    }
+                }
+            }
+            for(; x < int(width); ++x){
                 float sum = 0.0f;
-                for(int d = -reach; d <= reach; ++d){
-                    const int row = std::max(0, std::min(int(height) - 1, y + d));
-                    sum += kernel[size_t(d + reach)] * across[size_t(row) * width + size_t(x)];
+                if(y >= reach && y + reach < int(height)){
+                    for(int d = -reach; d <= reach; ++d){
+                        sum += kernel[size_t(d + reach)] * across[size_t(y + d) * width + size_t(x)];
+                    }
+                }else{
+                    for(int d = -reach; d <= reach; ++d){
+                        const int row = std::max(0, std::min(int(height) - 1, y + d));
+                        sum += kernel[size_t(d + reach)] * across[size_t(row) * width + size_t(x)];
+                    }
                 }
                 out[size_t(y) * width + size_t(x)] = uint8_t(std::max(0.0f, std::min(255.0f, sum)));
             }
@@ -254,7 +308,8 @@ bool describeSift(const GrayImage& image, const glm::vec2& point, SiftDescriptor
 std::vector<SiftDescriptor> describeSiftScaled(const GrayImage& image,
                                                const std::vector<glm::vec2>& points,
                                                const std::vector<float>& scales,
-                                               const SiftConfig& config){
+                                               const SiftConfig& config,
+                                               SiftTiming* timing){
     std::vector<SiftDescriptor> out(points.size());
     if(points.empty() || scales.size() != points.size()) return out;
 
@@ -275,6 +330,10 @@ std::vector<SiftDescriptor> describeSiftScaled(const GrayImage& image,
     std::sort(order.begin(), order.end());
 
     for(int band : order){
+        using Clock = std::chrono::steady_clock;
+        auto secondsSince = [](Clock::time_point from){
+            return std::chrono::duration<double>(Clock::now() - from).count();
+        };
         const float scale = float(std::pow(2.0, double(band) / double(bands)));
 
         //SLIKA VEC NOSI NESTO ZAGLADJIVANJA. Senzorska slika ima oko pola piksela vlastitog, pa se
@@ -282,17 +341,22 @@ std::vector<SiftDescriptor> describeSiftScaled(const GrayImage& image,
         const float already = 0.5f;
         const float step = scale > already ? std::sqrt(scale * scale - already * already) : 0.0f;
 
+        const auto smoothingStarted = Clock::now();
         uint32_t width = 0, height = 0;
         const std::vector<uint8_t> soft = step > 0.0f
             ? blurred(image, step, width, height)
             : std::vector<uint8_t>();
+        if(timing) timing->smoothingSeconds += secondsSince(smoothingStarted);
 
         GrayImage view = image;
         if(step > 0.0f) view = GrayImage{soft.data(), width, height, width};
 
+        const auto gradientStarted = Clock::now();
         const Gradients gradients = gradientsOf(view);
+        if(timing) timing->gradientSeconds += secondsSince(gradientStarted);
 
         const std::vector<uint32_t>& mine = byBand[band];
+        const auto descriptorStarted = Clock::now();
         inBands(0, int(mine.size()), [&](uint32_t, int firstItem, int lastItem){
             for(int index = firstItem; index < lastItem; ++index){
                 const uint32_t which = mine[size_t(index)];
@@ -311,6 +375,7 @@ std::vector<SiftDescriptor> describeSiftScaled(const GrayImage& image,
                 buildDescriptor(gradients, point, angle, local, out[which]);
             }
         });
+        if(timing) timing->descriptorSeconds += secondsSince(descriptorStarted);
     }
     return out;
 }
@@ -361,30 +426,47 @@ float distance(const SiftDescriptor& a, const SiftDescriptor& b){
 //=============================================================================================
 namespace{
 
-struct SiftGrid{
-    int32_t firstX = 0, firstY = 0;
-    int32_t countX = 1, countY = 1;
-    std::vector<uint32_t> start;
-    std::vector<uint32_t> items;
-
-    uint32_t at(int32_t cx, int32_t cy, uint32_t& count) const {
-        const int32_t x = cx - firstX, y = cy - firstY;
-        if(x < 0 || y < 0 || x >= countX || y >= countY){ count = 0; return 0; }
-        const size_t cell = size_t(y) * size_t(countX) + size_t(x);
-        count = start[cell + 1] - start[cell];
-        return start[cell];
+//Kvadrat udaljenosti koji odustaje cim prijedje granicu - granica je drugi po redu, a iznad nje
+//kandidat ne moze promijeniti ni najboljeg ni drugog. Radi u KVADRATIMA da se izbjegne korijen
+inline int32_t squaredUnder(const SiftDescriptor& a, const SiftDescriptor& b, int32_t limit){
+    int32_t sum = 0;
+    for(size_t block = 0; block < siftLength; block += 32){
+        for(size_t i = block; i < block + 32; ++i){
+            const int32_t difference = int32_t(a.values[i]) - int32_t(b.values[i]);
+            sum += difference * difference;
+        }
+        if(sum >= limit) return sum;
     }
-};
+    return sum;
+}
 
-SiftGrid buildSiftGrid(const std::vector<SiftDescriptor>& set,
-                       const std::vector<glm::vec2>& pixels, float cell){
-    SiftGrid grid;
+}
+
+uint32_t SiftMatchGrid::at(int32_t cx, int32_t cy, uint32_t& count) const {
+    const int32_t x = cx - firstX, y = cy - firstY;
+    if(x < 0 || y < 0 || x >= countX || y >= countY){ count = 0; return 0; }
+    const size_t cell = size_t(y) * size_t(countX) + size_t(x);
+    count = start[cell + 1] - start[cell];
+    return start[cell];
+}
+
+SiftMatchGrid prepareSiftMatchGrid(const std::vector<SiftDescriptor>& set,
+                                   const std::vector<glm::vec2>& pixels,
+                                   float cell){
+    SiftMatchGrid grid;
+    grid.cellSize = std::max(1.0f, cell);
+    if(set.size() != pixels.size()){
+        grid.countX = grid.countY = 0;
+        grid.start.assign(1, 0);
+        return grid;
+    }
+
     std::vector<int32_t> cx(set.size(), 0), cy(set.size(), 0);
     bool any = false;
     for(size_t i = 0; i < set.size(); ++i){
         if(!set[i].valid) continue;
-        cx[i] = int32_t(std::floor(double(pixels[i].x) / double(cell)));
-        cy[i] = int32_t(std::floor(double(pixels[i].y) / double(cell)));
+        cx[i] = int32_t(std::floor(double(pixels[i].x) / double(grid.cellSize)));
+        cy[i] = int32_t(std::floor(double(pixels[i].y) / double(grid.cellSize)));
         if(!any){ grid.firstX = grid.countX = cx[i]; grid.firstY = grid.countY = cy[i]; any = true; }
         grid.firstX = std::min(grid.firstX, cx[i]);
         grid.firstY = std::min(grid.firstY, cy[i]);
@@ -402,32 +484,18 @@ SiftGrid buildSiftGrid(const std::vector<SiftDescriptor>& set,
         if(!set[i].valid) continue;
         ++grid.start[size_t(cy[i] - grid.firstY) * size_t(grid.countX) + size_t(cx[i] - grid.firstX) + 1];
     }
-    for(size_t cell = 0; cell < cells; ++cell) grid.start[cell + 1] += grid.start[cell];
+    for(size_t which = 0; which < cells; ++which) grid.start[which + 1] += grid.start[which];
 
     std::vector<uint32_t> cursor(grid.start.begin(), grid.start.end() - 1);
     grid.items.assign(grid.start[cells], 0);
+    grid.rankInCell.assign(set.size(), 0);
     for(uint32_t i = 0; i < uint32_t(set.size()); ++i){
         if(!set[i].valid) continue;
-        const size_t cell = size_t(cy[i] - grid.firstY) * size_t(grid.countX) + size_t(cx[i] - grid.firstX);
-        grid.items[cursor[cell]++] = i;
+        const size_t which = size_t(cy[i] - grid.firstY) * size_t(grid.countX) + size_t(cx[i] - grid.firstX);
+        grid.rankInCell[i] = cursor[which] - grid.start[which];
+        grid.items[cursor[which]++] = i;
     }
     return grid;
-}
-
-//Kvadrat udaljenosti koji odustaje cim prijedje granicu - granica je drugi po redu, a iznad nje
-//kandidat ne moze promijeniti ni najboljeg ni drugog. Radi u KVADRATIMA da se izbjegne korijen
-inline int32_t squaredUnder(const SiftDescriptor& a, const SiftDescriptor& b, int32_t limit){
-    int32_t sum = 0;
-    for(size_t block = 0; block < siftLength; block += 32){
-        for(size_t i = block; i < block + 32; ++i){
-            const int32_t difference = int32_t(a.values[i]) - int32_t(b.values[i]);
-            sum += difference * difference;
-        }
-        if(sum >= limit) return sum;
-    }
-    return sum;
-}
-
 }
 
 std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
@@ -436,13 +504,27 @@ std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
                                      const std::vector<glm::vec2>& toPixels,
                                      float radius,
                                      const SiftConfig& config){
+    const float cell = std::max(1.0f, radius);
+    const SiftMatchGrid fromGrid = prepareSiftMatchGrid(from, fromPixels, cell);
+    const SiftMatchGrid toGrid = prepareSiftMatchGrid(to, toPixels, cell);
+    return matchSiftNear(from, fromPixels, fromGrid, to, toPixels, toGrid, radius, config);
+}
+
+std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
+                                     const std::vector<glm::vec2>& fromPixels,
+                                     const SiftMatchGrid& fromGrid,
+                                     const std::vector<SiftDescriptor>& to,
+                                     const std::vector<glm::vec2>& toPixels,
+                                     const SiftMatchGrid& toGrid,
+                                     float radius,
+                                     const SiftConfig& config){
     std::vector<SiftMatch> matches;
     if(from.empty() || to.empty()) return matches;
     if(from.size() != fromPixels.size() || to.size() != toPixels.size()) return matches;
 
     const float cell = std::max(1.0f, radius);
-    const SiftGrid toGrid = buildSiftGrid(to, toPixels, cell);
-    const SiftGrid fromGrid = buildSiftGrid(from, fromPixels, cell);
+    if(fromGrid.cellSize != cell || toGrid.cellSize != cell ||
+       fromGrid.rankInCell.size() != from.size() || toGrid.rankInCell.size() != to.size()) return matches;
     const float radiusSquared = radius * radius;
 
     const int32_t farthest = std::numeric_limits<int32_t>::max();
@@ -451,9 +533,26 @@ std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
     std::vector<uint32_t> bestTo(from.size(), 0);
     std::vector<int32_t> bestSquared(from.size(), farthest);
 
-    inBands(0, int(from.size()), [&](uint32_t, int firstItem, int lastItem){
+    //Uzajamno najbolji par prije se trazio trecim punim prolazom kroz iste udaljenosti. Svaki
+    //pojas sada uz A->B prolaz vodi i svoj najbolji B->A kandidat, bez dijeljenog pisanja. Nakon
+    //spajanja po pojasevima dobije se isti izbor. order cuva TOCAN stari red obilaska kod
+    //izjednacenih udaljenosti: celija po dy/dx, zatim indeks unutar celije.
+    struct ReverseChoice{
+        int32_t squared;
+        uint32_t from;
+        uint64_t order;
+    };
+    const uint32_t matchingBands = bandCount(int(from.size()));
+    std::vector<ReverseChoice> reverse(size_t(matchingBands) * to.size(),
+                                       ReverseChoice{farthest, UINT32_MAX, UINT64_MAX});
+
+    inBands(0, int(from.size()), [&](uint32_t band, int firstItem, int lastItem){
+        ReverseChoice* reverseHere = reverse.data() + size_t(band) * to.size();
+        std::vector<std::pair<uint32_t, int32_t>> measured;
+        measured.reserve(4096);
         for(uint32_t i = uint32_t(firstItem); i < uint32_t(lastItem); ++i){
             if(!from[i].valid) continue;
+            measured.clear();
 
             const int32_t cx = int32_t(std::floor(double(fromPixels[i].x) / double(cell)));
             const int32_t cy = int32_t(std::floor(double(fromPixels[i].y) / double(cell)));
@@ -473,8 +572,16 @@ std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
                         const glm::vec2 apart = toPixels[j] - fromPixels[i];
                         if(glm::dot(apart, apart) > radiusSquared) continue;
 
-                        const int32_t d = squaredUnder(from[i], to[j], best);
+                        ReverseChoice& backward = reverseHere[j];
+                        const int32_t d = squaredUnder(from[i], to[j], farthest);
+                        measured.push_back({j, d});
                         if(d < best){ best = d; chosen = j; }
+
+                        const uint32_t reverseCell = uint32_t((-dy + 1) * 3 + (-dx + 1));
+                        const uint64_t order = (uint64_t(reverseCell) << 32) | fromGrid.rankInCell[i];
+                        if(d < backward.squared || (d == backward.squared && order < backward.order)){
+                            backward = ReverseChoice{d, i, order};
+                        }
                     }
                 }
             }
@@ -483,28 +590,16 @@ std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
             //vidi SiftConfig::secondBestApart
             if(best < farthest){
                 const float apartSquared = config.secondBestApart * config.secondBestApart;
+                for(const auto& candidate : measured){
+                    const uint32_t j = candidate.first;
+                    if(j == chosen) continue;
 
-                for(int32_t dy = -1; dy <= 1; ++dy){
-                    for(int32_t dx = -1; dx <= 1; ++dx){
-                        uint32_t count = 0;
-                        const uint32_t offset = toGrid.at(cx + dx, cy + dy, count);
-
-                        for(uint32_t k = 0; k < count; ++k){
-                            const uint32_t j = toGrid.items[offset + k];
-                            if(j == chosen) continue;
-
-                            const glm::vec2 apart = toPixels[j] - fromPixels[i];
-                            if(glm::dot(apart, apart) > radiusSquared) continue;
-
-                            if(config.secondBestApart > 0.0f){
-                                const glm::vec2 fromBest = toPixels[j] - toPixels[chosen];
-                                if(glm::dot(fromBest, fromBest) < apartSquared) continue;
-                            }
-
-                            const int32_t d = squaredUnder(from[i], to[j], second);
-                            if(d < second) second = d;
-                        }
+                    if(config.secondBestApart > 0.0f){
+                        const glm::vec2 fromBest = toPixels[j] - toPixels[chosen];
+                        if(glm::dot(fromBest, fromBest) < apartSquared) continue;
                     }
+
+                    if(candidate.second < second) second = candidate.second;
                 }
             }
 
@@ -523,30 +618,15 @@ std::vector<SiftMatch> matchSiftNear(const std::vector<SiftDescriptor>& from,
 
     inBands(0, int(to.size()), [&](uint32_t, int firstItem, int lastItem){
         for(uint32_t j = uint32_t(firstItem); j < uint32_t(lastItem); ++j){
-            if(!to[j].valid) continue;
-
-            const int32_t cx = int32_t(std::floor(double(toPixels[j].x) / double(cell)));
-            const int32_t cy = int32_t(std::floor(double(toPixels[j].y) / double(cell)));
-
-            int32_t best = farthest;
-            uint32_t chosen = UINT32_MAX;
-
-            for(int32_t dy = -1; dy <= 1; ++dy){
-                for(int32_t dx = -1; dx <= 1; ++dx){
-                    uint32_t count = 0;
-                    const uint32_t offset = fromGrid.at(cx + dx, cy + dy, count);
-
-                    for(uint32_t k = 0; k < count; ++k){
-                        const uint32_t i = fromGrid.items[offset + k];
-                        const glm::vec2 apart = toPixels[j] - fromPixels[i];
-                        if(glm::dot(apart, apart) > radiusSquared) continue;
-
-                        const int32_t d = squaredUnder(from[i], to[j], best);
-                        if(d < best){ best = d; chosen = i; }
-                    }
+            ReverseChoice best{farthest, UINT32_MAX, UINT64_MAX};
+            for(uint32_t band = 0; band < matchingBands; ++band){
+                const ReverseChoice& candidate = reverse[size_t(band) * to.size() + j];
+                if(candidate.squared < best.squared ||
+                   (candidate.squared == best.squared && candidate.order < best.order)){
+                    best = candidate;
                 }
             }
-            bestFrom[j] = chosen;
+            bestFrom[j] = best.from;
         }
     });
 

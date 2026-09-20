@@ -64,7 +64,9 @@ int main(){
 
     RenderTargetConfig targetConfig;
     targetConfig.colorFormat = vk::Format::eR32G32B32A32Sfloat;
-    targetConfig.extraColorUsage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage;
+    targetConfig.extraColorUsage = vk::ImageUsageFlagBits::eSampled |
+                                   vk::ImageUsageFlagBits::eStorage |
+                                   vk::ImageUsageFlagBits::eTransferSrc;
     targetConfig.enableDepth = false;
     targetConfig.finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 

@@ -3,6 +3,7 @@
 #include "Engine/Track.h"
 
 #include <algorithm>
+#include <chrono>
 #include <numeric>
 #include <unordered_map>
 
@@ -74,6 +75,16 @@ MatchGraphResult mergeGraphs(const MatchGraphResult& first, const MatchGraphResu
     out.refinedObservations = first.refinedObservations + second.refinedObservations;
     out.unrefinedObservations = first.unrefinedObservations + second.unrefinedObservations;
     out.unrefinedTracks = first.unrefinedTracks + second.unrefinedTracks;
+    out.preprocessSeconds = first.preprocessSeconds + second.preprocessSeconds;
+    out.featureSeconds = first.featureSeconds + second.featureSeconds;
+    out.detectionSeconds = first.detectionSeconds + second.detectionSeconds;
+    out.descriptorSeconds = first.descriptorSeconds + second.descriptorSeconds;
+    out.descriptorSmoothingSeconds = first.descriptorSmoothingSeconds + second.descriptorSmoothingSeconds;
+    out.descriptorGradientSeconds = first.descriptorGradientSeconds + second.descriptorGradientSeconds;
+    out.descriptorBuildSeconds = first.descriptorBuildSeconds + second.descriptorBuildSeconds;
+    out.matchingSeconds = first.matchingSeconds + second.matchingSeconds;
+    out.geometrySeconds = first.geometrySeconds + second.geometrySeconds;
+    out.assemblySeconds = first.assemblySeconds + second.assemblySeconds;
 
     //Medijan dvaju medijana nije medijan, pa se uzima veci od dvoje - to je barem broj koji je
     //negdje stvarno izmjeren
@@ -85,6 +96,11 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
                                  const Intrinsics& intrinsics,
                                  const MatchGraphConfig& config){
     MatchGraphResult result;
+    using Clock = std::chrono::steady_clock;
+    auto secondsSince = [](Clock::time_point from){
+        return std::chrono::duration<double>(Clock::now() - from).count();
+    };
+    const auto preprocessStarted = Clock::now();
     const uint32_t frames = uint32_t(images.size());
     if(frames < 2) return result;
 
@@ -156,6 +172,7 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
         small.cx = (intrinsics.cx - 0.5f * float(shrink - 1)) / float(shrink);
         small.cy = (intrinsics.cy - 0.5f * float(shrink - 1)) / float(shrink);
     }
+    result.preprocessSeconds = secondsSince(preprocessStarted);
 
     DescribeConfig describe = config.describe;
     if(config.patchFromWidth) describe.patch = std::max(12u, working[0].width / 40u);
@@ -174,23 +191,36 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     SiftConfig sift = config.sift;
     if(config.patchFromWidth) sift.patch = describe.patch;
 
+    const auto featuresStarted = Clock::now();
     for(uint32_t frame = 0; frame < frames; ++frame){
+        const auto detectionStarted = Clock::now();
         if(config.useScaleSpace){
             const std::vector<Keypoint> keys = detectScaleSpace(working[frame], config.scaleSpace);
+            result.detectionSeconds += secondsSince(detectionStarted);
             points[frame].reserve(keys.size());
             std::vector<float> scales;
             scales.reserve(keys.size());
             for(const Keypoint& one : keys){ points[frame].push_back(one.pixel); scales.push_back(one.scale); }
-            siftSignatures[frame] = describeSiftScaled(working[frame], points[frame], scales, sift);
+            const auto descriptorStarted = Clock::now();
+            SiftTiming timing;
+            siftSignatures[frame] = describeSiftScaled(working[frame], points[frame], scales, sift, &timing);
+            result.descriptorSeconds += secondsSince(descriptorStarted);
+            result.descriptorSmoothingSeconds += timing.smoothingSeconds;
+            result.descriptorGradientSeconds += timing.gradientSeconds;
+            result.descriptorBuildSeconds += timing.descriptorSeconds;
         }else{
             points[frame] = detectCorners(working[frame], detect);
+            result.detectionSeconds += secondsSince(detectionStarted);
+            const auto descriptorStarted = Clock::now();
             if(config.useSift) siftSignatures[frame] = describeSiftAll(working[frame], points[frame], sift);
             else               signatures[frame] = describeAll(working[frame], points[frame], describe);
+            result.descriptorSeconds += secondsSince(descriptorStarted);
         }
         offset[frame + 1] = offset[frame] + uint32_t(points[frame].size());
     }
     result.localizationPixels = config.useScaleSpace ? 1.0f : float(shrink);
     result.featuresTotal = offset[frames];
+    result.featureSeconds = secondsSince(featuresStarted);
     if(result.featuresTotal == 0) return result;
 
     // ---------------------------------------------------------------------------------
@@ -201,12 +231,24 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     std::vector<Edge> edges;
     std::vector<double> perPair;
     const float radius = config.searchFraction * float(working[0].width);
+    const bool bySift = config.useSift || config.useScaleSpace;
+
+    //Isti kadar sudjeluje u do config.window parova, a njegova prostorna mreza ovisi samo o
+    //znacajkama i stalnom radijusu. Pripremi je jednom umjesto da je ponovno gradi svaki par.
+    std::vector<SiftMatchGrid> siftGrids;
+    if(bySift){
+        const auto matchingStarted = Clock::now();
+        siftGrids.reserve(frames);
+        for(uint32_t frame = 0; frame < frames; ++frame){
+            siftGrids.push_back(prepareSiftMatchGrid(siftSignatures[frame], points[frame], radius));
+        }
+        result.matchingSeconds += secondsSince(matchingStarted);
+    }
 
     for(uint32_t a = 0; a < frames; ++a){
         for(uint32_t step = 1; step <= config.window; ++step){
             const uint32_t b = a + step;
             if(b >= frames) break;
-            const bool bySift = config.useSift || config.useScaleSpace;
             if(bySift){ if(siftSignatures[a].empty() || siftSignatures[b].empty()) continue; }
             else      { if(signatures[a].empty() || signatures[b].empty()) continue; }
 
@@ -215,9 +257,11 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
             //Dva potpisa daju dva razlicita zapisa poklapanja; dalje ih zanima samo tko s kim
             std::vector<std::pair<uint32_t, uint32_t>> matches;
             std::vector<uint32_t> distances;
+            const auto matchingStarted = Clock::now();
             if(bySift){
                 for(const SiftMatch& one : matchSiftNear(siftSignatures[a], points[a],
-                                                          siftSignatures[b], points[b], radius, sift)){
+                                                          siftGrids[a], siftSignatures[b], points[b],
+                                                          siftGrids[b], radius, sift)){
                     matches.push_back({one.from, one.to});
                     distances.push_back(uint32_t(one.distance));
                 }
@@ -228,6 +272,7 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
                     distances.push_back(one.distance);
                 }
             }
+            result.matchingSeconds += secondsSince(matchingStarted);
             if(matches.size() < config.minInliers) continue;
 
             std::vector<glm::vec2> here, there;
@@ -237,7 +282,9 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
                 there.push_back(points[b][match.second]);
             }
 
+            const auto geometryStarted = Clock::now();
             const TwoViewResult pose = relativePoseRobust(here, there, small, config.ransac);
+            result.geometrySeconds += secondsSince(geometryStarted);
             if(!pose.solved || pose.inlierCount < config.minInliers) continue;
 
             ++result.acceptedFrames;
@@ -255,6 +302,7 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
         std::sort(perPair.begin(), perPair.end());
         result.medianMatchesPerPair = perPair[perPair.size() / 2];
     }
+    const auto assemblyStarted = Clock::now();
 
     // ---------------------------------------------------------------------------------
     // Bridovi u komponente
@@ -624,6 +672,7 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
         }
     }
 
+    result.assemblySeconds = secondsSince(assemblyStarted);
     return result;
 }
 

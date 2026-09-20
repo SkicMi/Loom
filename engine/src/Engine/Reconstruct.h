@@ -100,6 +100,12 @@ struct ReconstructConfig{
     //=========================================================================================
     uint32_t initialPairTrials = 4;
 
+    //Puni pokusaji s vec odabranim pocetnim parovima nemaju zajednicko promjenjivo stanje i mogu
+    //se graditi istodobno. False postoji kao referentni put za bit-identicni test i mjerenje;
+    //izbor parova i pravilo pobjednika moraju ostati isti u oba nacina.
+    bool parallelInitialPairTrials = true;
+
+
     //=========================================================================================
     // DRUGO MISLJENJE ZA KAMERU KOJA SE ZAGLAVILA.
     //
@@ -286,6 +292,13 @@ struct ReconstructConfig{
 
     uint32_t bundleIterations = 15;
 
+    //GLOBALNI BUNDLE NAKON DODAVANJA KAMERE. Vrijednost 1.0 cuva stari put: bundle nakon svake
+    //kamere. Vrijednost veca od jedan pokrece ga kad broj rijesenih kamera naraste za taj faktor;
+    //npr. 1.25 kod 3, 4, 6, 8... kamera. Zavrsni refine i njegovi bundleovi ostaju netaknuti.
+    //To je bitno na velikom grafu gdje je svaki globalni bundle skuplji, a 76 uzastopnih poziva
+    //rjesava gotovo isti problem. Pozivatelj smije ukljuciti rjedju kadencu tek uz vlastitu mjeru.
+    double incrementalBundleGrowth = 1.0;
+
     //=========================================================================================
     // CISCENJE I PONOVNA TRIANGULACIJA, u krug, nakon sto se kamere iscrpe.
     //
@@ -374,6 +387,27 @@ struct ReconstructConfig{
     double poseMinInlierRatio = 0.25;
 };
 
+struct ReconstructTiming{
+    //Samo telemetrija: nijedna vrijednost ne ulazi u odluku solvera. totalSeconds je stvarno
+    //zidno vrijeme poziva, ukljucujuci odbacene pocetne parove i popravak sava. Ostale faze
+    //opisuju rjesenje koje je vraceno; kod jednog pokusaja njihov zbroj objasnjava cijeli poziv.
+    double totalSeconds = 0.0;
+    double initialPairSeconds = 0.0;
+    double poseSeconds = 0.0;
+    double triangulationSeconds = 0.0;
+    double bundleSeconds = 0.0;
+    double bundleCostSeconds = 0.0;
+    double bundleLinearizeSeconds = 0.0;
+    double bundleSchurSeconds = 0.0;
+    double bundleDenseSolveSeconds = 0.0;
+    double bundleBackSubstituteSeconds = 0.0;
+    double filteringSeconds = 0.0;
+    double diagnosticsSeconds = 0.0;
+    uint32_t poseCalls = 0;
+    uint32_t triangulationCalls = 0;
+    uint32_t bundleCalls = 0;
+};
+
 struct Reconstruction{
     std::vector<Pose> poses;
     std::vector<uint8_t> posed;          //1 za kameru koja je rijesena
@@ -446,6 +480,8 @@ struct Reconstruction{
     double initialAngle = 0.0;       //medijan kuta pod kojim se zrake tog para sijeku
     uint32_t initialPoints = 0;      //koliko se iz njega dalo triangulirati
 
+    ReconstructTiming timing;
+
     bool ok = false;
 };
 
@@ -465,5 +501,13 @@ Reconstruction reconstruct(const std::vector<Observation>& observations,
                            size_t pointCount,
                            const Intrinsics& intrinsics,
                            const ReconstructConfig& config = {});
+
+//Ponovno racuna dijagnostiku nad POSTOJECOM geometrijom i maskama. Ne mijenja poze, tocke ni
+//odluku koja su opazanja usla u rjesenje. Potrebno je nakon vanjskog bundlea (npr. zajednicke
+//samokalibracije), jer su tada spremljene reprojekcije i kutovi iz stare geometrije zastarjeli.
+void refreshReconstructionDiagnostics(const std::vector<Observation>& observations,
+                                      const Intrinsics& intrinsics,
+                                      const ReconstructConfig& config,
+                                      Reconstruction& state);
 
 }

@@ -39,9 +39,39 @@ Plane blur(const Plane& source, float sigma){
     std::vector<float> across(size_t(source.width) * source.height, 0.0f);
     inBands(0, int(source.height), [&](uint32_t, int firstRow, int lastRow){
         for(int y = firstRow; y < lastRow; ++y){
-            for(int x = 0; x < int(source.width); ++x){
+            const float* row = source.values.data() + size_t(y) * source.width;
+            int x = 0;
+            const int interiorBegin = std::min(reach, int(source.width));
+            const int interiorEnd = std::max(interiorBegin, int(source.width) - reach);
+            for(; x < interiorBegin; ++x){
                 float sum = 0.0f;
-                for(int d = -reach; d <= reach; ++d) sum += kernel[size_t(d + reach)] * source.at(x + d, y);
+                for(int d = -reach; d <= reach; ++d){
+                    sum += kernel[size_t(d + reach)] * source.at(x + d, y);
+                }
+                across[size_t(y) * source.width + size_t(x)] = sum;
+            }
+            for(; x + 7 < interiorEnd; x += 8){
+                float sums[8] = {};
+                for(int d = -reach; d <= reach; ++d){
+                    const float weight = kernel[size_t(d + reach)];
+                    for(int lane = 0; lane < 8; ++lane) sums[lane] += weight * row[x + lane + d];
+                }
+                for(int lane = 0; lane < 8; ++lane){
+                    across[size_t(y) * source.width + size_t(x + lane)] = sums[lane];
+                }
+            }
+            for(; x < interiorEnd; ++x){
+                float sum = 0.0f;
+                for(int d = -reach; d <= reach; ++d){
+                    sum += kernel[size_t(d + reach)] * row[x + d];
+                }
+                across[size_t(y) * source.width + size_t(x)] = sum;
+            }
+            for(; x < int(source.width); ++x){
+                float sum = 0.0f;
+                for(int d = -reach; d <= reach; ++d){
+                    sum += kernel[size_t(d + reach)] * source.at(x + d, y);
+                }
                 across[size_t(y) * source.width + size_t(x)] = sum;
             }
         }
@@ -49,11 +79,31 @@ Plane blur(const Plane& source, float sigma){
 
     inBands(0, int(source.height), [&](uint32_t, int firstRow, int lastRow){
         for(int y = firstRow; y < lastRow; ++y){
-            for(int x = 0; x < int(source.width); ++x){
+            int x = 0;
+            if(y >= reach && y + reach < int(source.height)){
+                for(; x + 7 < int(source.width); x += 8){
+                    float sums[8] = {};
+                    for(int d = -reach; d <= reach; ++d){
+                        const float weight = kernel[size_t(d + reach)];
+                        const float* values = across.data() + size_t(y + d) * source.width + size_t(x);
+                        for(int lane = 0; lane < 8; ++lane) sums[lane] += weight * values[lane];
+                    }
+                    for(int lane = 0; lane < 8; ++lane){
+                        out.values[size_t(y) * out.width + size_t(x + lane)] = sums[lane];
+                    }
+                }
+            }
+            for(; x < int(source.width); ++x){
                 float sum = 0.0f;
-                for(int d = -reach; d <= reach; ++d){
-                    const int row = std::max(0, std::min(int(source.height) - 1, y + d));
-                    sum += kernel[size_t(d + reach)] * across[size_t(row) * source.width + size_t(x)];
+                if(y >= reach && y + reach < int(source.height)){
+                    for(int d = -reach; d <= reach; ++d){
+                        sum += kernel[size_t(d + reach)] * across[size_t(y + d) * source.width + size_t(x)];
+                    }
+                }else{
+                    for(int d = -reach; d <= reach; ++d){
+                        const int row = std::max(0, std::min(int(source.height) - 1, y + d));
+                        sum += kernel[size_t(d + reach)] * across[size_t(row) * source.width + size_t(x)];
+                    }
                 }
                 out.values[size_t(y) * out.width + size_t(x)] = sum;
             }

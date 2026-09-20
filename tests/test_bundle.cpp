@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,27 @@ void disturb(std::vector<Engine::Pose>& poses, std::vector<glm::vec3>& points){
         const float c = float((i * 71) % 29) / 29.0f - 0.5f;
         points[i] += 0.06f * glm::vec3(a, b, c);
     }
+}
+
+uint64_t bundleHash(const Engine::BundleResult& result){
+    uint64_t hash = 1469598103934665603ull;
+    auto addFloat = [&](float value){
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        for(unsigned shift = 0; shift < 32; shift += 8){
+            hash ^= uint8_t(bits >> shift);
+            hash *= 1099511628211ull;
+        }
+    };
+    for(const Engine::Pose& pose : result.poses){
+        addFloat(pose.position.x); addFloat(pose.position.y); addFloat(pose.position.z);
+        addFloat(pose.orientation.w); addFloat(pose.orientation.x);
+        addFloat(pose.orientation.y); addFloat(pose.orientation.z);
+    }
+    for(const glm::vec3& point : result.points){
+        addFloat(point.x); addFloat(point.y); addFloat(point.z);
+    }
+    return hash;
 }
 
 }
@@ -143,6 +165,7 @@ int main(){
 
         const Engine::BundleResult result = Engine::bundleAdjust(clean.observations, poses, points, clean.intrinsics);
 
+
         //Mjerilo se izmjeri i ponisti prije usporedbe - vidi scaleOf
         const double scale = scaleOf(result.poses, clean.poses);
         std::vector<Engine::Pose> aligned = result.poses;
@@ -162,6 +185,21 @@ int main(){
         report.check("sidro miruje",
             result.poses[0].position == clean.poses[0].position && result.poses[0].orientation == clean.poses[0].orientation,
             "prva kamera je ostala tocno gdje je bila");
+
+        const double classified = result.timing.costSeconds + result.timing.linearizeSeconds +
+            result.timing.schurSeconds + result.timing.denseSolveSeconds +
+            result.timing.backSubstituteSeconds;
+        report.check("telemetrija pokriva stvarni bundle",
+            result.iterations > 0 && result.timing.totalSeconds > 0.0 &&
+            result.timing.linearizeSeconds > 0.0 && result.timing.schurSeconds > 0.0 &&
+            result.timing.denseSolveSeconds > 0.0 && classified <= result.timing.totalSeconds * 1.01,
+            fmt("ukupno %.6f s, klasificirano %.6f s kroz %u koraka",
+                result.timing.totalSeconds, classified, result.iterations));
+
+        report.check("bundle je bit-identican",
+            bundleHash(result) == 4084565953268247014ull,
+            fmt("hash %llu", static_cast<unsigned long long>(bundleHash(result))));
+
     }
 
     // -------------------------------------------------------------------------------

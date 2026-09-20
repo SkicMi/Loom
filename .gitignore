@@ -14,3 +14,6 @@ tools/depth/.venv/
 view*.png
 .vscode/
 .venv/
+
+# Mape za gradnju s drugim postavkama (sanitizeri, release, tsan)
+build-*/

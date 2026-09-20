@@ -32,6 +32,16 @@ struct BundleConfig{
     //Sidro za gauge. Bez njega bi rjesenje klizilo, a s njim su ostale kamere i tocke izrazene
     //prema prvoj - sto je i ono sto se poslije predaje Loomu
     bool fixFirstCamera = true;
+
+};
+
+struct BundleTiming{
+    double totalSeconds = 0.0;
+    double costSeconds = 0.0;
+    double linearizeSeconds = 0.0;
+    double schurSeconds = 0.0;
+    double denseSolveSeconds = 0.0;
+    double backSubstituteSeconds = 0.0;
 };
 
 struct BundleResult{
@@ -40,6 +50,7 @@ struct BundleResult{
     uint32_t iterations = 0;
     double startMedian = 0.0;
     double endMedian = 0.0;
+    BundleTiming timing;
     bool solved = false;
 };
 
