@@ -24,6 +24,8 @@
 #include <Engine/Reconstruct.h>
 #include <Engine/SelfCalibration.h>
 #include <Engine/SolveCache.h>
+#include <Engine/Bands.h>
+#include <Engine/SolvePose.h>
 #include <Engine/Track.h>
 
 #include <algorithm>
@@ -48,6 +50,151 @@ std::vector<uint8_t> toGray(const Spool::Image& image){
     }
     return gray;
 }
+
+//=============================================================================================
+// PUNE SLICICE: poza za SVAKI kadar, ne samo za kljucne.
+//
+// ZASTO. Solver uzima svaki step-ti kadar, pa od 2304 kadra snimke izadje 229 poza. Za splat je to
+// dosta. Za match-move nije: CG objekt tada skace pet puta u sekundi, a izmedju uzoraka USD
+// linearno interpolira - sto kamera iz ruke sigurno ne radi.
+//
+// NE REKONSTRUIRA SE IZNOVA. Struktura je vec rijesena, pa se medjukadar samo LOKALIZIRA: tocke se
+// pratiteljem prenesu iz najblizeg kljucnog kadra, a poza izadje iz PnP-a. Red velicine jeftinije
+// od solvea, jer se u 3D nista ne trazi.
+//
+// KRECE SE OD KLJUCNOG KADRA, NE OD PRETHODNOG MEDJUKADRA. Lanac pracenja koji se ne resetira
+// nakuplja pomak, pa bi zadnji kadar prije sljedeceg kljucnog bio najlosiji. Ovako je svaki
+// medjukadar udaljen najvise step-1 kadrova od mjesta s tocnom pozom
+//=============================================================================================
+struct DenseTrack{
+    std::vector<Engine::Pose> poses;      //po IZVORNOM kadru snimke
+    std::vector<uint8_t> posed;
+    uint32_t localised = 0;
+    uint32_t failed = 0;
+    uint32_t medianKept = 0;   //koliko je tocaka prezivjelo prijenos, medijan
+};
+
+DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
+                              const Engine::Reconstruction& solved,
+                              const std::vector<Engine::Observation>& observations,
+                              const std::vector<uint32_t>& keyframeFrames,
+                              const Engine::Intrinsics& intrinsics){
+    DenseTrack out;
+    if(step <= 1 || keyframeFrames.empty()) return out;
+
+    //Koja opazanja kljucnog kadra gledaju RIJESENU tocku - samo ona nose 3D koji PnP treba
+    std::vector<std::vector<Engine::PointObservation>> perKeyframe(keyframeFrames.size());
+    for(const Engine::Observation& observation : observations){
+        if(observation.camera >= keyframeFrames.size()) continue;
+        if(observation.point >= solved.solved.size() || !solved.solved[observation.point]) continue;
+        if(observation.camera >= solved.posed.size() || !solved.posed[observation.camera]) continue;
+        perKeyframe[observation.camera].push_back(
+            Engine::PointObservation{observation.point, observation.pixel});
+    }
+
+    //Od rednog broja KORISTENOG kadra do kljucnog kadra
+    std::vector<int> keyframeOfUsed;
+    for(size_t k = 0; k < keyframeFrames.size(); ++k){
+        if(keyframeFrames[k] >= keyframeOfUsed.size()) keyframeOfUsed.resize(keyframeFrames[k] + 1, -1);
+        keyframeOfUsed[keyframeFrames[k]] = int(k);
+    }
+
+    Engine::TrackConfig trackConfig;
+    trackConfig.levels = 4;          //medjukadar je blizu, ali kamera iz ruke zna skociti
+    trackConfig.window = 10;
+
+    Engine::PoseSolveConfig poseConfig;
+    poseConfig.huberPixels = 3.0;
+
+    //SAMO UNUTAR RIJESENOG OPSEGA. Iza zadnjeg kljucnog kadra rekonstrukcija ne pokriva nista, pa
+    //bi se poze ondje EKSTRAPOLIRALE - pracenje bi jos neko vrijeme uspijevalo i davalo brojke koje
+    //izgledaju uredno a ne stoje ni na cemu. Prvi pokusaj je bas to radio: 780 od 1088 kadrova
+    //"lokalizirano" dok je rjesenje pokrivalo njih dvjesto cetrdeset
+    const uint32_t lastSolvedSource = keyframeFrames.back() * step;
+
+    Spool::VideoReader reader(path);
+    uint32_t sourceIndex = 0, usedIndex = 0;
+
+    Engine::Pyramid previous;
+    std::vector<Engine::PointObservation> active;
+    Engine::Pose lastPose;
+    bool havePose = false;
+    std::vector<uint32_t> inlierCounts;
+
+    while(!reader.atEnd()){
+        const Spool::Image frame = reader.readNext();
+        if(frame.pixels.empty()) break;
+
+        const std::vector<uint8_t> gray = toGray(frame);
+        const Engine::GrayImage image{gray.data(), frame.width, frame.height, frame.width};
+        Engine::Pyramid pyramid(image, trackConfig.levels);
+
+        if(out.poses.size() <= sourceIndex){
+            out.poses.resize(sourceIndex + 1);
+            out.posed.resize(sourceIndex + 1, uint8_t(0));
+        }
+
+        const bool isUsed = (step <= 1) || (sourceIndex % step == 0);
+        int keyframe = -1;
+        if(isUsed && usedIndex < keyframeOfUsed.size()) keyframe = keyframeOfUsed[usedIndex];
+
+        if(keyframe >= 0){
+            //Kljucni kadar: poza je vec rijesena, i odavde krece novi lanac
+            out.poses[sourceIndex] = solved.poses[size_t(keyframe)];
+            out.posed[sourceIndex] = 1;
+            lastPose = solved.poses[size_t(keyframe)];
+            havePose = true;
+            active = perKeyframe[size_t(keyframe)];
+        }else if(havePose && !active.empty()){
+            //Medjukadar: prenesi tocke i rijesi pozu
+            std::vector<Engine::PointObservation> moved(active.size());
+            std::vector<uint8_t> kept(active.size(), 0);
+            Engine::inBands(0, int(active.size()), [&](uint32_t, int first, int last){
+                for(int i = first; i < last; ++i){
+                    glm::vec2 landed;
+                    if(Engine::trackPoint(previous, pyramid, active[size_t(i)].pixel, landed, trackConfig)){
+                        moved[size_t(i)] = Engine::PointObservation{active[size_t(i)].point, landed};
+                        kept[size_t(i)] = 1;
+                    }
+                }
+            });
+
+            std::vector<Engine::PointObservation> survived;
+            survived.reserve(moved.size());
+            for(size_t i = 0; i < moved.size(); ++i) if(kept[i]) survived.push_back(moved[i]);
+
+            if(survived.size() >= 12){
+                const Engine::PoseSolveResult result =
+                    Engine::solvePose(solved.points, survived, intrinsics, lastPose, poseConfig);
+                if(result.solved){
+                    out.poses[sourceIndex] = result.pose;
+                    out.posed[sourceIndex] = 1;
+                    lastPose = result.pose;
+                    ++out.localised;
+                    inlierCounts.push_back(uint32_t(survived.size()));
+                }else{
+                    ++out.failed;
+                }
+            }else{
+                ++out.failed;
+            }
+            //Pracenje ide dalje od ONOGA STO JE NADJENO, da se sljedeci kadar ne trazi iz starog mjesta
+            active = survived;
+        }
+
+        previous = std::move(pyramid);
+        if(isUsed) ++usedIndex;
+        ++sourceIndex;
+        if(sourceIndex > lastSolvedSource) break;
+    }
+
+    if(!inlierCounts.empty()){
+        std::sort(inlierCounts.begin(), inlierCounts.end());
+        out.medianKept = inlierCounts[inlierCounts.size() / 2];
+    }
+    return out;
+}
+
 
 void printReconstructTiming(const Engine::Reconstruction& state, const char* indent = "    "){
     const Engine::ReconstructTiming& time = state.timing;
@@ -994,9 +1141,40 @@ int main(int argc, char** argv){
         // pratece XML uz snimku
         //=================================================================================
         {
+            //=============================================================================
+            // PUNE SLICICE - vidi localiseEveryFrame. Solve daje pozu svakog step-tog kadra;
+            // match-move trazi svaki. Medjukadrovi se lokaliziraju, ne rekonstruiraju.
+            //=============================================================================
+            Engine::Reconstruction forExport = best;
+            int exportStep = int(step);
+
+            if(step > 1){
+                const auto denseStarted = std::chrono::steady_clock::now();
+                const DenseTrack dense = localiseEveryFrame(path, step, best, solveObservations,
+                                                            keyframeFrames, bestIntrinsics);
+                const double denseSeconds = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - denseStarted).count();
+
+                const uint32_t between = dense.localised + dense.failed;
+                if(dense.localised > 0 && between > 0){
+                    std::printf("  pune slicice: %u od %u medjukadrova lokalizirano (%.1f %%), "
+                                "medijan %u prenesenih tocaka, %.1f s\n",
+                                dense.localised, between,
+                                100.0 * double(dense.localised) / double(between),
+                                dense.medianKept, denseSeconds);
+
+                    forExport.poses = dense.poses;
+                    forExport.posed = dense.posed;
+                    exportStep = 1;
+                }else{
+                    std::printf("  pune slicice nisu uspjele (%u medjukadrova), izvozi se svaki %u. kadar\n",
+                                between, step);
+                }
+            }
+
             Engine::UsdExportConfig usdConfig;
             usdConfig.firstFrame = 1;
-            usdConfig.frameStep = int(step);
+            usdConfig.frameStep = exportStep;
             usdConfig.framesPerSecond = info.frameRate() > 0.0 ? info.frameRate() : 25.0;
             usdConfig.sensorWidthMillimetres = hints.sensorWidthMillimetres;
 
@@ -1007,7 +1185,7 @@ int main(int argc, char** argv){
             }
 
             const std::string usdPath = outputDirectory + "/kamera.usda";
-            if(Engine::writeUsdScene(usdPath, best, bestIntrinsics, info.width, info.height,
+            if(Engine::writeUsdScene(usdPath, forExport, bestIntrinsics, info.width, info.height,
                                      usdColours, usdConfig)){
                 std::printf("Zapisan %s (kamera i tocke za Nuke/Houdini/Blender%s)\n",
                             usdPath.c_str(),

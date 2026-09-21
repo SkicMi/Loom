@@ -448,6 +448,18 @@ target_link_libraries(OverlayBox PRIVATE Engine Spool)
 add_executable(VideoSolve src/video_solve.cpp)
 target_link_libraries(VideoSolve PRIVATE Spool Engine)
 
+# Loom - desktop alat. `Loom` otvori prozor i odande se bira sto alat radi. Solver se pokrece kao
+# zaseban proces, pa se nijedna linija VideoSolvea ne mijenja da bi suicelje postojalo
+# Meta se zove LoomDesk jer su "Loom" (staticka biblioteka) i "LoomApp" (src/main.cpp) vec
+# zauzeti; BINARY se zove loom, malim slovom, jer se tako pokrece iz terminala
+add_executable(LoomDesk src/loom_app.cpp)
+set_target_properties(LoomDesk PROPERTIES OUTPUT_NAME loom)
+target_link_libraries(LoomDesk PRIVATE Loom TreadlePaint)
+# KORIJEN PROJEKTA U KODU. Aplikacija se pokrece iz build mape, a trener splatova i njegov venv
+# zive u korijenu - bez ovoga bi radila samo kad se slucajno pokrene s pravog mjesta
+target_compile_definitions(LoomDesk PRIVATE LOOM_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+add_dependencies(LoomDesk LoomShaders VideoSolve)
+
 add_executable(SolveViewer src/solve_viewer.cpp)
 target_link_libraries(SolveViewer PRIVATE LoomPreset Engine)
 add_dependencies(SolveViewer LoomShaders)
