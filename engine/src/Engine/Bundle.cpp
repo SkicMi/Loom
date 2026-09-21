@@ -224,6 +224,34 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
 
     double lambda = config.lambda;
 
+    //=====================================================================================
+    // JAKOBIJAN SE RACUNA JEDNOM PO OPAZANJU, PA SE PISE U DVA NEOVISNA PROSTORA U DVA PROLAZA.
+    //
+    // Prijasnja petlja je u JEDNOM prolazu radila troje: racunala jakobijan (skupo - projekcija,
+    // trig), pisala u gPoint/C (indeksirano PO TOCKI) i pisala u gCamera/B/E (indeksirano PO
+    // KAMERI). To se ne da razdijeliti po dretvama na jedan nacin kao Schur, jer bi svaka podjela
+    // - po tocki ili po kameri - ostavila DRUGU polovicu pisanja da se sudara izmedju dretvi.
+    //
+    // Zato su tri prolaza, svaki siguran za sebe:
+    //
+    //   1. jakobijan          po OPAZANJU, svako u svoj red predmemorije - nema sudara, nema dijeljenog izlaza
+    //   2. gCamera/B          po KAMERI, kao Schur - svaka dretva cita SVA opazanja i preskace tudju kameru
+    //   3. gPoint/C, E        po TOCKI, isto - svaka dretva cita sva opazanja i preskace tudju tocku
+    //
+    // Isti obrazac koji je vec dokazan na Schuru: cijena je da svaka dretva prodje sve, dobitak je
+    // da nijedna ne ceka drugu. Poredak zbrajanja unutar svake izlazne celije ostaje TOCNO onaj iz
+    // izvornog jednog prolaza - opazanja se u prolazima 2 i 3 obilaze u IZVORNOM redoslijedu, samo
+    // se tudja preskacu - pa je rezultat bit po bit isti kao prije
+    //=====================================================================================
+    struct Linearized{
+        double residual[2];
+        double pointPart[2][3];
+        double cameraPart[2][6];
+        double weightSquared = 0.0;
+        uint8_t valid = 0;
+    };
+    std::vector<Linearized> cache(observations.size());
+
     for(uint32_t iteration = 0; iteration < config.maxIterations; ++iteration){
         const auto linearizeStarted = Clock::now();
         std::vector<double> B(size_t(freeCameras) * 36, 0.0);
@@ -232,54 +260,84 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
         std::vector<double> gPoint(pointCount * 3, 0.0);
         std::fill(blockCount.begin(), blockCount.end(), size_t(0));
 
+        //PROLAZ 1: jakobijan po opazanju. Svaka dretva pise samo u svoj red - nema izlaza koji
+        //dijele
+        inBands(0, int(observations.size()), [&](uint32_t, int firstItem, int lastItem){
+            for(int index = firstItem; index < lastItem; ++index){
+                const Observation& observation = observations[size_t(index)];
+                Linearized& slot = cache[size_t(index)];
+                slot.valid = 0;
+                if(observation.camera >= cameraCount || observation.point >= pointCount) continue;
+
+                const Pose& pose = result.poses[observation.camera];
+                const glm::vec3& point = result.points[observation.point];
+                if(!bundleJacobians(pose, intrinsics, point, observation.pixel,
+                                    slot.residual, slot.pointPart, slot.cameraPart)) continue;
+
+                //Tezina pod Huberom mnozi i rezidual i jakobijan, pa ulazi u sve tri strane odjednom
+                const double weight = huberWeight(
+                    std::sqrt(slot.residual[0] * slot.residual[0] + slot.residual[1] * slot.residual[1]),
+                    config.huberPixels);
+                slot.weightSquared = weight * weight;
+                slot.valid = 1;
+            }
+        });
+
         uint32_t used = 0;
-        for(const Observation& observation : observations){
-            if(observation.camera >= cameraCount || observation.point >= pointCount) continue;
-
-            const Pose& pose = result.poses[observation.camera];
-            const glm::vec3& point = result.points[observation.point];
-
-            double residual[2], pointPart[2][3], cameraPart[2][6];
-            if(!bundleJacobians(pose, intrinsics, point, observation.pixel,
-                                residual, pointPart, cameraPart)) continue;
-            ++used;
-
-            //Tezina pod Huberom mnozi i rezidual i jakobijan, pa ulazi u sve tri strane odjednom
-            const double weight = huberWeight(std::sqrt(residual[0] * residual[0] + residual[1] * residual[1]),
-                                              config.huberPixels);
-            const double weightSquared = weight * weight;
-
-            for(int i = 0; i < 3; ++i){
-                for(int row = 0; row < 2; ++row) gPoint[observation.point * 3 + size_t(i)] += weightSquared * pointPart[row][i] * residual[row];
-                for(int j = 0; j < 3; ++j){
-                    for(int row = 0; row < 2; ++row) C[observation.point * 9 + size_t(i * 3 + j)] += weightSquared * pointPart[row][i] * pointPart[row][j];
-                }
-            }
-
-            //Fiksna kamera nema nepoznanica, ali njezina opazanja i dalje drze tocke
-            if(freeIndex[observation.camera] < 0) continue;
-
-            const size_t camera = size_t(freeIndex[observation.camera]);
-            for(int i = 0; i < 6; ++i){
-                for(int row = 0; row < 2; ++row) gCamera[camera * 6 + size_t(i)] += weightSquared * cameraPart[row][i] * residual[row];
-                for(int j = 0; j < 6; ++j){
-                    for(int row = 0; row < 2; ++row) B[camera * 36 + size_t(i * 6 + j)] += weightSquared * cameraPart[row][i] * cameraPart[row][j];
-                }
-            }
-
-            CameraBlock block;
-            block.camera = int(camera);
-            for(int i = 0; i < 6; ++i){
-                for(int j = 0; j < 3; ++j){
-                    for(int row = 0; row < 2; ++row) block.e[size_t(i * 3 + j)] += weightSquared * cameraPart[row][i] * pointPart[row][j];
-                }
-            }
-            E[blockOffset[observation.point] + blockCount[observation.point]++] = block;
-        }
-
+        for(const Linearized& slot : cache) used += slot.valid;
         if(used < 4){
             break;
         }
+
+        //PROLAZ 2: gCamera/B, po kameri - isti obrazac kao Schur nize
+        inBands(0, freeCameras, [&](uint32_t, int firstCamera, int lastCamera){
+            for(size_t index = 0; index < observations.size(); ++index){
+                const Linearized& slot = cache[index];
+                if(!slot.valid) continue;
+                const Observation& observation = observations[index];
+
+                const int free = freeIndex[observation.camera];
+                if(free < firstCamera || free >= lastCamera) continue;   //ukljucuje fiksnu (-1)
+
+                const size_t camera = size_t(free);
+                for(int i = 0; i < 6; ++i){
+                    for(int row = 0; row < 2; ++row) gCamera[camera * 6 + size_t(i)] += slot.weightSquared * slot.cameraPart[row][i] * slot.residual[row];
+                    for(int j = 0; j < 6; ++j){
+                        for(int row = 0; row < 2; ++row) B[camera * 36 + size_t(i * 6 + j)] += slot.weightSquared * slot.cameraPart[row][i] * slot.cameraPart[row][j];
+                    }
+                }
+            }
+        });
+
+        //PROLAZ 3: gPoint/C i E, po tocki - isto. Fiksna kamera i dalje puni gPoint/C (tocka se
+        //triangulira i iz nje), ali ne dobiva E blok - kao u izvorniku
+        inBands(0, int(pointCount), [&](uint32_t, int firstPoint, int lastPoint){
+            for(size_t index = 0; index < observations.size(); ++index){
+                const Linearized& slot = cache[index];
+                if(!slot.valid) continue;
+                const Observation& observation = observations[index];
+                if(int(observation.point) < firstPoint || int(observation.point) >= lastPoint) continue;
+
+                for(int i = 0; i < 3; ++i){
+                    for(int row = 0; row < 2; ++row) gPoint[observation.point * 3 + size_t(i)] += slot.weightSquared * slot.pointPart[row][i] * slot.residual[row];
+                    for(int j = 0; j < 3; ++j){
+                        for(int row = 0; row < 2; ++row) C[observation.point * 9 + size_t(i * 3 + j)] += slot.weightSquared * slot.pointPart[row][i] * slot.pointPart[row][j];
+                    }
+                }
+
+                if(freeIndex[observation.camera] < 0) continue;   //fiksna kamera nema E blok
+
+                const size_t camera = size_t(freeIndex[observation.camera]);
+                CameraBlock block;
+                block.camera = int(camera);
+                for(int i = 0; i < 6; ++i){
+                    for(int j = 0; j < 3; ++j){
+                        for(int row = 0; row < 2; ++row) block.e[size_t(i * 3 + j)] += slot.weightSquared * slot.cameraPart[row][i] * slot.pointPart[row][j];
+                    }
+                }
+                E[blockOffset[observation.point] + blockCount[observation.point]++] = block;
+            }
+        }, 1);
 
         //Prigusenje na dijagonalu oba bloka, razmjerno njoj samoj
         for(int c = 0; c < freeCameras; ++c){
