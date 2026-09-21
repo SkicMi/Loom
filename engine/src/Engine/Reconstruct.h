@@ -319,6 +319,21 @@ struct ReconstructConfig{
     double incrementalBundleGrowth = 1.0;
 
     //=========================================================================================
+    // LOKALNI BUNDLE: koliko se kamera oko zadnje dodane smije micati. Nula znaci sve.
+    //
+    // ZASTO. Inkrementalni rast zove bundle nakon svake kamere i svaki put optimizira CIJELU
+    // rekonstrukciju - i onih dvjesto kamera koje su odavno konvergirale. Izmjereno na kamenom
+    // zidu: 229 poziva, 3107 s, dakle 13.6 s po pozivu, dok jedan poziv na kompletan graf traje
+    // 14.55 s. Svaki poziv placa cijeli graf.
+    //
+    // Rjedja kadenca (incrementalBundleGrowth) to ne rjesava - izmjereno i odbaceno, vidi tamo.
+    //
+    // Prozor je drugo: nove kamere se micu, daleke stoje ALI I DALJE DRZE tocke koje vide, pa se
+    // tocnost ne gubi kao kod preskakanja. Sto je izvan prozora, ovaj put se ne dira
+    //=========================================================================================
+    uint32_t localBundleWindow = 0;
+
+    //=========================================================================================
     // CISCENJE I PONOVNA TRIANGULACIJA, u krug, nakon sto se kamere iscrpe.
     //
     // Postoji zato sto je izmjereno da bundle nije kriv: pusten na COLMAP-ovo gotovo rjesenje

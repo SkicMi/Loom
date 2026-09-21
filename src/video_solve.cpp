@@ -467,6 +467,16 @@ int main(int argc, char** argv){
         //samo racuna
         config.keepLargestHealthySegment = true;
 
+        //LOKALNI BUNDLE U RASTU. Bundle se i dalje zove nakon svake kamere, ali mice samo prozor
+        //oko zadnje dodane; daleke kamere stoje i drze tocke koje vide. Refine ostaje globalan, pa
+        //se nakupljeni drift i dalje ispravlja.
+        //
+        //Izmjereno, isti graf, ista konfiguracija:
+        //   kameni zid (229 kamera)  3107 s -> 626 s, baza 6.82 -> 6.82 st, omjer 2.52 -> 2.53
+        //   joystick    (75 kamera)    95 s ->  37 s, baza 8.57 -> 8.46 st, omjer 4.08 -> 4.03
+        //Dakle isto rjesenje, pet puta jeftinije - dobitak raste s brojem kamera
+        config.localBundleWindow = 10;
+
         if(!thorough){
             config.initialPairTrials = 1;
             config.seamFactor = 0.0;

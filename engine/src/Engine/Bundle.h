@@ -33,6 +33,25 @@ struct BundleConfig{
     //prema prvoj - sto je i ono sto se poslije predaje Loomu
     bool fixFirstCamera = true;
 
+    //=========================================================================================
+    // KOJE SE KAMERE NE MICU, osim prve. Prazno znaci "sve su slobodne".
+    //
+    // ZASTO POSTOJI. U inkrementalnom rastu se bundle zove nakon svake prihvacene kamere, i svaki
+    // put iznova optimizira CIJELU rekonstrukciju - i onih dvjesto kamera koje su odavno
+    // konvergirale. Izmjereno na kamenom zidu: 229 poziva, ukupno 3107 s, dakle 13.6 s po pozivu,
+    // a jedan poziv na kompletan graf traje 14.55 s. Svaki poziv placa cijeli graf.
+    //
+    // Rjedja kadenca to ne rjesava - izmjereno i odbaceno: na 1.10 vrijeme padne na 575 s ali
+    // omjer izdvojenih poraste s 2.52 na 3.09 i baza padne s 6.82 na 5.40 st; na 1.25 je 244 s uz
+    // omjer 5.23. Zanimljivo je da 1.25 ima NAJBOLJU reprojekciju (0.870 px) uz NAJGORI omjer -
+    // ucebnicki primjer prenaucenosti: manje bundlea znaci da manje tocaka prezivi filtar, pa
+    // preostanu lake, a reprojekcija na njima izgleda odlicno dok poopcavanje propada.
+    //
+    // Ono sto radi je ogranicavanje na PROZOR: nove kamere se micu, daleke stoje ali i dalje drze
+    // tocke koje vide. Time se gustoca S-a i cijena gustog rjesavanja urusavaju s brojem
+    // slobodnih kamera, a tocnost ostaje jer se lokalna geometrija i dalje ispravlja svaki korak
+    //=========================================================================================
+    std::vector<uint8_t> fixedCameras;
 };
 
 struct BundleTiming{

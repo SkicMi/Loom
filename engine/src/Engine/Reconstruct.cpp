@@ -672,15 +672,57 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         state.timing.triangulationSeconds += elapsed(phaseStarted);
     };
 
-    auto runBundle = [&](){
+    //Koja je kamera zadnja usla. Lokalni prozor se racuna oko nje, jer je ona jedina zbog koje se
+    //bundle uopce ponovno zove
+    size_t lastAddedCamera = 0;
+
+    //LOKALNI PROZOR SE SMIJE SAMO U RASTU. Refine i zavrsni prolazi moraju biti GLOBALNI, inace
+    //nigdje u lancu ne bi ostalo mjesto na kojem se nakupljeni drift ispravlja - a bas se zato
+    //refine i zove periodicki. Lokalni bundle svaki korak, globalni povremeno: to je podjela koja
+    //cijeli postupak drzi i brzim i ispravnim
+    auto runBundle = [&](bool allowLocal = false){
         const auto phaseStarted = Clock::now();
         ++state.timing.bundleCalls;
+
+        //=====================================================================================
+        // LOKALNI PROZOR - vidi ReconstructConfig::localBundleWindow.
+        //
+        // Daleke kamere se ne micu, ali njihova opazanja OSTAJU u problemu: one drze tocke koje
+        // vide, pa se tocka ne moze odsetati samo zato sto ju prozor vuce. Bez toga bi lokalni
+        // bundle tiho razbio ono sto je vec bilo dobro
+        //=====================================================================================
+        std::vector<uint8_t> fixedCameras;
+        std::vector<uint8_t> pointInWindow;
+        const bool local = allowLocal && config.localBundleWindow > 0 &&
+                           state.posedCameras > config.localBundleWindow;
+        if(local){
+            const size_t half = size_t(config.localBundleWindow) / 2;
+            const size_t from = lastAddedCamera > half ? lastAddedCamera - half : 0;
+            const size_t to = std::min(cameraCount, lastAddedCamera + half + 1);
+
+            fixedCameras.assign(cameraCount, uint8_t(1));
+            for(size_t camera = from; camera < to; ++camera) fixedCameras[camera] = 0;
+
+            //Tocke koje prozor uopce vidi. Ostale se ovaj put ne diraju - njih nitko nije pomaknuo
+            pointInWindow.assign(pointCount, uint8_t(0));
+            for(size_t index = 0; index < observations.size(); ++index){
+                if(!usable[index]) continue;
+                const Observation& observation = observations[index];
+                if(observation.camera >= from && observation.camera < to &&
+                   state.posed[observation.camera] && state.solved[observation.point]){
+                    pointInWindow[observation.point] = 1;
+                }
+            }
+        }
+
         std::vector<Observation> kept;
         kept.reserve(observations.size());
         for(size_t index = 0; index < observations.size(); ++index){
             if(!usable[index]) continue;
             const Observation& observation = observations[index];
-            if(state.posed[observation.camera] && state.solved[observation.point]) kept.push_back(observation);
+            if(!state.posed[observation.camera] || !state.solved[observation.point]) continue;
+            if(local && !pointInWindow[observation.point]) continue;
+            kept.push_back(observation);
         }
         if(kept.empty()){
             state.timing.bundleSeconds += elapsed(phaseStarted);
@@ -690,6 +732,7 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         BundleConfig bundleConfig;
         bundleConfig.huberPixels = config.huberPixels;
         bundleConfig.maxIterations = config.bundleIterations;
+        bundleConfig.fixedCameras = std::move(fixedCameras);
 
         const BundleResult result = bundleAdjust(kept, state.poses, state.points, intrinsics, bundleConfig);
         state.timing.bundleCostSeconds += result.timing.costSeconds;
@@ -956,6 +999,7 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         state.poses[best] = placed;
         state.posed[best] = 1;
         ++state.posedCameras;
+        lastAddedCamera = size_t(best);
 
         triangulateVisible(false);
         const bool refinementDue = state.posedCameras >= nextRefine;
@@ -964,7 +1008,7 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
 
         //Uz zadanu vrijednost 1.0 ostaje tocno stari redoslijed, ukljucujuci bundle neposredno
         //prije refinea. Rjedja kadenca ga na granici ne duplira jer refine vec zavrsava bundleom.
-        if(bundleDue && (!refinementDue || config.incrementalBundleGrowth <= 1.0)) runBundle();
+        if(bundleDue && (!refinementDue || config.incrementalBundleGrowth <= 1.0)) runBundle(true);
 
         if(refinementDue){
             refine(1);

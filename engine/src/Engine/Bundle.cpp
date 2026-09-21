@@ -192,6 +192,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
     int freeCameras = 0;
     for(size_t camera = 0; camera < cameraCount; ++camera){
         if(config.fixFirstCamera && camera == 0) continue;
+        if(camera < config.fixedCameras.size() && config.fixedCameras[camera]) continue;
         freeIndex[camera] = freeCameras++;
     }
     const int n = 6 * freeCameras;
