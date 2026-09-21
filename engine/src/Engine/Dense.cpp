@@ -34,6 +34,51 @@ bool solveDense(std::vector<double> A, std::vector<double> b, int n, std::vector
     return true;
 }
 
+bool solveBanded(std::vector<double> A, std::vector<double> b, int n, int halfWidth,
+                 std::vector<double>& x){
+    x.assign(size_t(n), 0.0);
+    if(halfWidth < 0) return false;
+
+    //Ispuna od pivotiranja: L unutar halfWidth ispod, U do 2*halfWidth iznad dijagonale
+    const int fill = std::min(n - 1, 2 * halfWidth);
+
+    for(int column = 0; column < n; ++column){
+        //Ispod column+halfWidth je stupac dokazano nula, pa ondje nema sto pivotirati
+        const int lastRow = std::min(n - 1, column + halfWidth);
+        const int lastColumn = std::min(n - 1, column + fill);
+
+        int pivot = column;
+        for(int row = column + 1; row <= lastRow; ++row){
+            if(std::fabs(A[size_t(row * n + column)]) > std::fabs(A[size_t(pivot * n + column)])) pivot = row;
+        }
+        if(std::fabs(A[size_t(pivot * n + column)]) < 1e-14){
+            return false;
+        }
+        if(pivot != column){
+            //Zamjena samo unutar podrucja koje moze biti razlicito od nule
+            for(int k = column; k <= lastColumn; ++k){
+                std::swap(A[size_t(column * n + k)], A[size_t(pivot * n + k)]);
+            }
+            std::swap(b[size_t(column)], b[size_t(pivot)]);
+        }
+        for(int row = column + 1; row <= lastRow; ++row){
+            const double factor = A[size_t(row * n + column)] / A[size_t(column * n + column)];
+            if(factor == 0.0) continue;
+            for(int k = column; k <= lastColumn; ++k){
+                A[size_t(row * n + k)] -= factor * A[size_t(column * n + k)];
+            }
+            b[size_t(row)] -= factor * b[size_t(column)];
+        }
+    }
+    for(int row = n - 1; row >= 0; --row){
+        double sum = b[size_t(row)];
+        const int lastColumn = std::min(n - 1, row + fill);
+        for(int k = row + 1; k <= lastColumn; ++k) sum -= A[size_t(row * n + k)] * x[size_t(k)];
+        x[size_t(row)] = sum / A[size_t(row * n + row)];
+    }
+    return true;
+}
+
 bool invert3(const double m[3][3], double out[3][3]){
     const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
                      - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])

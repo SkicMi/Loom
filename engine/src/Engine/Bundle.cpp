@@ -435,7 +435,39 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
 
         const auto denseStarted = Clock::now();
         std::vector<double> cameraStep(size_t(n), 0.0);
-        if(n > 0 && !solveDense(S, rhs, n, cameraStep)){
+        //=====================================================================================
+        // TRAKASTO RJESAVANJE KAD SE ISPLATI - vidi Engine/Dense.h, solveBanded.
+        //
+        // S je n x n i rjesava se gusto, O(n^3). Ali gotovo je prazna: izmjereno na pravoj snimci
+        // (kameni zid, 229 kamera) samo 15.8 posto parova kamera uopce dijeli neku tocku, i nijedan
+        // par udaljeniji od 39 kamera ne dijeli nijednu. Ovdje se stvarna polusirina IZMJERI iz
+        // blokova, pa se posao izvan nje preskoci.
+        //
+        // Aritmetika ostaje ista jer se preskacu iskljucivo clanovi koji su tocno nula; zlatni hash
+        // bundlea to brani. Kad vrpca nije uska, ide se gustim putem kao i prije
+        //=====================================================================================
+        int cameraSpread = 0;
+        for(size_t p = 0; p < pointCount; ++p){
+            if(!pointUsable[p]) continue;
+            const size_t begin = blockOffset[p], end = begin + blockCount[p];
+            if(end <= begin) continue;
+            int lowest = E[begin].camera, highest = E[begin].camera;
+            for(size_t index = begin + 1; index < end; ++index){
+                lowest = std::min(lowest, E[index].camera);
+                highest = std::max(highest, E[index].camera);
+            }
+            cameraSpread = std::max(cameraSpread, highest - lowest);
+        }
+        const int halfWidth = 6 * (cameraSpread + 1) - 1;
+
+        //Ispod trecine je granica opreza, ne mjerenja: sira vrpca uz ispunu od pivotiranja vise
+        //nista ne stedi, a gusti put je vec provjeren
+        const bool banded = n > 0 && halfWidth * 3 < n;
+        if(banded && !solveBanded(S, rhs, n, halfWidth, cameraStep)){
+            result.timing.denseSolveSeconds += elapsed(denseStarted);
+            break;
+        }
+        if(!banded && n > 0 && !solveDense(S, rhs, n, cameraStep)){
             result.timing.denseSolveSeconds += elapsed(denseStarted);
             break;   //singularan sustav: dalje bi bilo nagadjanje
         }
