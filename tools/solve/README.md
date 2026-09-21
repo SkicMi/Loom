@@ -1213,3 +1213,64 @@ u kadru**; ravan parket i bijeli zid kao jedini sadrzaj kadra ne daju nista nije
 
 I jos jedno: gimbal daje ostrinu i mirnu rotaciju, ali **ne stvara paralaksu**. Za dubinu treba
 pomak u stranu - obilazak, ne zaokret oko sebe.
+
+## MapAnything kao treca mjera, uz nas i COLMAP
+
+Izvan naseg poznavanja u trenutku pisanja (rujan 2026) postoji **MapAnything** (Meta + Carnegie
+Mellon, https://github.com/facebookresearch/map-anything): feed-forward mreza koja iz slika
+DIREKTNO regresira poze, zariste i oblak tocaka, bez iterativnog bundlea. `--apache` bira jedini
+komercijalno slobodan checkpoint (`facebook/map-anything-apache`); bez te zastavice model je
+CC-BY-NC i ne smije se koristiti u ovom projektu.
+
+**Zasto je vrijedno mjeriti.** Nas najveci danasnji problem nije kvaliteta nego POKRIVENOST -
+COLMAP i mi oba posrcemo na razlicitim vrstama snimke (COLMAP na siromasnoj teksturi, mi na
+brzini). Feed-forward mreza koja nikad ne radi iterativno "posrtanje" - uvijek vrati NESTO za
+konacno vrijeme - je druga vrsta alata, i vrijedi znati gdje je jaca a gdje slabija od nase.
+
+### Izmjereno na sve tri nase teske snimke
+
+| snimka | nas solver | COLMAP | **MapAnything (sirovo)** |
+|---|---|---|---|
+| C0255 joystick (bijeli stol, siromasna tekstura) | 75/75 kamera, omjer izdvojenih **4.73** (pada), splat vidljivo krivog oblika | **2 od 197** - neuspjeh | 75/75, **80 s**, splat grub ali TOPOLOSKI na mjestu |
+| C0257 kameni zid, posteno (231 kadar, 46 s) | 229/229, **4 h 38 min**, omjer 2.46 | 231/231, **~15 min**, baza 9.96 st | nije testirano (VRAM) |
+| C0256 tamna vrata (7.7 s, okomito, ponavljajuci uzorak) | nikad testirano do kraja | nije testirano | 32/32, **42 s**, reprojekcija ~3% sirine radne slike |
+
+**Brzina je stvarna i velika.** 80 s naspram 19 minuta (nas) ili potpunog neuspjeha (COLMAP) na
+joysticku. Ovo nije marketing nego izmjereno na identicnim ulaznim kadrovima.
+
+**Ali izlaz NIJE dotjeran.** Reprojekcija na joysticku je 50.9 px na radnoj slici od 518 px (~9.8%
+sirine) - mreza regresira TOPOLOGIJU dobro (baza/paralaksa 40.11 st medijan, sira od nase ili
+COLMAP-ove na bilo kojoj snimci), ali ne dotjeruje na subpikselnu tocnost jer nema iterativnog
+koraka. Splat treniran izravno na tom izlazu (`mapanything_joystick.ply`, bez ikakvog bundlea) je
+prepoznatljiv ali mutan i sa sjenkastim artefaktima - usporedi s nasim potpuno krivim polozajem
+predmeta na istoj snimci.
+
+### Stvarna granica na ovoj kartici (RTX 5070, 12 GB)
+
+DINOv2-giant pozadina trazi vise memorije nego sto se ocekivalo iz broja kadrova:
+
+| kadrova | ishod |
+|---|---|
+| 32 | radi, 42 s |
+| 96 | CUDA OOM SAM ZA SEBE (9.75 GB), bez icega drugog na kartici |
+| 192 | CUDA OOM |
+
+Skripta (`mapanything_solve.sh`) ne dijeli automatski na serije. Za ovu karticu drzati EVERY tako
+da izlazi tridesetak kadrova.
+
+### Zakljucak koji iz ovoga slijedi, i sto NE slijedi
+
+**Ne zamjenjuje nas solver.** Cijeli razlog postojanja ovog projekta je vlastiti C++/Vulkan lanac
+bez oblaka i bez tudjih ovisnosti u jezgri - PyTorch model to narusava, i integracija bi bila
+kompromis, ne besplatan dobitak.
+
+**Vrijedan je kao INICIJALIZATOR, ne kao zamjena.** Ondje gdje nasa vlastita geometrija nema
+signala (siromasna tekstura, kratka snimka, ravna scena), MapAnythingova gruba ali topoloski
+tocna procjena poza i oblaka mogla bi posluziti kao pocetna tocka za NAS bundle - umjesto da
+Reconstruct.cpp bira pocetni par i raste kamera po kameru od nule. To trazi novu ulaznu putanju u
+`ReconstructConfig` (zadani seed poza/tocaka umjesto uvijek-vlastite inicijalizacije) - stvaran,
+zaseban zadatak, ne popodnevni posao.
+
+**Dok se ta putanja ne napravi**, `mapanything_solve.sh` sam za sebe je koristan alat: kad nas
+solver i COLMAP oba padnu (kao na joysticku), ovo je jedini nacin da se uopce dobije nesto za
+pregled u `SplatViewer`-u - makar grubo.

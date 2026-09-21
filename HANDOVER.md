@@ -406,6 +406,20 @@ mobitel.
 
 ---
 
+### 7. MapAnything kao inicijalizator za degenerirane scene (novo)
+
+Feed-forward model (Meta+CMU, Apache 2.0 komercijalno slobodan uz `--apache`) izmjeren na nase tri
+najteze snimke - vidi `tools/solve/README.md`, odjeljak "MapAnything kao treca mjera". Sazetak:
+
+  - **80 s** na joysticku naspram naseg **19 min** i COLMAP-ovog potpunog neuspjeha (2/197)
+  - ali reprojekcija ~9.8% radne sirine slike - regresira TOPOLOGIJU dobro, ne dotjeruje subpikselno
+  - stvarna granica VRAM-a na 12 GB kartici: ~32 kadra po pozivu, 96 vec puca
+
+*Kriterij:* NIJE zamjena solvera. Sljedeci korak je nova ulazna putanja u `ReconstructConfig` -
+zadani seed poza/tocaka koji nas bundle prima umjesto uvijek-vlastite inicijalizacije - da se
+iskoristi ondje gdje nasa geometrija danas nema signala. `tools/solve/mapanything_solve.sh` vec
+postoji i radi kao samostalan alat za slucajeve gdje i nas solver i COLMAP padnu.
+
 ## 8. Testni materijal — koje snimke i kako ih snimiti
 
 Cilj nije "četiri snimke" nego **četiri različita kvara**. Drona nema i neće ga biti neko vrijeme;
