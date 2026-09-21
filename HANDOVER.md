@@ -291,7 +291,32 @@ To dokazuje integraciju i konzistentan izvoz, **ne tocnost te procjene lece**. S
 release materijal, a dvije neovisne dijagnoze ga odbijaju. Zadatak ostaje otvoren dok ista postavka
 ne prodje pune S1/S2/S3/M1 snimke i poznatu/referentnu zarisnu gdje je dostupna.
 
-### 3. Brzina (dan-dva)
+### 3. Brzina — VELIKI POMAK 21.9., ali jos nije gotovo
+
+Tri ulancana dobitka, svaki izmjeren izolirano na PRAVOM grafu (kameni zid, 1 435 373 opazanja,
+229 kamera, 265 452 tocke), ne na sintetici:
+
+  1. **Schur po dretvama** (d748369) - izlaz bit po bit isti
+  2. **Linearizacija po dretvama** (c26d13d) - 13.48 s -> 2.40 s, 5.6x, isti zlatni hash
+     4084565953268247014. Teze od Schura jer ista petlja pise u DVA neovisna prostora (po tocki i
+     po kameri), pa su tri prolaza: jakobijan po opazanju, gCamera/B po kameri, gPoint/C i E po
+     tocki.
+  3. **Lokalni bundle u rastu** (7608de3) - 3107 s -> 626 s, **5.0x**, uz nepromijenjene mjere
+     (baza 6.82 -> 6.82 st, omjer izdvojenih 2.52 -> 2.53, 99.96% tocaka).
+
+Prije prozora je probana **rjedja kadenca** i ODBACENA - Sol ju je odbacio tjedan ranije, ja sam
+posumnjao da je usporedba bila nepostena, izmjerio, i on je bio u pravu: 1.10 daje omjer 3.09
+(osnovica 2.52), 1.25 daje 5.23. Zanimljivo je da 1.25 ima NAJBOLJU reprojekciju (0.870 px) uz
+NAJGORI omjer - prenaucenost: manje bundlea, manje tocaka prezivi filtar, preostanu lake.
+
+Zamka koju sam sam napravio pa uhvatio: `refine()` ide kroz isti `runBundle`, pa bi s prozorom
+nestao SVAKI globalni bundle i drift se nikad ne bi ispravio. **Lokalni svaki korak, globalni
+povremeno.**
+
+Sto jos stoji: graf (poklapanje) je i dalje velik trosak, i broj znacajki po kadru je izveden iz
+povrsine slike ali nije mjerenjem optimiziran.
+
+### 3b. Stariji zapis o brzini grafa
 
 Graf je na istih 80 ulaznih / 78 kljucnih 4K kadrova u `Release` buildu spusten s **448,7 s na
 337,8 s**. Matcher vise ne racuna uzajamno najboljeg susjeda u zasebnom punom prolazu, a SIFT-ovu
@@ -393,11 +418,54 @@ sekvencijalan unutar jednog solvea, a ta dva ispisana solvea sama uzimaju oko 28
 *Kriterij:* ispod 10 min za 30 s snimke, uz **bit-identičan** graf (postoji presedan — graf je već
 jednom ubrzan 10× bit-identično).
 
+### 3c. Zdravlje splata — NOVA MJERA (21.9.)
+
+`tools/splat/splat_health.py` mjeri koliko se splat razisao izvan scene koju je solver rijesio.
+
+**Vrijednost joj je u tome sto ju NE racuna nas program.** Sve ostalo - reprojekcija, baza,
+izdvojena opazanja, polje ostataka - racuna isti kod koji je poze i nasao. Ovo mjeri sto je TRENER
+napravio s tim pozama, a on o nasem solveru ne zna nista.
+
+    slucaj                        tocaka   gaussiana   omjer splat/model   u 3x scene
+    soba, nase poze (rast2)        59879      655247               1.3x        99.5%
+    joystick, MapAnythingove       232677     3775883              1.4x        98.9%
+    soba, nase poze (oba_boja)     81639      655247              23.1x        90.0%
+    joystick, nase poze            17640      400331            7515.3x        10.8%
+
+Dvije objasnjenja koja te brojke iskljucuju: nije mjerilo (omjer je bezdimenzijski) i nije rijetka
+inicijalizacija (soba "rast2" ima MANJE tocaka a BOLJI omjer). Mjera razlikuje i dva NASA VLASTITA
+rjesenja na istoj snimci.
+
+Zdravo je 1 do 2. Preko desetak znaci da trener nije nasao dosljedno objasnjenje - i tada gledanje
+splata nije test solvera nego test strpljenja.
+
 ### 4. Provuci četiri snimke kroz prag (odjeljak 9)
 
-### 5. Izvoz u Blender/Nuke
+### 5. Izvoz u Blender/Nuke — RIJESENO (USD)
 
-Bez toga VFX namjena ne postoji, ma kakav solve bio.
+`VideoSolve` sada uz COLMAP tekst pise i **`kamera.usda`**: kamera kroz vrijeme i oblak tocaka,
+citljivo u Nuke 17 (GeoImport), Houdini 21 i Blenderu. Vidi `Engine/UsdExport.h`.
+
+Izabran je USD, ne `.chan` ni FBX, iz tri razloga: ti formati nose rotaciju kao **tri Eulerova
+kuta** a paketi se ne slazu kojim se redom mnoze (promasen redoslijed ne pada nego samo tise krivo
+izgleda), trazie **biblioteku**, i ne mogu nositi splat. USD nosi punu matricu, obican je tekst, a
+od OpenUSD 26.03 splat je prvorazredni prim pa scena i kamera stanu u istu datoteku.
+
+Konvencija je gotovo trivijalna jer nasa `Pose` gleda niz **-Z s +Y gore**, bas kao USD kamera -
+nema zrcaljenja osi, za razliku od COLMAP-a. Ostaje samo da je USD **po retcima** a glm po
+stupcima.
+
+Provjereno na tri razine: `test_usd_export` (5.83e-05 px, uz negativnu kontrolu koja daje 895557
+px), pravi solve otvoren **Pixarovom USD bibliotekom** (`GetFieldOfView` vraca 75.378 st, tocno
+ono sto je solver javio), i izostanak uzorka za nerijesenu kameru.
+
+Zarisna se pise u **pravim milimetrima** kad se senzor zna. To je usput i dijagnoza: izvezeni
+joystick pokazuje 15.2 mm na objektivu 18-50 mm, dakle nemoguce - "f = 2485 px" to covjeku nikad
+nije pokazao.
+
+**Sto jos fali za prvi VFX kadar:** nista u izvozu. Kamera i splat izlaze iz istog solvea pa su
+vec u istom prostoru - provjereno. Relight NIJE nas problem: ni Framestore na Supermanu nije radio
+fizikalni relight nego je pratio kameru s plate-a, skalirao ju u prostor splata i kompozitirao.
 
 ### 6. Rolling shutter kao parametar bundlea
 
