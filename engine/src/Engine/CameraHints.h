@@ -85,6 +85,10 @@ struct CameraHints{
     // OGRADA JE SIRA NEGO STO IZGLEDA: u videu se senzor obicno izrezuje, a zoom se tijekom kadra
     // moze pomaknuti. Zato se uzima cijeli raspon objektiva, ne jedna vrijednost
     //=========================================================================================
+    //Sirina senzora u milimetrima kad se model prepozna, inace nula. Nije samo za ogradu ispod:
+    //izvoz u USD time pise STVARNU zarisnu duljinu, onakvu kakvu umjetnik ocekuje vidjeti
+    double sensorWidthMillimetres = 0.0;
+
     bool hasFieldOfViewRange = false;
     double widestFieldOfView = 0.0;      //kod najkraceg zarista
     double narrowestFieldOfView = 0.0;   //kod najduljeg

@@ -16,6 +16,7 @@
 #include <Engine/CameraHints.h>
 #include <Engine/ResidualField.h>
 #include <Engine/ColmapExport.h>
+#include <Engine/UsdExport.h>
 #include <Engine/ColmapImport.h>
 #include <Engine/MatchGraph.h>
 #include <Engine/MergeTracks.h>
@@ -972,6 +973,37 @@ int main(int argc, char** argv){
         //=================================================================================
         const std::vector<glm::u8vec3> colours =
             Engine::pointColours(best, solveObservations, colourImages, shrinkColour);
+
+        //=================================================================================
+        // I USD, ZA VFX ALAT. COLMAP tekst ide treneru splatova, ali u Nuke, Houdini ili Blender
+        // ne ide nista - a bez toga rjesenje ne izlazi iz naseg lanca u alat u kojem se radi
+        // kompozit. USD to rjesava bez ijedne nove ovisnosti: punu matricu nosi sam tekst, pa
+        // nema Eulerovog redoslijeda koji se moze promasiti.
+        //
+        // Zarisna se pise u STVARNIM milimetrima kad se zna senzor - a zna se otkad se cita
+        // pratece XML uz snimku
+        //=================================================================================
+        {
+            Engine::UsdExportConfig usdConfig;
+            usdConfig.firstFrame = 1;
+            usdConfig.frameStep = int(step);
+            usdConfig.framesPerSecond = info.frameRate() > 0.0 ? info.frameRate() : 25.0;
+            usdConfig.sensorWidthMillimetres = hints.sensorWidthMillimetres;
+
+            std::vector<glm::vec3> usdColours;
+            usdColours.reserve(colours.size());
+            for(const glm::u8vec3& colour : colours){
+                usdColours.push_back(glm::vec3(colour) / 255.0f);
+            }
+
+            const std::string usdPath = outputDirectory + "/kamera.usda";
+            if(Engine::writeUsdScene(usdPath, best, bestIntrinsics, info.width, info.height,
+                                     usdColours, usdConfig)){
+                std::printf("Zapisan %s (kamera i tocke za Nuke/Houdini/Blender%s)\n",
+                            usdPath.c_str(),
+                            hints.sensorWidthMillimetres > 0.0 ? ", zarisna u pravim mm" : "");
+            }
+        }
 
         if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours)){
             std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());

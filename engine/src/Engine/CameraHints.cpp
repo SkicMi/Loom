@@ -258,6 +258,7 @@ CameraHints hintsFrom(const SourceFacts& facts){
         }
 
         const double sensor = sensorWidthFor(sidecarMake + " " + sidecarModel);
+        hints.sensorWidthMillimetres = sensor;
         double shortest = 0.0, longest = 0.0;
         focalRangeFrom(hints.lens, shortest, longest);
 

@@ -35,6 +35,7 @@ add_library(Engine STATIC
     src/Engine/Reconstruct.cpp
     src/Engine/ScaleSpace.cpp
     src/Engine/ColmapExport.cpp
+    src/Engine/UsdExport.cpp
     src/Engine/ColmapImport.cpp
     src/Engine/Describe.cpp
     src/Engine/Sift.cpp
