@@ -30,6 +30,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -623,6 +625,41 @@ int main(int argc, char** argv){
         //   joystick    (75 kamera)    95 s ->  37 s, baza 8.57 -> 8.46 st, omjer 4.08 -> 4.03
         //Dakle isto rjesenje, pet puta jeftinije - dobitak raste s brojem kamera
         config.localBundleWindow = 10;
+
+        //=================================================================================
+        // ZIVI SNIMAK ZA SUICELJE. Rekonstrukcija traje minutama i dosad se o njoj nije znalo
+        // nista dok ne zavrsi; ovako `loom` moze pokazati kako scena nastaje.
+        //
+        // PISE SE ATOMSKI - prvo u .tmp pa preimenovanje - jer citatelj gleda isti taj fajl i ne
+        // smije uhvatiti polovicu. Bez toga bi povremeno ucitao besmislice i nitko ne bi znao zasto
+        //=================================================================================
+        if(!outputDirectory.empty()){
+            const std::string progressPath = outputDirectory + "/napredak.bin";
+            config.progressEvery = 5;
+            config.onProgress = [progressPath](const Engine::Reconstruction& state){
+                std::vector<glm::vec3> cameras, points;
+                for(size_t c = 0; c < state.poses.size(); ++c){
+                    if(c < state.posed.size() && state.posed[c]) cameras.push_back(state.poses[c].position);
+                }
+                for(size_t p = 0; p < state.points.size(); ++p){
+                    if(p < state.solved.size() && state.solved[p]) points.push_back(state.points[p]);
+                }
+
+                const std::string temporary = progressPath + ".tmp";
+                std::ofstream file(temporary, std::ios::binary);
+                if(!file) return;
+                const uint32_t cameraCount = uint32_t(cameras.size());
+                const uint32_t pointCount = uint32_t(points.size());
+                file.write("LOOMPRG1", 8);
+                file.write(reinterpret_cast<const char*>(&cameraCount), 4);
+                file.write(reinterpret_cast<const char*>(&pointCount), 4);
+                if(cameraCount) file.write(reinterpret_cast<const char*>(cameras.data()), cameraCount * 12);
+                if(pointCount) file.write(reinterpret_cast<const char*>(points.data()), pointCount * 12);
+                file.close();
+                std::error_code ignored;
+                std::filesystem::rename(temporary, progressPath, ignored);
+            };
+        }
 
         if(!thorough){
             config.initialPairTrials = 1;

@@ -1001,6 +1001,12 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         ++state.posedCameras;
         lastAddedCamera = size_t(best);
 
+        //Javljanje napretka - vidi ReconstructConfig::onProgress
+        if(config.onProgress && config.progressEvery > 0 &&
+           state.posedCameras % config.progressEvery == 0){
+            config.onProgress(state);
+        }
+
         triangulateVisible(false);
         const bool refinementDue = state.posedCameras >= nextRefine;
         const bool bundleDue = config.incrementalBundleGrowth <= 1.0 ||

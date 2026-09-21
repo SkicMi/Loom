@@ -439,6 +439,39 @@ rjesenja na istoj snimci.
 Zdravo je 1 do 2. Preko desetak znaci da trener nije nasao dosljedno objasnjenje - i tada gledanje
 splata nije test solvera nego test strpljenja.
 
+### 3d. Pune slicice i `loom` kao alat — RIJESENO (21.9.)
+
+**Pune slicice.** Solver uzima svaki step-ti kadar, pa je od 1968 kadara izlazilo 25 poza. Za splat
+dosta, za match-move ne: CG objekt skace pet puta u sekundi, a USD izmedju uzoraka linearno
+interpolira. Medjukadar se sada LOKALIZIRA umjesto da se rekonstruira - tocke se pratiteljem
+prenesu iz najblizeg kljucnog kadra, poza izadje iz PnP-a. Nijedan novi algoritam: `Track.cpp` i
+`SolvePose.cpp` su vec postojali.
+
+    266 od 266 medjukadrova lokalizirano (100.0 %), medijan 646 prenesenih tocaka, 52.4 s
+
+Provjereno Pixarovom USD bibliotekom: 291 uzorak, razmak izmedju svih tocno 1 (prije: 25 uzoraka
+na razmaku 10).
+
+Dvije odluke: lanac se RESETIRA na svakom kljucnom kadru (inace se nakuplja pomak), i staje se na
+ZADNJEM kljucnom kadru - prvi pokusaj je isao do kraja snimke i javio "780 od 1088 lokalizirano"
+dok je rjesenje pokrivalo 240 kadara.
+
+**`./loom`** je desktop alat: izbornik, odabir snimke, pa cijeli lanac u jednom prozoru - solve,
+trening splata, pregled scene. Suicelje je `Treadle::Ui` koji je vec postojao.
+
+Solver se pokrece kao ZASEBAN PROCES, namjerno: njegov ispis je nastajao uz svako mjerenje i tocno
+je ono sto suicelje treba pokazati; solve traje satima pa prozor mora prezivjeti njegov pad; i
+nijedna linija solvera se ne mijenja da bi suicelje postojalo.
+
+**Zivi oblak tocaka.** `ReconstructConfig::onProgress` javlja stanje svakih pet kamera (Engine i
+dalje ne dira disk), `VideoSolve` to zapisuje atomski u `napredak.bin`, `loom` cita i crta - bez
+ijednog novog shadera, jer Treadleov `DrawList` ima pravokutnik.
+
+`test_progress_view` brani ono sto se ne vidi: binarni raspored (promijeni netko redoslijed polja i
+scena postane smece a nijedan test ne padne) i mjerilo projekcije. Negativna kontrola je greska
+koju smo vec jednom napravili - jedna tocka odbjegla na 1e5; da se srediste racuna po min/max
+umjesto po postotcima, scena bi se skupila u piksel.
+
 ### 4. Provuci četiri snimke kroz prag (odjeljak 9)
 
 ### 5. Izvoz u Blender/Nuke — RIJESENO (USD)

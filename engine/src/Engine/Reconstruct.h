@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include "Engine/Bundle.h"
 #include "Engine/TwoView.h"
 
@@ -43,6 +44,9 @@ namespace Engine{
 // MJERILO OSTAJE SLOBODNO: pomak pocetnog para je jedinicni, pa je cijela rekonstrukcija tocna do
 // jednog broja. Isto kao u S3 i S5.
 //=============================================================================================
+
+//Unaprijed, jer ReconstructConfig::onProgress govori o njoj a ona je opisana nize
+struct Reconstruction;
 
 struct ReconstructConfig{
     RansacConfig ransac;
@@ -332,6 +336,19 @@ struct ReconstructConfig{
     // tocnost ne gubi kao kod preskakanja. Sto je izvan prozora, ovaj put se ne dira
     //=========================================================================================
     uint32_t localBundleWindow = 0;
+
+    //=========================================================================================
+    // JAVLJANJE NAPRETKA tijekom rasta. Nula znaci bez javljanja.
+    //
+    // ZASTO. Rekonstrukcija na pravoj snimci traje minutama i dosad se o njoj nije znalo nista dok
+    // ne zavrsi. Suicelju treba ono sto vec postoji u ovoj petlji: koje su kamere postavljene i
+    // gdje su tocke - da se vidi kako scena nastaje umjesto da se ceka.
+    //
+    // ENGINE I DALJE NE DIRA DISK. Ovdje se samo pozove ono sto je pozivatelj dao; hoce li on to
+    // zapisati, nacrtati ili baciti, nije stvar ovog sloja
+    //=========================================================================================
+    std::function<void(const Reconstruction&)> onProgress;
+    uint32_t progressEvery = 0;      //nakon koliko novih kamera se javlja
 
     //=========================================================================================
     // CISCENJE I PONOVNA TRIANGULACIJA, u krug, nakon sto se kamere iscrpe.

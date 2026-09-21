@@ -19,6 +19,8 @@
 #include "Core/LoomConfig.h"
 #include "Core/LoomInitializer.h"
 
+#include "LoomProgress.h"
+
 #include <Treadle/Ui.h>
 #include <TreadlePaint/UiPainter.h>
 
@@ -27,6 +29,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <fstream>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
@@ -190,6 +194,13 @@ int main(int argc, char** argv){
     Job job;
     std::thread worker;
 
+    //Zivi snimak: cita se povremeno, ne svaki kadar - datoteka moze imati milijune tocaka, a
+    //solver je ionako pise rjedje nego sto se crta
+    Loom::Snapshot snapshot;
+    uint32_t snapshotPoints = 0;
+    auto lastRead = std::chrono::steady_clock::now();
+    const auto appStarted = std::chrono::steady_clock::now();
+
     bool wasDown = false;
     double lastScroll = 0.0;
     (void)lastScroll;
@@ -209,6 +220,21 @@ int main(int argc, char** argv){
         const bool down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         input.down[uint32_t(Treadle::MouseButton::Left)] = down;
         wasDown = down;
+
+        //Novi snimak svakih pola sekunde dok posao traje
+        const auto now = std::chrono::steady_clock::now();
+        if(job.running && std::chrono::duration<double>(now - lastRead).count() > 0.5){
+            lastRead = now;
+            Loom::Snapshot fresh;
+            if(Loom::readSnapshot(job.outputDirectory + "/napredak.bin", fresh)) snapshot = std::move(fresh);
+        }
+
+        //Oblak se crta ISPOD suicelja, pa ide u svoj popis i prvi na red
+        Treadle::DrawList scene;
+        if(screen == Screen::Running && !snapshot.points.empty()){
+            const float angle = float(std::chrono::duration<double>(now - appStarted).count()) * 0.18f;
+            snapshotPoints = Loom::paintSnapshot(snapshot, scene, float(windowWidth), float(windowHeight), angle);
+        }
 
         ui.begin(input, float(windowWidth), float(windowHeight));
 
@@ -295,6 +321,16 @@ int main(int argc, char** argv){
                     ui.value("jos oko", humanTime(std::max(0.0, total - elapsed)));
                 }
             }
+            if(!snapshot.points.empty()){
+                char text[48];
+                std::snprintf(text, sizeof(text), "%zu kamera, %zu tocaka",
+                              snapshot.cameras.size(), snapshot.points.size());
+                ui.value("scena", text);
+                if(snapshotPoints > 0){
+                    std::snprintf(text, sizeof(text), "%u u kadru", snapshotPoints);
+                    ui.value("nacrtano", text);
+                }
+            }
             ui.separator();
 
             if(job.running && job.task == Task::Train && job.fraction >= 0.0f){
@@ -370,6 +406,9 @@ int main(int argc, char** argv){
 
         if(!loom.renderer.beginFrame()) continue;
         loom.renderer.beginPass();
+        if(!scene.vertices.empty()){
+            painter.draw(loom.renderer, scene, uint32_t(windowWidth), uint32_t(windowHeight));
+        }
         painter.draw(loom.renderer, ui.drawn(), uint32_t(windowWidth), uint32_t(windowHeight));
         loom.renderer.endPass();
         loom.renderer.endFrame();
