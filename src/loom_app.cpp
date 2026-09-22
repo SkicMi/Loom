@@ -50,17 +50,35 @@ struct Phase{
     double share;           //priblizan udio ukupnog vremena, IZMJEREN na kamenom zidu
 };
 
-//Udjeli su iz stvarnog mjerenja (231 kadar, 4K, 8166 s ukupno): pracenje 386 s, graf 3942 s od
-//cega poklapanje 2585, rekonstrukcija 694 s, pune slicice ~260 s. Ostatak je dekodiranje i zapis
+//UDJELI SU IZ STVARNOG MJERENJA, na OPTIMIZIRANOM buildu (C0257, 231 kadar 4K, ukupno 2381 s):
+//
+//    pracenje i kljucni kadrovi     183 s   kumulativno  0.08
+//    prostor mjerila                501 s                0.29
+//    graf spojen                    606 s                0.33
+//    samokalibracija                 90 s                0.37
+//    rekonstrukcija                 202 s                0.46
+//    zapis 229 slika u 4K                                0.64
+//    pune slicice                   430 s                0.82
+//
+// Broj je KUMULATIVAN udio ukupnog vremena u trenutku kad se taj redak ispise, pa se iz njega i
+// proteklog vremena procijeni ostatak.
+//
+// PRVA VERZIJA OVE TABLICE BILA JE KRIVA ZA 3.4 PUTA jer je mjerena na Debug buildu - vidi
+// warnIfUnoptimised nize. Brojke iznad su s -O2.
+//
+// I ovako su samo procjena: mjerene su na JEDNOJ snimci, a druga snimka ih ne mora slijediti -
+// prazan bijeli zid provede vise vremena u poklapanju, bogata tekstura u potpisima. Zato u prozoru
+// pise "jos oko", ne tocan broj
 const Phase phases[] = {
-    {"Snimka ",            "citanje snimke",        0.03},
-    {"kljucnih kadrova",   "pracenje i kljucni kadrovi", 0.05},
-    {"prostor mjerila:",   "znacajke i poklapanje", 0.30},
-    {"graf poklapanja:",   "graf poklapanja",       0.20},
-    {"samokalibracija:",   "zariste",               0.10},
-    {"Najbolje:",          "rekonstrukcija",        0.20},
-    {"pune slicice:",      "pune slicice",          0.08},
-    {"Zapisano u",         "gotovo",                1.00},
+    {"Snimka ",            "citanje snimke",             0.01},
+    {"kljucnih kadrova",   "pracenje i kljucni kadrovi", 0.08},
+    {"prostor mjerila:",   "znacajke i poklapanje",      0.29},
+    {"graf poklapanja:",   "graf spojen",                0.33},
+    {"samokalibracija:",   "zariste",                    0.37},
+    {"nakon pune obrade",  "rekonstrukcija",             0.46},
+    {"slika u ",           "zapis slika",                0.64},
+    {"pune slicice:",      "pune slicice",               0.82},
+    {"Zapisano u",         "gotovo",                     1.00},
 };
 
 //Sto se trenutno vrti. Oba posla su vanjski procesi koji ispisuju napredak, pa ih jedna te ista

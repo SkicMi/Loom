@@ -291,6 +291,40 @@ To dokazuje integraciju i konzistentan izvoz, **ne tocnost te procjene lece**. S
 release materijal, a dvije neovisne dijagnoze ga odbijaju. Zadatak ostaje otvoren dok ista postavka
 ne prodje pune S1/S2/S3/M1 snimke i poznatu/referentnu zarisnu gdje je dostupna.
 
+### 3-UPOZORENJE. Brojke iz 17.-22. rujna su mjerene na NEOPTIMIZIRANOM buildu
+
+Build mapa je od 17. rujna stajala na `CMAKE_BUILD_TYPE=Debug`, dakle bez ijedne `-O` zastavice.
+Alat radi jednako, samo oko **3.4 puta sporije**, pa se nista nije vidjelo osim brojki koje izgledaju
+kao rezultat.
+
+`CMakeLists` vec brani od toga (postavlja RelWithDebInfo kad build type nije zadan), ali ta se
+zastita NE aktivira kad je Debug vec u predmemoriji. Od commita 579995d `VideoSolve` i `loom` pitaju
+sam prevoditelj (`__OPTIMIZE__`) i glasno se jave.
+
+**Isti posao, ista masina, ista snimka (C0257, 231 kadar 4K):**
+
+    faza                              Debug        -O2      omjer
+    cijeli lanac                     8166 s     2381 s       3.4x
+    graf poklapanja                  3942 s      606 s       6.5x
+    - poklapanje                     2585 s      300 s       8.6x
+    - potpisi                         951 s      179 s       5.3x
+    rekonstrukcija (thorough)         694 s      202 s       3.4x
+    bundle, puni graf, 15 iteracija  14.55 s     3.53 s      4.1x
+
+**Kvaliteta je identicna:** 229/229 kamera, 1.202 px, baza 7.29 st, omjer izdvojenih 2.46 - svaka
+brojka ista. Build ne mijenja rezultat, samo vrijeme. Zlatni hash bundlea je isti s -O0 i -O2.
+
+**Sto se time mijenja u zakljuccima:**
+
+  - Poklapanje NIJE usko grlo. U Debugu je bilo 47 % vremena, na -O2 je 12.6 %.
+  - Trakasto rjesavanje je danas gotovo nevazno: gusto rjesavanje je 0.45 s od 3.53 s bundlea.
+    Ostaje korisno tek oko tisucu kamera (8.4x na 1600, ne 14.4x kako je prvo izmjereno).
+  - Vrijeme vise nema jednog velikog krivca nego je razmazano; najveci pojedini komad je
+    dekodiranje videa i zapis 229 slika u 4K.
+  - Pune slicice su 430 s, dakle 18 % lanca - rade savrseno (2072/2072) ali nisu besplatne.
+
+**Relativne usporedbe na istom buildu i dalje vrijede** - lokalni bundle 5x, linearizacija 5.6x.
+
 ### 3. Brzina — VELIKI POMAK 21.9., ali jos nije gotovo
 
 Tri ulancana dobitka, svaki izmjeren izolirano na PRAVOM grafu (kameni zid, 1 435 373 opazanja,
