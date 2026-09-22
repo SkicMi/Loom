@@ -161,9 +161,29 @@ std::string humanTime(double seconds){
     return text;
 }
 
+
+//=============================================================================================
+// NEOPTIMIZIRAN BUILD SE MORA JAVITI, glasno.
+//
+// ZASTO OVO POSTOJI. Cijeli je projekt od 17. do 22. rujna stajao u build mapi postavljenoj na
+// Debug - dakle bez ijedne -O zastavice. Nijedno mjerenje u tom razdoblju nije vrijedilo, a to se
+// nije vidjelo jer alat radi jednako, samo cetiri puta sporije. Dan je potrosen na trazenje uskog
+// grla u kodu koji prevoditelj nije ni pokusao optimizirati.
+//
+// CMakeLists vec brani od toga - postavlja RelWithDebInfo kad build type nije zadan - ali ta se
+// zastita ne aktivira kad je Debug VEC u predmemoriji. Jedino sto pouzdano zna je li prevodjeno s
+// optimizacijom je sam prevoditelj, pa se pita njega
+//=============================================================================================
+void warnIfUnoptimised(){
+#ifndef __OPTIMIZE__
+    std::printf("\n  !! NEOPTIMIZIRAN BUILD - mjerenja ne vrijede, a alat je oko cetiri puta "
+                "sporiji.\n     Popravak: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo\n\n");
+#endif
+}
 }
 
 int main(int argc, char** argv){
+    warnIfUnoptimised();
     LoomConfig config;
     config.width = 1180;
     config.height = 760;
