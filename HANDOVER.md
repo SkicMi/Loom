@@ -506,6 +506,48 @@ scena postane smece a nijedan test ne padne) i mjerilo projekcije. Negativna kon
 koju smo vec jednom napravili - jedna tocka odbjegla na 1e5; da se srediste racuna po min/max
 umjesto po postotcima, scena bi se skupila u piksel.
 
+### 3e. GDJE JE GRANICA KVALITETE — izmjereno 22.9., i nije u solveru
+
+Ovo je najvazniji nalaz o kvaliteti dosad, i mijenja gdje ima smisla raditi.
+
+**Solver protiv poznate istine** (`TruthBench luk`, savrsen pinhole ulaz, bez suma i izoblicenja):
+
+    kadrova   omjer izdvojenih   greska polozaja   polje ostataka
+         40               1.36           0.013 %   bijelo
+        120               1.26           0.021 %   bijelo
+        229               1.23           0.014 %   bijelo
+
+**Prava snimka na ISTOM broju kamera** (C0257, 229 kadrova): omjer **2.46**, polje ostataka **pada**.
+
+Isti solver, isti kod, ista duljina niza. Dakle:
+
+  - **Duljina niza nije kriva.** Omjer se s duljinom cak POPRAVLJA (1.36 -> 1.23), a greska
+    polozaja na 229 kadrova je ista kao na 40. Nakupljanje drifta je ovime iskljuceno kao glavni
+    uzrok, pa zatvaranje petlje NIJE prvi korak za kvalitetu (ostaje potrebno za stan).
+  - **Optimizacija nije granica.** Solver postize 0.014 % i bijelo polje kad ulaz postuje model.
+    Bolji bundle, dulji tragovi i finije poklapanje guraju nesto sto je vec tu.
+
+**Sto onda jest.** Polje ostataka se dijeli na staticki dio (objektiv, glavna tocka - uvijek isti)
+i promjenjivi (mijenja se po kadru):
+
+    komponenta     sintetika 229   prava snimka   omjer
+    staticka            0.032 px       0.088 px    2.8x
+    promjenjiva         0.077 px       0.535 px    7.0x
+
+Promjenjivi dio dominira. To ISKLJUCUJE distorziju i glavnu tocku, jer su one staticne i pokazale
+bi se u prvom retku. Ostaje ono sto se mijenja po kadru s gibanjem kamere: **rolling shutter** ili
+stabilizacija. Sony ZV-E10M2 u 4K ima rolling shutter, a stabilizacija je na snimanju bila
+iskljucena.
+
+**Sljedeci korak za kvalitetu je MODEL KAMERE, ne solver:** poza po RETKU slike umjesto po kadru.
+Pri izmjerenih 10.57 st skretanja po kadru je gornji red snimljen milisekundama prije donjeg, a to
+nijedna jedna poza ne moze objasniti. Zahvat je u `Bundle.cpp` i `TruthBench` ga moze simulirati,
+pa se ucinak izmjeri prije nego udje.
+
+**Prije toga vrijedi jos snimki.** Sve gore je jedna kamera. Druga kamera s drugacijim rolling
+shutterom mora pokazati drugaciji promjenjivi signal; to je potvrda izvana i jaca je od bilo kojeg
+racuna iznutra.
+
 ### 4. Provuci četiri snimke kroz prag (odjeljak 9)
 
 ### 5. Izvoz u Blender/Nuke — RIJESENO (USD)
