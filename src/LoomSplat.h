@@ -79,6 +79,16 @@ public:
     }
 
     bool isLoading() const {return loading;}
+
+    //Sredista gaussiana u koordinatama splata, za odabir plohe. Gotovo prozirni (lebdeci sum
+    //treninga) se preskacu - oni nisu ploha
+    template<class Visit>
+    void forEachCentre(float minOpacity, Visit&& visit) const{
+        std::lock_guard<std::mutex> guard(lock);
+        for(const SplatMath::RawSplat& s : raw){
+            if(s.positionOpacity.w >= minOpacity) visit(glm::vec3(s.positionOpacity));
+        }
+    }
     size_t count() const {return splatCount;}
     std::string error() const{ std::lock_guard<std::mutex> guard(lock); return problem; }
 

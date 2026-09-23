@@ -48,6 +48,8 @@ struct ViewportState{
     bool showPoints = true;
     bool showPaths = true;
     bool showCameras = true;
+    //Plohe tijela crta PBR prolaz na kartici (LoomPbr.h); ovdje ostaju samo bridovi odabranog
+    bool gpuMeshes = false;
 };
 
 //Kamera pogleda u ovom kadru: gdje je i kako projicira
@@ -327,6 +329,7 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
         if(!entity.visible || !entity.mesh) return;
         const glm::mat4 world = stage.worldMatrix(entity.id, frame);
         const bool isSelected = entity.id == selected;
+        if(state.gpuMeshes && !isSelected){ ++report.drawnMeshes; return; }
         const glm::vec3 base = entity.mesh->colour;
         const glm::vec3 light = glm::normalize(glm::vec3(0.4f, 1.0f, 0.3f));
 
@@ -358,6 +361,7 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
             const glm::vec3 centre = (quad[0] + quad[1] + quad[2] + quad[3]) * 0.25f;
             const bool facing = glm::dot(normal, camera.eye - centre) > 0.0f;
             if(entity.mesh->shape == Warp::Shape::Cube && !facing) continue;
+            if(state.gpuMeshes) continue;           //plohu crta kartica, ovdje samo bridovi
             const float shade = 0.45f + 0.55f * std::fabs(glm::dot(normal, light));
             face.depth = depthSum * 0.25f;
             face.colour = {base.r * shade, base.g * shade, base.b * shade, entity.mesh->shape == Warp::Shape::Plane ? 0.45f : 0.92f};
