@@ -16,6 +16,9 @@
 #include "TestHarness.h"
 
 #include "../src/LoomProgress.h"
+#include "../src/LoomResult.h"
+
+#include "Engine/ColmapExport.h"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -192,6 +195,82 @@ int main(){
         Treadle::DrawList list;
         const Loom::PaintReport painted = Loom::paintScene(Loom::prepareScene(tiny), list, 1180.0f, 760.0f, Loom::ViewState{});
         report.check("premalo tocaka se preskace", painted.drawnPoints == 0 && list.vertices.empty(), "tri tocke");
+    }
+
+    //-- 6. GOTOV REZULTAT se otvara iz mape: snimak kad ga ima, inace COLMAP ------------------------
+    //
+    //Stara mapa nema napredak.bin, a nova ima oba. Snimak mora imati prednost jer nosi boje; bez
+    //njega se mora procitati COLMAP i kamere moraju doci na ista mjesta
+    {
+        namespace fs = std::filesystem;
+        const fs::path root = fs::temp_directory_path() / "loom_rezultati_test";
+        fs::remove_all(root);
+        const fs::path directory = root / "snimka_loom";
+        fs::create_directories(directory);
+        fs::create_directories(root / "obicna_mapa");
+
+        Engine::Reconstruction reconstruction;
+        for(size_t i = 0; i < original.cameras.size(); ++i){
+            Engine::Pose pose;
+            pose.position = original.cameras[i];
+            pose.orientation = original.orientations[i];
+            reconstruction.poses.push_back(pose);
+            reconstruction.posed.push_back(1);
+        }
+        reconstruction.points = original.points;
+        reconstruction.solved.assign(original.points.size(), 1);
+        //Svaka kamera vidi po neku tocku i ima ime kakvo solve daje: uvoz ih slaze PO IMENU
+        std::vector<Engine::Observation> observations;
+        std::vector<std::string> names;
+        for(size_t i = 0; i < original.cameras.size(); ++i) names.push_back(fmt("kadar_%05zu.jpg", i));
+        for(uint32_t point = 0; point < original.points.size(); ++point){
+            for(uint32_t camera = point % 20; camera < original.cameras.size(); camera += 7){
+                Engine::Observation observation;
+                observation.camera = camera;
+                observation.point = point;
+                observations.push_back(observation);
+            }
+        }
+        const bool wrote = Engine::writeColmapText(directory.string(), reconstruction, Engine::Intrinsics{}, observations, names);
+
+        Loom::Snapshot fromColmap;
+        const Loom::ResultSource first = Loom::loadResult(directory, fromColmap);
+        float worst = 0.0f;
+        for(size_t i = 0; i < std::min(fromColmap.cameras.size(), original.cameras.size()); ++i){
+            worst = std::max(worst, glm::length(fromColmap.cameras[i] - original.cameras[i]));
+        }
+        report.check("stara mapa bez snimka se otvara iz COLMAP-a",
+            wrote && first == Loom::ResultSource::Colmap &&
+            fromColmap.cameras.size() == original.cameras.size() &&
+            fromColmap.points.size() == original.points.size() && worst < 1e-3f,
+            fmt("%zu kamera, %zu tocaka, kamera najdalje %.2e od prave", fromColmap.cameras.size(),
+                fromColmap.points.size(), worst));
+
+        //Snimak BEZ boja je zapisan usred solvea i gubi od gotovog modela
+        Loom::Snapshot midway = original;
+        midway.colours.clear();
+        midway.points.resize(100);
+        Loom::writeSnapshot((directory / "napredak.bin").string(), midway);
+        Loom::Snapshot stale;
+        const Loom::ResultSource staleSource = Loom::loadResult(directory, stale);
+        report.check("snimak iz sredine solvea gubi od gotovog modela",
+            staleSource == Loom::ResultSource::Colmap && stale.points.size() == original.points.size(),
+            fmt("%zu tocaka procitano, snimak ih je imao 100", stale.points.size()));
+
+        Loom::writeSnapshot((directory / "napredak.bin").string(), original);
+        Loom::Snapshot fromSnapshot;
+        const Loom::ResultSource second = Loom::loadResult(directory, fromSnapshot);
+        report.check("konacan snimak ima prednost jer nosi boje",
+            second == Loom::ResultSource::Snapshot && fromSnapshot.colours.size() == original.points.size(),
+            fmt("%zu boja", fromSnapshot.colours.size()));
+
+        const std::vector<fs::path> listed = Loom::resultsIn(root);
+        Loom::Snapshot nothing;
+        report.check("popis nudi samo mape s rezultatom",
+            listed.size() == 1 && listed[0].filename() == "snimka_loom" &&
+            Loom::loadResult(root / "obicna_mapa", nothing) == Loom::ResultSource::None,
+            fmt("%zu ponudjeno", listed.size()));
+        fs::remove_all(root);
     }
 
     std::filesystem::remove(path);

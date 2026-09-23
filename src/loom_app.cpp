@@ -20,6 +20,7 @@
 #include "Core/LoomInitializer.h"
 
 #include "LoomProgress.h"
+#include "LoomResult.h"
 
 #include <Treadle/Ui.h>
 #include <TreadlePaint/UiPainter.h>
@@ -40,7 +41,7 @@
 
 namespace{
 
-enum class Screen{ Menu, PickVideo, Running, Result };
+enum class Screen{ Menu, PickVideo, PickResult, Running };
 
 //Faze onako kako ih VideoSolve ispisuje. Redoslijed je onaj kojim stvarno idu, pa se napredak
 //cita iz toga koja se zadnja javila
@@ -256,6 +257,8 @@ int main(int argc, char** argv){
                                               : std::filesystem::current_path();
     std::vector<std::filesystem::path> videos = videosIn(browseAt);
     std::filesystem::path chosenVideo;
+    std::vector<std::filesystem::path> results;
+    bool openedResult = false;        //prikazuje se gotov rezultat s diska, ne posao koji je tekao
 
     int stepIndex = 2;                 //svaki n-ti kadar
     const int steps[] = {1, 5, 10, 20};
@@ -339,6 +342,10 @@ int main(int argc, char** argv){
                 videos = videosIn(browseAt);
                 screen = Screen::PickVideo;
             }
+            if(ui.button("Otvori rezultat")){
+                results = Loom::resultsIn(browseAt);
+                screen = Screen::PickResult;
+            }
             ui.label("");
             ui.label("Gaussian splat - trening trazi rijesenu");
             ui.label("snimku, pa ide poslije solvea.");
@@ -387,6 +394,7 @@ int main(int argc, char** argv){
                     snapshot = Loom::Snapshot{};
                     prepared = Loom::PreparedScene{};
                     view = Loom::ViewState{};
+                    openedResult = false;
                     std::error_code ignored;
                     std::filesystem::remove(out / "napredak.bin", ignored);
 
@@ -400,6 +408,73 @@ int main(int argc, char** argv){
             if(ui.button("natrag")) screen = Screen::Menu;
             ui.end();
 
+        }else if(screen == Screen::PickResult){
+            //GOTOV REZULTAT: mapa koju je solve ostavio. Nudi se sto je u trenutnoj mapi, a u
+            //ostale podmape se da uci - rezultati obicno stoje uz snimke, jednu razinu dublje
+            ui.panel("Otvori rezultat", 40, 40, 560);
+            ui.value("mapa", browseAt.string().size() > 46
+                             ? "..." + browseAt.string().substr(browseAt.string().size() - 43)
+                             : browseAt.string());
+            if(ui.button("^ mapa iznad")){
+                browseAt = browseAt.parent_path();
+                results = Loom::resultsIn(browseAt);
+            }
+            {
+                std::error_code error;
+                std::vector<std::filesystem::path> folders;
+                for(const auto& entry : std::filesystem::directory_iterator(browseAt, error)){
+                    if(error) break;
+                    const std::string name = entry.path().filename().string();
+                    if(entry.is_directory(error) && !name.empty() && name[0] != '.' &&
+                       !Loom::isResultDirectory(entry.path())) folders.push_back(entry.path());
+                }
+                std::sort(folders.begin(), folders.end());
+                if(folders.size() > 8) folders.resize(8);
+                for(const std::filesystem::path& folder : folders){
+                    if(ui.button("> " + folder.filename().string())){
+                        browseAt = folder;
+                        results = Loom::resultsIn(browseAt);
+                    }
+                }
+            }
+            ui.separator();
+
+            if(results.empty()) ui.label("(nema rezultata u ovoj mapi - trazi se mapa s napredak.bin ili COLMAP modelom)");
+            std::filesystem::path open;
+            for(const std::filesystem::path& result : results){
+                if(ui.button(result.filename().string())) open = result;
+            }
+            if(!open.empty()){
+                Loom::Snapshot loaded;
+                const Loom::ResultSource source = Loom::loadResult(open, loaded);
+                if(worker.joinable()) worker.join();
+                {
+                    std::lock_guard<std::mutex> guard(job.lock);
+                    job.lines.clear();
+                    job.lines.push_back(source == Loom::ResultSource::Snapshot ? "otvoren snimak: " + (open / "napredak.bin").string()
+                                      : source == Loom::ResultSource::Colmap   ? "otvoren COLMAP model (bez boja): " + open.string()
+                                                                               : "u mapi nema nicega citljivog: " + open.string());
+                }
+                job.task = Task::Solve;
+                job.outputDirectory = open.string();
+                job.failed = (source == Loom::ResultSource::None);
+                job.phase = -1;
+                job.started = std::chrono::steady_clock::now();
+                snapshot = std::move(loaded);
+                prepared = Loom::prepareScene(snapshot);
+                view = Loom::ViewState{};
+                chosenVideo = open;
+                openedResult = true;
+
+                //Splat, ako ga je trening vec napravio, da se moze odmah pogledati
+                std::error_code error;
+                splatPath = std::filesystem::is_regular_file(open / "scena.ply", error) ? (open / "scena.ply").string() : "";
+                screen = Screen::Running;
+            }
+            ui.separator();
+            if(ui.button("natrag")) screen = Screen::Menu;
+            ui.end();
+
         }else{
             const double elapsed = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - job.started).count();
@@ -409,9 +484,9 @@ int main(int argc, char** argv){
             char title[64];
             std::snprintf(title, sizeof(title), "%s %s", what,
                           job.running ? "tece" : (job.failed ? "je pao" : "gotov"));
-            ui.panel(title, 20, 20, 340);
-            ui.value("snimka", chosenVideo.filename().string());
-            ui.value("proteklo", humanTime(elapsed));
+            ui.panel(openedResult && !job.running && job.task == Task::Solve ? "Rezultat" : title, 20, 20, 340);
+            ui.value(openedResult ? "mapa" : "snimka", chosenVideo.filename().string());
+            if(!openedResult || job.running) ui.value("proteklo", humanTime(elapsed));
 
             if(phase >= 0 && phase < int(sizeof(phases) / sizeof(phases[0]))){
                 ui.value("faza", phases[phase].label);
@@ -456,10 +531,19 @@ int main(int argc, char** argv){
                     ui.label("kamera.usda - za Nuke/Houdini/Blender");
                     ui.separator();
 
+                    if(!splatPath.empty() && ui.button("POGLEDAJ SPLAT")){
+                        char command[1400];
+                        std::snprintf(command, sizeof(command),
+                                      "./SplatViewer \"%s\" 1 16 0 0 pogled.png 3 0 \"%s\" &",
+                                      splatPath.c_str(), job.outputDirectory.c_str());
+                        if(std::system(command) != 0){ /* preglednik javlja sam */ }
+                    }
+
                     //DRUGI KORAK LANCA. Solve daje poze i tocke; splat od toga radi scenu. Trener
                     //trazi slike iz solvea, pa ide bas ta mapa i nijedna druga
                     ui.slider("koraka treninga", &trainSteps, 1000.0f, 30000.0f);
                     if(ui.button("TRENIRAJ SPLAT")){
+                        openedResult = false;
                         splatPath = job.outputDirectory + "/scena.ply";
                         char command[1400];
                         std::snprintf(command, sizeof(command),
