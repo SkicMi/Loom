@@ -124,6 +124,7 @@ public:
             indent(in); out << "color3f[] primvars:displayColor = ["; vector(mesh.colour); out << "]\n";
         }
         if(entity.splat){ indent(in); out << "custom asset loom:splat = "; asset(entity.splat->path); out << '\n'; }
+        if(entity.joint){ indent(in); out << "custom color3f loom:joint = "; vector(entity.joint->colour); out << '\n'; }
 
         for(Id child : entity.children){
             out << '\n';
@@ -222,6 +223,7 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
         }
         entity.mesh = mesh;
     }
+    if(const usda::Attribute* joint = prim.find("loom:joint")) entity.joint = Joint{asVector(joint->value, Joint{}.colour)};
     const std::string splat = textOf(prim, "loom:splat");
     if(!splat.empty()) entity.splat = Splat{splat};
 

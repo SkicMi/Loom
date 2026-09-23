@@ -291,6 +291,8 @@ uint64_t Stage::fingerprint() const{
         if(e.mesh){ h.add(e.mesh->shape); h.add(e.mesh->colour); }
         h.add(e.splat.has_value());
         if(e.splat) h.text(e.splat->path);
+        h.add(e.joint.has_value());
+        if(e.joint) h.add(e.joint->colour);
     });
     h.add(media.size());
     for(const Media& m : media){

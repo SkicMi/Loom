@@ -82,6 +82,9 @@ int main(){
     original.get(plane)->mesh = Warp::Mesh{Warp::Shape::Plane};
     original.get(plane)->visible = false;
     original.create("Nul");
+    const Warp::Id hips = original.create("Hips");
+    original.get(hips)->joint = Warp::Joint{glm::vec3(0.1f, 0.9f, 0.3f)};
+    original.get(original.create("Spine", hips))->joint = Warp::Joint{};
 
     Warp::Media media;
     media.path = "/home/netko/snimke/C0257.MP4";
@@ -143,6 +146,11 @@ int main(){
         const Warp::Entity* r = loaded.get(loaded.find("/Kocka/Ravnina"));
         const Warp::Entity* s = loaded.get(loaded.find("/C0257/Splat"));
         const Warp::Entity* n = loaded.get(loaded.find("/Nul"));
+        const Warp::Entity* spine = loaded.get(loaded.find("/Hips/Spine"));
+        const Warp::Entity* hipsLoaded = loaded.get(loaded.find("/Hips"));
+        report.check("zglobovi kostura", spine && spine->joint && hipsLoaded && hipsLoaded->joint &&
+                                         hipsLoaded->joint->colour == glm::vec3(0.1f, 0.9f, 0.3f),
+            "Hips i Spine s oznakom zgloba");
         report.check("kocka, ravnina, splat i nul",
             k && k->mesh && k->mesh->shape == Warp::Shape::Cube && k->mesh->colour == glm::vec3(0.2f, 0.4f, 0.9f) &&
             r && r->mesh && r->mesh->shape == Warp::Shape::Plane && s && s->splat && s->splat->path == "/tmp/scena.ply" &&

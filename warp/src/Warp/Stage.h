@@ -97,6 +97,13 @@ struct Mesh{
     glm::vec3 colour{0.95f, 0.55f, 0.15f};
 };
 
+//ZGLOB KOSTURA (lik iz pokreta, npr. Kimodo). Zglob je obican entitet - transformacija i kljucevi
+//su njegovi, roditelj je roditeljski zglob - a ova oznaka kaze pogledu da ga crta kao tocku i kost
+//do roditelja, ne kao nul. Kostur od 77 zglobova tako ne treba jos 77 kocaka u stablu
+struct Joint{
+    glm::vec3 colour{0.35f, 0.75f, 1.0f};
+};
+
 //Istrenirani gaussian splat, kao put do .ply
 struct Splat{
     std::string path;
@@ -119,6 +126,7 @@ struct Entity{
     std::optional<Points> points;
     std::optional<Mesh> mesh;
     std::optional<Splat> splat;
+    std::optional<Joint> joint;
 
     bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty();}
 };

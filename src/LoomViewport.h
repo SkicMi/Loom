@@ -298,6 +298,26 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
         });
     }
 
+    //-- kosturi: kost od zgloba do roditeljskog zgloba, i tocka na zglobu --------------------
+    //Zglob je entitet s oznakom Joint (vidi Warp::Joint); kost se crta samo do roditelja koji je
+    //i sam zglob - korijen visi o grupi, i do nje nema kosti
+    stage.walk([&](const Warp::Entity& entity, int){
+        if(!entity.visible || !entity.joint) return;
+        const glm::vec3 at = glm::vec3(stage.worldMatrix(entity.id, frame)[3]);
+        const Warp::Entity* parent = stage.get(entity.parent);
+        const bool isSelected = entity.id == selected;
+        const glm::vec3 c = entity.joint->colour;
+        const Treadle::Color colour = isSelected ? accent : Treadle::Color{c.r, c.g, c.b, 0.95f};
+        if(parent && parent->joint){
+            segment(list, camera, glm::vec3(stage.worldMatrix(parent->id, frame)[3]), at, isSelected ? 3.0f : 2.0f, colour);
+        }
+        glm::vec2 pixel;
+        if(project(camera, at, pixel) && camera.rect.contains(pixel.x, pixel.y)){
+            const float size = isSelected ? 8.0f : 5.0f;
+            list.rect(pixel.x - size * 0.5f, pixel.y - size * 0.5f, size, size, colour);
+        }
+    });
+
     //-- tijela: plohe od straga prema naprijed, pa bridovi ----------------------------------
     struct Face{ glm::vec2 pixels[4]; float depth; Treadle::Color colour; };
     std::vector<Face> faces;
@@ -400,7 +420,7 @@ inline Warp::Id pickEntity(const Warp::Stage& stage, double frame, const ViewCam
     Warp::Id best = Warp::None;
     float bestDistance = 16.0f;
     stage.walk([&](const Warp::Entity& entity, int){
-        if(!entity.visible || (!entity.camera && !entity.mesh)) return;
+        if(!entity.visible || (!entity.camera && !entity.mesh && !entity.joint)) return;
         glm::vec2 pixel;
         if(!project(camera, glm::vec3(stage.worldMatrix(entity.id, frame)[3]), pixel)) return;
         const float distance = glm::length(pixel - mouse);

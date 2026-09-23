@@ -15,7 +15,7 @@
 // SNIMKA PROZORA IZ SAMOG EDITORA. Prozor se na ovom sustavu ne da snimiti izvana, pa editor zna
 // sam odraditi ono sto bi korisnik kliknuo i spremiti kadar:
 //
-//   loom <mapa> --snimi slika.png --rezultat C0256_loom [--kadar 120] [--kroz] [--kocka | --kocka-u 90]
+//   loom <mapa> --snimi slika.png --rezultat C0256_loom [--kadar 120] [--kroz] [--kocka | --kocka-u 90] [--pokret hod.bvh]
 //
 // uveze rezultat, po zelji doda kocku (postavljenu u kadru 90) i gleda kroz rijesenu kameru, pa
 // spremi kadar i izadje.
@@ -32,6 +32,7 @@
 #include "LoomScene.h"
 #include "LoomSplat.h"
 #include "LoomViewport.h"
+#include "LoomWeaverMotion.h"
 
 #include "Vulkan/ImageData.h"
 #include "Vulkan/Material.h"
@@ -64,13 +65,14 @@ namespace fs = std::filesystem;
 //jer solve u pozadini stvara nove mape rezultata
 struct Browser{
     fs::path at;
-    std::vector<fs::path> folders, videos, results, projects;
+    std::vector<fs::path> folders, videos, results, projects, motions;
 
     void refresh(){
         folders.clear();
         projects.clear();
         results = Loom::resultsIn(at);
         videos = Loom::videosIn(at);
+        motions = Loom::weaverMotionFilesIn(at);
         std::error_code error;
         for(const auto& entry : fs::directory_iterator(at, error)){
             if(error) break;
@@ -138,6 +140,7 @@ std::string kindOf(const Warp::Entity& entity){
     if(entity.points) return "oblak tocaka";
     if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "kocka" : "ravnina";
     if(entity.splat) return "gaussian splat";
+    if(entity.joint) return "zglob";
     return entity.children.empty() ? "nul" : "grupa";
 }
 
@@ -174,7 +177,7 @@ int main(int argc, char** argv){
     //Argumenti: prva mapa, pa zastavice za snimku (vidi zaglavlje)
     fs::path startAt = fs::current_path();
     std::string startProject;             //loom projekt.usda otvara projekt
-    std::string shotPath, shotResult, shotSave;
+    std::string shotPath, shotResult, shotSave, shotMotion;
     double shotFrame = -1.0;
     bool shotThrough = false, shotCube = false, shotNoSplat = false, shotRotate = false;
     double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
@@ -186,6 +189,7 @@ int main(int argc, char** argv){
         else if(argument == "--kroz") shotThrough = true;
         else if(argument == "--bez-splata") shotNoSplat = true;
         else if(argument == "--rotacija") shotRotate = true;
+        else if(argument == "--pokret" && i + 1 < argc) shotMotion = argv[++i];
         else if(argument == "--spremi" && i + 1 < argc) shotSave = argv[++i];
         else if(argument == "--kocka") shotCube = true;
         else if(argument == "--kocka-u" && i + 1 < argc){ shotCube = true; shotCubeFrame = std::atof(argv[++i]); }
@@ -314,6 +318,8 @@ int main(int argc, char** argv){
         message = text;
     };
 
+
+
     //NOVO TIJELO SJEDI NA POVRSINI SNIMKE ondje kamo se gleda: na tockama oblaka pod sredinom
     //pogleda (ili pod misem, kad je dodano desnim klikom u pogled). Kroz rijesenu kameru to je
     //stvarni zid ili stol u kadru - bas ondje gdje se provjerava drzi li se kocka snimke. Kad pod
@@ -350,6 +356,72 @@ int main(int argc, char** argv){
         focus = Focus::Entity;
     };
     auto addMesh = [&](Warp::Shape shape, Warp::Id parent){ addMeshAt(shape, parent, glm::vec2(0.0f), false); };
+
+    //POKRET LIKA (WeaverMotion, NVIDIA Kimodo): BVH postaje kostur u sceni (vidi LoomWeaverMotion.h).
+    //U praznoj sceni klip preuzme timeline. U sceni iz matchmovea pocinje na kadru glave, u vremenu
+    //scene, i STOJI NA PODU ispod mjesta u koje pogled gleda:
+    //
+    //  mjesto    gdje sredisnja zraka pogleda presijece pod (y = 0); kad gleda vodoravno ili gore -
+    //            snimka iz ruke gotovo uvijek - pod ispod tocke na koju gleda (povrsina snimke, ili
+    //            tocka na udaljenosti scene)
+    //  mjerilo   solve nema metre, ali kamera iz ruke je na visini oka, oko 1.5 m iznad poda. Visina
+    //            kamere nad podom je zato najbolja procjena metra koju scena daje; Kimodo pise metre.
+    //            Kamera na stativu, dronu ili niskom kutu to krsi - dotjeruje se na grupi
+    auto importMotion = [&](const fs::path& path){
+        Loom::MotionPlacement placement;
+        if(stage.size() > 0){
+            int w = 0, h = 0;
+            glfwGetWindowSize(window, &w, &h);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h)).viewport, view);
+            const glm::vec2 centre(camera.frame.x + camera.frame.width * 0.5f, camera.frame.y + camera.frame.height * 0.5f);
+            const Loom::Ray ray = Loom::rayThrough(camera, centre);
+            glm::vec3 place;
+            const bool hitsFloor = ray.direction.y < -1e-3f && ray.origin.y > 0.0f &&
+                                   -ray.origin.y / ray.direction.y < extent.radius * 20.0f;
+            if(hitsFloor){
+                place = ray.origin + ray.direction * (-ray.origin.y / ray.direction.y);
+            }else{
+                glm::vec3 looked;
+                if(!Loom::surfaceAt(stage, frame, camera, centre, looked)){
+                    looked = ray.origin + ray.direction * glm::length(extent.centre - ray.origin);
+                }
+                place = glm::vec3(looked.x, 0.0f, looked.z);
+            }
+            placement.position = place;
+            placement.startFrame = std::round(frame);
+            placement.sceneFps = stage.framesPerSecond;
+            Engine::WeaverMotion::Clip clip;
+            std::string error;
+            if(!Engine::WeaverMotion::readKimodoBvh(path.string(), clip, error)){ message = "pokret se ne da procitati: " + error; return; }
+            const float eyeHeight = ray.origin.y;
+            placement.scale = eyeHeight > 1e-4f ? eyeHeight / 1.5f
+                                                : 0.35f * std::max(1e-4f, glm::length(place - ray.origin)) /
+                                                  std::max(1e-4f, Loom::motionRestHeight(clip));
+            const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionClip(stage, clip, path.stem().string(), placement);
+            if(!report.problem.empty()){ message = "pokret: " + report.problem; return; }
+            selected = report.group;
+            collapsed.insert(report.root);
+            char text[256];
+            std::snprintf(text, sizeof(text), "pokret (NVIDIA Kimodo): %zu zglobova, kadrovi %.0f-%.0f, mjerilo %.3f",
+                          report.joints, report.firstFrame, report.lastFrame, placement.scale);
+            message = text;
+        }else{
+            const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionBvh(stage, path, placement);
+            if(!report.problem.empty()){ message = "pokret se ne da procitati: " + report.problem; return; }
+            selected = report.group;
+            collapsed.insert(report.root);
+            frame = stage.startFrame;
+            extentDirty = true;
+            view.lookThrough = Warp::None;
+            view.orbit.target = glm::vec3(0.0f, report.height * 0.5f, 0.0f);
+            view.orbit.distance = std::max(1.0f, report.height * 2.5f);
+            char text[256];
+            std::snprintf(text, sizeof(text), "pokret (NVIDIA Kimodo): %zu zglobova, %zu kadrova @ %.0f fps",
+                          report.joints, report.frames, stage.framesPerSecond);
+            message = text;
+        }
+        focus = Focus::Entity;
+    };
 
     //-- projekt ----------------------------------------------------------------------------------
     //Projekt je .usda (vidi Warp/Project.h). Prvo spremanje ga stavi u mapu koju media prozor
@@ -471,6 +543,7 @@ int main(int argc, char** argv){
             frame = shown;
         }
     }
+    if(!shotMotion.empty()){ importMotion(shotMotion); std::printf("%s\n", message.c_str()); }
     if(!shotSave.empty()){
         projectPath = shotSave;
         saveProjectNow();
@@ -716,6 +789,11 @@ int main(int argc, char** argv){
                     ui.openMenu("projekt");
                 }
             }
+            for(const fs::path& motion : browser.motions){
+                if(ui.selectable("[pokret] " + motion.filename().string(), false)){
+                    importMotion(motion);
+                }
+            }
             for(const fs::path& result : browser.results){
                 if(ui.selectable("[rezultat] " + result.filename().string(), false)){
                     //Snimka uz rezultat, ako postoji, postaje ploca kamere
@@ -785,6 +863,11 @@ int main(int argc, char** argv){
             }else if(entity){
                 ui.value("ime", Treadle::fitText(entity->name, 160.0f, theme.textScale));
                 ui.value("vrsta", kindOf(*entity));
+                //Grupa lika iz pokreta: vidi se odakle je pokret
+                if(!entity->children.empty() && stage.get(entity->children.front()) &&
+                   stage.get(entity->children.front())->joint && !entity->joint){
+                    ui.value("pokret", Engine::WeaverMotion::poweredBy);
+                }
                 ui.checkbox("vidljivo", &entity->visible);
                 ui.separator();
                 //TRANSFORMACIJA U OVOM KADRU. Brzina vucenja je iz velicine scene: solve nema
