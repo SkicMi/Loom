@@ -171,6 +171,40 @@ std::vector<std::filesystem::path> videosIn(const std::filesystem::path& directo
     return found;
 }
 
+//=============================================================================================
+// STO JE ZAPRAVO PALO, recenicom.
+//
+// ZASTO. Kad je trening pao na nedostajucem ninji, prozor je pokazao petnaest redaka Python
+// tragova i korisnik je iz toga trebao sam izvuci da mu fali jedan alat u PATH-u. To je isto kao
+// da nije pokazao nista.
+//
+// Ovdje se ispis pregleda unatrag i trazi poznat potpis. Kad se nadje, gore pise recenica; kad se
+// ne nadje, i dalje stoje zadnji redci - dakle nikad manje nego prije
+//=============================================================================================
+struct KnownFailure{
+    const char* signature;
+    const char* meaning;
+};
+
+const KnownFailure knownFailures[] = {
+    {"Ninja is required",      "gsplatu treba `ninja` u PATH-u da prevede CUDA dio"},
+    {"out of memory",          "kartica je puna - zatvori sto jos crta pa probaj ponovno"},
+    {"No module named",        "u .venv fali paket; provjeri instalaciju"},
+    {"Premalo kljucnih",       "snimka je prekratka ili se kamera ne mice dovoljno"},
+    {"nema dovoljno",          "snimka nije dala dovoljno zajednickih tocaka"},
+    {"No such file",           "putanja ne postoji - provjeri mapu snimke"},
+    {"NEOPTIMIZIRAN BUILD",    "alat je preveden bez -O2; vidi naredbu u ispisu"},
+};
+
+std::string explainFailure(const std::vector<std::string>& lines){
+    for(size_t i = lines.size(); i-- > 0; ){
+        for(const KnownFailure& known : knownFailures){
+            if(lines[i].find(known.signature) != std::string::npos) return known.meaning;
+        }
+    }
+    return {};
+}
+
 std::string humanTime(double seconds){
     char text[64];
     if(seconds < 90.0){ std::snprintf(text, sizeof(text), "%.0f s", seconds); return text; }
@@ -396,9 +430,16 @@ int main(int argc, char** argv){
                         splatPath = job.outputDirectory + "/scena.ply";
                         char command[1400];
                         std::snprintf(command, sizeof(command),
-                                      "cd \"%s\" && ./.venv/bin/python tools/splat/train_splats.py "
+                                      //VENV SE AKTIVIRA, ne zaobilazi. Pozvati ./.venv/bin/python
+                                      //izravno pokrene pravi interpreter, ali NE stavi .venv/bin u
+                                      //PATH - a torch trazi `ninja` bas ondje da bi preveo gsplatovu
+                                      //CUDA ekstenziju. Bez toga trening padne nakon pedesetak
+                                      //sekundi uz "Ninja is required to load C++ extensions", iako
+                                      //je ninja uredno instaliran u venvu
+                                      "cd \"%s\" && PATH=\"%s/.venv/bin:$PATH\" "
+                                      "./.venv/bin/python tools/splat/train_splats.py "
                                       "\"%s\" \"%s/images\" \"%s\" --steps %d",
-                                      LOOM_ROOT_DIR, job.outputDirectory.c_str(),
+                                      LOOM_ROOT_DIR, LOOM_ROOT_DIR, job.outputDirectory.c_str(),
                                       job.outputDirectory.c_str(), splatPath.c_str(), int(trainSteps));
                         if(worker.joinable()) worker.join();
                         worker = std::thread(runSolve, std::ref(job), std::string(command),
@@ -419,7 +460,18 @@ int main(int argc, char** argv){
                         if(std::system(command) != 0){ /* preglednik javlja sam */ }
                     }
                 }else{
-                    ui.label("Pao je. Zadnji redci desno kazu zasto.");
+                    //Recenica kad je uzrok prepoznat; inace stara uputa, koja je i dalje tocna
+                    std::string why;
+                    {
+                        std::lock_guard<std::mutex> guard(job.lock);
+                        why = explainFailure(job.lines);
+                    }
+                    if(!why.empty()){
+                        ui.label("Pao je:");
+                        ui.label(why);
+                    }else{
+                        ui.label("Pao je. Zadnji redci desno kazu zasto.");
+                    }
                 }
                 ui.separator();
                 if(ui.button("natrag na izbornik")) screen = Screen::Menu;
