@@ -505,5 +505,40 @@ int main(){
             fitted);
     }
 
+    //-- BROJ KOJI SE VUCE: pomak misa u pomak broja, svako polje za sebe ---------------------
+    {
+        Treadle::Ui ui;
+        Treadle::Input input;
+        float position[3] = {1.0f, 2.0f, 3.0f};
+        auto frame = [&](Treadle::Input state){
+            ui.begin(state, 1000.0f, 800.0f);
+            ui.dock("Svojstva", Treadle::Rect{0.0f, 0.0f, 320.0f, 400.0f});
+            ui.dragVector("pomak", position, 0.01f);
+            ui.end();
+        };
+        const Treadle::Theme& theme = ui.style();
+        const float firstRow = theme.padding + Treadle::textHeight(theme.textScale) + theme.spacing + 1.0f + theme.spacing;
+        const float fieldRow = firstRow + Treadle::textHeight(theme.textScale) + theme.spacing + theme.rowHeight * 0.5f;
+        const float width = (320.0f - 2.0f * theme.padding - 2.0f * theme.spacing) / 3.0f;
+        //Srednje polje (y): pritisni, vuci 50 desno pa jos 20 desno; mis smije izaci iz polja
+        input.mouseX = theme.padding + width * 1.5f + theme.spacing;
+        input.mouseY = fieldRow;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        frame(input);
+        input.mouseX += 50.0f;
+        frame(input);
+        input.mouseX += 120.0f;                       //van polja, u trece - i dalje vuce y
+        input.mouseY += 200.0f;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Left)] = false;
+        frame(input);
+        input.mouseX += 100.0f;
+        frame(input);
+        report.check("vucenje broja: pomak misa puta brzina, samo svoje polje",
+            std::fabs(position[1] - 3.7f) < 1e-4f && position[0] == 1.0f && position[2] == 3.0f,
+            fmt("x %.3f, y %.3f (ocekivano 3.700), z %.3f", position[0], position[1], position[2]));
+    }
+
     return report.result();
 }

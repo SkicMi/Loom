@@ -184,6 +184,56 @@ Transform Stage::localAt(Id id, double frame) const{
     return t;
 }
 
+void Stage::setLocalAt(Id id, double frame, const Transform& transform){
+    Entity* entity = get(id);
+    if(!entity) return;
+    if(entity->translationKeys.empty()) entity->local.translation = transform.translation;
+    else entity->translationKeys.set(frame, transform.translation);
+    if(entity->rotationKeys.empty()) entity->local.rotation = transform.rotation;
+    else entity->rotationKeys.set(frame, transform.rotation);
+    if(entity->scaleKeys.empty()) entity->local.scale = transform.scale;
+    else entity->scaleKeys.set(frame, transform.scale);
+}
+
+void Stage::keyAll(Id id, double frame){
+    Entity* entity = get(id);
+    if(!entity) return;
+    const Transform now = localAt(id, frame);
+    entity->translationKeys.set(frame, now.translation);
+    entity->rotationKeys.set(frame, now.rotation);
+    entity->scaleKeys.set(frame, now.scale);
+}
+
+size_t Stage::eraseKeysAt(Id id, double frame){
+    Entity* entity = get(id);
+    if(!entity) return 0;
+    //Kad os izgubi ZADNJI kljuc, vrijednost koju je drzala postaje mirna - inace bi kocka
+    //odskocila natrag na mjesto od prije animiranja
+    const Transform held = localAt(id, frame);
+    size_t erased = 0;
+    if(entity->translationKeys.erase(frame)){ ++erased; if(entity->translationKeys.empty()) entity->local.translation = held.translation; }
+    if(entity->rotationKeys.erase(frame)){ ++erased; if(entity->rotationKeys.empty()) entity->local.rotation = held.rotation; }
+    if(entity->scaleKeys.erase(frame)){ ++erased; if(entity->scaleKeys.empty()) entity->local.scale = held.scale; }
+    return erased;
+}
+
+bool Stage::neighbourKey(Id id, double frame, int direction, double& found) const{
+    const Entity* entity = get(id);
+    if(!entity) return false;
+    bool any = false;
+    auto consider = [&](const std::vector<double>& times){
+        for(double t : times){
+            const bool ahead = direction > 0 ? t > frame + 1e-9 : t < frame - 1e-9;
+            if(!ahead) continue;
+            if(!any || (direction > 0 ? t < found : t > found)){ found = t; any = true; }
+        }
+    };
+    consider(entity->translationKeys.times);
+    consider(entity->rotationKeys.times);
+    consider(entity->scaleKeys.times);
+    return any;
+}
+
 glm::mat4 Stage::localMatrix(Id id, double frame) const{
     return localAt(id, frame).matrix();
 }

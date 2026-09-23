@@ -165,5 +165,28 @@ int main(){
             fmt("pogodak %u (kocka %u), promasaj %u", hit, cube, miss));
     }
 
+    //-- 5. strelice: os pod misem i pomak koliko je mis prosao --------------------------------
+    {
+        Loom::ViewportState orbitState;
+        orbitState.orbit.target = glm::vec3(0.0f);
+        orbitState.orbit.distance = 12.0f;
+        const Loom::ViewCamera orbit = Loom::viewCameraFor(stage, 7.0, viewportRect, orbitState);
+        const Loom::Gizmo gizmo = Loom::gizmoFor(orbit, glm::vec3(0.0f));
+        glm::vec2 origin, tipX;
+        Loom::project(orbit, glm::vec3(0.0f), origin);
+        Loom::project(orbit, glm::vec3(gizmo.length, 0.0f, 0.0f), tipX);
+        const float onScreen = glm::length(tipX - origin);
+        const int axis = Loom::gizmoAxisAt(orbit, gizmo, origin + (tipX - origin) * 0.8f + glm::vec2(0.0f, 3.0f));
+        const float moved = Loom::gizmoDrag(orbit, gizmo, 0, (tipX - origin) * 0.5f);
+        //Okomito na os mis ne pomice nista
+        const glm::vec2 across(-(tipX - origin).y, (tipX - origin).x);
+        const float sideways = Loom::gizmoDrag(orbit, gizmo, 0, across);
+        //90 px je duljina strelice OKOMITE na pogled; os gledana ukoso je skracena, nikad dulja
+        report.check("strelica X: hvata se uz os, pomak pola strelice = pola duljine",
+            axis == 0 && onScreen <= 90.5f && onScreen > 40.0f && std::fabs(moved - gizmo.length * 0.5f) < 1e-4f &&
+            std::fabs(sideways) < 1e-4f,
+            fmt("na ekranu %.1f px, pomak %.4f od %.4f, poprijeko %.1e", onScreen, moved, gizmo.length, sideways));
+    }
+
     return report.result();
 }

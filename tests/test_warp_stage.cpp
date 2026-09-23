@@ -174,5 +174,39 @@ int main(){
             "kljuc u kadru 10 ostao (1, 0, 0)");
     }
 
+    //-- 6. uredjivanje kroz vrijeme -------------------------------------------------------------
+    {
+        Warp::Stage stage;
+        const Warp::Id cube = stage.create("Kocka");
+        Warp::Transform moved;
+        moved.translation = glm::vec3(1.0f, 2.0f, 3.0f);
+        stage.setLocalAt(cube, 10.0, moved);
+        const bool staticEdit = !stage.get(cube)->animated() && stage.localAt(cube, 99.0).translation == moved.translation;
+
+        //Kljuc u 10, pa pomak u 20: os s kljucevima dobiva drugi kljuc, a izmedju je pravac
+        stage.keyAll(cube, 10.0);
+        moved.translation = glm::vec3(3.0f, 2.0f, 3.0f);
+        stage.setLocalAt(cube, 20.0, moved);
+        const glm::vec3 middle = stage.localAt(cube, 15.0).translation;
+        report.check("uredjivanje: mirno ostaje mirno, animirano dobiva kljuc",
+            staticEdit && stage.get(cube)->translationKeys.size() == 2 && glm::length(middle - glm::vec3(2, 2, 3)) < 1e-5f,
+            fmt("u 15: (%.2f, %.2f, %.2f)", middle.x, middle.y, middle.z));
+
+        double next = 0.0, previous = 0.0;
+        const bool haveNext = stage.neighbourKey(cube, 12.0, +1, next);
+        const bool havePrevious = stage.neighbourKey(cube, 12.0, -1, previous);
+        const bool noneAfter = !stage.neighbourKey(cube, 20.0, +1, next);
+        report.check("skok na susjedni kljuc", haveNext && havePrevious && noneAfter && previous == 10.0,
+            fmt("iz 12: prethodni %.0f, sljedeci %s", previous, haveNext ? "20" : "nema"));
+
+        //Brisanje zadnjeg kljuca ostavi vrijednost koju je drzao, ne onu od prije animiranja
+        stage.eraseKeysAt(cube, 10.0);
+        const size_t erased = stage.eraseKeysAt(cube, 20.0);
+        report.check("brisanje zadnjeg kljuca ne vraca kocku na staro mjesto",
+            erased == 3 && !stage.get(cube)->animated() && stage.localAt(cube, 1.0).translation == glm::vec3(3, 2, 3),
+            fmt("obrisano %zu, stoji na (%.0f, %.0f, %.0f)", erased, stage.localAt(cube, 1.0).translation.x,
+                stage.localAt(cube, 1.0).translation.y, stage.localAt(cube, 1.0).translation.z));
+    }
+
     return report.result();
 }

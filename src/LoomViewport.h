@@ -382,4 +382,78 @@ inline Warp::Id pickEntity(const Warp::Stage& stage, double frame, const ViewCam
     return best;
 }
 
+//=============================================================================================
+// STRELICE ZA POMICANJE: tri osi svijeta iz sredista odabranog, uhvati jednu i vuci.
+//
+// Duljina je STALNA NA EKRANU (90 px), ne u svijetu - scena iz solvea nema metre, pa bi strelica
+// zadane duljine u jednoj snimci bila tocka, a u drugoj veca od sobe. Vuce se samo uzduz osi:
+// pomak misa se projicira na smjer osi na ekranu, pa kocka ide tocno onoliko koliko je mis prosao
+// preko strelice. Radi i kroz rijesenu kameru - tamo se kocka namjesta na pod snimke
+//=============================================================================================
+struct Gizmo{
+    glm::vec3 origin{0.0f};
+    float length = 1.0f;            //u svijetu, tako da na ekranu bude 90 px
+    bool visible = false;
+};
+
+inline Gizmo gizmoFor(const ViewCamera& camera, const glm::vec3& origin){
+    Gizmo gizmo;
+    gizmo.origin = origin;
+    glm::vec2 pixel;
+    float depth = 0.0f;
+    if(!project(camera, origin, pixel, &depth)) return gizmo;
+    gizmo.length = 90.0f * depth / camera.focal;
+    gizmo.visible = true;
+    return gizmo;
+}
+
+inline glm::vec3 gizmoAxis(int axis){
+    return axis == 0 ? glm::vec3(1, 0, 0) : axis == 1 ? glm::vec3(0, 1, 0) : glm::vec3(0, 0, 1);
+}
+
+//Os pod misem, -1 kad nijedna. Udaljenost od duzine na ekranu, do 8 px
+inline int gizmoAxisAt(const ViewCamera& camera, const Gizmo& gizmo, glm::vec2 mouse){
+    if(!gizmo.visible) return -1;
+    glm::vec2 origin;
+    if(!project(camera, gizmo.origin, origin)) return -1;
+    int best = -1;
+    float bestDistance = 8.0f;
+    for(int axis = 0; axis < 3; ++axis){
+        glm::vec2 tip;
+        if(!project(camera, gizmo.origin + gizmoAxis(axis) * gizmo.length, tip)) continue;
+        const glm::vec2 d = tip - origin;
+        const float lengthSquared = glm::dot(d, d);
+        if(lengthSquared < 1.0f) continue;          //os gleda ravno u kameru: ne da se vuci
+        const float t = std::clamp(glm::dot(mouse - origin, d) / lengthSquared, 0.15f, 1.0f);
+        const float distance = glm::length(mouse - (origin + d * t));
+        if(distance < bestDistance){ bestDistance = distance; best = axis; }
+    }
+    return best;
+}
+
+//Koliko se u svijetu pomaknuti uzduz osi za zadani pomak misa
+inline float gizmoDrag(const ViewCamera& camera, const Gizmo& gizmo, int axis, glm::vec2 mouseDelta){
+    glm::vec2 origin, tip;
+    if(axis < 0 || !project(camera, gizmo.origin, origin) ||
+       !project(camera, gizmo.origin + gizmoAxis(axis) * gizmo.length, tip)) return 0.0f;
+    const glm::vec2 d = tip - origin;
+    const float lengthSquared = glm::dot(d, d);
+    if(lengthSquared < 1.0f) return 0.0f;
+    return glm::dot(mouseDelta, d) / lengthSquared * gizmo.length;
+}
+
+inline void paintGizmo(Treadle::DrawList& list, const ViewCamera& camera, const Gizmo& gizmo, int hotAxis){
+    if(!gizmo.visible) return;
+    const Treadle::Color colours[3] = {{0.95f, 0.30f, 0.30f, 1.0f}, {0.40f, 0.90f, 0.35f, 1.0f}, {0.35f, 0.55f, 1.00f, 1.0f}};
+    for(int axis = 0; axis < 3; ++axis){
+        const Treadle::Color colour = axis == hotAxis ? Treadle::Color{1.0f, 1.0f, 0.6f, 1.0f} : colours[axis];
+        const glm::vec3 tip = gizmo.origin + gizmoAxis(axis) * gizmo.length;
+        segment(list, camera, gizmo.origin, tip, axis == hotAxis ? 4.0f : 3.0f, colour);
+        glm::vec2 pixel;
+        if(project(camera, tip, pixel) && camera.rect.contains(pixel.x, pixel.y)){
+            list.rect(pixel.x - 5.0f, pixel.y - 5.0f, 10.0f, 10.0f, colour);
+        }
+    }
+}
+
 }

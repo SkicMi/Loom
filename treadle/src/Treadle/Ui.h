@@ -88,6 +88,14 @@ class Ui{
     //Red koji se da odabrati, kao u popisu datoteka. true u kadru lijevog pritiska
     bool selectable(const std::string& text, bool selected);
 
+    //BROJ KOJI SE VUCE, kao u Blenderu: pritisni na polje i vuci vodoravno. speed je promjena po
+    //pikselu; sa shiftom deset puta sporije, za fino namjestanje. Nema raspona - pomak kocke u
+    //sceni bez metara nema prirodne granice, a klizac bi ju morao izmisliti
+    bool dragFloat(const std::string& name, float* target, float speed);
+
+    //Tri broja u jednom redu (x, y, z), svaki se vuce zasebno. true kad se bilo koji promijenio
+    bool dragVector(const std::string& name, float* xyz, float speed);
+
     //Red stabla. depth uvlaci, strelica lijevo otvara i zatvara djecu kad ih ima
     enum class TreeClick{ None, Select, Toggle };
     TreeClick treeRow(const std::string& text, int depth, bool hasChildren, bool expanded, bool selected);
@@ -185,6 +193,8 @@ class Ui{
     float scrollOffset = 0.0f;
 
     bool lastRowRightPressed = false;
+    float dragLastX = 0.0f;       //gdje je mis bio prosli kadar, dok se broj vuce
+    bool dragField(uint64_t id, const Rect& box, float* target, float speed);
 
     //Izbornik. Velicina je iz PROSLOG kadra: pozadina se crta prije stavki, a klik se mora znati
     //odbiti prije nego sto ijedan widget ovog kadra pita za njega

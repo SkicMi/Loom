@@ -166,6 +166,20 @@ public:
 
     //Transformacija u kadru: lokalna (roditelj -> entitet) i svjetska (entitet -> svijet)
     Transform localAt(Id id, double frame) const;
+
+    //UREDJIVANJE KROZ VRIJEME. Os koja vec ima kljuceve dobiva kljuc u ovom kadru - inace bi
+    //promjena nestala cim se timeline pomakne, jer kljucevi imaju prednost. Os bez kljuceva mijenja
+    //mirnu vrijednost, pa kocka koja nije animirana ne postane animirana slucajno
+    void setLocalAt(Id id, double frame, const Transform& transform);
+
+    //Kljuc na svim trima osima u ovom kadru, s vrijednoscu koju entitet u njemu upravo ima
+    void keyAll(Id id, double frame);
+
+    //Brise kljuceve u tom kadru na svim osima. Vraca koliko ih je bilo
+    size_t eraseKeysAt(Id id, double frame);
+
+    //Susjedni kljuc bilo koje osi: direction +1 sljedeci, -1 prethodni. false kad ga nema
+    bool neighbourKey(Id id, double frame, int direction, double& found) const;
     glm::mat4 localMatrix(Id id, double frame) const;
     glm::mat4 worldMatrix(Id id, double frame) const;
 

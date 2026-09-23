@@ -489,4 +489,50 @@ Ui::Region Ui::region(const std::string& id, const Rect& box){
     return region;
 }
 
+bool Ui::dragField(uint64_t id, const Rect& box, float* target, float speed){
+    const bool hot = box.contains(input.mouseX, input.mouseY);
+    if(hot && pressed[uint32_t(MouseButton::Left)]){
+        activeId = id;
+        dragLastX = input.mouseX;
+    }
+    const float before = *target;
+    if(activeId == id){
+        const float moved = input.mouseX - dragLastX;
+        *target += moved * speed * (input.shift ? 0.1f : 1.0f);
+        dragLastX = input.mouseX;
+    }
+    list.rect(box, activeId == id ? theme.active : (hot ? theme.hot : theme.control));
+    const std::string reading = fitText(formatNumber(*target), box.width - 6.0f, theme.textScale);
+    list.text(box.x + (box.width - textWidth(reading, theme.textScale)) * 0.5f,
+              box.y + (box.height - textHeight(theme.textScale)) * 0.5f, reading, theme.text, theme.textScale);
+    return *target != before;
+}
+
+bool Ui::dragFloat(const std::string& name, float* target, float speed){
+    if(!target) return false;
+    const Row row = nextRow(theme.rowHeight);
+    if(!row.visible) return false;
+    const float labelWidth = row.box.width * 0.4f;
+    list.text(row.box.x, row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
+              fitText(name, labelWidth - 4.0f, theme.textScale), theme.dim, theme.textScale);
+    const Rect field{row.box.x + labelWidth, row.box.y, row.box.width - labelWidth, row.box.height};
+    return dragField(idFor(name), field, target, speed);
+}
+
+bool Ui::dragVector(const std::string& name, float* xyz, float speed){
+    if(!xyz) return false;
+    label(name);
+    const Row row = nextRow(theme.rowHeight);
+    if(!row.visible) return false;
+    const float width = (row.box.width - 2.0f * theme.spacing) / 3.0f;
+    bool changed = false;
+    const Color axes[3] = {{0.95f, 0.35f, 0.35f, 1.0f}, {0.45f, 0.9f, 0.4f, 1.0f}, {0.4f, 0.6f, 1.0f, 1.0f}};
+    for(int axis = 0; axis < 3; ++axis){
+        const Rect field{row.box.x + float(axis) * (width + theme.spacing), row.box.y, width, row.box.height};
+        if(dragField(idFor(name + char('x' + axis)), field, &xyz[axis], speed)) changed = true;
+        list.rect(field.x, field.y + field.height - 2.0f, field.width, 2.0f, axes[axis]);
+    }
+    return changed;
+}
+
 }

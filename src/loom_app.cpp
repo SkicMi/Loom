@@ -205,6 +205,13 @@ int main(int argc, char** argv){
     static float scrollAccumulated = 0.0f;
     glfwSetScrollCallback(window, [](GLFWwindow*, double, double y){ scrollAccumulated += float(y); });
 
+    //Strelice za pomicanje i rotacija u stupnjevima. Kutovi se pamte dok se uredjuju: kvaternion
+    //natrag u Eulerove kutove nije jednoznacan, pa bi polje koje se vuce preko 90 st skocilo
+    int gizmoAxisHeld = -1, gizmoAxisHot = -1;
+    glm::vec3 eulerCache(0.0f);
+    Warp::Id eulerFor = Warp::None;
+    double eulerFrame = -1.0;
+
     Keys keys;
     bool leftWasDown = false, middleWasDown = false, rightWasDown = false;
     bool leftInViewport = false, dragging = false, middleDragging = false;
@@ -581,13 +588,40 @@ int main(int argc, char** argv){
                 ui.value("vrsta", kindOf(*entity));
                 ui.checkbox("vidljivo", &entity->visible);
                 ui.separator();
-                const Warp::Transform local = stage.localAt(entity->id, frame);
-                ui.label("pomak");
-                ui.label("  " + vectorText(local.translation));
-                ui.label("rotacija (st)");
-                ui.label("  " + vectorText(glm::degrees(glm::eulerAngles(local.rotation))));
-                ui.label("mjerilo");
-                ui.label("  " + vectorText(local.scale));
+                //TRANSFORMACIJA U OVOM KADRU. Brzina vucenja je iz velicine scene: solve nema
+                //metre, pa bi stalni korak u jednoj snimci bio nevidljiv, a u drugoj golem
+                Warp::Transform local = stage.localAt(entity->id, frame);
+                bool edited = false;
+                float translation[3] = {local.translation.x, local.translation.y, local.translation.z};
+                if(ui.dragVector("pomak", translation, extent.radius * 0.004f)){
+                    local.translation = glm::vec3(translation[0], translation[1], translation[2]);
+                    edited = true;
+                }
+                if(eulerFor != entity->id || eulerFrame != frame){
+                    eulerCache = glm::degrees(glm::eulerAngles(local.rotation));
+                    eulerFor = entity->id;
+                    eulerFrame = frame;
+                }
+                float rotation[3] = {eulerCache.x, eulerCache.y, eulerCache.z};
+                if(ui.dragVector("rotacija (st)", rotation, 0.5f)){
+                    eulerCache = glm::vec3(rotation[0], rotation[1], rotation[2]);
+                    local.rotation = glm::normalize(glm::quat(glm::radians(eulerCache)));
+                    edited = true;
+                }
+                float scale[3] = {local.scale.x, local.scale.y, local.scale.z};
+                const float scaleSpeed = std::max(1e-5f, (std::fabs(scale[0]) + std::fabs(scale[1]) + std::fabs(scale[2])) * 0.0015f);
+                if(ui.dragVector("mjerilo", scale, scaleSpeed)){
+                    local.scale = glm::vec3(scale[0], scale[1], scale[2]);
+                    edited = true;
+                }
+                //Jednoliko mjerilo: za kocku, i za grupu solvea kad se scena svodi na metre
+                float uniform = 1.0f;
+                if(ui.dragFloat("sve osi x", &uniform, 0.004f) && uniform > 0.0f){
+                    local.scale *= uniform;
+                    edited = true;
+                }
+                if(edited) stage.setLocalAt(entity->id, frame, local);
+                if(entity->animated()) ui.label("(os s kljucevima dobiva kljuc u ovom kadru)");
                 if(entity->animated()){
                     ui.value("kljuceva", std::to_string(std::max(entity->translationKeys.size(), entity->rotationKeys.size())));
                 }
@@ -647,10 +681,42 @@ int main(int argc, char** argv){
             if(forward) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
             auto [toEnd, a5] = toolButton(">|", a4, rowY, rowH);
             if(toEnd) frame = stage.endFrame;
+
+            //Kljucevi odabranog: skok, postavljanje, brisanje
+            const bool haveEntity = stage.get(selected) != nullptr;
+            auto [previousKey, b1] = toolButton("<K", a5 + 16.0f, rowY, rowH);
+            auto [nextKey, b2] = toolButton("K>", b1, rowY, rowH);
+            auto [setKey, b3] = toolButton("Kljuc (K)", b2, rowY, rowH);
+            auto [dropKey, b4] = toolButton("Obrisi kljuc", b3, rowY, rowH);
+            double jump = 0.0;
+            if(previousKey && haveEntity && stage.neighbourKey(selected, frame, -1, jump)) frame = jump;
+            if(nextKey && haveEntity && stage.neighbourKey(selected, frame, +1, jump)) frame = jump;
+            if(setKey && haveEntity) stage.keyAll(selected, std::round(frame));
+            if(dropKey && haveEntity) stage.eraseKeysAt(selected, std::round(frame));
+
+            //Raspon: od i do glave, ili cijelo - od prvog do zadnjeg kljuca u sceni
+            auto [rangeFrom, c1] = toolButton("Od", b4 + 16.0f, rowY, rowH);
+            auto [rangeTo, c2] = toolButton("Do", c1, rowY, rowH);
+            auto [rangeAll, c3] = toolButton("Cijelo", c2, rowY, rowH);
+            if(rangeFrom) stage.startFrame = std::min(std::round(frame), stage.endFrame - 1.0);
+            if(rangeTo) stage.endFrame = std::max(std::round(frame), stage.startFrame + 1.0);
+            if(rangeAll){
+                double low = 1e18, high = -1e18;
+                stage.walk([&](const Warp::Entity& e, int){
+                    for(const std::vector<double>* times : {&e.translationKeys.times, &e.rotationKeys.times, &e.scaleKeys.times}){
+                        if(times->empty()) continue;
+                        low = std::min(low, times->front());
+                        high = std::max(high, times->back());
+                    }
+                });
+                if(high > low){ stage.startFrame = low; stage.endFrame = high; }
+            }
+            frame = std::clamp(frame, stage.startFrame, stage.endFrame);
+
             char text[96];
             std::snprintf(text, sizeof(text), "kadar %d   (%.0f - %.0f, %.0f fps)", int(std::floor(frame)),
                           stage.startFrame, stage.endFrame, stage.framesPerSecond);
-            canvas.text(a5 + 12.0f, rowY + 6.0f, text, theme.text, theme.textScale);
+            canvas.text(c3 + 16.0f, rowY + 6.0f, text, theme.text, theme.textScale);
 
             //Traka: kadrovi, kljucevi odabranog, glava
             const float trackTop = rowY + rowH + 12.0f;
@@ -768,13 +834,36 @@ int main(int argc, char** argv){
         const bool overViewport = viewportRect.contains(float(cursorX), float(cursorY)) && !ui.wantsMouse();
         const Loom::ViewCamera pickCamera = Loom::viewCameraFor(stage, frame, viewportRect, view);
 
-        //Lijevi: klik bira, vucenje okrece
+        //Strelice odabranog: vide se i hvataju prije okretanja pogleda
+        const Warp::Entity* chosen = stage.get(selected);
+        Loom::Gizmo gizmo;
+        if(chosen && chosen->visible && selected != view.lookThrough && focus == Focus::Entity){
+            gizmo = Loom::gizmoFor(pickCamera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
+        }
+        const glm::vec2 mouse{float(cursorX), float(cursorY)};
+        gizmoAxisHot = gizmoAxisHeld >= 0 ? gizmoAxisHeld : (overViewport ? Loom::gizmoAxisAt(pickCamera, gizmo, mouse) : -1);
+
+        //Lijevi: strelica pomice, klik bira, vucenje okrece
         if(leftDown && !leftWasDown){
             leftInViewport = overViewport;
             dragging = false;
             pressX = cursorX; pressY = cursorY;
+            gizmoAxisHeld = overViewport ? gizmoAxisHot : -1;
         }
-        if(leftDown && leftInViewport){
+        if(!leftDown) gizmoAxisHeld = -1;
+        if(leftDown && gizmoAxisHeld >= 0 && chosen){
+            const float amount = Loom::gizmoDrag(pickCamera, gizmo, gizmoAxisHeld,
+                                                 glm::vec2(float(cursorX - lastX), float(cursorY - lastY)));
+            if(amount != 0.0f){
+                const glm::vec3 world = gizmo.origin + Loom::gizmoAxis(gizmoAxisHeld) * amount;
+                const glm::mat4 parentWorld = chosen->parent == Warp::None ? glm::mat4(1.0f)
+                                                                          : stage.worldMatrix(chosen->parent, frame);
+                Warp::Transform local = stage.localAt(selected, frame);
+                local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(world, 1.0f));
+                stage.setLocalAt(selected, frame, local);
+            }
+            dragging = true;                    //nije klik: ne bira nista kad se pusti
+        }else if(leftDown && leftInViewport){
             if(!dragging && std::hypot(cursorX - pressX, cursorY - pressY) > 4.0) dragging = true;
             if(dragging){
                 view.lookThrough = Warp::None;
@@ -813,6 +902,7 @@ int main(int argc, char** argv){
         lastX = cursorX; lastY = cursorY;
 
         if(keys.pressed(window, GLFW_KEY_SPACE)) playing = !playing;
+        if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
         if(keys.pressed(window, GLFW_KEY_RIGHT)) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
         if(keys.pressed(window, GLFW_KEY_LEFT)) frame = std::max(stage.startFrame, std::floor(frame) - 1.0);
         if(keys.pressed(window, GLFW_KEY_HOME)) frame = stage.startFrame;
@@ -849,6 +939,11 @@ int main(int argc, char** argv){
         {
             const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewportRect, view);
             Loom::paintStage(stage, frame, camera, view, extent, selected, scene);
+            const Warp::Entity* chosenNow = stage.get(selected);
+            if(chosenNow && chosenNow->visible && selected != view.lookThrough && focus == Focus::Entity){
+                Loom::paintGizmo(scene, camera, Loom::gizmoFor(camera, glm::vec3(stage.worldMatrix(selected, frame)[3])),
+                                 gizmoAxisHot);
+            }
             if(live.size() > 0){
                 Loom::ViewportState liveView = view;
                 liveView.showGrid = stage.size() == 0 && view.showGrid;
