@@ -269,13 +269,25 @@ int main(int argc, char** argv){
     //Zivi snimak: cita se povremeno, ne svaki kadar - datoteka moze imati milijune tocaka, a
     //solver je ionako pise rjedje nego sto se crta
     Loom::Snapshot snapshot;
-    uint32_t snapshotPoints = 0;
+    Loom::PreparedScene prepared;          //snimak spreman za crtanje - racuna se kad stigne novi
+    Loom::ViewState view;
+    Loom::PaintReport painted;
+    bool wasRunning = false;
+    bool longLog = false;
     auto lastRead = std::chrono::steady_clock::now();
-    const auto appStarted = std::chrono::steady_clock::now();
+    auto lastFrame = std::chrono::steady_clock::now();
 
-    bool wasDown = false;
-    double lastScroll = 0.0;
-    (void)lastScroll;
+    //Scena ima svoj slikar: oblak od sto tisuca tocaka ne stane u kapacitet suicelja, a slikar na
+    //kapacitetu reze i javlja upozorenje
+    UiPainter scenePainter(loom.device, loom.command, loom.getColorFormat(), vk::Format::eUndefined,
+                           1u << 19);
+
+    //Kotacic GLFW javlja dogadjajem, ne stanjem, pa se skuplja ovdje i nulira svaki kadar
+    static float scrollAccumulated = 0.0f;
+    glfwSetScrollCallback(window, [](GLFWwindow*, double, double y){ scrollAccumulated += float(y); });
+    double dragX = 0.0, dragY = 0.0;
+    bool dragging = false;
+
 
     while(!glfwWindowShouldClose(window)){
         glfwPollEvents();
@@ -291,21 +303,30 @@ int main(int argc, char** argv){
         input.mouseY = float(cursorY);
         const bool down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         input.down[uint32_t(Treadle::MouseButton::Left)] = down;
-        wasDown = down;
 
-        //Novi snimak svakih pola sekunde dok posao traje
+        //NOVI SNIMAK svakih pola sekunde dok posao traje - i jos JEDNOM kad zavrsi, jer tada
+        //VideoSolve zapise konacni: uspravan i s bojama
         const auto now = std::chrono::steady_clock::now();
-        if(job.running && std::chrono::duration<double>(now - lastRead).count() > 0.5){
+        const bool justFinished = wasRunning && !job.running;
+        wasRunning = job.running;
+        if((job.running && std::chrono::duration<double>(now - lastRead).count() > 0.5) || justFinished){
             lastRead = now;
             Loom::Snapshot fresh;
-            if(Loom::readSnapshot(job.outputDirectory + "/napredak.bin", fresh)) snapshot = std::move(fresh);
+            if(Loom::readSnapshot(job.outputDirectory + "/napredak.bin", fresh)){
+                snapshot = std::move(fresh);
+                prepared = Loom::prepareScene(snapshot);
+            }
         }
+
+        //Sam se okrece dok ga nitko ne dira; cim ga netko pomakne, ostaje gdje ga je ostavio
+        const float frameSeconds = std::min(0.1f, float(std::chrono::duration<double>(now - lastFrame).count()));
+        lastFrame = now;
+        if(view.autoRotate) view.yaw += frameSeconds * 0.18f;
 
         //Oblak se crta ISPOD suicelja, pa ide u svoj popis i prvi na red
         Treadle::DrawList scene;
-        if(screen == Screen::Running && !snapshot.points.empty()){
-            const float angle = float(std::chrono::duration<double>(now - appStarted).count()) * 0.18f;
-            snapshotPoints = Loom::paintSnapshot(snapshot, scene, float(windowWidth), float(windowHeight), angle);
+        if(screen == Screen::Running && !prepared.points.empty()){
+            painted = Loom::paintScene(prepared, scene, float(windowWidth), float(windowHeight), view);
         }
 
         ui.begin(input, float(windowWidth), float(windowHeight));
@@ -360,6 +381,15 @@ int main(int argc, char** argv){
                                   int(frameCount), out.string().c_str());
 
                     if(worker.joinable()) worker.join();
+
+                    //STARI SNIMAK SE BRISE prije novog posla. Bez toga bi se prvih sekundi crtala
+                    //scena iz proslog prolaza iste snimke - uredna, uvjerljiva i kriva
+                    snapshot = Loom::Snapshot{};
+                    prepared = Loom::PreparedScene{};
+                    view = Loom::ViewState{};
+                    std::error_code ignored;
+                    std::filesystem::remove(out / "napredak.bin", ignored);
+
                     worker = std::thread(runSolve, std::ref(job), std::string(command),
                                          out.string(), Task::Solve, 0);
                     screen = Screen::Running;
@@ -379,7 +409,7 @@ int main(int argc, char** argv){
             char title[64];
             std::snprintf(title, sizeof(title), "%s %s", what,
                           job.running ? "tece" : (job.failed ? "je pao" : "gotov"));
-            ui.panel(title, 40, 40, 380);
+            ui.panel(title, 20, 20, 340);
             ui.value("snimka", chosenVideo.filename().string());
             ui.value("proteklo", humanTime(elapsed));
 
@@ -394,14 +424,17 @@ int main(int argc, char** argv){
                 }
             }
             if(!snapshot.points.empty()){
-                char text[48];
+                char text[64];
                 std::snprintf(text, sizeof(text), "%zu kamera, %zu tocaka",
                               snapshot.cameras.size(), snapshot.points.size());
                 ui.value("scena", text);
-                if(snapshotPoints > 0){
-                    std::snprintf(text, sizeof(text), "%u u kadru", snapshotPoints);
-                    ui.value("nacrtano", text);
+                if(prepared.upright){
+                    std::snprintf(text, sizeof(text), "da (bila nagnuta %.1f st)", prepared.tiltDegrees);
+                    ui.value("uspravno", text);
+                }else if(!snapshot.orientations.empty()){
+                    ui.value("uspravno", "ne - kamere se ne slazu");
                 }
+                if(snapshot.colours.size() == snapshot.points.size()) ui.value("boje", "da");
             }
             ui.separator();
 
@@ -478,26 +511,65 @@ int main(int argc, char** argv){
             }
             ui.end();
 
-            //ISPIS SOLVERA, onakav kakav jest. Ne prepricava se nego se pokazuje - jer je svaki
-            //broj u njemu nastao uz neko mjerenje i znaci nesto
-            ui.panel("Sto alat govori", 450, 40, float(std::max(320, windowWidth - 490)));
+            //ISPIS SOLVERA, onakav kakav jest - ali DOLJE i kratak. Prije je stajao preko sredine
+            //prozora i pokrivao upravo ono sto se htjelo gledati: oblak se vidio samo po rubovima
             {
+                const size_t show = longLog ? 22 : 7;
+                const float logHeight = 50.0f + float(show) * 20.0f;
+                const float logWidth = float(std::max(400, windowWidth - 40));
+                const size_t fits = size_t(std::max(20.0f, (logWidth - 20.0f) / 12.0f));
+                ui.panel("Sto alat govori", 20, float(windowHeight) - logHeight - 20.0f, logWidth);
                 std::lock_guard<std::mutex> guard(job.lock);
-                const size_t show = 26;
                 const size_t from = job.lines.size() > show ? job.lines.size() - show : 0;
                 for(size_t i = from; i < job.lines.size(); ++i){
                     std::string line = job.lines[i];
-                    if(line.size() > 96) line = line.substr(0, 96);
+                    if(line.size() > fits) line = line.substr(0, fits);
                     ui.label(line);
                 }
+                ui.end();
             }
-            ui.end();
+
+            //POGLED: sto se crta. Svaki sloj se da ugasiti, jer gust oblak zna sakriti putanju
+            if(!prepared.points.empty()){
+                ui.panel("Pogled", float(windowWidth) - 250.0f, 20, 230);
+                ui.checkbox("mreza na podu", &view.showGrid);
+                ui.checkbox("osi", &view.showAxes);
+                ui.checkbox("putanja kamere", &view.showPath);
+                ui.checkbox("smjer kamera", &view.showDirections);
+                ui.checkbox("sam se okrece", &view.autoRotate);
+                ui.checkbox("cijeli ispis", &longLog);
+                if(ui.button("vrati pogled")){
+                    view.yaw = 0.6f; view.pitch = 0.45f; view.zoom = 1.0f;
+                }
+                ui.label("lijevi mis: okretanje");
+                ui.label("kotacic: priblizavanje");
+                ui.end();
+            }
         }
+
+        //MIS POMICE POGLED TEK KAD GA SUICELJE NIJE UZELO - pravilo iz Treadle/Ui.h: odgovor na
+        //to pitanje postoji tek kad su svi widgeti ovog kadra vidjeli mis
+        if(screen == Screen::Running && !prepared.points.empty()){
+            if(down && !dragging && !ui.wantsMouse()){
+                dragging = true; dragX = cursorX; dragY = cursorY;
+            }
+            if(!down) dragging = false;
+            if(dragging){
+                view.yaw -= float(cursorX - dragX) * 0.008f;
+                view.pitch = std::clamp(view.pitch + float(cursorY - dragY) * 0.008f, -1.45f, 1.45f);
+                if(cursorX != dragX || cursorY != dragY) view.autoRotate = false;
+                dragX = cursorX; dragY = cursorY;
+            }
+            if(scrollAccumulated != 0.0f && !ui.wantsMouse()){
+                view.zoom = std::clamp(view.zoom * std::pow(0.88f, scrollAccumulated), 0.08f, 8.0f);
+            }
+        }
+        scrollAccumulated = 0.0f;
 
         if(!loom.renderer.beginFrame()) continue;
         loom.renderer.beginPass();
         if(!scene.vertices.empty()){
-            painter.draw(loom.renderer, scene, uint32_t(windowWidth), uint32_t(windowHeight));
+            scenePainter.draw(loom.renderer, scene, uint32_t(windowWidth), uint32_t(windowHeight));
         }
         painter.draw(loom.renderer, ui.drawn(), uint32_t(windowWidth), uint32_t(windowHeight));
         loom.renderer.endPass();

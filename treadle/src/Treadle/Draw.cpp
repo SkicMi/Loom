@@ -1,5 +1,7 @@
 #include "Treadle/Draw.h"
 
+#include <cmath>
+
 namespace Treadle{
 
 void DrawList::rect(float x, float y, float width, float height, const Color& color){
@@ -13,6 +15,25 @@ void DrawList::rect(float x, float y, float width, float height, const Color& co
     vertices.push_back({x + width, y,          color.r, color.g, color.b, color.a});
     vertices.push_back({x + width, y + height, color.r, color.g, color.b, color.a});
     vertices.push_back({x,         y + height, color.r, color.g, color.b, color.a});
+
+    indices.push_back(base + 0); indices.push_back(base + 1); indices.push_back(base + 2);
+    indices.push_back(base + 0); indices.push_back(base + 2); indices.push_back(base + 3);
+}
+
+void DrawList::line(float x0, float y0, float x1, float y1, float thickness, const Color& color){
+    const float dx = x1 - x0, dy = y1 - y0;
+    const float length = std::sqrt(dx * dx + dy * dy);
+    if(length < 1e-4f || thickness <= 0.0f) return;
+
+    //Okomica na duzinu, pola debljine na svaku stranu
+    const float nx = -dy / length * thickness * 0.5f;
+    const float ny =  dx / length * thickness * 0.5f;
+
+    const uint32_t base = uint32_t(vertices.size());
+    vertices.push_back({x0 + nx, y0 + ny, color.r, color.g, color.b, color.a});
+    vertices.push_back({x1 + nx, y1 + ny, color.r, color.g, color.b, color.a});
+    vertices.push_back({x1 - nx, y1 - ny, color.r, color.g, color.b, color.a});
+    vertices.push_back({x0 - nx, y0 - ny, color.r, color.g, color.b, color.a});
 
     indices.push_back(base + 0); indices.push_back(base + 1); indices.push_back(base + 2);
     indices.push_back(base + 0); indices.push_back(base + 2); indices.push_back(base + 3);

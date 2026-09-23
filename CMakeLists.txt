@@ -454,7 +454,7 @@ target_link_libraries(VideoSolve PRIVATE Spool Engine)
 # zauzeti; BINARY se zove loom, malim slovom, jer se tako pokrece iz terminala
 add_executable(LoomDesk src/loom_app.cpp)
 set_target_properties(LoomDesk PROPERTIES OUTPUT_NAME loom)
-target_link_libraries(LoomDesk PRIVATE Loom TreadlePaint)
+target_link_libraries(LoomDesk PRIVATE Loom TreadlePaint Engine)
 # KORIJEN PROJEKTA U KODU. Aplikacija se pokrece iz build mape, a trener splatova i njegov venv
 # zive u korijenu - bez ovoga bi radila samo kad se slucajno pokrene s pravog mjesta
 target_compile_definitions(LoomDesk PRIVATE LOOM_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

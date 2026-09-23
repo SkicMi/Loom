@@ -47,6 +47,11 @@ struct DrawList{
     void rect(const Rect& box, const Color& color);
     void rect(float x, float y, float width, float height, const Color& color);
 
+    //DUZINA proizvoljnog smjera, debljine thickness, kao jedan cetverokut. Postoji zbog prikaza
+    //napretka u loom-u: putanja kamere je niz duzina, a pravokutnik moze biti samo vodoravan ili
+    //okomit. Crtac ne reze poledjinu (vidi rect), pa redoslijed vrhova ne ovisi o smjeru duzine
+    void line(float x0, float y0, float x1, float y1, float thickness, const Color& color);
+
     //Samo obrub, debljine thickness prema UNUTRA. Prema unutra jer se obrub tada nikad ne
     //prosiri preko onoga sto je raspored izmjerio
     void outline(const Rect& box, float thickness, const Color& color);

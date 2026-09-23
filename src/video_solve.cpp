@@ -16,7 +16,10 @@
 #include <Engine/CameraHints.h>
 #include <Engine/ResidualField.h>
 #include <Engine/ColmapExport.h>
+#include <Engine/Upright.h>
 #include <Engine/UsdExport.h>
+
+#include "LoomSnapshot.h"
 #include <Engine/ColmapImport.h>
 #include <Engine/MatchGraph.h>
 #include <Engine/MergeTracks.h>
@@ -657,27 +660,17 @@ int main(int argc, char** argv){
             const std::string progressPath = outputDirectory + "/napredak.bin";
             config.progressEvery = 5;
             config.onProgress = [progressPath](const Engine::Reconstruction& state){
-                std::vector<glm::vec3> cameras, points;
+                //Isti pisac kao na kraju (LoomSnapshot.h), pa pisac i citac ne mogu razici
+                Loom::Snapshot snapshot;
                 for(size_t c = 0; c < state.poses.size(); ++c){
-                    if(c < state.posed.size() && state.posed[c]) cameras.push_back(state.poses[c].position);
+                    if(c < state.posed.size() && !state.posed[c]) continue;
+                    snapshot.cameras.push_back(state.poses[c].position);
+                    snapshot.orientations.push_back(state.poses[c].orientation);
                 }
                 for(size_t p = 0; p < state.points.size(); ++p){
-                    if(p < state.solved.size() && state.solved[p]) points.push_back(state.points[p]);
+                    if(p < state.solved.size() && state.solved[p]) snapshot.points.push_back(state.points[p]);
                 }
-
-                const std::string temporary = progressPath + ".tmp";
-                std::ofstream file(temporary, std::ios::binary);
-                if(!file) return;
-                const uint32_t cameraCount = uint32_t(cameras.size());
-                const uint32_t pointCount = uint32_t(points.size());
-                file.write("LOOMPRG1", 8);
-                file.write(reinterpret_cast<const char*>(&cameraCount), 4);
-                file.write(reinterpret_cast<const char*>(&pointCount), 4);
-                if(cameraCount) file.write(reinterpret_cast<const char*>(cameras.data()), cameraCount * 12);
-                if(pointCount) file.write(reinterpret_cast<const char*>(points.data()), pointCount * 12);
-                file.close();
-                std::error_code ignored;
-                std::filesystem::rename(temporary, progressPath, ignored);
+                Loom::writeSnapshot(progressPath, snapshot);
             };
         }
 
@@ -983,6 +976,28 @@ int main(int argc, char** argv){
         }
     }
 
+    //=====================================================================================
+    // USPRAVNO, prije svega sto ide van - vidi Engine/Upright.h.
+    //
+    // Rekonstrukcija je dosad bila u sustavu prve kamere: nagnuta koliko god je prva kamera bila
+    // nagnuta, u svakom alatu nizvodno. Ovdje se okrene tako da je prosjecni "gore" kamera +Y, prva
+    // kamera gleda niz -Z, a ishodiste je u sredistu scene. Transformacija je kruta, pa se nijedna
+    // reprojekcija ne mijenja - a pune slicice, USD, COLMAP tekst i splat dobiju isti sustav
+    //=====================================================================================
+    if(best.ok){
+        const Engine::UprightFrame upright =
+            Engine::uprightFrame(best.poses, best.posed, best.points, best.solved);
+        if(upright.applied){
+            Engine::applyUpright(upright, best);
+            std::printf("  uspravno: scena je bila nagnuta %.1f st, sada je prosjecni gore kamera +Y "
+                        "(sloznost %.3f)\n", upright.tiltDegrees, upright.coherence);
+        }else{
+            std::printf("  uspravno: NIJE primijenjeno - kamere se ne slazu oko smjera gore "
+                        "(sloznost %.3f, prag 0.5); scena ostaje u sustavu prve kamere\n",
+                        upright.coherence);
+        }
+    }
+
     //DVIJE PROVJERE KOJE RADE BEZ POZNATE ISTINE.
     //
     //1. Putanja drona je glatka. Rjesenje koje je promasilo obicno trza - kut izmedju uzastopnih
@@ -1239,6 +1254,24 @@ int main(int argc, char** argv){
             usdColours.reserve(colours.size());
             for(const glm::u8vec3& colour : colours){
                 usdColours.push_back(glm::vec3(colour) / 255.0f);
+            }
+
+            //KONACNI SNIMAK za loom: uspravan, i ovaj put s bojama. Tijekom rasta boje nije bilo
+            //jer ona trazi slike, a tek su sada sve procitane
+            {
+                Loom::Snapshot finalSnapshot;
+                for(size_t c = 0; c < best.poses.size(); ++c){
+                    if(c < best.posed.size() && !best.posed[c]) continue;
+                    finalSnapshot.cameras.push_back(best.poses[c].position);
+                    finalSnapshot.orientations.push_back(best.poses[c].orientation);
+                }
+                for(size_t p = 0; p < best.points.size(); ++p){
+                    if(p < best.solved.size() && !best.solved[p]) continue;
+                    finalSnapshot.points.push_back(best.points[p]);
+                    if(p < colours.size()) finalSnapshot.colours.push_back(colours[p]);
+                }
+                if(finalSnapshot.colours.size() != finalSnapshot.points.size()) finalSnapshot.colours.clear();
+                Loom::writeSnapshot(outputDirectory + "/napredak.bin", finalSnapshot);
             }
 
             const std::string usdPath = outputDirectory + "/kamera.usda";
