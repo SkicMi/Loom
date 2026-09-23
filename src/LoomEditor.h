@@ -84,4 +84,15 @@ inline std::filesystem::path resultFolderFor(const std::filesystem::path& video)
     return video.parent_path() / (video.stem().string() + "_loom");
 }
 
+//Obrnuto: snimka uz mapu rezultata, ista imena bez _loom. Prazno kad je nema - rezultat koji je
+//netko donio bez snimke se i dalje otvara, samo bez ploce iza kamere
+inline std::string plateFor(const std::filesystem::path& resultFolder){
+    std::string stem = resultFolder.filename().string();
+    if(stem.size() > 5 && stem.substr(stem.size() - 5) == "_loom") stem.resize(stem.size() - 5);
+    for(const std::filesystem::path& video : videosIn(resultFolder.parent_path())){
+        if(video.stem().string() == stem) return video.string();
+    }
+    return {};
+}
+
 }

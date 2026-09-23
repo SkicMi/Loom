@@ -368,6 +368,33 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
     return report;
 }
 
+//POVRSINA POD PIKSELOM: tocke oblaka koje padaju blizu piksela, medijan njihove dubine duz zrake.
+//Kocka postavljena ondje sjedi na stvarnoj plohi snimke - zidu, stolu, podu - pa se kroz kameru
+//odmah vidi drzi li se nje. Medijan, ne najbliza: jedna odbjegla tocka ispred zida bi inace
+//povukla kocku u zrak. false kad oko piksela nema dovoljno tocaka
+inline bool surfaceAt(const Warp::Stage& stage, double frame, const ViewCamera& camera, glm::vec2 pixel,
+                      glm::vec3& out, float radius = 25.0f){
+    std::vector<float> depths;
+    stage.walk([&](const Warp::Entity& entity, int){
+        if(!entity.visible || !entity.points) return;
+        const glm::mat4 world = stage.worldMatrix(entity.id, frame);
+        for(const glm::vec3& p : entity.points->positions){
+            glm::vec2 at;
+            float depth = 0.0f;
+            if(!project(camera, glm::vec3(world * glm::vec4(p, 1.0f)), at, &depth)) continue;
+            if(glm::length(at - pixel) <= radius) depths.push_back(depth);
+        }
+    });
+    if(depths.size() < 5) return false;
+    std::nth_element(depths.begin(), depths.begin() + long(depths.size() / 2), depths.end());
+    const float depth = depths[depths.size() / 2];
+    //Zraka kroz piksel, u svijetu: obrnuto od project()
+    const glm::vec3 inCamera((pixel.x - camera.centre.x) / camera.focal * depth,
+                             -(pixel.y - camera.centre.y) / camera.focal * depth, -depth);
+    out = glm::vec3(glm::inverse(camera.view) * glm::vec4(inCamera, 1.0f));
+    return true;
+}
+
 //Entitet pod misem: kamera po vrhu piramide, tijelo po sredistu. Najblizi unutar 16 piksela
 inline Warp::Id pickEntity(const Warp::Stage& stage, double frame, const ViewCamera& camera, glm::vec2 mouse){
     Warp::Id best = Warp::None;

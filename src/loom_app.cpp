@@ -15,19 +15,27 @@
 // SNIMKA PROZORA IZ SAMOG EDITORA. Prozor se na ovom sustavu ne da snimiti izvana, pa editor zna
 // sam odraditi ono sto bi korisnik kliknuo i spremiti kadar:
 //
-//   loom <mapa> --snimi slika.png --rezultat C0256_loom [--kadar 120] [--kroz] [--kocka]
+//   loom <mapa> --snimi slika.png --rezultat C0256_loom [--kadar 120] [--kroz] [--kocka | --kocka-u 90]
 //
-// uveze rezultat, po zelji doda kocku i gleda kroz rijesenu kameru, pa spremi kadar i izadje.
+// uveze rezultat, po zelji doda kocku (postavljenu u kadru 90) i gleda kroz rijesenu kameru, pa
+// spremi kadar i izadje.
 // Tako se editor provjerava okom, a ne samo testom racuna
+//
+// SNIMKA IZA SCENE (V). Kroz rijesenu kameru se iza scene crta pravi kadar snimke - ploca. Tu se
+// matchmove presudjuje: kocka na podu mora stajati na istom mjestu snimke kroz cijeli kadar
 #include "Core/LoomConfig.h"
 #include "Core/LoomInitializer.h"
 
 #include "LoomEditor.h"
 #include "LoomJob.h"
+#include "LoomPlate.h"
 #include "LoomScene.h"
 #include "LoomViewport.h"
 
 #include "Vulkan/ImageData.h"
+#include "Vulkan/Material.h"
+#include "Vulkan/StreamingTexture.h"
+#include "Vulkan/Texture.h"
 
 #include <Spool/ImageFile.h>
 #include <Spool/VideoFile.h>
@@ -151,6 +159,7 @@ int main(int argc, char** argv){
     std::string shotPath, shotResult;
     double shotFrame = -1.0;
     bool shotThrough = false, shotCube = false;
+    double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
     for(int i = 1; i < argc; ++i){
         const std::string argument = argv[i];
         if(argument == "--snimi" && i + 1 < argc) shotPath = argv[++i];
@@ -158,6 +167,7 @@ int main(int argc, char** argv){
         else if(argument == "--kadar" && i + 1 < argc) shotFrame = std::atof(argv[++i]);
         else if(argument == "--kroz") shotThrough = true;
         else if(argument == "--kocka") shotCube = true;
+        else if(argument == "--kocka-u" && i + 1 < argc){ shotCube = true; shotCubeFrame = std::atof(argv[++i]); }
         else if(argument.rfind("--", 0) != 0) startAt = argument;
     }
 
@@ -173,6 +183,7 @@ int main(int argc, char** argv){
     int selectedMedia = -1;
     Focus focus = Focus::Entity;
     Warp::Id menuEntity = Warp::None;
+    glm::vec2 menuPixel(0.0f);            //gdje je desni klik otvorio izbornik pogleda
     int menuMedia = -1;
 
     double frame = 1.0;
@@ -260,7 +271,9 @@ int main(int argc, char** argv){
         message = "trening krenuo";
     };
 
-    auto importFolder = [&](const fs::path& directory, const std::string& plate){
+    auto importFolder = [&](const fs::path& directory, const std::string& givenPlate){
+        //Snimka uz rezultat postaje ploca kamere i kad ju pozivatelj nije znao
+        const std::string plate = givenPlate.empty() ? Loom::plateFor(directory) : givenPlate;
         const Loom::ImportReport report = Loom::importResult(stage, directory, plate);
         if(!report.problem.empty()){ message = report.problem; return; }
         selected = report.camera;
@@ -276,20 +289,42 @@ int main(int argc, char** argv){
         message = text;
     };
 
-    //Novo tijelo: velicina iz scene (solve nema metre), postavljeno na pod usred scene
-    auto addMesh = [&](Warp::Shape shape, Warp::Id parent){
+    //NOVO TIJELO SJEDI NA POVRSINI SNIMKE ondje kamo se gleda: na tockama oblaka pod sredinom
+    //pogleda (ili pod misem, kad je dodano desnim klikom u pogled). Kroz rijesenu kameru to je
+    //stvarni zid ili stol u kadru - bas ondje gdje se provjerava drzi li se kocka snimke. Kad pod
+    //pikselom nema tocaka, zraka se spusti na pod (y = 0), a kad ni to ne ide, sredina scene.
+    //Velicina je iz udaljenosti (solve nema metre): desetina puta do mjesta
+    auto addMeshAt = [&](Warp::Shape shape, Warp::Id parent, glm::vec2 pixel, bool usePixel){
         const char* name = shape == Warp::Shape::Cube ? "Kocka" : "Ravnina";
         const Warp::Id id = stage.create(name, parent);
         Warp::Entity& entity = *stage.get(id);
         entity.mesh = Warp::Mesh{shape};
-        const float size = extent.radius * (shape == Warp::Shape::Cube ? 0.2f : 0.8f);
-        const glm::vec3 worldPosition(extent.centre.x, shape == Warp::Shape::Cube ? size * 0.5f : 0.0f, extent.centre.z);
+
+        int w = 0, h = 0;
+        glfwGetWindowSize(window, &w, &h);
+        const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h)).viewport, view);
+        if(!usePixel) pixel = glm::vec2(camera.frame.x + camera.frame.width * 0.5f, camera.frame.y + camera.frame.height * 0.5f);
+        const glm::mat4 inverse = glm::inverse(camera.view);
+        const glm::vec3 eye = glm::vec3(inverse[3]);
+        const glm::vec3 ray = glm::normalize(glm::vec3(inverse * glm::vec4((pixel.x - camera.centre.x) / camera.focal,
+                                                                            -(pixel.y - camera.centre.y) / camera.focal, -1.0f, 0.0f)));
+        glm::vec3 place(extent.centre.x, 0.0f, extent.centre.z);
+        bool onSurface = Loom::surfaceAt(stage, frame, camera, pixel, place);
+        if(!onSurface && ray.y < -1e-3f && eye.y > 0.0f && -eye.y / ray.y < extent.radius * 20.0f){
+            place = eye + ray * (-eye.y / ray.y);
+        }
+        const float distance = std::max(1e-4f, glm::length(place - eye));
+        const float size = distance * (shape == Warp::Shape::Cube ? 0.1f : 0.4f);
+        //Na podu kocka stoji NA njemu; na zidu ili stolu joj je sredina na plohi
+        const glm::vec3 worldPosition = onSurface ? place
+                                                  : glm::vec3(place.x, shape == Warp::Shape::Cube ? size * 0.5f : 0.0f, place.z);
         const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
         entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(worldPosition, 1.0f));
         entity.local.scale = glm::vec3(size);
         selected = id;
         focus = Focus::Entity;
     };
+    auto addMesh = [&](Warp::Shape shape, Warp::Id parent){ addMeshAt(shape, parent, glm::vec2(0.0f), false); };
 
     auto firstCamera = [&](){
         Warp::Id found = Warp::None;
@@ -304,12 +339,38 @@ int main(int argc, char** argv){
         extentDirty = true;
     };
 
+    //-- ploca iza kamere ----------------------------------------------------------------------
+    //Cjevovod je Loomov fullscreen prolaz; crta se u pravokutnik kadra suzenjem viewporta, a
+    //material.baseColor mnozi snimku - to je svjetlina ploce
+    PipelineConfig plateConfig;
+    plateConfig.vertexBindings.clear();
+    plateConfig.vertexAttributes.clear();
+    plateConfig.descriptorBindings = {Texture::getLayoutBinding(), Material::getDataLayoutBinding()};
+    plateConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.vert.spv";
+    plateConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.frag.spv";
+    plateConfig.cullMode = vk::CullModeFlagBits::eNone;
+    VulkanGraphicsPipeline platePipeline = loom.createPipeline(plateConfig);
+    std::unique_ptr<StreamingTexture> plateTexture;
+    std::unique_ptr<Material> plateMaterial;
+    Loom::PlateStream plateStream;
+    bool showPlate = true;
+    float plateBrightness = 1.0f;
+    bool plateReady = false;
+    int64_t plateShown = -1;
+    std::vector<uint8_t> platePixels;
+
     uint32_t framesDrawn = 0;
     if(!shotResult.empty()){
         importFolder(shotResult, "");
         if(shotFrame >= 0.0) frame = shotFrame;
-        if(shotCube) addMesh(Warp::Shape::Cube, Warp::None);
         if(shotThrough) view.lookThrough = firstCamera();
+        if(shotCube){
+            //Kocka se postavi u jednom kadru a snima u drugom - to je provjera drzi li se snimke
+            const double shown = frame;
+            if(shotCubeFrame >= 0.0) frame = shotCubeFrame;
+            addMesh(Warp::Shape::Cube, Warp::None);
+            frame = shown;
+        }
     }
 
     while(!glfwWindowShouldClose(window)){
@@ -432,7 +493,9 @@ int main(int argc, char** argv){
                     view.lookThrough = chosen && chosen->camera ? selected : firstCamera();
                 }
             }
-            auto [logButton, afterLog] = toolButton("Ispis", afterThrough, y, h, showLog);
+            auto [plateButton, afterPlate] = toolButton("Snimka (V)", afterThrough, y, h, showPlate);
+            if(plateButton) showPlate = !showPlate;
+            auto [logButton, afterLog] = toolButton("Ispis", afterPlate, y, h, showLog);
             if(logButton) showLog = !showLog;
 
             //Stanje posla ili zadnja poruka, desno
@@ -639,6 +702,13 @@ int main(int argc, char** argv){
                     if(ui.button(view.lookThrough == entity->id ? "Izadji iz kamere" : "Gledaj kroz kameru")){
                         view.lookThrough = view.lookThrough == entity->id ? Warp::None : entity->id;
                     }
+                    if(!entity->camera->plate.empty()){
+                        ui.checkbox("snimka iza (V)", &showPlate);
+                        ui.slider("svjetlina snimke", &plateBrightness, 0.0f, 1.0f);
+                        char plateText[64];
+                        std::snprintf(plateText, sizeof(plateText), "%lld", (long long)plateShown);
+                        if(view.lookThrough == entity->id && showPlate) ui.value("kadar snimke", plateText);
+                    }
                 }
                 if(entity->points){
                     ui.separator();
@@ -781,6 +851,7 @@ int main(int argc, char** argv){
         if(rightDown && !rightWasDown && layout.viewport.contains(float(cursorX), float(cursorY)) &&
            !ui.wantsMouse() && !ui.menuOpen("media") && !ui.menuOpen("entitet")){
             ui.openMenu("pogled");
+            menuPixel = glm::vec2(float(cursorX), float(cursorY));
         }
         if(ui.beginMenu("media")){
             const bool valid = menuMedia >= 0 && menuMedia < int(stage.media.size());
@@ -814,8 +885,8 @@ int main(int argc, char** argv){
             ui.endMenu();
         }
         if(ui.beginMenu("pogled")){
-            if(ui.menuItem("Dodaj kocku")) addMesh(Warp::Shape::Cube, Warp::None);
-            if(ui.menuItem("Dodaj ravninu")) addMesh(Warp::Shape::Plane, Warp::None);
+            if(ui.menuItem("Dodaj kocku ovdje")) addMeshAt(Warp::Shape::Cube, Warp::None, menuPixel, true);
+            if(ui.menuItem("Dodaj ravninu ovdje")) addMeshAt(Warp::Shape::Plane, Warp::None, menuPixel, true);
             ui.menuSeparator();
             if(ui.menuItem("Uokviri sve")){
                 view.lookThrough = Warp::None;
@@ -903,6 +974,7 @@ int main(int argc, char** argv){
 
         if(keys.pressed(window, GLFW_KEY_SPACE)) playing = !playing;
         if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
+        if(keys.pressed(window, GLFW_KEY_V)) showPlate = !showPlate;
         if(keys.pressed(window, GLFW_KEY_RIGHT)) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
         if(keys.pressed(window, GLFW_KEY_LEFT)) frame = std::max(stage.startFrame, std::floor(frame) - 1.0);
         if(keys.pressed(window, GLFW_KEY_HOME)) frame = stage.startFrame;
@@ -952,8 +1024,60 @@ int main(int argc, char** argv){
             }
         }
 
+        //PLOCA: koji kadar snimke odgovara kadru timelinea, i je li stigao iz niti
+        const Warp::Entity* throughEntity = stage.get(view.lookThrough);
+        const bool plateWanted = showPlate && throughEntity && throughEntity->camera &&
+                                 !throughEntity->camera->plate.empty();
+        bool plateArrived = false;
+        uint32_t plateWidth = 0, plateHeight = 0;
+        if(plateWanted){
+            plateStream.open(throughEntity->camera->plate);
+            plateStream.request(int64_t(throughEntity->camera->plateFirstFrame) + int64_t(std::llround(frame)) - 1);
+            int64_t index = -1;
+            plateArrived = plateStream.take(platePixels, plateWidth, plateHeight, index);
+            if(plateArrived){
+                plateShown = index;
+                //Tekstura se (ponovno) stvara kad se velicina promijeni - druga snimka
+                if(!plateTexture || plateTexture->getExtent().width != plateWidth ||
+                   plateTexture->getExtent().height != plateHeight){
+                    loom.waitIdle();
+                    plateMaterial.reset();
+                    StreamingTextureConfig textureConfig;
+                    textureConfig.format = vk::Format::eR8G8B8A8Srgb;
+                    plateTexture = std::make_unique<StreamingTexture>(loom.device, loom.command,
+                                                                      vk::Extent2D{plateWidth, plateHeight}, textureConfig);
+                    plateMaterial = std::make_unique<Material>(loom.device, loom.command, loom.getDescriptorPool(),
+                                                               platePipeline, plateTexture->getSampled());
+                    plateReady = false;
+                }
+            }
+        }
+
         if(!loom.renderer.beginFrame()) continue;
+        //Tek NAKON beginFrame: prsten teksture se oslanja na to da je renderer vec pricekao
+        if(plateArrived && plateTexture){
+            plateTexture->update(platePixels.data(), platePixels.size());
+            plateMaterial->setSampledImage(plateTexture->getSampled());
+            plateReady = true;
+        }
         loom.renderer.beginPass();
+        if(plateWanted && plateReady && plateMaterial){
+            //Viewport suzen na kadar kamere; prozor i okvir mogu imati razlicite piksele (HiDPI)
+            int framebufferWidth = 0, framebufferHeight = 0;
+            glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+            const float sx = float(framebufferWidth) / float(std::max(1, windowWidth));
+            const float sy = float(framebufferHeight) / float(std::max(1, windowHeight));
+            const Loom::ViewCamera through = Loom::viewCameraFor(stage, frame, viewportRect, view);
+            plateMaterial->setBaseColor(glm::vec4(plateBrightness, plateBrightness, plateBrightness, 1.0f));
+            const vk::raii::CommandBuffer& commands = loom.renderer.borrowCommands();
+            commands.setViewport(0, vk::Viewport{through.frame.x * sx, through.frame.y * sy,
+                                                 through.frame.width * sx, through.frame.height * sy, 0.0f, 1.0f});
+            commands.setScissor(0, vk::Rect2D{{int32_t(through.frame.x * sx), int32_t(through.frame.y * sy)},
+                                              {uint32_t(through.frame.width * sx), uint32_t(through.frame.height * sy)}});
+            loom.renderer.drawFullscreen(*plateMaterial);
+            commands.setViewport(0, vk::Viewport{0.0f, 0.0f, float(framebufferWidth), float(framebufferHeight), 0.0f, 1.0f});
+            commands.setScissor(0, vk::Rect2D{{0, 0}, {uint32_t(framebufferWidth), uint32_t(framebufferHeight)}});
+        }
         if(!scene.vertices.empty()){
             scenePainter.draw(loom.renderer, scene, uint32_t(windowWidth), uint32_t(windowHeight));
         }
@@ -962,7 +1086,10 @@ int main(int argc, char** argv){
         loom.renderer.endFrame();
 
         //Snimka: nekoliko kadrova da se raspored i scena slegnu, pa jedan u datoteku
-        if(!shotPath.empty() && ++framesDrawn >= 6){
+        //Kroz kameru se ceka i da ploca stigne iz niti - inace bi snimka pokazala pogled bez nje
+        const bool plateSettled = !plateWanted || !plateStream.error().empty() ||
+            plateShown == int64_t(throughEntity->camera->plateFirstFrame) + int64_t(std::llround(frame)) - 1;
+        if(!shotPath.empty() && ++framesDrawn >= 6 && (plateSettled || framesDrawn > 900)){
             loom.waitIdle();
             const ImageData shot = loom.renderer.readLastFrame();
             const Spool::Image image = Spool::imageFromPixels(shot.pixels.data(), shot.extent.width, shot.extent.height,
@@ -974,5 +1101,7 @@ int main(int argc, char** argv){
     }
 
     if(worker.joinable()) worker.join();
+    plateStream.close();
+    loom.waitIdle();
     return 0;
 }

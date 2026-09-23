@@ -11,6 +11,7 @@
 #include "TestHarness.h"
 
 #include "../src/LoomEditor.h"
+#include "../src/LoomPlate.h"
 #include "../src/LoomViewport.h"
 
 #include "Engine/SyntheticScene.h"
@@ -186,6 +187,45 @@ int main(){
             axis == 0 && onScreen <= 90.5f && onScreen > 40.0f && std::fabs(moved - gizmo.length * 0.5f) < 1e-4f &&
             std::fabs(sideways) < 1e-4f,
             fmt("na ekranu %.1f px, pomak %.4f od %.4f, poprijeko %.1e", onScreen, moved, gizmo.length, sideways));
+    }
+
+    //-- 6. kocka sjeda na povrsinu pod pikselom, a odbjegla tocka ju ne povuce -----------------
+    {
+        Warp::Stage wall;
+        const Warp::Id cloud = wall.create("Zid");
+        Warp::Points points;
+        for(int i = 0; i < 3000; ++i){
+            points.positions.push_back(glm::vec3(std::sin(i * 0.37f) * 1.0f, std::cos(i * 0.91f) * 0.8f, -6.0f));
+        }
+        //Odbjegle tocke ispred zida, bas na zraci kroz sredinu
+        for(int i = 0; i < 3; ++i) points.positions.push_back(glm::vec3(0.0f, 0.0f, -1.0f - 0.1f * i));
+        wall.get(cloud)->points = points;
+
+        Loom::ViewportState front;
+        front.orbit.target = glm::vec3(0.0f, 0.0f, -6.0f);
+        front.orbit.yaw = 0.0f; front.orbit.pitch = 0.0f; front.orbit.distance = 6.0f;
+        const Loom::ViewCamera camera = Loom::viewCameraFor(wall, 1.0, viewportRect, front);
+        glm::vec3 hit(0.0f);
+        const bool found = Loom::surfaceAt(wall, 1.0, camera, camera.centre, hit);
+        glm::vec3 none(0.0f);
+        const bool empty = Loom::surfaceAt(wall, 1.0, camera, glm::vec2(viewportRect.x + 2.0f, viewportRect.y + 2.0f), none);
+        report.check("nova kocka sjeda na zid pod pikselom, odbjegle tocke ju ne povuku",
+            found && std::fabs(hit.z + 6.0f) < 1e-3f && glm::length(glm::vec2(hit.x, hit.y)) < 1e-3f && !empty,
+            fmt("pogodak (%.3f, %.3f, %.3f); u kutu bez tocaka %s", hit.x, hit.y, hit.z, empty ? "nasao" : "nista"));
+    }
+
+    //-- 7. ploca se smanjuje prosjekom, ne preskakanjem ----------------------------------------
+    {
+        //4x2 slika, faktor 2: svaki izlazni piksel je prosjek kvadrata 2x2
+        std::vector<uint8_t> source(4 * 2 * 4, 0);
+        const uint8_t reds[8] = {0, 100, 200, 40, 20, 80, 0, 0};
+        for(int i = 0; i < 8; ++i){ source[size_t(i) * 4] = reds[i]; source[size_t(i) * 4 + 3] = 255; }
+        std::vector<uint8_t> out;
+        uint32_t width = 0, height = 0;
+        Loom::PlateStream::shrink(source, 4, 2, 2, out, width, height);
+        //lijevi: (0 + 100 + 20 + 80) / 4 = 50; desni: (200 + 40 + 0 + 0) / 4 = 60
+        report.check("ploca: smanjenje prosjekom kvadrata", width == 2 && height == 1 && out[0] == 50 && out[4] == 60 && out[3] == 255,
+            fmt("%ux%u, crveno %u i %u (ocekivano 50 i 60)", width, height, out.size() > 4 ? out[0] : 0, out.size() > 4 ? out[4] : 0));
     }
 
     return report.result();
