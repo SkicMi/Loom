@@ -249,6 +249,10 @@ add_subdirectory(engine)
 # njegov je problem - vidi treadle/CMakeLists.txt
 add_subdirectory(treadle)
 
+# Warp - scena: stablo entiteta s komponentama i kljucevima kroz vrijeme. Ovisi samo o glm-u -
+# vidi warp/CMakeLists.txt
+add_subdirectory(warp)
+
 # ----------------------------------------------------------------------------
 # Loom biblioteka
 # ----------------------------------------------------------------------------
@@ -454,7 +458,7 @@ target_link_libraries(VideoSolve PRIVATE Spool Engine)
 # zauzeti; BINARY se zove loom, malim slovom, jer se tako pokrece iz terminala
 add_executable(LoomDesk src/loom_app.cpp)
 set_target_properties(LoomDesk PROPERTIES OUTPUT_NAME loom)
-target_link_libraries(LoomDesk PRIVATE Loom TreadlePaint Engine)
+target_link_libraries(LoomDesk PRIVATE Loom TreadlePaint Engine Warp)
 # KORIJEN PROJEKTA U KODU. Aplikacija se pokrece iz build mape, a trener splatova i njegov venv
 # zive u korijenu - bez ovoga bi radila samo kad se slucajno pokrene s pravog mjesta
 target_compile_definitions(LoomDesk PRIVATE LOOM_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -531,7 +535,7 @@ if(LOOM_BUILD_TESTS)
         add_executable(${TEST_NAME} ${TEST_SOURCE})
         # Testovi linkaju obje biblioteke. To je dozvoljeno i tu prestaje: same
         # biblioteke jedna o drugoj ne znaju nista.
-        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool Engine Treadle LoomPreset TreadlePaint)
+        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool Engine Treadle Warp LoomPreset TreadlePaint)
         target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         add_dependencies(${TEST_NAME} LoomShaders)
         add_dependencies(LoomTests ${TEST_NAME})
