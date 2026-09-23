@@ -260,11 +260,34 @@ void warnIfUnoptimised(){
 }
 }
 
-int main(int argc, char** argv){
+int main(int realArgc, char** realArgv){
     warnIfUnoptimised();
+
+    //=====================================================================================
+    // SAMO KAMERA, za matchmove: --samo-kamera bilo gdje u naredbi.
+    //
+    // Splat trazi slike kadrova u punoj razlucivosti (images/), a matchmove samo pozu - kameru na
+    // svakom kadru i tocke za orijentaciju. Zapis stotina 4K PNG-ova je 18 % cijelog solvea
+    // (izmjereno na kamenom zidu: 0.46 -> 0.64 kumulativno), pa se u ovom nacinu preskace. Sve
+    // ostalo ostaje: pune slicice (kamera na SVAKOM kadru) su ono sto matchmove i trazi, a boje
+    // tocaka se i dalje skupljaju iz istih kadrova - bez njih je oblak u editoru siv.
+    //
+    // Zastavica, ne jos jedan pozicijski argument: ima ih vec osam, a deveti bi znacio da se za
+    // matchmove moraju napisati i svi prije njega
+    //=====================================================================================
+    bool cameraOnly = false;
+    std::vector<char*> positional;
+    for(int i = 0; i < realArgc; ++i){
+        if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
+        else positional.push_back(realArgv[i]);
+    }
+    const int argc = int(positional.size());
+    char** argv = positional.data();
+
     if(argc < 2){
         std::printf("Upotreba: VideoSolve snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa] [cameras.txt] [graf|graf-bez-mjerila|spajanje|bez-spajanja] [graph-cache.bin]\n");
         std::printf("  zadano je graf: uglovi za pokrivenost i prostor mjerila za tocnost, spojeni\n");
+        std::printf("  --samo-kamera: za matchmove - bez slika kadrova za splat, oko petine brze\n");
         std::printf("  cameras.txt: COLMAP-ova kalibracija. Kad je zadana, zarista i distorzija se\n");
         std::printf("               NE pogadjaju nego citaju, a opazanja se isprave prije solvea\n");
         return 1;
@@ -1126,7 +1149,7 @@ int main(int argc, char** argv){
         std::filesystem::create_directories(outputDirectory);
 
         const std::filesystem::path imageDirectory = std::filesystem::path(outputDirectory) / "images";
-        std::filesystem::create_directories(imageDirectory);
+        if(!cameraOnly) std::filesystem::create_directories(imageDirectory);
 
         //Koji kadar snimke odgovara kojoj kameri. Ime mora biti ono koje je ColmapExport upisao u
         //images.txt, a on numerira po INDEKSU KAMERE - ne po redu rijesenih. Kad jedna kamera
@@ -1168,9 +1191,11 @@ int main(int argc, char** argv){
                 }
                 exportPixels = flatPixels.data();
             }
-            Spool::savePng((imageDirectory / name).string(),
-                           Spool::imageFromPixels(exportPixels, frame.width, frame.height));
-            ++written;
+            if(!cameraOnly){
+                Spool::savePng((imageDirectory / name).string(),
+                               Spool::imageFromPixels(exportPixels, frame.width, frame.height));
+                ++written;
+            }
 
             const uint32_t w = frame.width / shrinkColour, h = frame.height / shrinkColour;
             colourStore[place].assign(size_t(w) * h * 4, 0);
@@ -1184,7 +1209,8 @@ int main(int argc, char** argv){
             }
             colourImages[place] = Engine::ColourImage{colourStore[place].data(), w, h, w};
         }
-        std::printf("Zapisano %u slika u %s\n", written, imageDirectory.string().c_str());
+        if(cameraOnly) std::printf("Samo kamera: slike kadrova se ne zapisuju (splat ih trazi, matchmove ne)\n");
+        else std::printf("Zapisano %u slika u %s\n", written, imageDirectory.string().c_str());
 
         //=================================================================================
         // IZVOZE SE OPAZANJA S KOJIMA JE RIJESENO, ne ona iz trackera.

@@ -224,9 +224,11 @@ int main(int argc, char** argv){
         //STARI SNIMAK SE BRISE prije novog posla. Bez toga bi se prvih sekundi crtala scena iz
         //proslog prolaza iste snimke - uredna, uvjerljiva i kriva
         fs::remove(out / "napredak.bin", ignored);
+        //Za matchmove bez slika kadrova (vidi --samo-kamera u VideoSolveu); splat ih treba
         char command[1400];
-        std::snprintf(command, sizeof(command), "./VideoSolve \"%s\" %d %d 0 \"%s\"",
-                      video.string().c_str(), steps[stepIndex], int(frameCount), out.string().c_str());
+        std::snprintf(command, sizeof(command), "./VideoSolve \"%s\" %d %d 0 \"%s\"%s",
+                      video.string().c_str(), steps[stepIndex], int(frameCount), out.string().c_str(),
+                      thenSplat ? "" : " --samo-kamera");
         jobVideo = video.string();
         afterJob = thenSplat ? After::ImportAndTrain : After::Import;
         live = Warp::Stage{};
@@ -571,6 +573,8 @@ int main(int argc, char** argv){
                 if(ui.button("Solve kamere")) startSolve(selectedMedia, false);
                 if(ui.button("Solve + Gaussian splat")) startSolve(selectedMedia, true);
                 if(!media.result.empty() && ui.button("Otvori rezultat")) importFolder(media.result, media.path);
+                if(!media.result.empty() && fs::is_directory(fs::path(media.result) / "images") && !job.running &&
+                   ui.button("Treniraj splat iz rezultata")) startTrain(media.result);
                 ui.label("(isto i desnim klikom)");
             }else if(entity){
                 ui.value("ime", Treadle::fitText(entity->name, 160.0f, theme.textScale));
@@ -719,6 +723,13 @@ int main(int argc, char** argv){
             const bool hasResult = valid && !stage.media[size_t(menuMedia)].result.empty();
             if(ui.menuItem("Otvori rezultat", hasResult)){
                 importFolder(stage.media[size_t(menuMedia)].result, stage.media[size_t(menuMedia)].path);
+            }
+            //Trening trazi slike kadrova, a solve za matchmove ih ne pise
+            const bool canTrain = hasResult && fs::is_directory(fs::path(stage.media[size_t(menuMedia)].result) / "images");
+            if(ui.menuItem(canTrain || !hasResult ? "Treniraj splat iz rezultata" : "Treniraj splat (solve bez slika)",
+                           canTrain && !job.running)){
+                jobVideo = stage.media[size_t(menuMedia)].path;
+                startTrain(stage.media[size_t(menuMedia)].result);
             }
             ui.menuSeparator();
             if(ui.menuItem("Ukloni iz projekta", valid)){
