@@ -56,6 +56,12 @@ class Ui{
     //Nova ploha. Zatvara prethodnu ako je otvorena
     void panel(const std::string& title, float x, float y, float width);
 
+    //USIDRENA PLOHA: zadan cijeli pravokutnik, kao stupac editora. Sadrzaj koji ne stane se ne
+    //crta i ne pogadja misem - redak je ili cijeli vidljiv ili ga nema, jer crtac ne reze. Kad
+    //je dan scroll, kotacic nad plohom pomice sadrzaj, a na kraju kadra se odsijece na ono sto
+    //sadrzaj stvarno zauzme
+    void dock(const std::string& title, const Rect& box, float* scroll = nullptr);
+
     //-- widgeti -----------------------------------------------------------------------------
     void label(const std::string& text);
 
@@ -79,6 +85,54 @@ class Ui{
     //Jedan od ponudjenih, kao red gumba s oznacenim izborom. true kad se izbor promijenio
     bool choice(const std::string& name, const std::vector<std::string>& options, int* index);
 
+    //Red koji se da odabrati, kao u popisu datoteka. true u kadru lijevog pritiska
+    bool selectable(const std::string& text, bool selected);
+
+    //Red stabla. depth uvlaci, strelica lijevo otvara i zatvara djecu kad ih ima
+    enum class TreeClick{ None, Select, Toggle };
+    TreeClick treeRow(const std::string& text, int depth, bool hasChildren, bool expanded, bool selected);
+
+    //Je li ZADNJI widget upravo dobio desni klik - za izbornik na desni klik
+    bool rightClicked() const {return lastRowRightPressed;}
+
+    //-- izbornik na desni klik ----------------------------------------------------------------
+    //
+    //    if(ui.selectable(ime, odabran)) ...;
+    //    if(ui.rightClicked()) ui.openMenu("media");
+    //    ...
+    //    if(ui.beginMenu("media")){
+    //        if(ui.menuItem("Solve kamere")) ...;
+    //        ui.endMenu();
+    //    }
+    //
+    //Izbornik se crta IZNAD svega sto je u kadru nacrtano, i prije i poslije njega. Dok je
+    //otvoren, klik ispod njega ne stize do widgeta ispod; klik pokraj njega ga zatvori i takodjer
+    //ne stize nikamo - inace bi zatvaranje izbornika usput kliknulo gumb iza njega
+    void openMenu(const std::string& id);
+    bool menuOpen(const std::string& id) const;
+    bool beginMenu(const std::string& id);
+    bool menuItem(const std::string& text, bool enabled = true);
+    void menuSeparator();
+    void endMenu();
+    void closeMenu(){openMenuId = 0;}
+
+    //-- slobodna povrsina ---------------------------------------------------------------------
+    //
+    //Za ono sto nije redak: timeline, graf, pogled. Treadle kaze sto mis radi nad pravokutnikom,
+    //a pozivatelj crta sam u canvas(). Vucenje koje krene u povrsini ostaje njezino i kad mis
+    //izadje iz nje, isto kao kod klizaca
+    struct Region{
+        Rect box;
+        bool hot = false;           //mis je nad povrsinom
+        bool pressed = false;       //lijevi pritisak u ovom kadru
+        bool held = false;          //vuce se, pocelo je u ovoj povrsini
+        bool rightPressed = false;
+        float mouseX = 0.0f, mouseY = 0.0f;
+        float wheel = 0.0f;         //kotacic nad povrsinom
+    };
+    Region region(const std::string& id, const Rect& box);
+    DrawList& canvas(){return list;}
+
     //-- rezultat ----------------------------------------------------------------------------
     const DrawList& drawn() const {return list;}
 
@@ -93,6 +147,7 @@ class Ui{
     struct Row{
         Rect box;
         bool hot = false;
+        bool visible = true;      //u usidrenoj plohi: stane li redak u nju
     };
 
     uint64_t idFor(const std::string& name) const;
@@ -122,6 +177,29 @@ class Ui{
     //sljedecem kadru nastane iznova, na drugoj adresi
     uint64_t activeId = 0;
     bool pointerOverUi = false;
+
+    //Usidrena ploha
+    bool panelDocked = false;
+    float contentTop = 0.0f;      //prvi piksel ispod naslova
+    float* scrollTarget = nullptr;
+    float scrollOffset = 0.0f;
+
+    bool lastRowRightPressed = false;
+
+    //Izbornik. Velicina je iz PROSLOG kadra: pozadina se crta prije stavki, a klik se mora znati
+    //odbiti prije nego sto ijedan widget ovog kadra pita za njega
+    uint64_t openMenuId = 0;
+    uint64_t menuOpenedFrame = 0;
+    uint64_t frameNumber = 0;
+    Rect menuBox;                 //prosli kadar
+    Rect menuBuilding;            //ovaj kadar
+    float menuWidestText = 0.0f;
+    float menuX = 0.0f, menuY = 0.0f;
+    bool inMenu = false;
+    bool menuItemClicked = false;
+    DrawList overlay;             //izbornik, spojen na kraj popisa u end()
+    size_t menuVertexBase = 0;
+    bool menuPressed[uint32_t(MouseButton::Count)] = {false, false, false};
 };
 
 }

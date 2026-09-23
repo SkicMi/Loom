@@ -151,6 +151,18 @@ int main(){
             fmt("razlika %.2e", glm::length(inScene - inSolve)));
     }
 
+    //-- 3b. pod na nuli: donjih 5 % tocaka ispod y = 0 ---------------------------------------
+    {
+        const glm::mat4 group = stage.worldMatrix(imported.group, 1.0);
+        size_t below = 0;
+        for(const glm::vec3& p : scene.reconstruction.points){
+            if((group * glm::vec4(p, 1.0f)).y < 0.0f) ++below;
+        }
+        const float share = float(below) / float(scene.reconstruction.points.size());
+        report.check("pod scene je na y = 0", share > 0.03f && share < 0.07f,
+            fmt("%.1f %% tocaka ispod nule", 100.0f * share));
+    }
+
     //-- 4. izmedju kljuceva kamera je izmedju polozaja ------------------------------------------
     {
         const glm::vec3 a(stage.worldMatrix(imported.camera, 4.0)[3]);

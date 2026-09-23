@@ -52,6 +52,10 @@ struct DrawList{
     //okomit. Crtac ne reze poledjinu (vidi rect), pa redoslijed vrhova ne ovisi o smjeru duzine
     void line(float x0, float y0, float x1, float y1, float thickness, const Color& color);
 
+    //Trokut proizvoljnog oblika, za popunjene plohe u pogledu editora (stranica kocke). Crtac ne
+    //reze poledjinu, pa redoslijed vrhova nije vazan
+    void triangle(float x0, float y0, float x1, float y1, float x2, float y2, const Color& color);
+
     //Samo obrub, debljine thickness prema UNUTRA. Prema unutra jer se obrub tada nikad ne
     //prosiri preko onoga sto je raspored izmjerio
     void outline(const Rect& box, float thickness, const Color& color);
@@ -71,6 +75,10 @@ constexpr int lineAdvance = 9;
 //sto se ista nacrta, pa je racun ovdje a ne u crtanju
 float textWidth(const std::string& value, float scale = 1.0f);
 float textHeight(float scale = 1.0f);
+
+//Tekst skracen da stane u zadanu sirinu, s ".." na kraju kad je skracen. Crtac ne reze, pa bi
+//predugo ime iz stupca editora bez ovoga iscurilo preko pogleda
+std::string fitText(const std::string& value, float width, float scale = 1.0f);
 
 //Je li tocka (column, row) unutar slova upaljena. Postoji izvan crtanja da se font moze
 //provjeriti testom - font kojemu nedostaje slovo daje rupu u natpisu, a nista ne pukne

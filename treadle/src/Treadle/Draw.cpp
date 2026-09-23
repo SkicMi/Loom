@@ -39,6 +39,14 @@ void DrawList::line(float x0, float y0, float x1, float y1, float thickness, con
     indices.push_back(base + 0); indices.push_back(base + 2); indices.push_back(base + 3);
 }
 
+void DrawList::triangle(float x0, float y0, float x1, float y1, float x2, float y2, const Color& color){
+    const uint32_t base = uint32_t(vertices.size());
+    vertices.push_back({x0, y0, color.r, color.g, color.b, color.a});
+    vertices.push_back({x1, y1, color.r, color.g, color.b, color.a});
+    vertices.push_back({x2, y2, color.r, color.g, color.b, color.a});
+    indices.push_back(base + 0); indices.push_back(base + 1); indices.push_back(base + 2);
+}
+
 void DrawList::rect(const Rect& box, const Color& color){
     rect(box.x, box.y, box.width, box.height, color);
 }
@@ -82,6 +90,14 @@ float DrawList::text(float x, float y, const std::string& value, const Color& co
     }
 
     return textWidth(value, scale);
+}
+
+std::string fitText(const std::string& value, float width, float scale){
+    if(textWidth(value, scale) <= width) return value;
+    const float step = float(glyphAdvance) * scale;
+    const int fits = int(width / step) - 2;
+    if(fits <= 0) return "";
+    return value.substr(0, size_t(fits)) + "..";
 }
 
 }

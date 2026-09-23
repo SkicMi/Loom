@@ -305,5 +305,205 @@ int main(){
             fmt("najvisi uski pravokutnik %.0f px (slovo je 14)", double(tallest)));
     }
 
+    //-- USIDRENA PLOHA: ono sto ne stane se ne crta i ne klika --------------------------------
+    //
+    //Crtac ne reze, pa redak koji ne stane mora nestati CIJELI. Da se samo ne crta a i dalje
+    //prima klik, klik na pogled ispod stupca bi kliknuo nevidljivi gumb
+    {
+        Treadle::Ui ui;
+        Treadle::Input input;
+        float scroll = 0.0f;
+        const Treadle::Rect box{0.0f, 0.0f, 240.0f, 200.0f};
+        int clicked = -1;
+
+        auto oneFrame = [&](Treadle::Input state){
+            clicked = -1;
+            ui.begin(state, 1000.0f, 800.0f);
+            ui.dock("Media", box, &scroll);
+            for(int i = 0; i < 20; ++i){
+                if(ui.button("snimka " + std::to_string(i))) clicked = i;
+            }
+            ui.end();
+        };
+
+        oneFrame(input);
+        float lowest = 0.0f;
+        for(const Treadle::Vertex& v : ui.drawn().vertices) lowest = std::max(lowest, v.y);
+        report.check("usidrena ploha ne curi", lowest <= box.height + 0.01f,
+            fmt("najnizi vrh %.1f, ploha do %.0f", double(lowest), double(box.height)));
+
+        //Gdje bi deseti redak bio da ploha nije usidrena: ispod nje
+        const Treadle::Theme& theme = ui.style();
+        const float firstRow = theme.padding + Treadle::textHeight(theme.textScale) + theme.spacing + 1.0f + theme.spacing;
+        const float pitch = theme.rowHeight + theme.spacing;
+        input.mouseX = 100.0f;
+        input.mouseY = firstRow + pitch * 10.0f + theme.rowHeight * 0.5f;
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        oneFrame(input);
+        report.check("redak izvan plohe ne prima klik", clicked == -1, fmt("kliknut %d", clicked));
+        input.down[uint32_t(Treadle::MouseButton::Left)] = false;
+        oneFrame(input);
+
+        //Kotacic do kraja: odsijece se na sadrzaj, pa je zadnji redak na dnu i klika se
+        input.mouseY = 100.0f;
+        input.wheel = -100.0f;
+        oneFrame(input);
+        input.wheel = 0.0f;
+        const float visible = box.height - theme.padding * 0.5f - firstRow;
+        const float content = pitch * 20.0f;
+        report.check("kotacic staje na kraju sadrzaja", std::fabs(scroll - (content - visible)) < 0.01f,
+            fmt("pomak %.1f, ocekivano %.1f", double(scroll), double(content - visible)));
+
+        const float lastRowY = firstRow - scroll + pitch * 19.0f + theme.rowHeight * 0.5f;
+        input.mouseY = lastRowY;
+        oneFrame(input);
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        oneFrame(input);
+        report.check("zadnji redak se klika nakon pomaka", clicked == 19, fmt("kliknut %d na y %.0f", clicked, double(lastRowY)));
+    }
+
+    //-- IZBORNIK NA DESNI KLIK --------------------------------------------------------------
+    //
+    //Dvije stvari se ne smiju dogoditi: klik na stavku izbornika klikne i gumb ispod njega, i
+    //klik kojim se izbornik zatvara klikne ono na sto je pao
+    {
+        Treadle::Ui ui;
+        Treadle::Input input;
+        bool solveChosen = false, buttonUnder = false, rowSelected = false;
+        size_t vertexCountBeforeMenu = 0;
+
+
+        //Stvarni kadar: redak, gumbi, pa izbornik na kraju, kao u editoru
+        auto frame = [&](Treadle::Input state){
+            solveChosen = buttonUnder = rowSelected = false;
+            ui.begin(state, 1000.0f, 800.0f);
+            ui.dock("Media", Treadle::Rect{0.0f, 0.0f, 300.0f, 600.0f});
+            if(ui.selectable("C0256.MP4", false)) rowSelected = true;
+            if(ui.rightClicked()) ui.openMenu("media");
+            for(int i = 0; i < 8; ++i) if(ui.button("ispod " + std::to_string(i))) buttonUnder = true;
+            vertexCountBeforeMenu = ui.drawn().vertices.size();
+            if(ui.beginMenu("media")){
+                if(ui.menuItem("Solve kamere")) solveChosen = true;
+                ui.menuItem("Solve + splat");
+                ui.endMenu();
+            }
+            ui.end();
+        };
+
+        const Treadle::Theme& theme = ui.style();
+        const float firstRow = theme.padding + Treadle::textHeight(theme.textScale) + theme.spacing + 1.0f + theme.spacing;
+        input.mouseX = 60.0f;
+        input.mouseY = firstRow + theme.rowHeight * 0.5f;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Right)] = true;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Right)] = false;
+        const bool opened = ui.menuOpen("media");
+        frame(input);
+
+        //Izbornik je nacrtan POSLIJE svega ostalog: njegova pozadina pocinje na mjestu klika, a
+        //lezi iza svega sto je stupac nacrtao
+        bool onTop = false;
+        const std::vector<Treadle::Vertex>& vertices = ui.drawn().vertices;
+        for(size_t i = vertexCountBeforeMenu; i + 3 < vertices.size(); i += 4){
+            if(vertices[i].x == input.mouseX && vertices[i].y == input.mouseY &&
+               vertices[i + 2].x - vertices[i].x >= 200.0f) onTop = true;
+        }
+        report.check("desni klik otvara izbornik, crta se na vrhu", opened && onTop,
+            fmt("%zu vrhova prije izbornika, %zu ukupno", vertexCountBeforeMenu, ui.drawn().vertices.size()));
+
+        //Prva stavka lezi odmah ispod mjesta klika (od +16 do +40 ispod prvog retka), a gumb
+        //"ispod 0" od +30 do +54: na +35 mis je nad OBOJE
+        input.mouseY = firstRow + 35.0f;
+        input.mouseX = 120.0f;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        frame(input);
+        report.check("stavka izbornika okida, gumb ispod ne", solveChosen && !buttonUnder && !rowSelected,
+            fmt("stavka %d, gumb ispod %d, redak %d", solveChosen, buttonUnder, rowSelected));
+        input.down[uint32_t(Treadle::MouseButton::Left)] = false;
+        frame(input);
+        report.check("izbornik se zatvori nakon izbora", !ui.menuOpen("media"), "zatvoren");
+
+        //Opet otvoren, pa klik pokraj njega - na gumb: izbornik se zatvori, gumb ne okine
+        input.mouseX = 60.0f;
+        input.mouseY = firstRow + theme.rowHeight * 0.5f;
+        input.down[uint32_t(Treadle::MouseButton::Right)] = true;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Right)] = false;
+        frame(input);
+        const float buttonRow7 = firstRow + (theme.rowHeight + theme.spacing) * 8.0f + theme.rowHeight * 0.5f;
+        input.mouseY = buttonRow7;
+        input.mouseX = 20.0f;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        frame(input);
+        report.check("klik pokraj izbornika ga zatvara i ne klika dalje", !ui.menuOpen("media") && !buttonUnder,
+            fmt("otvoren %d, gumb %d", ui.menuOpen("media"), buttonUnder));
+    }
+
+    //-- RED STABLA: strelica otvara, ostatak bira ---------------------------------------------
+    {
+        Treadle::Ui ui;
+        Treadle::Input input;
+        Treadle::Ui::TreeClick result = Treadle::Ui::TreeClick::None;
+        auto frame = [&](Treadle::Input state){
+            ui.begin(state, 1000.0f, 800.0f);
+            ui.dock("Scena", Treadle::Rect{0.0f, 0.0f, 300.0f, 400.0f});
+            result = ui.treeRow("Kamera", 1, true, false, false);
+            ui.end();
+        };
+        const Treadle::Theme& theme = ui.style();
+        const float firstRow = theme.padding + Treadle::textHeight(theme.textScale) + theme.spacing + 1.0f + theme.spacing;
+        const float arrowX = theme.padding + theme.rowHeight * 0.7f + theme.rowHeight * 0.5f;
+        input.mouseY = firstRow + theme.rowHeight * 0.5f;
+        input.mouseX = arrowX;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        frame(input);
+        const Treadle::Ui::TreeClick onArrow = result;
+        input.down[uint32_t(Treadle::MouseButton::Left)] = false;
+        frame(input);
+        input.mouseX = 200.0f;
+        frame(input);
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        frame(input);
+        report.check("strelica otvara, ime bira",
+            onArrow == Treadle::Ui::TreeClick::Toggle && result == Treadle::Ui::TreeClick::Select, "uvucen redak dubine 1");
+    }
+
+    //-- SLOBODNA POVRSINA: vucenje ostaje njezino ---------------------------------------------
+    {
+        Treadle::Ui ui;
+        Treadle::Input input;
+        Treadle::Ui::Region region;
+        auto frame = [&](Treadle::Input state){
+            ui.begin(state, 1000.0f, 800.0f);
+            region = ui.region("timeline", Treadle::Rect{0.0f, 600.0f, 1000.0f, 200.0f});
+            ui.end();
+        };
+        input.mouseX = 500.0f; input.mouseY = 700.0f;
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        frame(input);
+        const bool started = region.pressed && region.held && ui.wantsMouse();
+        input.mouseY = 100.0f;                              //mis pobjegne gore, u pogled
+        frame(input);
+        const bool stillHeld = region.held && !region.hot && ui.wantsMouse();
+        input.down[uint32_t(Treadle::MouseButton::Left)] = false;
+        frame(input);
+        report.check("vucenje po timelineu ostaje njegovo i kad mis izadje", started && stillHeld && !region.held &&
+                                                                             !ui.wantsMouse(),
+            fmt("pocelo %d, drzano vani %d", started, stillHeld));
+    }
+
+    //-- skraceni tekst --------------------------------------------------------------------------
+    {
+        const std::string longName = "C0256_jako_dugo_ime_snimke_koje_ne_stane.MP4";
+        const std::string fitted = Treadle::fitText(longName, 200.0f, 2.0f);
+        report.check("predugo ime se skrati da stane", Treadle::textWidth(fitted, 2.0f) <= 200.0f &&
+                                                       fitted.size() > 4 && fitted.substr(fitted.size() - 2) == "..",
+            fitted);
+    }
+
     return report.result();
 }
