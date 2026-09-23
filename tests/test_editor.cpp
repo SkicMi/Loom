@@ -228,5 +228,38 @@ int main(){
             fmt("%ux%u, crveno %u i %u (ocekivano 50 i 60)", width, height, out.size() > 4 ? out[0] : 0, out.size() > 4 ? out[4] : 0));
     }
 
+    //-- 8. krugovi za rotaciju: kut u prostoru, ne na ekranu --------------------------------------
+    //
+    //Iz kosog pogleda krug je elipsa i kut na ekranu laze. Kut se zato mjeri u ravnini kruga:
+    //mis prijedje s tocke kruga pod 20 st na tocku pod 65 st, i kocka se mora okrenuti tocno 45 st -
+    //i odozgo i odozdo, gdje se smjer vrtnje na ekranu obrne
+    {
+        Warp::Stage empty;
+        bool allExact = true;
+        std::string detail;
+        for(const float pitch : {0.6f, -0.7f}){
+            Loom::ViewportState state;
+            state.orbit.target = glm::vec3(0.3f, 0.2f, -0.1f);
+            state.orbit.distance = 6.0f;
+            state.orbit.yaw = 0.8f;
+            state.orbit.pitch = pitch;
+            const Loom::ViewCamera camera = Loom::viewCameraFor(empty, 1.0, viewportRect, state);
+            const Loom::Gizmo gizmo = Loom::gizmoFor(camera, state.orbit.target);
+            glm::vec2 from, to;
+            Loom::project(camera, Loom::ringPoint(gizmo, 1, glm::radians(20.0f)), from);
+            Loom::project(camera, Loom::ringPoint(gizmo, 1, glm::radians(65.0f)), to);
+            const float angle = glm::degrees(Loom::ringDrag(camera, gizmo, 1, from, to));
+            const int picked = Loom::ringAxisAt(camera, gizmo, from + glm::vec2(2.0f, -1.0f));
+            //Na ekranu bi kut bio drukciji - to je ono sto se ovdje izbjegava
+            glm::vec2 centre;
+            Loom::project(camera, gizmo.origin, centre);
+            const float screen = glm::degrees(std::fabs(std::atan2(to.y - centre.y, to.x - centre.x) -
+                                                        std::atan2(from.y - centre.y, from.x - centre.x)));
+            if(std::fabs(angle - 45.0f) > 0.01f || picked != 1) allExact = false;
+            detail += fmt("nagib %.1f: %.3f st (na ekranu %.1f), uhvacen krug %d; ", pitch, angle, screen, picked);
+        }
+        report.check("krug Y: 45 st misa = 45 st rotacije odozgo i odozdo", allExact, detail);
+    }
+
     return report.result();
 }

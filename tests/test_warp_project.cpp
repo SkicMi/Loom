@@ -194,6 +194,33 @@ int main(){
             read ? fmt("%zu entiteta", stage.size()) : problem);
     }
 
+    //-- OTISAK: nespremljeno se zna ------------------------------------------------------------
+    {
+        const uint64_t saved = loaded.fingerprint();
+        const bool sameAfterLoad = saved == original.fingerprint();
+        const bool stable = saved == loaded.fingerprint();
+
+        auto changes = [&](auto&& edit){
+            Warp::Stage copy;
+            std::string e;
+            Warp::loadProject(path, copy, e);
+            edit(copy);
+            return copy.fingerprint() != saved;
+        };
+        const bool moved = changes([](Warp::Stage& s){ s.get(s.find("/Kocka"))->local.translation.x += 1e-6f; });
+        const bool keyed = changes([](Warp::Stage& s){ s.keyAll(s.find("/Nul"), 5.0); });
+        const bool hidden = changes([](Warp::Stage& s){ s.get(s.find("/Kocka"))->visible = false; });
+        const bool renamed = changes([](Warp::Stage& s){ s.rename(s.find("/Nul"), "Nul2"); });
+        const bool reparented = changes([](Warp::Stage& s){ s.reparent(s.find("/Nul"), s.find("/Kocka")); });
+        const bool added = changes([](Warp::Stage& s){ s.create("Nova"); });
+        const bool media = changes([](Warp::Stage& s){ s.media.clear(); });
+        const bool range = changes([](Warp::Stage& s){ s.endFrame = 2300.0; });
+        report.check("otisak: isti nakon spremanja i otvaranja, mijenja se na svaku izmjenu",
+            sameAfterLoad && stable && moved && keyed && hidden && renamed && reparented && added && media && range,
+            fmt("isti %d, pomak %d, kljuc %d, vidljivost %d, ime %d, roditelj %d, novi %d, snimke %d, raspon %d",
+                sameAfterLoad, moved, keyed, hidden, renamed, reparented, added, media, range));
+    }
+
     fs::remove_all(directory);
     return report.result();
 }

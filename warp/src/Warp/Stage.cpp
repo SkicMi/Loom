@@ -249,4 +249,54 @@ glm::mat4 Stage::worldMatrix(Id id, double frame) const{
     return world;
 }
 
+namespace{
+
+//FNV-1a preko bajtova. Nije kriptografski - trazi se samo da promjena gotovo sigurno promijeni broj
+struct Hasher{
+    uint64_t value = 1469598103934665603ull;
+    void bytes(const void* data, size_t size){
+        const unsigned char* p = static_cast<const unsigned char*>(data);
+        for(size_t i = 0; i < size; ++i){ value ^= p[i]; value *= 1099511628211ull; }
+    }
+    template<class T> void add(const T& v){ bytes(&v, sizeof(T)); }
+    void text(const std::string& s){ add(s.size()); bytes(s.data(), s.size()); }
+    template<class T> void track(const Track<T>& t){
+        add(t.size());
+        if(!t.empty()){ bytes(t.times.data(), t.times.size() * sizeof(double)); bytes(t.values.data(), t.values.size() * sizeof(T)); }
+    }
+};
+
+}
+
+uint64_t Stage::fingerprint() const{
+    Hasher h;
+    h.add(startFrame); h.add(endFrame); h.add(framesPerSecond);
+    walk([&](const Entity& e, int depth){
+        h.add(depth);
+        h.text(e.name);
+        h.add(e.visible);
+        h.add(e.local.translation); h.add(e.local.rotation); h.add(e.local.scale);
+        h.track(e.translationKeys); h.track(e.rotationKeys); h.track(e.scaleKeys);
+        h.add(e.camera.has_value());
+        if(e.camera){
+            h.add(e.camera->focalPixels); h.add(e.camera->centreX); h.add(e.camera->centreY);
+            h.add(e.camera->width); h.add(e.camera->height); h.text(e.camera->plate); h.add(e.camera->plateFirstFrame);
+        }
+        h.add(e.points.has_value());
+        if(e.points){
+            h.add(e.points->positions.size()); h.add(e.points->colours.size());
+            if(!e.points->positions.empty()){ h.add(e.points->positions.front()); h.add(e.points->positions.back()); }
+        }
+        h.add(e.mesh.has_value());
+        if(e.mesh){ h.add(e.mesh->shape); h.add(e.mesh->colour); }
+        h.add(e.splat.has_value());
+        if(e.splat) h.text(e.splat->path);
+    });
+    h.add(media.size());
+    for(const Media& m : media){
+        h.text(m.path); h.text(m.result); h.add(m.frames); h.add(m.framesPerSecond); h.add(m.width); h.add(m.height);
+    }
+    return h.value;
+}
+
 }

@@ -117,6 +117,8 @@ class Ui{
     //otvoren, klik ispod njega ne stize do widgeta ispod; klik pokraj njega ga zatvori i takodjer
     //ne stize nikamo - inace bi zatvaranje izbornika usput kliknulo gumb iza njega
     void openMenu(const std::string& id);
+    //Isto, ali na zadanom mjestu - za pitanje koje ne dolazi od klika (izlaz s nespremljenim)
+    void openMenuAt(const std::string& id, float x, float y);
     bool menuOpen(const std::string& id) const;
     bool beginMenu(const std::string& id);
     bool menuItem(const std::string& text, bool enabled = true);

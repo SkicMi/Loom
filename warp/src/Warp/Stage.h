@@ -183,6 +183,15 @@ public:
     glm::mat4 localMatrix(Id id, double frame) const;
     glm::mat4 worldMatrix(Id id, double frame) const;
 
+    //OTISAK SCENE: broj koji se promijeni kad se promijeni bilo sto sto se sprema - stablo, imena,
+    //transformacije, kljucevi, komponente, snimke, raspon. Editor iz njega zna ima li nespremljenog.
+    //
+    //Otisak a ne brojac izmjena: brojac bi svako mjesto koje dira entitet moralo pozvati, a
+    //get() vraca obican pokazivac - jedno zaboravljeno mjesto i promjena bi tiho nestala pri
+    //izlasku. Otisak se ne da zaboraviti. Polozaji tocaka ulaze samo brojem i rubnim tockama:
+    //editor ih ne mijenja, a sto tisuca tocaka svaki kadar bi bilo skupo
+    uint64_t fingerprint() const;
+
     //Raspon timelinea, u kadrovima, i koliko kadrova ide u sekundi
     double startFrame = 1.0;
     double endFrame = 100.0;

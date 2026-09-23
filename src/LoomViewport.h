@@ -483,4 +483,103 @@ inline void paintGizmo(Treadle::DrawList& list, const ViewCamera& camera, const 
     }
 }
 
+//=============================================================================================
+// KRUGOVI ZA ROTACIJU: tri kruga oko osi svijeta kroz srediste odabranog, uhvati jedan i vuci.
+//
+// KUT SE RACUNA U PROSTORU, ne na ekranu. Zraka misa se presijece s ravninom kruga, i kut je
+// izmedju dviju tocaka u toj ravnini oko sredista. Kut izmjeren na ekranu bi lagao cim krug
+// nije gledan ravno - elipsa skraceno pokazuje kut, pa bi se kocka okretala brze ili sporije
+// nego mis, ovisno o tome odakle se gleda. Ovako je 90 st misa 90 st kocke iz svakog kuta.
+//
+// Samo kad je krug gotovo bocno (ravnina skoro paralelna zraci) presjek bjezi u beskonacnost;
+// tada se kut uzima s ekrana, oko projiciranog sredista - ondje je jedino on stabilan
+//=============================================================================================
+struct Ray{
+    glm::vec3 origin{0.0f};
+    glm::vec3 direction{0.0f, 0.0f, -1.0f};
+};
+
+//Zraka iz kamere pogleda kroz piksel prozora
+inline Ray rayThrough(const ViewCamera& camera, glm::vec2 pixel){
+    const glm::mat4 inverse = glm::inverse(camera.view);
+    Ray ray;
+    ray.origin = glm::vec3(inverse[3]);
+    ray.direction = glm::normalize(glm::vec3(inverse * glm::vec4((pixel.x - camera.centre.x) / camera.focal,
+                                                                 -(pixel.y - camera.centre.y) / camera.focal, -1.0f, 0.0f)));
+    return ray;
+}
+
+//Tocke kruga oko osi, polumjera iz gizma (90 px na ekranu kad je okomit na pogled)
+inline glm::vec3 ringPoint(const Gizmo& gizmo, int axis, float angle){
+    const glm::vec3 a = gizmoAxis((axis + 1) % 3), b = gizmoAxis((axis + 2) % 3);
+    return gizmo.origin + (a * std::cos(angle) + b * std::sin(angle)) * gizmo.length;
+}
+
+//Krug pod misem, -1 kad nijedan. Udaljenost od izlomljene crte kruga na ekranu, do 8 px
+inline int ringAxisAt(const ViewCamera& camera, const Gizmo& gizmo, glm::vec2 mouse){
+    if(!gizmo.visible) return -1;
+    int best = -1;
+    float bestDistance = 8.0f;
+    constexpr int segments = 64;
+    for(int axis = 0; axis < 3; ++axis){
+        glm::vec2 previous;
+        bool havePrevious = false;
+        for(int i = 0; i <= segments; ++i){
+            glm::vec2 at;
+            if(!project(camera, ringPoint(gizmo, axis, 6.2831853f * float(i) / segments), at)){ havePrevious = false; continue; }
+            if(havePrevious){
+                const glm::vec2 d = at - previous;
+                const float lengthSquared = std::max(1e-6f, glm::dot(d, d));
+                const float t = std::clamp(glm::dot(mouse - previous, d) / lengthSquared, 0.0f, 1.0f);
+                const float distance = glm::length(mouse - (previous + d * t));
+                if(distance < bestDistance){ bestDistance = distance; best = axis; }
+            }
+            previous = at;
+            havePrevious = true;
+        }
+    }
+    return best;
+}
+
+//Za koliko radijana se okrenuti oko osi kad mis ode iz from u to. Desno pravilo oko +osi
+inline float ringDrag(const ViewCamera& camera, const Gizmo& gizmo, int axis, glm::vec2 from, glm::vec2 to){
+    if(axis < 0 || !gizmo.visible) return 0.0f;
+    const glm::vec3 normal = gizmoAxis(axis);
+    const Ray a = rayThrough(camera, from), b = rayThrough(camera, to);
+    const float facingA = glm::dot(a.direction, normal), facingB = glm::dot(b.direction, normal);
+    if(std::fabs(facingA) > 0.08f && std::fabs(facingB) > 0.08f){
+        const glm::vec3 pa = a.origin + a.direction * (glm::dot(gizmo.origin - a.origin, normal) / facingA) - gizmo.origin;
+        const glm::vec3 pb = b.origin + b.direction * (glm::dot(gizmo.origin - b.origin, normal) / facingB) - gizmo.origin;
+        if(glm::length(pa) > 1e-6f && glm::length(pb) > 1e-6f){
+            return std::atan2(glm::dot(glm::cross(pa, pb), normal), glm::dot(pa, pb));
+        }
+    }
+    //Krug bocno: kut na ekranu oko projiciranog sredista. Na ekranu y ide dolje, pa je rast
+    //atan2 kretanje u smjeru kazaljke - a to je negativna rotacija oko osi okrenute prema kameri
+    glm::vec2 centre;
+    if(!project(camera, gizmo.origin, centre)) return 0.0f;
+    const float screen = std::atan2(to.y - centre.y, to.x - centre.x) - std::atan2(from.y - centre.y, from.x - centre.x);
+    const float wrapped = std::atan2(std::sin(screen), std::cos(screen));
+    const bool towardCamera = glm::dot(normal, camera.eye - gizmo.origin) > 0.0f;
+    return towardCamera ? -wrapped : wrapped;
+}
+
+inline void paintRings(Treadle::DrawList& list, const ViewCamera& camera, const Gizmo& gizmo, int hotAxis){
+    if(!gizmo.visible) return;
+    const Treadle::Color colours[3] = {{0.95f, 0.30f, 0.30f, 1.0f}, {0.40f, 0.90f, 0.35f, 1.0f}, {0.35f, 0.55f, 1.00f, 1.0f}};
+    constexpr int segments = 64;
+    for(int axis = 0; axis < 3; ++axis){
+        const Treadle::Color colour = axis == hotAxis ? Treadle::Color{1.0f, 1.0f, 0.6f, 1.0f} : colours[axis];
+        for(int i = 0; i < segments; ++i){
+            const glm::vec3 a = ringPoint(gizmo, axis, 6.2831853f * float(i) / segments);
+            const glm::vec3 b = ringPoint(gizmo, axis, 6.2831853f * float(i + 1) / segments);
+            //Straznja polovica kruga (iza sredista gledano iz kamere) tanja i blijeda
+            const bool behind = glm::dot((a + b) * 0.5f - gizmo.origin, camera.eye - gizmo.origin) < 0.0f;
+            Treadle::Color c = colour;
+            if(behind) c.a = 0.35f;
+            segment(list, camera, a, b, axis == hotAxis ? 3.5f : (behind ? 1.5f : 2.5f), c);
+        }
+    }
+}
+
 }

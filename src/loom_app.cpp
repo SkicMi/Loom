@@ -141,6 +141,12 @@ std::string kindOf(const Warp::Entity& entity){
     return entity.children.empty() ? "nul" : "grupa";
 }
 
+//Rotacija iz matrice koja moze nositi i mjerilo: stupci se normiraju prije pretvorbe
+glm::quat rotationOf(const glm::mat4& m){
+    return glm::normalize(glm::quat_cast(glm::mat3(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])),
+                                                   glm::normalize(glm::vec3(m[2])))));
+}
+
 enum class Focus{ Entity, Media };
 enum class After{ Nothing, Import, ImportAndTrain, AddSplat };
 
@@ -170,7 +176,7 @@ int main(int argc, char** argv){
     std::string startProject;             //loom projekt.usda otvara projekt
     std::string shotPath, shotResult, shotSave;
     double shotFrame = -1.0;
-    bool shotThrough = false, shotCube = false, shotNoSplat = false;
+    bool shotThrough = false, shotCube = false, shotNoSplat = false, shotRotate = false;
     double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
     for(int i = 1; i < argc; ++i){
         const std::string argument = argv[i];
@@ -179,6 +185,7 @@ int main(int argc, char** argv){
         else if(argument == "--kadar" && i + 1 < argc) shotFrame = std::atof(argv[++i]);
         else if(argument == "--kroz") shotThrough = true;
         else if(argument == "--bez-splata") shotNoSplat = true;
+        else if(argument == "--rotacija") shotRotate = true;
         else if(argument == "--spremi" && i + 1 < argc) shotSave = argv[++i];
         else if(argument == "--kocka") shotCube = true;
         else if(argument == "--kocka-u" && i + 1 < argc){ shotCube = true; shotCubeFrame = std::atof(argv[++i]); }
@@ -234,6 +241,9 @@ int main(int argc, char** argv){
     //Strelice za pomicanje i rotacija u stupnjevima. Kutovi se pamte dok se uredjuju: kvaternion
     //natrag u Eulerove kutove nije jednoznacan, pa bi polje koje se vuce preko 90 st skocilo
     int gizmoAxisHeld = -1, gizmoAxisHot = -1;
+    //W pomice, E okrece - kao u Mayi i Houdiniju
+    enum class Tool{ Move, Rotate };
+    Tool tool = shotRotate ? Tool::Rotate : Tool::Move;
     glm::vec3 eulerCache(0.0f);
     Warp::Id eulerFor = Warp::None;
     double eulerFrame = -1.0;
@@ -347,7 +357,12 @@ int main(int argc, char** argv){
     fs::path projectPath;
     fs::path pendingProject;              //ceka potvrdu, jer otvaranje zamjenjuje scenu
 
-    auto saveProjectNow = [&](){
+    //NESPREMLJENO: otisak scene u trenutku zadnjeg spremanja ili otvaranja (vidi
+    //Stage::fingerprint). Prazna scena na pocetku nije nespremljena
+    uint64_t savedFingerprint = stage.fingerprint();
+    bool quitting = false;
+
+    auto saveProjectNow = [&]() -> bool{
         if(projectPath.empty()){
             projectPath = browser.at / "loom_projekt.usda";
             for(int n = 2; fs::exists(projectPath); ++n) projectPath = browser.at / ("loom_projekt_" + std::to_string(n) + ".usda");
@@ -360,9 +375,11 @@ int main(int argc, char** argv){
                           std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
             message = text;
             browser.refresh();
-        }else{
-            message = "spremanje nije uspjelo: " + error;
+            savedFingerprint = stage.fingerprint();
+            return true;
         }
+        message = "spremanje nije uspjelo: " + error;
+        return false;
     };
 
     auto openProject = [&](const fs::path& path){
@@ -380,6 +397,19 @@ int main(int argc, char** argv){
         extentDirty = false;
         Loom::frameAll(stage, frame, view.orbit);
         message = "otvoren projekt " + path.filename().string();
+        savedFingerprint = stage.fingerprint();
+    };
+
+    auto newScene = [&](){
+        stage = Warp::Stage{};
+        projectPath.clear();
+        selected = Warp::None;
+        selectedMedia = -1;
+        view = Loom::ViewportState{};
+        frame = 1.0;
+        extentDirty = true;
+        message = "nova scena";
+        savedFingerprint = stage.fingerprint();
     };
 
     auto firstCamera = [&](){
@@ -447,8 +477,24 @@ int main(int argc, char** argv){
         std::printf("%s\n", message.c_str());
     }
 
-    while(!glfwWindowShouldClose(window)){
+    std::string windowTitle;
+    while(!quitting){
         glfwPollEvents();
+
+        //Otisak svaki kadar: prolaz kroz stablo i kljuceve, desetinka milisekunde i na 2301 kljucu
+        const bool dirty = stage.fingerprint() != savedFingerprint;
+        const std::string title = std::string("Loom - ") + (projectPath.empty() ? "nova scena" : projectPath.filename().string()) +
+                                  (dirty ? " *" : "");
+        if(title != windowTitle){ glfwSetWindowTitle(window, title.c_str()); windowTitle = title; }
+
+        //ZATVARANJE PROZORA S NESPREMLJENIM se zaustavi i pita. Bez nespremljenog - izlaz
+        if(glfwWindowShouldClose(window)){
+            if(!dirty) break;
+            glfwSetWindowShouldClose(window, GLFW_FALSE);
+            int w = 0, h = 0;
+            glfwGetWindowSize(window, &w, &h);
+            ui.openMenuAt("izlaz", float(w) * 0.5f - 200.0f, float(h) * 0.4f);
+        }
 
         int windowWidth = 0, windowHeight = 0;
         glfwGetWindowSize(window, &windowWidth, &windowHeight);
@@ -557,7 +603,11 @@ int main(int argc, char** argv){
             if(plane) addMesh(Warp::Shape::Plane, Warp::None);
             auto [nul, afterNul] = toolButton("+ Nul", afterPlane, y, h);
             if(nul){ selected = stage.create("Nul"); focus = Focus::Entity; }
-            auto [fit, afterFit] = toolButton("Uokviri (F)", afterNul + 12.0f, y, h);
+            auto [moveTool, afterMove] = toolButton("W", afterNul + 12.0f, y, h, tool == Tool::Move);
+            if(moveTool) tool = Tool::Move;
+            auto [rotateTool, afterRotate] = toolButton("E", afterMove, y, h, tool == Tool::Rotate);
+            if(rotateTool) tool = Tool::Rotate;
+            auto [fit, afterFit] = toolButton("Uokviri (F)", afterRotate + 12.0f, y, h);
             if(fit){ view.lookThrough = Warp::None; Loom::frameAll(stage.size() ? stage : live, frame, view.orbit); }
             auto [through, afterThrough] = toolButton("Kroz kameru (0)", afterFit, y, h, view.lookThrough != Warp::None);
             if(through){
@@ -571,7 +621,7 @@ int main(int argc, char** argv){
             if(plateButton) showPlate = !showPlate;
             auto [splatButton, afterSplat] = toolButton("Splat (B)", afterPlate, y, h, showSplat);
             if(splatButton) showSplat = !showSplat;
-            auto [saveButton, afterSave] = toolButton("Spremi", afterSplat + 12.0f, y, h);
+            auto [saveButton, afterSave] = toolButton(dirty ? "Spremi *" : "Spremi", afterSplat + 12.0f, y, h, dirty);
             if(saveButton) saveProjectNow();
             auto [newButton, afterNew] = toolButton("Novi", afterSave, y, h);
             if(newButton) ui.openMenu("novi");
@@ -939,22 +989,34 @@ int main(int argc, char** argv){
             ui.openMenu("pogled");
             menuPixel = glm::vec2(float(cursorX), float(cursorY));
         }
+        //Otvaranje, nova scena i izlaz PITAJU kad ima nespremljenog - i nude spremanje prvo
         if(ui.beginMenu("projekt")){
-            if(ui.menuItem("Otvori " + pendingProject.filename().string() + " (zamjenjuje scenu)")) openProject(pendingProject);
+            const std::string name = pendingProject.filename().string();
+            if(dirty){
+                if(ui.menuItem("Spremi pa otvori " + name) && saveProjectNow()) openProject(pendingProject);
+                if(ui.menuItem("Otvori " + name + " bez spremanja")) openProject(pendingProject);
+            }else if(ui.menuItem("Otvori " + name)){
+                openProject(pendingProject);
+            }
             ui.menuItem("Odustani");
             ui.endMenu();
         }
         if(ui.beginMenu("novi")){
-            if(ui.menuItem("Nova prazna scena (nespremljeno se gubi)")){
-                stage = Warp::Stage{};
-                projectPath.clear();
-                selected = Warp::None;
-                selectedMedia = -1;
-                view = Loom::ViewportState{};
-                frame = 1.0;
-                extentDirty = true;
-                message = "nova scena";
+            if(dirty){
+                if(ui.menuItem("Spremi pa nova scena") && saveProjectNow()) newScene();
+                if(ui.menuItem("Nova scena bez spremanja")) newScene();
+            }else if(ui.menuItem("Nova prazna scena")){
+                newScene();
             }
+            ui.menuItem("Odustani");
+            ui.endMenu();
+        }
+        if(ui.beginMenu("izlaz")){
+            ui.menuItem(projectPath.empty() ? "Scena nije spremljena." : projectPath.filename().string() + " ima nespremljene promjene.", false);
+            if(job.running) ui.menuItem("(solve jos tece - izlaz ceka da zavrsi)", false);
+            ui.menuSeparator();
+            if(ui.menuItem("Spremi i izadji") && saveProjectNow()) quitting = true;
+            if(ui.menuItem("Izadji bez spremanja")) quitting = true;
             ui.menuItem("Odustani");
             ui.endMenu();
         }
@@ -1017,7 +1079,9 @@ int main(int argc, char** argv){
             gizmo = Loom::gizmoFor(pickCamera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
         }
         const glm::vec2 mouse{float(cursorX), float(cursorY)};
-        gizmoAxisHot = gizmoAxisHeld >= 0 ? gizmoAxisHeld : (overViewport ? Loom::gizmoAxisAt(pickCamera, gizmo, mouse) : -1);
+        gizmoAxisHot = gizmoAxisHeld >= 0 ? gizmoAxisHeld
+                     : !overViewport ? -1
+                     : tool == Tool::Move ? Loom::gizmoAxisAt(pickCamera, gizmo, mouse) : Loom::ringAxisAt(pickCamera, gizmo, mouse);
 
         //Lijevi: strelica pomice, klik bira, vucenje okrece
         if(leftDown && !leftWasDown){
@@ -1027,7 +1091,20 @@ int main(int argc, char** argv){
             gizmoAxisHeld = overViewport ? gizmoAxisHot : -1;
         }
         if(!leftDown) gizmoAxisHeld = -1;
-        if(leftDown && gizmoAxisHeld >= 0 && chosen){
+        if(leftDown && gizmoAxisHeld >= 0 && chosen && tool == Tool::Rotate){
+            //Okretanje oko osi SVIJETA kroz srediste odabranog; u lokalnu rotaciju kroz roditelja
+            const float angle = Loom::ringDrag(pickCamera, gizmo, gizmoAxisHeld, glm::vec2(float(lastX), float(lastY)), mouse);
+            if(angle != 0.0f){
+                const glm::quat world = rotationOf(stage.worldMatrix(selected, frame));
+                const glm::quat parent = chosen->parent == Warp::None ? glm::quat(1.0f, 0.0f, 0.0f, 0.0f)
+                                                                     : rotationOf(stage.worldMatrix(chosen->parent, frame));
+                Warp::Transform local = stage.localAt(selected, frame);
+                local.rotation = glm::normalize(glm::inverse(parent) * glm::angleAxis(angle, Loom::gizmoAxis(gizmoAxisHeld)) * world);
+                stage.setLocalAt(selected, frame, local);
+                eulerFrame = -1.0;              //kutovi u svojstvima se procitaju iznova
+            }
+            dragging = true;
+        }else if(leftDown && gizmoAxisHeld >= 0 && chosen){
             const float amount = Loom::gizmoDrag(pickCamera, gizmo, gizmoAxisHeld,
                                                  glm::vec2(float(cursorX - lastX), float(cursorY - lastY)));
             if(amount != 0.0f){
@@ -1081,6 +1158,8 @@ int main(int argc, char** argv){
         if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
         if(keys.pressed(window, GLFW_KEY_V)) showPlate = !showPlate;
         if(keys.pressed(window, GLFW_KEY_B)) showSplat = !showSplat;
+        if(keys.pressed(window, GLFW_KEY_W)) tool = Tool::Move;
+        if(keys.pressed(window, GLFW_KEY_E)) tool = Tool::Rotate;
         const bool control = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                              glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
         if(keys.pressed(window, GLFW_KEY_S) && control) saveProjectNow();
@@ -1112,7 +1191,7 @@ int main(int argc, char** argv){
         }
         if(keys.pressed(window, GLFW_KEY_ESCAPE)){
             if(ui.menuOpen("pogled") || ui.menuOpen("media") || ui.menuOpen("entitet") || ui.menuOpen("projekt") ||
-               ui.menuOpen("novi")) ui.closeMenu();
+               ui.menuOpen("novi") || ui.menuOpen("izlaz")) ui.closeMenu();
             else if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
         }
 
@@ -1123,8 +1202,9 @@ int main(int argc, char** argv){
             Loom::paintStage(stage, frame, camera, view, extent, selected, scene);
             const Warp::Entity* chosenNow = stage.get(selected);
             if(chosenNow && chosenNow->visible && selected != view.lookThrough && focus == Focus::Entity){
-                Loom::paintGizmo(scene, camera, Loom::gizmoFor(camera, glm::vec3(stage.worldMatrix(selected, frame)[3])),
-                                 gizmoAxisHot);
+                const Loom::Gizmo shown = Loom::gizmoFor(camera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
+                if(tool == Tool::Move) Loom::paintGizmo(scene, camera, shown, gizmoAxisHot);
+                else Loom::paintRings(scene, camera, shown, gizmoAxisHot);
             }
             if(live.size() > 0){
                 Loom::ViewportState liveView = view;

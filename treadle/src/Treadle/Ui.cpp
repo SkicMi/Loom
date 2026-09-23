@@ -411,6 +411,12 @@ void Ui::openMenu(const std::string& id){
     menuBox = Rect{};
 }
 
+void Ui::openMenuAt(const std::string& id, float x, float y){
+    openMenu(id);
+    menuX = x;
+    menuY = y;
+}
+
 bool Ui::menuOpen(const std::string& id) const{
     return openMenuId != 0 && openMenuId == menuHash(id);
 }
