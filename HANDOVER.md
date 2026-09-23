@@ -37,7 +37,7 @@ Pet biblioteka, **nijedna ne ovisi o drugoj**:
 | **`Spool`** (`spool/src/Spool`) | čita i piše datoteke | `ImageFile.h`, `VideoFile.h`, `GaussianPly.h` |
 | **`Engine`** (`engine/src/Engine`) | rekonstrukcija | `ScaleSpace.h`, `MatchGraph.h`, `Reconstruct.h`, `Bundle.h`, `ColmapExport.h`, `CameraHints.h` |
 | **`Treadle`** (`treadle/src/Treadle`) | UI, **nula vanjskih ovisnosti** | `Ui.h`, `Draw.h` |
-| **`Warp`** (`warp/src/Warp`) | scena: stablo entiteta s komponentama, ključevi kroz vrijeme (USD-oblik), samo glm | `Stage.h`, `UsdCamera.h` |
+| **`Warp`** (`warp/src/Warp`) | scena: stablo entiteta s komponentama, ključevi kroz vrijeme (USD-oblik), samo glm; projekt se sprema kao pravi `.usda` (vlastiti čitač podskupa, bez OpenUSD-a) | `Stage.h`, `Project.h`, `Usda.h`, `UsdCamera.h` |
 
 Tier disciplina u Loomu je **branjena testom**: `<Loom/Loom.h>` se preprocesira i u 1 622 367 znakova
 ne smije biti nijedan `vk::`. Kontrola postoji jer detektor koji ništa ne nađe izgleda isto kao

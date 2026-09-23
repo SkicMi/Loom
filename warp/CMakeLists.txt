@@ -27,6 +27,8 @@ endif()
 add_library(Warp STATIC
     src/Warp/Stage.cpp
     src/Warp/UsdCamera.cpp
+    src/Warp/Usda.cpp
+    src/Warp/Project.cpp
 )
 
 target_include_directories(Warp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

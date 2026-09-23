@@ -38,6 +38,7 @@
 #include "Vulkan/Texture.h"
 
 #include <Spool/ImageFile.h>
+#include <Warp/Project.h>
 #include <Spool/VideoFile.h>
 #include <Treadle/Ui.h>
 #include <TreadlePaint/UiPainter.h>
@@ -62,21 +63,28 @@ namespace fs = std::filesystem;
 //jer solve u pozadini stvara nove mape rezultata
 struct Browser{
     fs::path at;
-    std::vector<fs::path> folders, videos, results;
+    std::vector<fs::path> folders, videos, results, projects;
 
     void refresh(){
         folders.clear();
+        projects.clear();
         results = Loom::resultsIn(at);
         videos = Loom::videosIn(at);
         std::error_code error;
         for(const auto& entry : fs::directory_iterator(at, error)){
             if(error) break;
             const std::string name = entry.path().filename().string();
+            if(entry.is_regular_file(error) && entry.path().extension() == ".usda" &&
+               Warp::isProjectFile(entry.path().string())){
+                projects.push_back(entry.path());
+                continue;
+            }
             if(!entry.is_directory(error) || name.empty() || name[0] == '.') continue;
             if(Loom::isResultDirectory(entry.path())) continue;
             folders.push_back(entry.path());
         }
         std::sort(folders.begin(), folders.end());
+        std::sort(projects.begin(), projects.end());
     }
 };
 
@@ -156,7 +164,8 @@ int main(int argc, char** argv){
 
     //Argumenti: prva mapa, pa zastavice za snimku (vidi zaglavlje)
     fs::path startAt = fs::current_path();
-    std::string shotPath, shotResult;
+    std::string startProject;             //loom projekt.usda otvara projekt
+    std::string shotPath, shotResult, shotSave;
     double shotFrame = -1.0;
     bool shotThrough = false, shotCube = false;
     double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
@@ -166,8 +175,10 @@ int main(int argc, char** argv){
         else if(argument == "--rezultat" && i + 1 < argc) shotResult = argv[++i];
         else if(argument == "--kadar" && i + 1 < argc) shotFrame = std::atof(argv[++i]);
         else if(argument == "--kroz") shotThrough = true;
+        else if(argument == "--spremi" && i + 1 < argc) shotSave = argv[++i];
         else if(argument == "--kocka") shotCube = true;
         else if(argument == "--kocka-u" && i + 1 < argc){ shotCube = true; shotCubeFrame = std::atof(argv[++i]); }
+        else if(argument.size() > 5 && argument.substr(argument.size() - 5) == ".usda") startProject = argument;
         else if(argument.rfind("--", 0) != 0) startAt = argument;
     }
 
@@ -326,6 +337,47 @@ int main(int argc, char** argv){
     };
     auto addMesh = [&](Warp::Shape shape, Warp::Id parent){ addMeshAt(shape, parent, glm::vec2(0.0f), false); };
 
+    //-- projekt ----------------------------------------------------------------------------------
+    //Projekt je .usda (vidi Warp/Project.h). Prvo spremanje ga stavi u mapu koju media prozor
+    //pregledava, pod imenom koje jos ne postoji - nikad preko tudjeg projekta
+    fs::path projectPath;
+    fs::path pendingProject;              //ceka potvrdu, jer otvaranje zamjenjuje scenu
+
+    auto saveProjectNow = [&](){
+        if(projectPath.empty()){
+            projectPath = browser.at / "loom_projekt.usda";
+            for(int n = 2; fs::exists(projectPath); ++n) projectPath = browser.at / ("loom_projekt_" + std::to_string(n) + ".usda");
+        }
+        const auto started = std::chrono::steady_clock::now();
+        std::string error;
+        if(Warp::saveProject(stage, projectPath.string(), error)){
+            char text[256];
+            std::snprintf(text, sizeof(text), "spremljeno: %s (%.1f s)", projectPath.filename().string().c_str(),
+                          std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+            message = text;
+            browser.refresh();
+        }else{
+            message = "spremanje nije uspjelo: " + error;
+        }
+    };
+
+    auto openProject = [&](const fs::path& path){
+        std::string error;
+        Warp::Stage opened;
+        if(!Warp::loadProject(path.string(), opened, error)){ message = "ne mogu otvoriti: " + error; return; }
+        stage = std::move(opened);
+        projectPath = path;
+        selected = Warp::None;
+        selectedMedia = -1;
+        collapsed.clear();
+        view = Loom::ViewportState{};
+        frame = stage.startFrame;
+        extent = Loom::sceneExtent(stage, frame);
+        extentDirty = false;
+        Loom::frameAll(stage, frame, view.orbit);
+        message = "otvoren projekt " + path.filename().string();
+    };
+
     auto firstCamera = [&](){
         Warp::Id found = Warp::None;
         stage.walk([&](const Warp::Entity& e, int){ if(found == Warp::None && e.camera) found = e.id; });
@@ -360,6 +412,13 @@ int main(int argc, char** argv){
     std::vector<uint8_t> platePixels;
 
     uint32_t framesDrawn = 0;
+    if(!startProject.empty()){
+        openProject(startProject);
+        if(shotFrame >= 0.0) frame = shotFrame;
+        if(shotThrough) view.lookThrough = firstCamera();
+        browser.at = fs::absolute(startProject).parent_path();
+        browser.refresh();
+    }
     if(!shotResult.empty()){
         importFolder(shotResult, "");
         if(shotFrame >= 0.0) frame = shotFrame;
@@ -371,6 +430,11 @@ int main(int argc, char** argv){
             addMesh(Warp::Shape::Cube, Warp::None);
             frame = shown;
         }
+    }
+    if(!shotSave.empty()){
+        projectPath = shotSave;
+        saveProjectNow();
+        std::printf("%s\n", message.c_str());
     }
 
     while(!glfwWindowShouldClose(window)){
@@ -495,7 +559,11 @@ int main(int argc, char** argv){
             }
             auto [plateButton, afterPlate] = toolButton("Snimka (V)", afterThrough, y, h, showPlate);
             if(plateButton) showPlate = !showPlate;
-            auto [logButton, afterLog] = toolButton("Ispis", afterPlate, y, h, showLog);
+            auto [saveButton, afterSave] = toolButton("Spremi", afterPlate + 12.0f, y, h);
+            if(saveButton) saveProjectNow();
+            auto [newButton, afterNew] = toolButton("Novi", afterSave, y, h);
+            if(newButton) ui.openMenu("novi");
+            auto [logButton, afterLog] = toolButton("Ispis", afterNew, y, h, showLog);
             if(logButton) showLog = !showLog;
 
             //Stanje posla ili zadnja poruka, desno
@@ -578,6 +646,12 @@ int main(int argc, char** argv){
                         selectedMedia = int(stage.media.size()) - 1;
                     }
                     focus = Focus::Media;
+                }
+            }
+            for(const fs::path& project : browser.projects){
+                if(ui.selectable("[projekt] " + project.filename().string(), project == projectPath)){
+                    pendingProject = project;
+                    ui.openMenu("projekt");
                 }
             }
             for(const fs::path& result : browser.results){
@@ -853,6 +927,25 @@ int main(int argc, char** argv){
             ui.openMenu("pogled");
             menuPixel = glm::vec2(float(cursorX), float(cursorY));
         }
+        if(ui.beginMenu("projekt")){
+            if(ui.menuItem("Otvori " + pendingProject.filename().string() + " (zamjenjuje scenu)")) openProject(pendingProject);
+            ui.menuItem("Odustani");
+            ui.endMenu();
+        }
+        if(ui.beginMenu("novi")){
+            if(ui.menuItem("Nova prazna scena (nespremljeno se gubi)")){
+                stage = Warp::Stage{};
+                projectPath.clear();
+                selected = Warp::None;
+                selectedMedia = -1;
+                view = Loom::ViewportState{};
+                frame = 1.0;
+                extentDirty = true;
+                message = "nova scena";
+            }
+            ui.menuItem("Odustani");
+            ui.endMenu();
+        }
         if(ui.beginMenu("media")){
             const bool valid = menuMedia >= 0 && menuMedia < int(stage.media.size());
             if(ui.menuItem("Solve kamere (matchmove)", valid && !job.running)) startSolve(menuMedia, false);
@@ -975,6 +1068,9 @@ int main(int argc, char** argv){
         if(keys.pressed(window, GLFW_KEY_SPACE)) playing = !playing;
         if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
         if(keys.pressed(window, GLFW_KEY_V)) showPlate = !showPlate;
+        const bool control = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                             glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+        if(keys.pressed(window, GLFW_KEY_S) && control) saveProjectNow();
         if(keys.pressed(window, GLFW_KEY_RIGHT)) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
         if(keys.pressed(window, GLFW_KEY_LEFT)) frame = std::max(stage.startFrame, std::floor(frame) - 1.0);
         if(keys.pressed(window, GLFW_KEY_HOME)) frame = stage.startFrame;
@@ -1002,7 +1098,8 @@ int main(int argc, char** argv){
             removeSelected(selected);
         }
         if(keys.pressed(window, GLFW_KEY_ESCAPE)){
-            if(ui.menuOpen("pogled") || ui.menuOpen("media") || ui.menuOpen("entitet")) ui.closeMenu();
+            if(ui.menuOpen("pogled") || ui.menuOpen("media") || ui.menuOpen("entitet") || ui.menuOpen("projekt") ||
+               ui.menuOpen("novi")) ui.closeMenu();
             else if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
         }
 
