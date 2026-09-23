@@ -91,10 +91,55 @@ struct Points{
 
 enum class Shape{ Cube, Plane };
 
-//Jednostavno tijelo za provjeru matchmovea: kocka jedinicne velicine oko ishodista, ravnina u XZ
+//Jednostavno tijelo za provjeru matchmovea: kocka jedinicne velicine oko ishodista, ravnina u XZ.
+//material je indeks u Stage::materials; -1 znaci zadani materijal boje colour
 struct Mesh{
     Shape shape = Shape::Cube;
     glm::vec3 colour{0.95f, 0.55f, 0.15f};
+    int material = -1;
+};
+
+//=============================================================================================
+// PBR MATERIJAL, metalnost i hrapavost - isti model kao glTF i UsdPreviewSurface, pa model iz
+// Blendera ili Substancea izgleda isto kao ondje.
+//
+// Mape su putovi: slika na disku (image = -1), ili glTF/GLB datoteka i redni broj slike u njoj
+// (image >= 0) - GLB slike nemaju vlastitu datoteku. Faktori se MNOZE s mapom, kao u glTF-u:
+// hrapavost 0.5 i mapa 0.8 daju 0.4
+//=============================================================================================
+struct TextureSlot{
+    std::string source;         //prazno: nema mape
+    int image = -1;             //slika unutar glTF-a; -1 kad je source slika
+    int texCoord = 0;           //UV skup
+    float amount = 1.0f;        //normal: jacina (scale); occlusion: jacina (strength)
+    bool empty() const {return source.empty();}
+};
+
+struct Material{
+    std::string name;
+    glm::vec4 baseColor{1.0f};
+    TextureSlot baseColorMap;               //sRGB, alfa u a
+    float metallic = 0.0f;
+    float roughness = 0.5f;
+    TextureSlot metallicRoughnessMap;       //G = hrapavost, B = metalnost (glTF)
+    TextureSlot normalMap;                  //tangentni prostor, +Y gore (glTF/OpenGL)
+    TextureSlot occlusionMap;               //R
+    glm::vec3 emissive{0.0f};
+    float emissiveStrength = 1.0f;
+    TextureSlot emissiveMap;                //sRGB
+    enum class Alpha{ Opaque, Mask, Blend };
+    Alpha alphaMode = Alpha::Opaque;
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
+};
+
+//Mreza iz glTF modela: datoteka, koja mreza u njoj, i materijal za svaki njezin primitiv
+//(indeksi u Stage::materials, -1 zadani). Geometrija ostaje u datoteci - editor ju cita i drzi
+//na kartici; scena pamti samo sto je gdje i od cega
+struct Model{
+    std::string path;
+    int mesh = -1;
+    std::vector<int> materials;
 };
 
 //ZGLOB KOSTURA (lik iz pokreta, npr. Kimodo). Zglob je obican entitet - transformacija i kljucevi
@@ -127,6 +172,7 @@ struct Entity{
     std::optional<Mesh> mesh;
     std::optional<Splat> splat;
     std::optional<Joint> joint;
+    std::optional<Model> model;
 
     bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty();}
 };
@@ -206,6 +252,16 @@ public:
     double framesPerSecond = 25.0;
 
     std::vector<Media> media;
+
+    //Biblioteka materijala. Tijela i modeli pokazuju na njih indeksom
+    std::vector<Material> materials;
+
+    //Dodaje materijal s imenom jedinstvenim u biblioteci; vraca indeks
+    int addMaterial(Material material);
+
+    //Brise materijal i popravlja sve koji pokazuju na njega ili iza njega - inace bi svako
+    //tijelo iza obrisanog tiho dobilo tudji materijal
+    void removeMaterial(int index);
 
 private:
     std::string uniqueName(const std::string& wanted, Id parent, Id except) const;

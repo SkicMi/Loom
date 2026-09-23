@@ -1,6 +1,7 @@
 #include "Warp/Project.h"
 #include "Warp/Usda.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -48,6 +49,56 @@ public:
         else string(value);
     }
     void indent(int depth){ for(int i = 0; i < depth; ++i) out << "    "; }
+
+    //Ime prima materijala: USD ime (slova, brojke, _), jedinstveno po rednom broju
+    static std::string materialPrim(const Stage& stage, int index){
+        std::string name;
+        for(char c : stage.materials[size_t(index)].name) name += (std::isalnum(static_cast<unsigned char>(c)) || c == '_') ? c : '_';
+        if(name.empty() || std::isdigit(static_cast<unsigned char>(name[0]))) name = "_" + name;
+        return name + "_" + std::to_string(index);
+    }
+
+    void slot(int depth, const char* name, const TextureSlot& t){
+        if(t.empty()) return;
+        indent(depth); out << "custom asset loom:" << name << " = "; asset(t.source); out << '\n';
+        indent(depth); out << "custom int4 loom:" << name << "Info = (" << t.image << ", " << t.texCoord << ", 0, 0)\n";
+        indent(depth); out << "custom float loom:" << name << "Amount = "; number(t.amount); out << '\n';
+    }
+
+    //Materijal kao USD Material s UsdPreviewSurfaceom - drugi alati vide boju, metalnost,
+    //hrapavost i emisiju; tocne vrijednosti i mape za povratak u Loom su u loom: atributima
+    void material(const Stage& stage, int index){
+        const Material& m = stage.materials[size_t(index)];
+        const std::string prim = materialPrim(stage, index);
+        out << "\n    def Material \"" << prim << "\"\n    {\n";
+        out << "        token outputs:surface.connect = </Materials/" << prim << "/Surface.outputs:surface>\n";
+        out << "        custom string loom:name = "; string(m.name); out << '\n';
+        out << "        custom float4 loom:baseColor = ("; number(m.baseColor.r); out << ", "; number(m.baseColor.g); out << ", ";
+        number(m.baseColor.b); out << ", "; number(m.baseColor.a); out << ")\n";
+        out << "        custom float loom:metallic = "; number(m.metallic); out << '\n';
+        out << "        custom float loom:roughness = "; number(m.roughness); out << '\n';
+        out << "        custom color3f loom:emissive = "; vector(m.emissive); out << '\n';
+        out << "        custom float loom:emissiveStrength = "; number(m.emissiveStrength); out << '\n';
+        out << "        custom token loom:alphaMode = \"" << (m.alphaMode == Material::Alpha::Mask ? "mask"
+                                                              : m.alphaMode == Material::Alpha::Blend ? "blend" : "opaque") << "\"\n";
+        out << "        custom float loom:alphaCutoff = "; number(m.alphaCutoff); out << '\n';
+        out << "        custom bool loom:doubleSided = " << (m.doubleSided ? 1 : 0) << '\n';
+        slot(2, "baseColorMap", m.baseColorMap);
+        slot(2, "metallicRoughnessMap", m.metallicRoughnessMap);
+        slot(2, "normalMap", m.normalMap);
+        slot(2, "occlusionMap", m.occlusionMap);
+        slot(2, "emissiveMap", m.emissiveMap);
+        out << "\n        def Shader \"Surface\"\n        {\n";
+        out << "            uniform token info:id = \"UsdPreviewSurface\"\n";
+        out << "            color3f inputs:diffuseColor = ("; number(m.baseColor.r); out << ", "; number(m.baseColor.g); out << ", ";
+        number(m.baseColor.b); out << ")\n";
+        out << "            float inputs:metallic = "; number(m.metallic); out << '\n';
+        out << "            float inputs:roughness = "; number(m.roughness); out << '\n';
+        out << "            float inputs:opacity = "; number(m.alphaMode == Material::Alpha::Opaque ? 1.0 : m.baseColor.a); out << '\n';
+        if(m.alphaMode == Material::Alpha::Mask){ out << "            float inputs:opacityThreshold = "; number(m.alphaCutoff); out << '\n'; }
+        out << "            color3f inputs:emissiveColor = "; vector(m.emissive * m.emissiveStrength); out << '\n';
+        out << "            token outputs:surface\n        }\n    }\n";
+    }
 
     template<class T, class Write>
     void attribute(int depth, const char* type, const char* name, const T& fixed, const Track<T>& keys, Write write){
@@ -122,6 +173,22 @@ public:
                 indent(in); out << "custom token loom:shape = \"plane\"\n";
             }
             indent(in); out << "color3f[] primvars:displayColor = ["; vector(mesh.colour); out << "]\n";
+            if(mesh.material >= 0 && size_t(mesh.material) < stage.materials.size()){
+                indent(in); out << "rel material:binding = </Materials/" << materialPrim(stage, mesh.material) << ">\n";
+                indent(in); out << "custom string loom:material = "; string(stage.materials[size_t(mesh.material)].name); out << '\n';
+            }
+        }
+        if(entity.model){
+            const Model& model = *entity.model;
+            indent(in); out << "custom asset loom:model = "; asset(model.path); out << '\n';
+            indent(in); out << "custom int loom:mesh = " << model.mesh << '\n';
+            indent(in); out << "custom string[] loom:materials = [";
+            for(size_t i = 0; i < model.materials.size(); ++i){
+                if(i) out << ", ";
+                const int m = model.materials[i];
+                string(m >= 0 && size_t(m) < stage.materials.size() ? stage.materials[size_t(m)].name : std::string());
+            }
+            out << "]\n";
         }
         if(entity.splat){ indent(in); out << "custom asset loom:splat = "; asset(entity.splat->path); out << '\n'; }
         if(entity.joint){ indent(in); out << "custom color3f loom:joint = "; vector(entity.joint->colour); out << '\n'; }
@@ -221,7 +288,23 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
         if(const usda::Attribute* c = prim.find("primvars:displayColor")){
             if(!c->value.items.empty()) mesh.colour = asVector(c->value.items[0], mesh.colour);
         }
+        const std::string bound = textOf(prim, "loom:material");
+        for(size_t i = 0; i < stage.materials.size() && !bound.empty(); ++i) if(stage.materials[i].name == bound) mesh.material = int(i);
         entity.mesh = mesh;
+    }
+    const std::string modelPath = textOf(prim, "loom:model");
+    if(!modelPath.empty()){
+        Model model;
+        model.path = modelPath;
+        model.mesh = int(numberOf(prim, "loom:mesh", -1.0));
+        if(const usda::Attribute* list = prim.find("loom:materials")){
+            for(const usda::Value& v : list->value.items){
+                int index = -1;
+                for(size_t i = 0; i < stage.materials.size() && !v.text.empty(); ++i) if(stage.materials[i].name == v.text) index = int(i);
+                model.materials.push_back(index);
+            }
+        }
+        entity.model = model;
     }
     if(const usda::Attribute* joint = prim.find("loom:joint")) entity.joint = Joint{asVector(joint->value, Joint{}.colour)};
     const std::string splat = textOf(prim, "loom:splat");
@@ -258,6 +341,12 @@ bool saveProject(const Stage& stage, const std::string& path, std::string& error
         for(Id root : stage.roots()){
             file << '\n';
             writer.prim(stage, *stage.get(root), 0);
+        }
+
+        if(!stage.materials.empty()){
+            file << "\ndef Scope \"Materials\"\n{\n    custom bool loom:materialLibrary = 1\n";
+            for(size_t i = 0; i < stage.materials.size(); ++i) writer.material(stage, int(i));
+            file << "}\n";
         }
 
         if(!stage.media.empty()){
@@ -301,7 +390,46 @@ bool loadProject(const std::string& path, Stage& stage, std::string& error){
     if(const usda::Value* v = layer.meta("framesPerSecond")) loaded.framesPerSecond = v->number;
     else if(const usda::Value* t = layer.meta("timeCodesPerSecond")) loaded.framesPerSecond = t->number;
 
+    //Materijali PRVI: tijela na njih pokazuju imenom, a scope je zapisan iza scene
     for(const usda::Prim& prim : layer.prims){
+        if(!prim.find("loom:materialLibrary")) continue;
+        for(const usda::Prim& entry : prim.children){
+            Material m;
+            m.name = textOf(entry, "loom:name");
+            if(m.name.empty()) m.name = entry.name;
+            if(const usda::Attribute* c = entry.find("loom:baseColor")){
+                m.baseColor = glm::vec4(float(c->value.at(0, 1)), float(c->value.at(1, 1)), float(c->value.at(2, 1)), float(c->value.at(3, 1)));
+            }else if(!entry.children.empty()){
+                //Tudji materijal: boja iz UsdPreviewSurfacea
+                if(const usda::Attribute* d = entry.children.front().find("inputs:diffuseColor")) m.baseColor = glm::vec4(asVector(d->value, glm::vec3(1.0f)), 1.0f);
+            }
+            m.metallic = float(numberOf(entry, "loom:metallic", m.metallic));
+            m.roughness = float(numberOf(entry, "loom:roughness", m.roughness));
+            if(const usda::Attribute* e = entry.find("loom:emissive")) m.emissive = asVector(e->value, m.emissive);
+            m.emissiveStrength = float(numberOf(entry, "loom:emissiveStrength", 1.0));
+            const std::string alpha = textOf(entry, "loom:alphaMode");
+            m.alphaMode = alpha == "mask" ? Material::Alpha::Mask : alpha == "blend" ? Material::Alpha::Blend : Material::Alpha::Opaque;
+            m.alphaCutoff = float(numberOf(entry, "loom:alphaCutoff", 0.5));
+            m.doubleSided = numberOf(entry, "loom:doubleSided", 0.0) != 0.0;
+            auto slot = [&](const char* name, TextureSlot& t){
+                t.source = textOf(entry, std::string("loom:") + name);
+                if(const usda::Attribute* info = entry.find(std::string("loom:") + name + "Info")){
+                    t.image = int(info->value.at(0, -1));
+                    t.texCoord = int(info->value.at(1, 0));
+                }
+                t.amount = float(numberOf(entry, std::string("loom:") + name + "Amount", 1.0));
+            };
+            slot("baseColorMap", m.baseColorMap);
+            slot("metallicRoughnessMap", m.metallicRoughnessMap);
+            slot("normalMap", m.normalMap);
+            slot("occlusionMap", m.occlusionMap);
+            slot("emissiveMap", m.emissiveMap);
+            loaded.materials.push_back(m);
+        }
+    }
+
+    for(const usda::Prim& prim : layer.prims){
+        if(prim.find("loom:materialLibrary")) continue;
         if(prim.find("loom:media")){
             for(const usda::Prim& entry : prim.children){
                 Media media;

@@ -82,6 +82,26 @@ int main(){
     original.get(plane)->mesh = Warp::Mesh{Warp::Shape::Plane};
     original.get(plane)->visible = false;
     original.create("Nul");
+    //Materijali: jedan sa svim mapama (i slikom iz GLB-a), jedan obican
+    Warp::Material brass;
+    brass.name = "Mjed / stara";
+    brass.baseColor = glm::vec4(0.8f, 0.6f, 0.2f, 0.9f);
+    brass.baseColorMap = Warp::TextureSlot{"/modeli/sat.glb", 2, 1, 1.0f};
+    brass.metallic = 0.85f; brass.roughness = 0.35f;
+    brass.metallicRoughnessMap = Warp::TextureSlot{"/modeli/sat.glb", 0, 0, 1.0f};
+    brass.normalMap = Warp::TextureSlot{"/teksture/normal.png", -1, 0, 0.5f};
+    brass.occlusionMap = Warp::TextureSlot{"/teksture/ao.png", -1, 0, 0.7f};
+    brass.emissive = glm::vec3(1.0f, 0.5f, 0.0f); brass.emissiveStrength = 3.0f;
+    brass.emissiveMap = Warp::TextureSlot{"/teksture/svjetlo.png", -1, 0, 1.0f};
+    brass.alphaMode = Warp::Material::Alpha::Mask; brass.alphaCutoff = 0.4f; brass.doubleSided = true;
+    original.addMaterial(brass);
+    Warp::Material plain;
+    plain.name = "Plasticna";
+    original.addMaterial(plain);
+    original.get(cube)->mesh->material = 1;
+    const Warp::Id statue = original.create("Kip");
+    original.get(statue)->model = Warp::Model{"/modeli/sat.glb", 3, {0, -1, 1}};
+
     const Warp::Id hips = original.create("Hips");
     original.get(hips)->joint = Warp::Joint{glm::vec3(0.1f, 0.9f, 0.3f)};
     original.get(original.create("Spine", hips))->joint = Warp::Joint{};
@@ -151,6 +171,25 @@ int main(){
         report.check("zglobovi kostura", spine && spine->joint && hipsLoaded && hipsLoaded->joint &&
                                          hipsLoaded->joint->colour == glm::vec3(0.1f, 0.9f, 0.3f),
             "Hips i Spine s oznakom zgloba");
+        bool materialsSame = loaded.materials.size() == 2;
+        if(materialsSame){
+            const Warp::Material& m = loaded.materials[0];
+            auto same = [](const Warp::TextureSlot& a, const Warp::TextureSlot& b){
+                return a.source == b.source && a.image == b.image && a.texCoord == b.texCoord && a.amount == b.amount;
+            };
+            materialsSame = m.name == brass.name && m.baseColor == brass.baseColor && m.metallic == brass.metallic &&
+                            m.roughness == brass.roughness && m.emissive == brass.emissive && m.emissiveStrength == 3.0f &&
+                            m.alphaMode == brass.alphaMode && m.alphaCutoff == brass.alphaCutoff && m.doubleSided &&
+                            same(m.baseColorMap, brass.baseColorMap) && same(m.metallicRoughnessMap, brass.metallicRoughnessMap) &&
+                            same(m.normalMap, brass.normalMap) && same(m.occlusionMap, brass.occlusionMap) &&
+                            same(m.emissiveMap, brass.emissiveMap) && loaded.materials[1].name == "Plasticna";
+        }
+        const Warp::Entity* kip = loaded.get(loaded.find("/Kip"));
+        const Warp::Entity* kockaLoaded = loaded.get(loaded.find("/Kocka"));
+        report.check("PBR materijali sa svim mapama, veze tijela i modela", materialsSame && kip && kip->model &&
+                     kip->model->path == "/modeli/sat.glb" && kip->model->mesh == 3 &&
+                     kip->model->materials == std::vector<int>({0, -1, 1}) && kockaLoaded && kockaLoaded->mesh->material == 1,
+                     fmt("%zu materijala", loaded.materials.size()));
         report.check("kocka, ravnina, splat i nul",
             k && k->mesh && k->mesh->shape == Warp::Shape::Cube && k->mesh->colour == glm::vec3(0.2f, 0.4f, 0.9f) &&
             r && r->mesh && r->mesh->shape == Warp::Shape::Plane && s && s->splat && s->splat->path == "/tmp/scena.ply" &&

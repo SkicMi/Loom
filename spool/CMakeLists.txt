@@ -50,6 +50,7 @@ add_library(Spool STATIC
     src/Spool/DepthFile.cpp
     src/Spool/VideoFile.cpp
     src/Spool/GaussianPly.cpp
+    src/Spool/Gltf.cpp
     src/Spool/StbImplementation.cpp
 )
 

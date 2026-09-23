@@ -208,5 +208,28 @@ int main(){
                 stage.localAt(cube, 1.0).translation.y, stage.localAt(cube, 1.0).translation.z));
     }
 
+    //-- 7. biblioteka materijala: imena i brisanje ---------------------------------------------
+    {
+        Warp::Stage stage;
+        Warp::Material m;
+        m.name = "Celik";
+        const int a = stage.addMaterial(m);
+        const int b = stage.addMaterial(m);             //isto ime: dobije broj
+        m.name = "Guma";
+        const int c = stage.addMaterial(m);
+        const Warp::Id cube = stage.create("Kocka");
+        stage.get(cube)->mesh = Warp::Mesh{};
+        stage.get(cube)->mesh->material = c;
+        const Warp::Id model = stage.create("Model");
+        stage.get(model)->model = Warp::Model{"x.glb", 0, {a, b, c}};
+        stage.removeMaterial(b);
+        report.check("brisanje materijala popravlja veze iza njega",
+            stage.materials.size() == 2 && stage.materials[1].name == "Guma" && stage.get(cube)->mesh->material == 1 &&
+            stage.get(model)->model->materials == std::vector<int>({0, -1, 1}) && stage.materials[0].name == "Celik",
+            fmt("imena %s, %s; kocka pokazuje na %d", stage.materials[0].name.c_str(), stage.materials[1].name.c_str(),
+                stage.get(cube)->mesh->material));
+        report.check("isto ime materijala dobije broj", a == 0 && b == 1, "Celik, Celik1");
+    }
+
     return report.result();
 }

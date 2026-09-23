@@ -293,12 +293,50 @@ uint64_t Stage::fingerprint() const{
         if(e.splat) h.text(e.splat->path);
         h.add(e.joint.has_value());
         if(e.joint) h.add(e.joint->colour);
+        if(e.mesh) h.add(e.mesh->material);
+        h.add(e.model.has_value());
+        if(e.model){ h.text(e.model->path); h.add(e.model->mesh); h.add(e.model->materials.size());
+                     for(int m : e.model->materials) h.add(m); }
     });
+    h.add(materials.size());
+    for(const Material& m : materials){
+        h.text(m.name); h.add(m.baseColor); h.add(m.metallic); h.add(m.roughness); h.add(m.emissive); h.add(m.emissiveStrength);
+        h.add(m.alphaMode); h.add(m.alphaCutoff); h.add(m.doubleSided);
+        for(const TextureSlot* t : {&m.baseColorMap, &m.metallicRoughnessMap, &m.normalMap, &m.occlusionMap, &m.emissiveMap}){
+            h.text(t->source); h.add(t->image); h.add(t->texCoord); h.add(t->amount);
+        }
+    }
     h.add(media.size());
     for(const Media& m : media){
         h.text(m.path); h.text(m.result); h.add(m.frames); h.add(m.framesPerSecond); h.add(m.width); h.add(m.height);
     }
     return h.value;
+}
+
+int Stage::addMaterial(Material material){
+    if(material.name.empty()) material.name = "Materijal";
+    const std::string base = material.name;
+    for(int suffix = 1;; ++suffix){
+        bool taken = false;
+        for(const Material& m : materials) if(m.name == material.name) taken = true;
+        if(!taken) break;
+        material.name = base + std::to_string(suffix);
+    }
+    materials.push_back(std::move(material));
+    return int(materials.size()) - 1;
+}
+
+void Stage::removeMaterial(int index){
+    if(index < 0 || size_t(index) >= materials.size()) return;
+    materials.erase(materials.begin() + index);
+    auto fix = [&](int& reference){
+        if(reference == index) reference = -1;
+        else if(reference > index) --reference;
+    };
+    for(auto& [id, entity] : entities){
+        if(entity.mesh) fix(entity.mesh->material);
+        if(entity.model) for(int& m : entity.model->materials) fix(m);
+    }
 }
 
 }
