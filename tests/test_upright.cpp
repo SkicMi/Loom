@@ -227,7 +227,7 @@ int main(){
                 pose.orientation = glm::quatLookAt(forward, glm::vec3(0.0f, 1.0f, 0.0f));
                 poses.push_back(pose);
             }
-            for(int i = 0; i < 300; ++i) points.push_back(glm::vec3(rng.signedUnit() * 0.3f, rng.next() * 0.1f, rng.signedUnit() * 0.3f));
+            for(int i = 0; i < 300; ++i) points.push_back(glm::vec3(rng.signedUnit() * 0.3f, rng.signedUnit() * 0.3f, rng.signedUnit() * 0.3f));   //bez poda: ispituje se put preko kamera
             const glm::quat scrambled = scramble(poses, points, rng);
 
             const std::vector<uint8_t> posed(poses.size(), 1), solved(points.size(), 1);
@@ -244,6 +244,131 @@ int main(){
         }
         report.check("pogled 30 st dolje u predmet: gore tocan", worstRight < 0.05f,
             fmt("desne osi promase %.3f st; prosjek gornjih bi promasio %.1f st", worstRight, worstMean));
+    }
+
+    //-- 6b. STVARNI JOYSTICK: pogled 60 st dolje u predmet --------------------------------------
+    //
+    //Prvi prag razilazenja (45 st) je ovaj slucaj ODBIO na stvarnoj snimci: razilazenje je jednako
+    //kutu pogleda dolje, a predmet na stolu se snima strmo. Scena je ostala naopako
+    {
+        float worst = 0.0f;
+        bool allApplied = true;
+        for(int trial = 0; trial < 10; ++trial){
+            std::vector<Engine::Pose> poses;
+            std::vector<glm::vec3> points;
+            for(int i = 0; i < 30; ++i){
+                const float angle = -0.9f + 1.8f * float(i) / 29.0f;
+                Engine::Pose pose;
+                pose.position = glm::vec3(std::sin(angle) * 0.5f, 0.87f, std::cos(angle) * 0.5f);
+                const glm::vec3 forward = glm::normalize(-pose.position);
+                pose.orientation = glm::quatLookAt(forward, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                    glm::angleAxis(glm::radians(1.5f * rng.signedUnit()), glm::vec3(0.0f, 0.0f, 1.0f));
+                poses.push_back(pose);
+            }
+            for(int i = 0; i < 300; ++i) points.push_back(glm::vec3(rng.signedUnit() * 0.3f, rng.signedUnit() * 0.3f, rng.signedUnit() * 0.3f));   //bez poda: ispituje se put preko kamera
+            const glm::quat scrambled = scramble(poses, points, rng);
+
+            const std::vector<uint8_t> posed(poses.size(), 1), solved(points.size(), 1);
+            const Engine::UprightFrame frame = Engine::uprightFrame(poses, posed, points, solved);
+            allApplied = allApplied && frame.applied && frame.source == Engine::UprightSource::Cameras;
+            const glm::vec3 trueUp = frame.rotation * (scrambled * glm::vec3(0.0f, 1.0f, 0.0f));
+            worst = std::max(worst, std::acos(std::clamp(trueUp.y, -1.0f, 1.0f)) * 57.2957795f);
+        }
+        report.check("pogled 60 st dolje, horizont ravan: iz kamera, pogodi", allApplied && worst < 0.5f,
+            fmt("primijenjeno u svih 10: %s, najgore %.3f st", allApplied ? "da" : "NE", worst));
+    }
+
+    //-- 6d. STVARNI JOYSTICK: kamera strmo dolje u stol, horizont se gubi -----------------------
+    //
+    //Izmjereno na snimci C0255: horizont 17.9 st, procjena iz kamera promasi stol za 51 st. Kamere
+    //tu ne mogu odluciti; stol moze. Tocke su vecinom na stolu (y = 0), plus predmet na njemu
+    {
+        float worst = 0.0f;
+        int fromPlane = 0;
+        for(int trial = 0; trial < 10; ++trial){
+            std::vector<Engine::Pose> poses;
+            std::vector<glm::vec3> points;
+            for(int i = 0; i < 30; ++i){
+                const float angle = -0.9f + 1.8f * float(i) / 29.0f;
+                Engine::Pose pose;
+                pose.position = glm::vec3(std::sin(angle) * 0.4f, 0.7f, std::cos(angle) * 0.4f);
+                pose.orientation = glm::quatLookAt(glm::normalize(-pose.position), glm::vec3(0.0f, 1.0f, 0.0f)) *
+                    glm::angleAxis(glm::radians(35.0f * rng.signedUnit()), glm::vec3(0.0f, 0.0f, 1.0f));
+                poses.push_back(pose);
+            }
+            for(int i = 0; i < 700; ++i) points.push_back(glm::vec3(rng.signedUnit() * 0.6f, 0.0f, rng.signedUnit() * 0.6f));
+            for(int i = 0; i < 300; ++i) points.push_back(glm::vec3(rng.signedUnit() * 0.08f, rng.next() * 0.06f, rng.signedUnit() * 0.12f));
+            const glm::quat scrambled = scramble(poses, points, rng);
+
+            const std::vector<uint8_t> posed(poses.size(), 1), solved(points.size(), 1);
+            const Engine::UprightFrame frame = Engine::uprightFrame(poses, posed, points, solved);
+            if(frame.applied && frame.source == Engine::UprightSource::Plane) ++fromPlane;
+            const glm::vec3 trueUp = frame.rotation * (scrambled * glm::vec3(0.0f, 1.0f, 0.0f));
+            worst = std::max(worst, frame.applied ? std::acos(std::clamp(trueUp.y, -1.0f, 1.0f)) * 57.2957795f : 180.0f);
+        }
+        report.check("stvarni joystick (horizont +-35 st, stol): gore iz ravnine stola", fromPlane == 10 && worst < 1.0f,
+            fmt("iz ravnine u %d od 10, najgore %.3f st", fromPlane, worst));
+    }
+
+    //-- 6e. NEGATIVNA KONTROLA: zid i kos horizont ne smiju prevaliti svijet na bok ----------------
+    //
+    //Dominantna ravnina je ovdje ZID - normala mu je vodoravna. Da se uzme kao gore, scena bi legla
+    //na bok. Mora se odbiti
+    {
+        int applied = 0;
+        for(int trial = 0; trial < 10; ++trial){
+            std::vector<Engine::Pose> poses;
+            std::vector<glm::vec3> points;
+            levelScene(poses, points, rng, 2.0f, 35.0f);
+            points.clear();
+            for(int i = 0; i < 800; ++i) points.push_back(glm::vec3(rng.signedUnit() * 3.0f, rng.signedUnit() * 2.0f, -3.0f));
+            const std::vector<uint8_t> posed(poses.size(), 1), solved(points.size(), 1);
+            if(Engine::uprightFrame(poses, posed, points, solved).applied) ++applied;
+        }
+        report.check("zid uz kos horizont: ne prevali se na bok", applied == 0, fmt("primijenjeno u %d od 10", applied));
+    }
+
+    //-- 6f. NEGATIVNA KONTROLA iz stvarne snimke vrata: zid, ravne kamere, DALEKE tocke -----------
+    //
+    //Na snimci vrata je put preko ravnine uzeo VRATA kao pod i polozio scenu na bok. Uzrok: sredinu
+    //je racunao prosjekom, daleke tocke su je odvukle, tolerancija je narasla toliko da je svaka
+    //ravnina kroz vrata "sadrzala" 92 posto tocaka. Ovdje isto: zid pred ravnim kamerama plus
+    //tocke daleko iza njega. Gore mora ostati tocno
+    {
+        float worst = 0.0f;
+        int wrongSource = 0;
+        for(int trial = 0; trial < 10; ++trial){
+            std::vector<Engine::Pose> poses;
+            std::vector<glm::vec3> points;
+            levelScene(poses, points, rng, 3.0f, 1.0f);
+            points.clear();
+            for(int i = 0; i < 1500; ++i) points.push_back(glm::vec3(rng.signedUnit() * 1.0f, rng.signedUnit() * 1.2f, -2.0f + rng.signedUnit() * 0.01f));
+            for(int i = 0; i < 150; ++i) points.push_back(glm::vec3(rng.signedUnit() * 300.0f, rng.signedUnit() * 300.0f, -300.0f - rng.next() * 500.0f));
+            const glm::quat scrambled = scramble(poses, points, rng);
+            const std::vector<uint8_t> posed(poses.size(), 1), solved(points.size(), 1);
+            const Engine::UprightFrame frame = Engine::uprightFrame(poses, posed, points, solved);
+            if(frame.source == Engine::UprightSource::Plane) ++wrongSource;
+            const glm::vec3 trueUp = frame.rotation * (scrambled * glm::vec3(0.0f, 1.0f, 0.0f));
+            worst = std::max(worst, frame.applied ? std::acos(std::clamp(trueUp.y, -1.0f, 1.0f)) * 57.2957795f : 180.0f);
+        }
+        report.check("vrata + daleke tocke: zid se ne uzme kao pod", wrongSource == 0 && worst < 2.0f,
+            fmt("ravnina izabrana %d od 10 puta, najgore %.2f st", wrongSource, worst));
+    }
+
+    //-- 6c. NEGATIVNA KONTROLA uz labaviji prag: horizont nasumicno do 60 st -----------------------
+    //
+    //Sloznost je ovdje jos visoka (0.8 i vise), pa je ne odbija ona - mora je odbiti horizont ili
+    //razilazenje. Da je prag razilazenja 90 st, ovo bi proslo s nasumicnim gore
+    {
+        int applied = 0;
+        for(int trial = 0; trial < 10; ++trial){
+            std::vector<Engine::Pose> poses;
+            std::vector<glm::vec3> points;
+            levelScene(poses, points, rng, 2.0f, 60.0f);
+            const std::vector<uint8_t> posed(poses.size(), 1), solved(points.size(), 1);
+            if(Engine::uprightFrame(poses, posed, points, solved).applied) ++applied;
+        }
+        report.check("horizont nasumicno do 60 st: odbijeno", applied == 0, fmt("primijenjeno u %d od 10", applied));
     }
 
     //-- 7. kamera se nikad ne zakrene: desne osi ne odredjuju nista ----------------------------

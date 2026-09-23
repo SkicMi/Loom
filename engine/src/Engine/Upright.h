@@ -38,31 +38,63 @@ namespace Engine{
 // Reprojekcija, baza, izdvojena opazanja i polje ostataka ostaju bit po bit ista - test to brani
 //=============================================================================================
 
+//Odakle je dosao "gore"
+enum class UprightSource{
+    None,       //nije primijenjeno - ni kamere ni scena ne odredjuju gore
+    Cameras,    //okomito na desne osi kamera; snimatelj je drzao horizont ravno
+    Plane       //normala dominantne vodoravne ravnine - stol ili pod
+};
+
 struct UprightFrame{
     glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};   //stari sustav -> uspravni
     glm::vec3 origin{0.0f};                        //u STARIM koordinatama; oduzima se prije rotacije
     float coherence = 0.0f;                        //duljina prosjeka gornjih osi, 0 do 1 (izvjestaj)
     float rollDegrees = 0.0f;                      //koliko su horizonti kamera prosjecno kosi
     float disagreementDegrees = 0.0f;              //kut izmedju gore iz desnih osi i prosjeka gornjih
+    float instabilityDegrees = 0.0f;               //najvece razilazenje gore iz POLOVICA kamera
     float tiltDegrees = 0.0f;                      //koliko je scena bila nagnuta
     bool fromRightAxes = false;                    //gore iz desnih osi; false = iz prosjeka gornjih
+    UprightSource source = UprightSource::None;
+    float planeShare = 0.0f;                       //udio tocaka na ravnini, kad je gore iz ravnine
+    float planeDegrees = 0.0f;                     //kut normale ravnine od prosjeka gornjih osi
     bool applied = false;                          //false kad se kamere ne slazu oko smjera "gore"
 };
 
 struct UprightConfig{
-    //Iznad ovoga nagiba horizonta (srednji kvadratni, u stupnjevima) se ne dira nista: kamere
-    //tada nemaju zajednicki vodoravni smjer i "gore" iz njih ne postoji
-    float maximumRollDegrees = 20.0f;
+    //Iznad ovoga nagiba horizonta (srednji kvadratni, u stupnjevima) kamere NE odredjuju gore.
+    //Izmjereno na pravim snimkama: vrata 0.83 st, kameni zid 3.77 st - a joystick 17.88 st, jer
+    //kamera okrenuta gotovo ravno dolje u stol nema horizont pa je ruka slobodno vrti. Lazna
+    //rjesenja uz kose horizonte takodjer padaju oko 18-19 st. Prvi prag (20) je bio iznad oboje
+    float maximumRollDegrees = 10.0f;
+
+    //RAVNINA SCENE ima prednost pred kamerama (vidi uprightFrame). Najveca ravnina na koju kamere
+    //gledaju ODOZGO je stol ili pod, i njezina normala JEST gore
+    //Normala okrenuta prema kamerama, pomnozena s prosjekom gornjih osi: pod daje cos(pogled dolje),
+    //zid u koji se gleda odozgo daje negativno. Prvi prag je bio 45 st BEZ predznaka od prosjeka
+    //gornjih osi - i odbio je stol, jer je kod pogleda 60 st dolje prosjek nagnut upravo 60 st.
+    //0.3 pusta pod do oko 72 st pogleda dolje, a zid u koji se gleda odozdo tek preko 17 st
+    float minimumUpAlignment = 0.3f;
+    float minimumPlaneShare = 0.15f;         //koliki dio tocaka mora lezati na ravnini
 
     //Druga najmanja svojstvena vrijednost od zbroja r r' mjeri koliko se kamera zakretala oko
     //okomice. Ispod ovoga desne osi ne odredjuju gore i uzima se prosjek gornjih osi
     double minimumYawSpread = 0.005;
 
-    //Prosjek gornjih osi mora biti SLOZAN (duljina do 1) i s procjenom iz desnih osi se ne smije
-    //razilaziti vise od ovoga. Pogled ravno dolje u stol od 30 st daje razilazenje od 27 st - dakle
-    //45 pusta taj slucaj, a odbija vodoravni smjer pogleda koji desne osi daju kad su horizonti kosi
+    //Prosjek gornjih osi mora biti SLOZAN (duljina do 1): to odbija kose horizonte, kad desne osi
+    //daju vodoravni smjer pogleda umjesto gore. Obje negativne kontrole padaju bas ovdje.
+    //
+    //Razilazenje s procjenom iz desnih osi smije biti VELIKO. Prvi prag je bio 45 st, postavljen
+    //prema testu s pogledom 30 st dolje - i odbio je stvarnu snimku joysticka: kamera iz ruke gleda
+    //predmet na stolu prosjecno 48 st odozgo, razilazenje je 47.7 st, scena je ostala u sustavu
+    //prve kamere i u pregledniku stajala naopako. Razilazenje je kod ispravnog slucaja jednako kutu
+    //pogleda prema dolje. Iznad 80 st (pogled gotovo ravno dolje, dron u nadiru) prosjek gornjih osi
+    //je vodoravan i vise ne kaze ni predznak - tada se ne dira nista
     float minimumCoherence = 0.5f;
-    float maximumDisagreementDegrees = 45.0f;
+    float maximumDisagreementDegrees = 80.0f;
+
+    //STABILNOST: gore iz jedne polovice kamera se mora slagati s gore iz svih. To je mjera
+    //sigurnosti koja ne laze - preostali nagib horizonta laze, jer ga prilagodba osi upije
+    float maximumInstabilityDegrees = 3.0f;
 };
 
 //Racuna uspravni sustav. Ne mijenja nista - samo kaze sto bi trebalo
