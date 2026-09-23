@@ -48,7 +48,7 @@ detektor koji ne radi.
 | meta | čemu služi |
 |---|---|
 | **`VideoSolve`** | glavni alat: .MP4 → poze + točke + slike u COLMAP formatu; `--samo-kamera` za matchmove (bez slika, ~18 % brže) |
-| **`loom`** (LoomDesk) | editor: media lijevo, pogled, scena i svojstva desno, timeline; solve/splat desnim klikom, kocka kroz riješenu kameru preko snimke. `loom <mapa> --snimi x.png --rezultat <mapa_loom> --kadar N --kroz --kocka-u M` sprema vlastiti kadar (prozor se izvana ne da snimiti) |
+| **`loom`** (LoomDesk) | editor: media lijevo, pogled, scena i svojstva desno, timeline; solve/splat desnim klikom, kocka kroz riješenu kameru preko snimke. `loom <mapa> --snimi x.png --rezultat <mapa_loom> --kadar N --kroz --kocka-u M` sprema vlastiti kadar (prozor se izvana ne da snimiti). Projekt: `loom projekt.usda`, Spremi/Ctrl+S. Splat se crta u pogledu (B), samo nulti SH clan |
 | **`TruthBench`** | **apsolutna** greška na snimci koju Loom sam nacrta (istina poznata) |
 | **`ModelInfo`** | što vrijedi rekonstrukcija **bez poznate istine** — baza, šavovi |
 | **`OverlayBox`** | kocka zalijepljena za scenu preko pravih kadrova — prava VFX provjera |

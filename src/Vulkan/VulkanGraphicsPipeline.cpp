@@ -111,6 +111,15 @@ void VulkanGraphicsPipeline::createPipeline(){
             colorBlendAttachment.dstAlphaBlendFactor = vk::BlendFactor::eZero;
             colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
             break;
+        case BlendMode::Premultiplied:
+            colorBlendAttachment.blendEnable = VK_TRUE;
+            colorBlendAttachment.srcColorBlendFactor = vk::BlendFactor::eOne;
+            colorBlendAttachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+            colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
+            colorBlendAttachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+            colorBlendAttachment.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+            colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
+            break;
         case BlendMode::Additive:
             colorBlendAttachment.blendEnable = VK_TRUE;
             colorBlendAttachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;

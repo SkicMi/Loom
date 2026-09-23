@@ -30,6 +30,7 @@
 #include "LoomJob.h"
 #include "LoomPlate.h"
 #include "LoomScene.h"
+#include "LoomSplat.h"
 #include "LoomViewport.h"
 
 #include "Vulkan/ImageData.h"
@@ -153,6 +154,8 @@ int main(int argc, char** argv){
     config.appName = "Loom";
     config.engineName = "Loom";
     config.enableDepth = false;
+    //Splat rasterizator trazi 21 set i 71 storage buffer; zadanih 64 po tipu strog driver odbije
+    config.maxDescriptorSets = 256;
     LoomInitializer loom(config);
 
     GLFWwindow* window = loom.window->getWindow();
@@ -167,7 +170,7 @@ int main(int argc, char** argv){
     std::string startProject;             //loom projekt.usda otvara projekt
     std::string shotPath, shotResult, shotSave;
     double shotFrame = -1.0;
-    bool shotThrough = false, shotCube = false;
+    bool shotThrough = false, shotCube = false, shotNoSplat = false;
     double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
     for(int i = 1; i < argc; ++i){
         const std::string argument = argv[i];
@@ -175,6 +178,7 @@ int main(int argc, char** argv){
         else if(argument == "--rezultat" && i + 1 < argc) shotResult = argv[++i];
         else if(argument == "--kadar" && i + 1 < argc) shotFrame = std::atof(argv[++i]);
         else if(argument == "--kroz") shotThrough = true;
+        else if(argument == "--bez-splata") shotNoSplat = true;
         else if(argument == "--spremi" && i + 1 < argc) shotSave = argv[++i];
         else if(argument == "--kocka") shotCube = true;
         else if(argument == "--kocka-u" && i + 1 < argc){ shotCube = true; shotCubeFrame = std::atof(argv[++i]); }
@@ -411,6 +415,12 @@ int main(int argc, char** argv){
     int64_t plateShown = -1;
     std::vector<uint8_t> platePixels;
 
+    //-- splat u pogledu -----------------------------------------------------------------------------
+    Loom::ViewportSplat viewportSplat(loom);
+    bool showSplat = !shotNoSplat;
+    bool splatWasLoading = false;
+    int splatSettledFrames = 0;
+
     uint32_t framesDrawn = 0;
     if(!startProject.empty()){
         openProject(startProject);
@@ -559,7 +569,9 @@ int main(int argc, char** argv){
             }
             auto [plateButton, afterPlate] = toolButton("Snimka (V)", afterThrough, y, h, showPlate);
             if(plateButton) showPlate = !showPlate;
-            auto [saveButton, afterSave] = toolButton("Spremi", afterPlate + 12.0f, y, h);
+            auto [splatButton, afterSplat] = toolButton("Splat (B)", afterPlate, y, h, showSplat);
+            if(splatButton) showSplat = !showSplat;
+            auto [saveButton, afterSave] = toolButton("Spremi", afterSplat + 12.0f, y, h);
             if(saveButton) saveProjectNow();
             auto [newButton, afterNew] = toolButton("Novi", afterSave, y, h);
             if(newButton) ui.openMenu("novi");
@@ -1068,6 +1080,7 @@ int main(int argc, char** argv){
         if(keys.pressed(window, GLFW_KEY_SPACE)) playing = !playing;
         if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
         if(keys.pressed(window, GLFW_KEY_V)) showPlate = !showPlate;
+        if(keys.pressed(window, GLFW_KEY_B)) showSplat = !showSplat;
         const bool control = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                              glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
         if(keys.pressed(window, GLFW_KEY_S) && control) saveProjectNow();
@@ -1150,7 +1163,36 @@ int main(int argc, char** argv){
             }
         }
 
+        //SPLAT: prvi vidljivi splat u sceni, kroz kameru pogleda i svjetsku matricu svog entiteta
+        int framebufferWidth = 0, framebufferHeight = 0;
+        glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+        const float pixelScaleX = float(framebufferWidth) / float(std::max(1, windowWidth));
+        bool splatActive = false;
+        Treadle::Rect splatArea;
+        {
+            Warp::Id splatId = Warp::None;
+            stage.walk([&](const Warp::Entity& e, int){ if(splatId == Warp::None && e.visible && e.splat) splatId = e.id; });
+            if(showSplat && splatId != Warp::None){
+                viewportSplat.want(stage.get(splatId)->splat->path);
+                const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewportRect, view);
+                const glm::mat4 world = stage.worldMatrix(splatId, frame);
+                const glm::vec3 eyeLocal = glm::vec3(glm::inverse(world) * glm::vec4(camera.eye, 1.0f));
+                splatArea = camera.rect;
+                splatActive = viewportSplat.prepare(camera.view * world, eyeLocal, camera.focal, camera.centre,
+                                                    camera.rect, pixelScaleX);
+            }
+            const bool loadingNow = viewportSplat.isLoading();
+            if(loadingNow && !splatWasLoading) message = "splat se cita...";
+            if(!loadingNow && splatWasLoading){
+                const std::string problem = viewportSplat.error();
+                message = problem.empty() ? "splat u pogledu: " + std::to_string(viewportSplat.count()) + " gaussiana"
+                                          : "splat se ne da procitati: " + problem;
+            }
+            splatWasLoading = loadingNow;
+        }
+
         if(!loom.renderer.beginFrame()) continue;
+        if(splatActive) viewportSplat.compute();
         //Tek NAKON beginFrame: prsten teksture se oslanja na to da je renderer vec pricekao
         if(plateArrived && plateTexture){
             plateTexture->update(platePixels.data(), platePixels.size());
@@ -1160,8 +1202,6 @@ int main(int argc, char** argv){
         loom.renderer.beginPass();
         if(plateWanted && plateReady && plateMaterial){
             //Viewport suzen na kadar kamere; prozor i okvir mogu imati razlicite piksele (HiDPI)
-            int framebufferWidth = 0, framebufferHeight = 0;
-            glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
             const float sx = float(framebufferWidth) / float(std::max(1, windowWidth));
             const float sy = float(framebufferHeight) / float(std::max(1, windowHeight));
             const Loom::ViewCamera through = Loom::viewCameraFor(stage, frame, viewportRect, view);
@@ -1175,6 +1215,13 @@ int main(int argc, char** argv){
             commands.setViewport(0, vk::Viewport{0.0f, 0.0f, float(framebufferWidth), float(framebufferHeight), 0.0f, 1.0f});
             commands.setScissor(0, vk::Rect2D{{0, 0}, {uint32_t(framebufferWidth), uint32_t(framebufferHeight)}});
         }
+        //Splat preko ploce (premultiplicirano: gdje ga nema, snimka se vidi), ispod crta scene
+        if(splatActive){
+            const float sx = pixelScaleX, sy = float(framebufferHeight) / float(std::max(1, windowHeight));
+            viewportSplat.present(vk::Rect2D{{int32_t(splatArea.x * sx), int32_t(splatArea.y * sy)},
+                                             {uint32_t(splatArea.width * sx), uint32_t(splatArea.height * sy)}},
+                                  vk::Extent2D{uint32_t(framebufferWidth), uint32_t(framebufferHeight)});
+        }
         if(!scene.vertices.empty()){
             scenePainter.draw(loom.renderer, scene, uint32_t(windowWidth), uint32_t(windowHeight));
         }
@@ -1186,7 +1233,10 @@ int main(int argc, char** argv){
         //Kroz kameru se ceka i da ploca stigne iz niti - inace bi snimka pokazala pogled bez nje
         const bool plateSettled = !plateWanted || !plateStream.error().empty() ||
             plateShown == int64_t(throughEntity->camera->plateFirstFrame) + int64_t(std::llround(frame)) - 1;
-        if(!shotPath.empty() && ++framesDrawn >= 6 && (plateSettled || framesDrawn > 900)){
+        //I splat mora stici iz niti: datoteka od stotina MB se cita sekundama
+        splatSettledFrames = viewportSplat.isLoading() ? 0 : splatSettledFrames + 1;
+        const bool splatSettled = splatSettledFrames >= 3;
+        if(!shotPath.empty() && ++framesDrawn >= 6 && ((plateSettled && splatSettled) || framesDrawn > 3000)){
             loom.waitIdle();
             const ImageData shot = loom.renderer.readLastFrame();
             const Spool::Image image = Spool::imageFromPixels(shot.pixels.data(), shot.extent.width, shot.extent.height,

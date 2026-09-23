@@ -8,7 +8,10 @@
 enum class BlendMode{
     None,
     Alpha,
-    Additive
+    Additive,
+    //Boja je vec pomnozena s pokrivenoscu - sto splat rasterizator i pise (color += T * alpha * c,
+    //alfa = 1 - T). Obicni Alpha bi je pomnozio drugi put i rubovi bi potamnjeli
+    Premultiplied
 };
 
 struct PipelineConfig{
