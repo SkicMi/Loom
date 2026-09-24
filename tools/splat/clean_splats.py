@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Ciscenje floatera iz gotovog splata, bez novog treninga (floaters.py kaze sto se mice i zasto).
 
-    tools/splat/clean_splats.py model_mapa ulaz.ply izlaz.ply [--downscale 2]
+    tools/splat/clean_splats.py mapa_loom                      (scena.ply u mjestu, izvornik se cuva)
+    tools/splat/clean_splats.py model_mapa ulaz.ply izlaz.ply   (izricito)
+
+S jednom mapom: scena.ply se prvi put preimenuje u scena_prije_ciscenja.ply, a ocisceni se zapise
+kao scena.ply - editor ga ucita kao i prije. Iduci put se cisti opet iz tog izvornika, pa ponovno
+pokretanje ne cisti vec ocisceno.
 
 Mjeri se na kadrovima iz kojih je splat treniran i u razlucivosti u kojoj je treniran (trener
 zadano uzima pola), jer "pola piksela" znaci pola piksela te slike. Izlaz je isti PLY, samo bez
@@ -47,8 +52,8 @@ def read_ply(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model", help="mapa s cameras.txt, images.txt, points3D.txt")
-    ap.add_argument("input", help="splat (.ply)")
-    ap.add_argument("output", help="gdje spremiti ocisceni splat")
+    ap.add_argument("input", nargs="?", default="", help="splat (.ply); zadano mapa/scena.ply u mjestu")
+    ap.add_argument("output", nargs="?", default="", help="gdje spremiti ocisceni splat")
     ap.add_argument("--images", default="", help="mapa sa slikama za provjeru PSNR-a (zadano: model/images)")
     ap.add_argument("--downscale", type=int, default=2, help="razlucivost treninga; trener zadano 2")
     ap.add_argument("--visible", type=float, default=0.5, help="najmanje piksela u barem jednom kadru")
@@ -58,6 +63,20 @@ def main():
 
     device = "cuda"
     model = Path(args.model)
+    if not (model / "images.txt").exists():
+        raise SystemExit(f"{model}: nema images.txt - treba mapa rezultata (npr. C0257_loom)")
+    if bool(args.input) != bool(args.output):
+        raise SystemExit("Zadaj ili samo mapu, ili mapu, ulaz i izlaz")
+    if not args.input:
+        original = model / "scena_prije_ciscenja.ply"
+        args.input, args.output = str(original), str(model / "scena.ply")
+        if not original.exists():
+            if not (model / "scena.ply").exists():
+                raise SystemExit(f"{model}: nema scena.ply")
+            (model / "scena.ply").rename(original)
+            print(f"Izvornik sacuvan: {original}")
+        else:
+            print(f"Cisti se iz izvornika: {original}")
     header, names, raw = read_ply(args.input)
     column = {name: i for i, name in enumerate(names)}
     tensor = lambda cols: torch.from_numpy(np.ascontiguousarray(raw[:, cols])).to(device)
