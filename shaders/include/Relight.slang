@@ -1,45 +1,48 @@
-//Ono sto oba relight prolaza dijele: sto je ploha i kako se do nje dolazi.
+//What both relight passes share: what a surface is and how to get to one.
 //
-//Razlikuju se samo u tome sto rade s rezultatom - jedan crta svoje svjetlo, drugi ga dodaje
-//na snimku koja je vec tu.
+//They differ only in what they do with the result - one draws its own light, the other adds
+//it to a photo that is already there.
 
 #include "Lighting.slang"
 
 struct RelightData{
-    //Tocke i normale su u view prostoru, jer je dubina iz koje su nastale bila. Svjetla su u
-    //svjetskom. Ovo je most izmedu to dvoje, i jedini razlog zasto relight treba kameru
+    //Points and normals are in view space, because the depth they came from was. Lights are
+    //in world space. This is the bridge between the two, and the only reason relight needs
+    //the camera
     float4x4 inverseView;
 
-    //I natrag: trag sjene ide kroz sliku pozicija, koja je u view prostoru, pa se svjetlo
-    //mora dovesti k njoj umjesto da se svaka tocka vodi u svjetski prostor
+    //And back: the shadow trace walks the position image, which is in view space, so the
+    //light has to be brought to it instead of taking every point into world space
     float4x4 view;
 
     float4 baseColor;
     float4 surface;      //x = shininess, y = specularStrength
-    float4 intrinsics;   //fx, fy, cx, cy - kojima se tocka vraca u piksel
-    float4 shadow;       //x = koraka (0 = bez sjene), y = duljina, z = debljina, w = odmak
-    float4 shadowSlope;  //x = rast odmaka, y = slobodno, z = rast debljine, w = prednji pojas
-    float4 occlusion;    //x = jacina, y = blizi prsten (px), z = dalji prsten (px), w = mjerilo (m)
-    float4 occluder;     //x = samo maska zaklanja, y = polumjer glacanja zaklona (px),
-                         //z = koliko zraka, w = polumjer svjetla (m)
+    float4 intrinsics;   //fx, fy, cx, cy - used to project a point back to a pixel
+    float4 shadow;       //x = steps (0 = no shadow), y = reach, z = thickness, w = bias
+    float4 shadowSlope;  //x = bias growth, y = free, z = thickness growth, w = front band
+    float4 occlusion;    //x = strength, y = near ring (px), z = far ring (px), w = scale (m)
+    float4 occluder;     //x = only the mask occludes, y = occluder smoothing radius (px),
+                         //z = ray count, w = light radius (m)
     float4 imageSize;    //xy
 }
 
-//Sjena trazena kroz samu sliku.
+//Shadow traced through the image itself.
 //
-//Karte sjena ovdje nema i ne moze je biti: dubina daje LJUSKU, ne geometriju - postoji samo
-//prednja ploha onoga sto se vidi. Zato se zaklon trazi hodanjem: od tocke prema svjetlu, u
-//koracima, i na svakom se koraku pogleda sto u slici stoji na tom mjestu. Ako je ono blize
-//kameri od nase tocke, nesto je izmedu.
+//There is no shadow map here and there cannot be: depth gives a SHELL, not geometry - only
+//the front surface of what is visible exists. So occlusion is found by marching: from the
+//point toward the light, in steps, and at every step we look at what the image holds at that
+//spot. If it is closer to the camera than our point, something is in between.
 //
-//Granica je posteno reci: sjenu baca samo ono sto je U KADRU. Predmet iza kamere ili izvan
-//ruba ne postoji ni u jednoj slici, pa ni ne moze zakloniti. To je granica postupka, ne
-//njegova greska - i to je razlog zasto se ovo zove kontaktna sjena a ne sjena.
-//Srednja od pet vrijednosti, po poznatom identitetu:
+//The limit is fair to state: only what is IN THE FRAME casts a shadow. An object behind the
+//camera or off the edge does not exist in any image, so it cannot occlude. That is a limit
+//of the technique, not its bug - and it is why this is called a contact shadow and not a
+//shadow.
+//Median of five values, via the known identity:
 //    median5 = median3( max(min(a,b), min(c,d)), min(max(a,b), max(c,d)), e )
 //
-//Medijan a ne prosjek: prosjek preko siluete pomijesa covjeka i zid dva metra iza njega pa
-//izmisli kosinu koje nema, dok medijan uzme onu stranu koje ima vise
+//Median, not mean: a mean across a silhouette blends a person with a wall two metres behind
+//him and invents a slope that does not exist, while the median takes whichever side there is
+//more of
 float median3(float x, float y, float z){
     return max(min(x, y), min(max(x, y), z));
 }
@@ -49,19 +52,20 @@ float median5(float a, float b, float c, float d, float e){
 }
 
 struct ScreenTrace : IOcclusion{
-    float3 point;        //tocka koja se sjenca, u view prostoru
-    float2 pixel;        //gdje je ona na ekranu - za razbijanje pruga
+    float3 point;        //the point being shadowed, in view space
+    float2 pixel;        //where it is on screen - for breaking up banding
     RelightData data;
 
-    //Vraca piksel u kojem bi se view tocka vidjela. Isto sto i odprojekcija, samo unatrag
+    //Returns the pixel in which a view-space point would be seen. Same as unprojection, only
+    //the other way
     float2 project(float3 view){
         float depth = -view.z;
         return float2(data.intrinsics.x * view.x / depth + data.intrinsics.z,
                       data.intrinsics.y * view.y / depth + data.intrinsics.w);
     }
 
-    //Jedan trag prema jednoj tocki svjetla. Vraca 0 ili 1 - namjerno tvrdo, jer je tvrda
-    //odluka jedina koju se da usporediti s analitickom geometrijom do zadnjeg piksela
+    //One march toward one point of light. Returns 0 or 1 - deliberately hard, because a hard
+    //decision is the only one comparable to analytic geometry down to the last pixel
     float march(float3 toLight, float reach, float lightDepth, float dither){
         int steps = int(data.shadow.x);
         float stride = reach / float(steps);
@@ -71,25 +75,27 @@ struct ScreenTrace : IOcclusion{
             float t = (float(i) + dither) * stride + data.shadow.w;
             float3 sample = point + toLight * t;
 
-            //Iza kamere se ne da projicirati
+            //Behind the camera there is no projecting
             if(sample.z > -1e-3) break;
 
             float2 at = project(sample);
             if(at.x < 0.0 || at.y < 0.0 || at.x >= data.imageSize.x || at.y >= data.imageSize.y){
-                //Izaslo iz kadra: ono sto je vani ne postoji ni u jednoj slici
+                //Off the frame: what is outside does not exist in any image
                 break;
             }
 
             float2 uv = at / data.imageSize.xy;
 
-            //TKO SMIJE ZAKLANJATI. Bez maske zaklon je sve sto se vidi, pa i zid sam sebi
+            //WHO IS ALLOWED TO OCCLUDE. Without a mask, everything visible occludes, including
+            //the wall to itself
             if(data.occluder.x > 0.5 && occluderMask.SampleLevel(uv, 0.0).r < 0.5) continue;
 
             float4 stored = positionMap.SampleLevel(uv, 0.0);
-            if(stored.w < 0.5) continue;   //nebo: nema plohe koja bi zaklanjala
+            if(stored.w < 0.5) continue;   //sky: there is no surface to occlude with
 
-            //GEOMETRIJA KOJA BACA SJENU NIJE ISTA KOJA SE SJENCA: tragu je nabor na majici
-            //samo mrlja, pa smije citati medijan pet uzoraka umjesto same tocke
+            //THE GEOMETRY THAT CASTS THE SHADOW IS NOT THE GEOMETRY BEING SHADOWED: a fabric
+            //fold is just a smudge to the trace, so it may read a five-sample median instead
+            //of a single point
             float storedDistance = -stored.z;
 
             if(data.occluder.y > 0.0){
@@ -110,17 +116,19 @@ struct ScreenTrace : IOcclusion{
                     down.w  > 0.5 ? -down.z  : far);
             }
 
-            //Koliko je zapisana ploha BLIZE kameri od tocke do koje smo dohodali. Predznak je
-            //ovdje jedina stvar koja odlucuje: obrnut, sve je u sjeni
+            //How much nearer the stored surface is to the camera than the point we marched to. The
+            //sign is the only thing that decides here: flipped, everything is in shadow
             float inFront = (-sample.z) - storedDistance;
 
-            //Odmak raste s putem, jer lazni zaklon raste s njim
+            //Bias grows with the path, because false occlusion grows with it
             float bias = data.shadow.w + t * growth;
 
-            //Sto se dalje odhodalo, to se manje zna o tome sto je iza uzorkovane plohe
+            //The farther we marched, the less is known about what is behind the sampled
+            //surface
             float thickness = data.shadow.z * (1.0 + (t / reach) * data.shadowSlope.z);
 
-            //Ploha blize kameri od svjetla ne moze zaklanjati - svjetlo je ispred nje
+            //A surface nearer the camera than the light cannot occlude - the light is in
+            //front of it
             bool ahead = true;
             if(data.shadowSlope.w > 0.0 && lightDepth > 0.0){
                 ahead = (storedDistance - lightDepth) > 0.5 * data.shadowSlope.w;
@@ -136,23 +144,24 @@ struct ScreenTrace : IOcclusion{
         int steps = int(data.shadow.x);
         if(steps <= 0) return 1.0;
 
-        //Deterministicko razbijanje pruga: bez pomaka bi se svi pikseli uzorkovali na istim
-        //udaljenostima i rub sjene bi bio stepenica. Hash po pikselu, ne slucajan broj - ista
-        //slika dva puta mora dati istu sjenu
+        //Deterministic banding break: without an offset every pixel would sample at the same
+        //distances and the shadow edge would be a staircase. Per-pixel hash, not a random
+        //number - the same image twice must give the same shadow
         float dither = frac(sin(dot(pixel, float2(12.9898, 78.233))) * 43758.5453);
 
         float lightDepth = (light.positionOrDirection.w == 0.0) ? -1.0
             : -mul(data.view, float4(light.positionOrDirection.xyz, 1.0)).z;
 
-        //SVJETLO KAO PLOHA, NE KAO TOCKA.
+        //LIGHT AS A DISC, NOT A POINT.
         //
-        //Tocka daje samo tvrdu sjenu; polusjena postoji zato sto se dio izvora vidi a dio ne.
-        //Zato se hoda vise puta, svaki put prema DRUGOJ tocki na disku polumjera lightRadius,
-        //i broji koliko ih je stiglo. Jezgra ostaje potpuno tamna jer nijedna zraka ne prode,
-        //a rub dobiva sirinu koja raste s velicinom svjetla - dakle iz fizike, ne iz koraka.
+        //A point gives only a hard shadow; penumbra exists because part of the source is
+        //visible and part is not. So we march several times, each time toward a DIFFERENT
+        //point on a disc of radius lightRadius, and count how many get through. The core
+        //stays fully dark because no ray passes, and the edge gets a width that grows with
+        //the light size - so from physics, not from the step size.
         //
-        //Ovo si smijemo priustiti jer slika smije trajati: realtime bi platio N tragova po
-        //pikselu, nama je to jedina cijena
+        //We can afford this because the image is allowed to take time: realtime would pay N
+        //traces per pixel, for us it is the only cost
         int rays = max(int(data.occluder.z), 1);
         float lightRadius = data.occluder.w;
 
@@ -161,7 +170,7 @@ struct ScreenTrace : IOcclusion{
         float distance = 0.0;
 
         if(light.positionOrDirection.w == 0.0){
-            //Usmjereno svjetlo: smjer je isti svugdje, pa se hoda zadanu duljinu
+            //Directional light: the direction is the same everywhere, so we march a fixed distance
             toLight = normalize(-mul(data.view, float4(light.positionOrDirection.xyz, 0.0)).xyz);
         }
         else{
@@ -172,8 +181,8 @@ struct ScreenTrace : IOcclusion{
 
             toLight = away / distance;
 
-            //Dalje od svjetla nema sto zaklanjati - hodati preko njega znaci naci zaklon
-            //koji je iza izvora
+            //Past the light there is nothing to occlude with - marching past it means finding an
+            //occluder that is behind the source
             reach = min(reach, distance);
         }
 
@@ -181,7 +190,7 @@ struct ScreenTrace : IOcclusion{
             return march(toLight, reach, lightDepth, dither);
         }
 
-        //Dvije osi okomite na smjer prema svjetlu, da se disk moze razapeti
+        //Two axes perpendicular to the direction toward the light, so the disc can be spanned
         float3 helper = abs(toLight.y) < 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
         float3 axisU = normalize(cross(helper, toLight));
         float3 axisV = cross(toLight, axisU);
@@ -189,20 +198,22 @@ struct ScreenTrace : IOcclusion{
         float reached = 0.0;
 
         for(int ray = 0; ray < rays; ++ray){
-            //Vogelov spiralni raspored: tocke po disku ravnomjerno, bez slucajnih brojeva.
-            //Pomak po pikselu i dalje razbija pruge, a ista slika dva puta daje istu sjenu
+            //Vogel's spiral layout: points spread evenly over the disc, no random numbers.
+            //The per-pixel offset still breaks banding, and the same image twice gives the
+            //same shadow
             float index = float(ray) + 0.5;
             float radius = lightRadius * sqrt(index / float(rays));
             float angle = index * 2.39996323 + dither * 6.28318531;
 
             float3 offset = axisU * (radius * cos(angle)) + axisV * (radius * sin(angle));
 
-            //Svaka zraka krece s DRUGOG mjesta unutar koraka. Bez toga svih N tragova
-            //uzorkuje na istim udaljenostima, pa im se greska kvantizacije poklapa i zbroj
-            //je jednako zrnat kao jedan trag - disk se rasprsi, a korak ne
+            //Every ray starts from a DIFFERENT place inside the step. Otherwise all N traces
+            //sample at the same distances, their quantization errors line up, and the sum is
+            //just as grainy as a single trace - the disc spreads, the step does not
 
-            //Zraka prema pomaknutoj tocki na izvoru. Za usmjereno svjetlo je pomak kutni, pa
-            //se polumjer cita kao tangens - izvor je beskonacno dalek i nema ga se gdje pomaci
+            //Ray toward an offset point on the source. For a directional light the offset
+            //is angular, so the radius is read as a tangent - the source is infinitely far
+            //away and there is nowhere to shift it
             float3 rayDirection = (light.positionOrDirection.w == 0.0)
                 ? normalize(toLight + offset)
                 : normalize(toLight * distance + offset);
@@ -218,8 +229,8 @@ struct ScreenTrace : IOcclusion{
 [[vk::binding(0,1)]] Sampler2D positionMap;
 [[vk::binding(1,1)]] Sampler2D normalMap;
 
-//Tko smije zaklanjati. Bijelo znaci "svatko", pa je slika koja se ne postavi bijeli piksel i
-//sve ostaje kako je bilo
+//Who is allowed to occlude. White means "everyone", so an image that is never set is a
+//white pixel and everything stays as it was
 [[vk::binding(2,1)]] Sampler2D occluderMask;
 
 struct VSOutput{
@@ -227,27 +238,28 @@ struct VSOutput{
     float2 texCoord : TEXCOORD0;
 }
 
-//Ploha pod ovim pikselom, prebacena u svjetski prostor. exists je false gdje plohe nema
+//The surface under this pixel, moved into world space. exists is false where there is no
+//surface
 struct Surface{
     float3 worldPos;
-    float3 viewPos;      //ista tocka prije pretvorbe - trag sjene hoda u ovom prostoru
+    float3 viewPos;      //the same point before the transform - the shadow trace walks in this space
     float3 N;
     float3 V;
     bool exists;
 }
 
-//AMBIJENTNA OKLUZIJA IZ SAME KARTE DUBINE.
+//AMBIENT OCCLUSION FROM THE DEPTH MAP ITSELF.
 //
-//Ono sto ubaceno svjetlo cini SJEDECIM: bez nje predmet lebdi nad pozadinom, jer nista ne
-//potamni tamo gdje se dodiruju. Ne treba joj svjetlo - racuna se iz geometrije.
+//What makes inserted light look SEATED: without it an object floats over the background,
+//because nothing darkens where they touch. It needs no light - it is computed from geometry.
 //
-//Racuna se ovdje, u fragment shaderu, a ne u zasebnu teksturu. TypeGPU je preracunava jer
-//mora stati u osam milisekundi; nama slika smije trajati, pa 32 dodatna uzorka po pikselu
-//stedi cijelu jednu sliku, njen binding i njeno odrzavanje.
+//It is computed here, in the fragment shader, not into a separate texture. TypeGPU
+//recomputes it because it must fit in eight milliseconds; our image is allowed to take time,
+//so 32 extra samples per pixel saves an entire image, its binding and its maintenance.
 //
-//Dva prstena: blizi hvata dodir, dalji sjenu udubine. Susjed se broji utoliko koliko je
-//BLIZE (cleared) i utoliko koliko je jos uvijek u dodiru (contact) - drugo bez prvog bi
-//svaku daleku pozadinu proglasilo zaklonom
+//Two rings: the near one catches contact, the far one the crevice shadow. A neighbour counts
+//for how much it is NEARER (cleared) and for how much it is still touching (contact) - the
+//second without the first would declare every distant background an occluder
 float ambientOcclusion(float2 texCoord, float4 settings, float2 imageSize){
     if(settings.x <= 0.0) return 0.0;
 
@@ -257,8 +269,8 @@ float ambientOcclusion(float2 texCoord, float4 settings, float2 imageSize){
     float centreDistance = -centre.z;
     float scale = max(settings.w, 1e-4);
 
-    //Prag ispod kojeg je razlika sum, i domet preko kojeg susjed vise nije u dodiru. Oboje
-    //vezano uz mjerilo, pa se namjesta jedan broj a ne tri
+    //Threshold below which a difference is noise, and reach past which a neighbour is no
+    //longer in contact. Both are tied to the scale, so one number is tuned and not three
     float floorDistance = 0.1 * scale;
     float range = 4.0 * scale;
 
@@ -269,13 +281,13 @@ float ambientOcclusion(float2 texCoord, float4 settings, float2 imageSize){
         float radius = (ring == 0) ? settings.y : settings.z;
 
         for(int step = 0; step < 8; ++step){
-            float angle = float(step) * 0.7853981634;   //osmina kruga
+            float angle = float(step) * 0.7853981634;   //an eighth of the circle
             float2 offset = float2(cos(angle), sin(angle)) * radius;
 
             float4 neighbour = positionMap.SampleLevel(texCoord + offset / imageSize, 0.0);
             if(neighbour.w < 0.5) continue;
 
-            //Pozitivno znaci da je susjed BLIZE kameri, dakle da nesto strsi prema nama
+            //Positive means the neighbour is NEARER to the camera, so something sticks out toward us
             float difference = centreDistance - (-neighbour.z);
 
             float contact = 1.0 - saturate(abs(difference) / range);
@@ -307,7 +319,7 @@ Surface surfaceAt(float2 texCoord, float4x4 inverseView){
 
     out.worldPos = mul(inverseView, float4(point.xyz, 1.0)).xyz;
 
-    //Normala je smjer, ne mjesto: w = 0, pa je translacija ne dira
+    //A normal is a direction, not a position: w = 0, so the translation leaves it alone
     out.N = normalize(mul(inverseView, float4(normal.xyz, 0.0)).xyz);
     out.V = normalize(frame.cameraPosition.xyz - out.worldPos);
     return out;

@@ -1,5 +1,6 @@
 #include "TestHarness.h"
 #include <Engine/WeaverMotion.h>
+#include "../src/LoomWeaverMotion.h"
 
 #include <cmath>
 #include <filesystem>
@@ -19,6 +20,34 @@ int main(){
 
     report.check("identitet", std::string(Engine::WeaverMotion::poweredBy) == "NVIDIA Kimodo",
                  Engine::WeaverMotion::poweredBy);
+
+    const std::string unsafePrompt = std::string("walk ") + char(39) + "now" + char(39) + "; $(touch /tmp/should-not-run)";
+    const std::string expectedQuoted = std::string(1, char(39)) + "walk " + char(39) + char(92) + char(39) + char(39) +
+                                       "now" + char(39) + char(92) + char(39) + char(39) +
+                                       "; $(touch /tmp/should-not-run)" + char(39);
+    report.check("shell argument quoting", Loom::shellQuoteArgument(unsafePrompt) == expectedQuoted,
+                 Loom::shellQuoteArgument(unsafePrompt));
+
+    const std::string shellCommand = "printf '%s' " + Loom::shellQuoteArgument(unsafePrompt);
+    FILE* shell = popen(shellCommand.c_str(), "r");
+    std::string roundTrip;
+    if(shell){
+        char buffer[128];
+        while(std::fgets(buffer, sizeof(buffer), shell)) roundTrip += buffer;
+    }
+    const int shellStatus = shell ? pclose(shell) : -1;
+    report.check("shell quote round-trip against real /bin/sh",
+                 shellStatus == 0 && roundTrip == unsafePrompt, roundTrip);
+
+    const std::string generationCommand = Loom::buildWeaverMotionCommand(
+        "/tmp/Kimodo runner/bin/kimodo_gen", unsafePrompt, 120.0f, "/tmp/motion output/clip");
+    report.check("Kimodo command quotes values, clamps duration, and enables BVH",
+                 generationCommand.find(" " + Loom::shellQuoteArgument("/tmp/Kimodo runner/bin/kimodo_gen") + " ") != std::string::npos &&
+                 generationCommand.find(" " + Loom::shellQuoteArgument(unsafePrompt) + " --model ") != std::string::npos &&
+                 generationCommand.find("--output " + Loom::shellQuoteArgument("/tmp/motion output/clip")) != std::string::npos &&
+                 generationCommand.find("--duration 10.00") != std::string::npos &&
+                 generationCommand.find("--bvh --bvh_standard_tpose") != std::string::npos,
+                 generationCommand);
 
     const std::string bvh =
         "HIERARCHY\n"

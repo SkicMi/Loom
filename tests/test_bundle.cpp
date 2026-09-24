@@ -1,20 +1,22 @@
-// S3: bundle adjustment - poze i tocke se popravljaju ZAJEDNO, preko Schurovog komplementa.
+// S3: bundle adjustment - poses and points are fixed TOGETHER, through the Schur complement.
 //
-// PnP (S2) popravlja pozu uz nepomicne tocke, triangulacija (S1) tocke uz nepomicne poze. Svaka
-// vjeruje onome sto joj je dano, pa se greska seli s jedne strane na drugu. Ovdje su nepoznanice
-// oboje: 6 po kameri i 3 po tocki, za ovu scenu 42 + 900.
+// PnP (S2) fixes the pose with motionless points, triangulation (S1) the points with
+// motionless poses. Each trusts what it was given, so the error moves from one side to the
+// other. Here both are unknowns: 6 per camera and 3 per point, for this scene 42 + 900.
 //
-// Sto se brani:
+// What is defended:
 //
-//   jakobijan po tocki   protiv numericke derivacije, prema skali retka - isto pravilo koje je u
-//                        S2 otkrilo obrnut predznak
-//   zajedno je bolje     BA mora dati tocke bitno blize istini nego triangulacija s istim (krivim)
-//                        pozama. To je razlog zasto BA uopce postoji, pa je i mjereno
-//   bez suma             sve se mora vratiti na istinu do zaokruzivanja
-//   sa sumom             reprojekcija padne na razinu suma, a poze i tocke ostanu blizu
-//   sidro miruje         fiksna kamera se NE SMIJE pomaknuti ni za bit; bez nje cijelo rjesenje
-//                        smije kliziti kroz prostor i usporedba s istinom gubi smisao
-//   bez iteracija        kontrola da posao rade koraci, a ne sama pocetna pretpostavka
+//   point Jacobian    against numeric derivative, per-row scale - the same rule that in
+//                     S2 exposed a flipped sign
+//   together is better   BA must give points notably closer to the truth than triangulation
+//                     with the same (wrong) poses. That is why BA exists at all, so it is
+//                     measured
+//   without noise     everything must return to the truth up to rounding
+//   with noise        reprojection falls to the noise level, and poses and points stay close
+//   anchor rests      the fixed camera MUST NOT move by even a bit; without it the whole
+//                     solution may slide through space and comparison with the truth loses
+//                     meaning
+//   without iterations   control that the steps do the work, not the initial guess itself
 #include "TestHarness.h"
 
 #include <Engine/Bundle.h>
@@ -47,10 +49,11 @@ double medianPoseError(const std::vector<Engine::Pose>& got, const std::vector<E
     return medianOf(errors);
 }
 
-//MJERILO JE SLOBODNO. Uz fiksnu kameru 0 ostaje jedan neodredjen stupanj slobode: skaliraj sve
-//udaljenosti oko nje i nijedno opazanje se ne promijeni. Reprojekcija te dvije scene ne moze
-//razlikovati, pa se s istinom usporedjuje OBLIK - mjerilo se izmjeri iz baze prema drugoj kameri
-//i ponisti. U pravom radu mjerilo dolazi izvana (poznata baza ili senzor), ne iz slika
+//SCALE IS FREE. With camera 0 fixed one undetermined degree of freedom remains: scale every
+//distance around it and no observation changes. Reprojection cannot tell those two scenes
+//apart, so SHAPE is compared with the truth - scale is measured from the baseline toward the
+//second camera and cancelled. In real work scale comes from outside (a known baseline or
+//sensor), not from images
 double scaleOf(const std::vector<Engine::Pose>& got, const std::vector<Engine::Pose>& truth){
     const double mine = double(glm::length(got[1].position - got[0].position));
     const double real = double(glm::length(truth[1].position - truth[0].position));
@@ -61,9 +64,10 @@ glm::vec3 unscale(const glm::vec3& value, const glm::vec3& anchor, double scale)
     return anchor + (value - anchor) / float(scale);
 }
 
-//Poremecaj koji je uvijek isti: kamere 1.. u stranu i malo zakrenute, tocke razasute oko istine.
-//Kamera 0 se NE dira - ona je sidro, i da je pomaknuta pa fiksirana, cijelo bi rjesenje legitimno
-//sjelo u njezin krivi sustav
+//A disturbance that is always the same: cameras 1.. off to the side and slightly rotated,
+//points scattered around the truth. Camera 0 is NOT touched - it is the anchor, and had it
+//been moved and then fixed, the whole solution would legitimately settle into its wrong
+//frame
 void disturb(std::vector<Engine::Pose>& poses, std::vector<glm::vec3>& points){
     for(size_t i = 1; i < poses.size(); ++i){
         const float sign = (i % 2 == 0) ? 1.0f : -1.0f;
@@ -109,7 +113,7 @@ int main(){
     const Engine::SyntheticScene clean = Engine::makeSyntheticScene(config);
 
     // -------------------------------------------------------------------------------
-    // Jakobijan po tocki protiv numericke derivacije
+    // Point Jacobian against numeric derivative
     // -------------------------------------------------------------------------------
 
     {
@@ -120,7 +124,7 @@ int main(){
         for(size_t i = 0; i < clean.observations.size(); i += 91){
             const Engine::Observation& observation = clean.observations[i];
             const Engine::Pose& pose = clean.poses[observation.camera];
-            //Tocka namjerno pomaknuta s istine, da reziduali ne budu nula
+            //Point deliberately moved off the truth, so residuals are not zero
             const glm::vec3 point = clean.points[observation.point] + glm::vec3(0.04f, -0.03f, 0.05f);
 
             double residual[2], jacobian[2][3];
@@ -152,7 +156,7 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Bez suma: sve se vraca na istinu
+    // Without noise: everything returns to the truth
     // -------------------------------------------------------------------------------
 
     {
@@ -166,7 +170,7 @@ int main(){
         const Engine::BundleResult result = Engine::bundleAdjust(clean.observations, poses, points, clean.intrinsics);
 
 
-        //Mjerilo se izmjeri i ponisti prije usporedbe - vidi scaleOf
+        //Scale is measured and cancelled before comparison - see scaleOf
         const double scale = scaleOf(result.poses, clean.poses);
         std::vector<Engine::Pose> aligned = result.poses;
         std::vector<glm::vec3> alignedPoints = result.points;
@@ -181,7 +185,7 @@ int main(){
             fmt("poze %.4f -> %.2e m, tocke %.4f -> %.2e m, mjerilo %.6f, reprojekcija %.2f -> %.2e px kroz %u koraka",
                 poseBefore, poseAfter, pointBefore, pointAfter, scale, result.startMedian, result.endMedian, result.iterations));
 
-        //Sidro: bit po bit, jer fiksna kamera nema nepoznanica
+        //Anchor: bit for bit, because a fixed camera has no unknowns
         report.check("sidro miruje",
             result.poses[0].position == clean.poses[0].position && result.poses[0].orientation == clean.poses[0].orientation,
             "prva kamera je ostala tocno gdje je bila");
@@ -203,7 +207,7 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Zajedno je bolje nego svaki korak za sebe
+    // Together is better than each step alone
     // -------------------------------------------------------------------------------
 
     {
@@ -211,7 +215,7 @@ int main(){
         std::vector<glm::vec3> points = clean.points;
         disturb(poses, points);
 
-        //Triangulacija s tim istim (krivim) pozama - najbolje sto S1 sam moze
+        //Triangulation with those same (wrong) poses - the best S1 alone can do
         std::vector<uint8_t> solved;
         const std::vector<glm::vec3> triangulated = Engine::triangulateAll(clean.observations, poses,
                                                                            clean.intrinsics, clean.points.size(), solved);
@@ -229,7 +233,7 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Sa sumom
+    // With noise
     // -------------------------------------------------------------------------------
 
     {
@@ -252,28 +256,30 @@ int main(){
         const double poseAfter = medianPoseError(aligned, noisy.poses);
         const double pointAfter = medianPointError(alignedPoints, noisy.points);
 
-        //Reprojekcija ne smije pasti ispod suma: ispod njega nema sto biti, a solver koji to tvrdi
-        //zapravo je savio scenu oko suma
+        //Reprojection must not fall below the noise: below it there is nothing to be, and a solver
+        //claiming it actually bent the scene around the noise
         report.check("sa sumom: reprojekcija na razini suma, poze i tocke blizu",
             result.solved && result.endMedian > 0.2 && result.endMedian < 1.0 && poseAfter < 0.01 && pointAfter < 0.05,
             fmt("poze %.4f m, tocke %.4f m, reprojekcija %.2f -> %.3f px", poseAfter, pointAfter, result.startMedian, result.endMedian));
     }
 
     // -------------------------------------------------------------------------------
-    // Brzina: uvrstavanje tocaka mora znati za pomak kamera
-    // -------------------------------------------------------------------------------
+// Speed: point substitution must know about the camera moves
+// -------------------------------------------------------------------------------
     //
-    // I OVU PROVJERU JE TRAZILA MUTACIJA. Kad se u uvrstavanju izbaci clan E' dc - dakle kad se
-    // tocke poprave bez veze s time kako su se pomaknule kamere - solver i dalje stigne do istog
-    // odgovora, jer prigusenje prihvaca samo korake koji smanje gresku. Razlikuje se BRZINA:
+    //A MUTATION ASKED FOR THIS CHECK TOO. When the E' dc term is dropped from the substitution
+    //- that is, when points are fixed with no regard for how the cameras moved - the solver
+    //still reaches the same answer, because damping only accepts steps that reduce the error.
+    //What differs is SPEED:
     //
-    //   koraka    tocno          bez veze s kamerama
+    //   steps     exact          regardless of cameras
     //     1     2.78e-02 px            2.48 px
     //     2     1.17e-04               0.46
     //     3     2.40e-05               0.27
     //     6     2.40e-05               0.044
     //
-    //Prag 1e-3 je cetrdesetak puta iznad tocnog i dvjesto puta ispod mutiranog
+    //Threshold 1e-3 is about forty times above the exact and two hundred times below the
+    //mutated
 
     {
         std::vector<Engine::Pose> poses = clean.poses;
@@ -289,7 +295,7 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Kontrola: bez iteracija se nista ne mijenja
+    // Control: without iterations nothing changes
     // -------------------------------------------------------------------------------
 
     {

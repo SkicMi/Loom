@@ -699,7 +699,7 @@ int main(int argc, char** argv){
     // -------------------------------------------------------------------------------
 
     Treadle::Ui ui;
-    UiPainter painter(loom.device, loom.command, loom.getColorFormat(), vk::Format::eUndefined,
+    UiPainter painter(loom.device, loom.command, loom.getDescriptorPool(), loom.getColorFormat(), vk::Format::eUndefined,
                       1u << 17);
 
     //KOCKA ZA BRISANJE je zasebna od one iz argumenata. Ona je mjerni predmet i puna je; ova je

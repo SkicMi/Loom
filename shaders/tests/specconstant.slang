@@ -1,8 +1,10 @@
-// Test specijalizacijskih konstanti: shader koji ne zna svoju velicinu dok se pipeline ne stvori.
+// Test of specialization constants: a shader that does not know its own size until the pipeline
+// is created.
 //
-// GROUP je i velicina radne grupe i broj koji shader zapisuje. Zato se iz rezultata vidi dvoje
-// odjednom: da je konstanta stigla do koda, i da je stigla do same radne grupe - a to su dvije
-// razlicite stvari, jer prvo bi radilo i s push constantom a drugo ne bi.
+// GROUP is both the workgroup size and the value the shader writes out. The result proves two
+// things at once: that the constant reached the code, and that it reached the actual workgroup -
+// two different things, because the first would also work with a push constant and the second
+// would not.
 [[vk::constant_id(0)]] const uint GROUP = 8;
 
 struct Params{
@@ -18,11 +20,11 @@ struct Params{
 [shader("compute")]
 [numthreads(GROUP, 1, 1)]
 void computeMain(uint3 threadId : SV_GroupThreadID){
-    //Koliko je dretvi stvarno pokrenuto: svaka broji jednu. Ovo je jedini nacin da se izmjeri
-    //velicina radne grupe iznutra, jer je ona za shader konstanta a ne podatak
+    //How many threads were actually launched: each counts one. This is the only way to measure
+    //the workgroup size from inside, because to the shader it is a constant, not data
     InterlockedAdd(results[params.slot * 2 + 0], 1u);
 
-    //I sto konstanta kaze da jest. Jedna dretva je dovoljna
+    //And what the constant claims it is. One thread is enough
     if(threadId.x == 0){
         results[params.slot * 2 + 1] = GROUP;
     }

@@ -64,7 +64,7 @@ inline const Phase phases[] = {
 
 //Sto se trenutno vrti. Oba posla su vanjski procesi koji ispisuju napredak, pa ih jedna te ista
 //masinerija prati - razlikuju se samo po tome sto se u ispisu trazi
-enum class Task{ Solve, Train };
+enum class Task{ Solve, Train, WeaverMotion };
 
 struct Job{
     std::mutex lock;
@@ -115,7 +115,7 @@ inline void runSolve(Job& job, std::string command, std::string outputDirectory,
             for(int i = 0; i < int(sizeof(phases) / sizeof(phases[0])); ++i){
                 if(line.find(phases[i].marker) != std::string::npos && i > job.phase) job.phase = i;
             }
-        }else{
+        }else if(task == Task::Train){
             //TRENING ZNA TOCNO GDJE JE, pa se ne procjenjuje nego cita: redci su oblika
             //"   6999  gubitak 0.0330  gaussiana 3775883"
             if(line.find("gubitak") != std::string::npos && totalSteps > 0){

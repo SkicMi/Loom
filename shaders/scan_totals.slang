@@ -1,7 +1,7 @@
-// Prefiksni zbroj, prolaz 2 od 3: zbroj preko zbrojeva blokova.
+// Prefix sum, pass 2 of 3: the sum across the block sums.
 //
-// Jedna grupa od 256 dretvi kroz polje blockCount brojeva, u komadima. Za scenu od 741883
-// splatova to je 725 brojeva - jedan komad i nesto. Isti oblik kao radix_scan.
+// One 256-thread group runs over the blockCount array in chunks. For a scene of 741883 splats
+// that is 725 numbers - one chunk and a bit. Same shape as radix_scan.
 struct Params{
     uint count;
     uint blockCount;

@@ -50,7 +50,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <set>
 #include <string>
@@ -169,10 +171,12 @@ int main(int argc, char** argv){
 
     GLFWwindow* window = loom.window->getWindow();
     Treadle::Ui ui;
-    UiPainter painter(loom.device, loom.command, loom.getColorFormat(), vk::Format::eUndefined, 1u << 18);
+    UiPainter painter(loom.device, loom.command, loom.getDescriptorPool(),
+                      loom.getColorFormat(), vk::Format::eUndefined, 1u << 18);
 
     //Scena ima svoj slikar: oblak od sto tisuca tocaka ne stane u kapacitet suicelja
-    UiPainter scenePainter(loom.device, loom.command, loom.getColorFormat(), vk::Format::eUndefined, 1u << 20);
+    UiPainter scenePainter(loom.device, loom.command, loom.getDescriptorPool(),
+                           loom.getColorFormat(), vk::Format::eUndefined, 1u << 20);
 
     //Argumenti: prva mapa, pa zastavice za snimku (vidi zaglavlje)
     fs::path startAt = fs::current_path();
@@ -221,6 +225,11 @@ int main(int argc, char** argv){
 
     float mediaScroll = 0.0f, hierarchyScroll = 0.0f, propertiesScroll = 0.0f;
     std::string message;                  //zadnja poruka korisniku, u alatnoj traci
+    bool motionWorkflowOpen = false;
+    bool motionPromptFocused = false;
+    std::string motionPrompt = "a biped walks forward";
+    float motionDuration = 5.0f;
+    fs::path generatedMotionPath;
 
     //-- poslovi ----------------------------------------------------------------------------------
     Loom::Job job;
@@ -241,6 +250,25 @@ int main(int argc, char** argv){
 
     static float scrollAccumulated = 0.0f;
     glfwSetScrollCallback(window, [](GLFWwindow*, double, double y){ scrollAccumulated += float(y); });
+    static std::string typedCharacters;
+    glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint){
+        if(codepoint < 32 || codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return;
+        if(codepoint <= 0x7f){
+            typedCharacters.push_back(static_cast<char>(codepoint));
+        }else if(codepoint <= 0x7ff){
+            typedCharacters.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
+            typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        }else if(codepoint <= 0xffff){
+            typedCharacters.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+            typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+            typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        }else{
+            typedCharacters.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
+            typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
+            typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+            typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+        }
+    });
 
     //Strelice za pomicanje i rotacija u stupnjevima. Kutovi se pamte dok se uredjuju: kvaternion
     //natrag u Eulerove kutove nije jednoznacan, pa bi polje koje se vuce preko 90 st skocilo
@@ -367,6 +395,21 @@ int main(int argc, char** argv){
     //  mjerilo   solve nema metre, ali kamera iz ruke je na visini oka, oko 1.5 m iznad poda. Visina
     //            kamere nad podom je zato najbolja procjena metra koju scena daje; Kimodo pise metre.
     //            Kamera na stativu, dronu ili niskom kutu to krsi - dotjeruje se na grupi
+    auto newestMotionInBrowser = [&]() -> fs::path{
+        fs::path newest;
+        std::filesystem::file_time_type newestTime{};
+        for(const fs::path& motion : browser.motions){
+            std::error_code error;
+            const auto modified = fs::last_write_time(motion, error);
+            if(error) continue;
+            if(newest.empty() || modified > newestTime){
+                newest = motion;
+                newestTime = modified;
+            }
+        }
+        return newest;
+    };
+
     auto importMotion = [&](const fs::path& path){
         Loom::MotionPlacement placement;
         if(stage.size() > 0){
@@ -421,6 +464,63 @@ int main(int argc, char** argv){
             message = text;
         }
         focus = Focus::Entity;
+    };
+
+    auto importNewestMotion = [&](){
+        const fs::path motion = newestMotionInBrowser();
+        if(motion.empty()){
+            message = "U otvorenoj mapi nema BVH-a za uvoz.";
+            return;
+        }
+        importMotion(motion);
+        if(!message.empty()) message = "WeaverMotion: " + message;
+    };
+
+    auto startMotionGeneration = [&](){
+        if(job.running){
+            message = "Drugi Loom posao još radi.";
+            return;
+        }
+        const auto firstText = std::find_if_not(motionPrompt.begin(), motionPrompt.end(),
+            [](unsigned char c){ return std::isspace(c) != 0; });
+        if(firstText == motionPrompt.end()){
+            message = "Upiši opis pokreta prije generiranja.";
+            motionPromptFocused = true;
+            return;
+        }
+
+        const fs::path runner = fs::path(LOOM_ROOT_DIR) /
+                                "tools/weavermotion/.venv-clean/bin/kimodo_gen";
+        if(!fs::is_regular_file(runner)){
+            message = "Kimodo runner nije instaliran; vidi tools/weavermotion/README.md.";
+            return;
+        }
+
+        const fs::path outputDirectory = browser.at / "WeaverMotion";
+        std::error_code error;
+        fs::create_directories(outputDirectory, error);
+        if(error){
+            message = "Ne mogu napraviti izlaznu mapu WeaverMotion: " + error.message();
+            return;
+        }
+
+        const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        const fs::path outputStem = outputDirectory / ("motion_" + std::to_string(stamp));
+        generatedMotionPath = outputStem;
+        generatedMotionPath += ".bvh";
+
+        const std::string command = Loom::buildWeaverMotionCommand(
+            runner, motionPrompt, motionDuration, outputStem);
+        afterJob = After::Nothing;
+        startJob(command, outputDirectory.string(), Loom::Task::WeaverMotion, 0);
+        message = "Kimodo generira na GPU-u; LLM2Vec encoder radi na CPU-u.";
+        showLog = true;
+    };
+
+    auto openMotionWorkflow = [&](){
+        motionWorkflowOpen = true;
+        motionPromptFocused = true;
     };
 
     //-- projekt ----------------------------------------------------------------------------------
@@ -553,6 +653,20 @@ int main(int argc, char** argv){
     std::string windowTitle;
     while(!quitting){
         glfwPollEvents();
+        if(motionWorkflowOpen && motionPromptFocused){
+            if(motionPrompt.size() + typedCharacters.size() <= 4096) motionPrompt += typedCharacters;
+            typedCharacters.clear();
+            static bool backspaceWasDown = false;
+            const bool backspaceDown = glfwGetKey(window, GLFW_KEY_BACKSPACE) == GLFW_PRESS;
+            if(backspaceDown && !backspaceWasDown && !motionPrompt.empty()){
+                size_t first = motionPrompt.size() - 1;
+                while(first > 0 && (static_cast<unsigned char>(motionPrompt[first]) & 0xc0) == 0x80) --first;
+                motionPrompt.erase(first);
+            }
+            backspaceWasDown = backspaceDown;
+        }else{
+            typedCharacters.clear();
+        }
 
         //Otisak svaki kadar: prolaz kroz stablo i kljuceve, desetinka milisekunde i na 2301 kljucu
         const bool dirty = stage.fingerprint() != savedFingerprint;
@@ -637,6 +751,19 @@ int main(int argc, char** argv){
                 const Warp::Id id = stage.create("Splat", group);
                 stage.get(id)->splat = Warp::Splat{job.outputDirectory + "/scena.ply"};
                 message = "splat gotov: " + job.outputDirectory + "/scena.ply";
+            }else if(job.task == Loom::Task::WeaverMotion){
+                std::error_code error;
+                if(fs::is_regular_file(generatedMotionPath, error)){
+                    browser.at = generatedMotionPath.parent_path();
+                    browser.refresh();
+                    importMotion(generatedMotionPath);
+                    if(!message.empty()) message = "Kimodo gotovo; " + message;
+                    motionWorkflowOpen = true;
+                    motionPromptFocused = false;
+                }else{
+                    message = "Kimodo nije izradio očekivani BVH; pregledaj Ispis.";
+                    showLog = true;
+                }
             }
             browser.refresh();
         }
@@ -694,7 +821,9 @@ int main(int argc, char** argv){
             if(plateButton) showPlate = !showPlate;
             auto [splatButton, afterSplat] = toolButton("Splat (B)", afterPlate, y, h, showSplat);
             if(splatButton) showSplat = !showSplat;
-            auto [saveButton, afterSave] = toolButton(dirty ? "Spremi *" : "Spremi", afterSplat + 12.0f, y, h, dirty);
+            auto [motionButton, afterMotion] = toolButton("Text->Motion", afterSplat + 12.0f, y, h);
+            if(motionButton) openMotionWorkflow();
+            auto [saveButton, afterSave] = toolButton(dirty ? "Spremi *" : "Spremi", afterMotion + 12.0f, y, h, dirty);
             if(saveButton) saveProjectNow();
             auto [newButton, afterNew] = toolButton("Novi", afterSave, y, h);
             if(newButton) ui.openMenu("novi");
@@ -714,6 +843,8 @@ int main(int argc, char** argv){
                                   job.fraction >= 0.0f ? 100.0 * double(job.fraction) : 0.0,
                                   Loom::humanTime(elapsed).c_str());
                     status = text;
+                }else if(job.task == Loom::Task::WeaverMotion){
+                    status = "Kimodo generira motion - " + Loom::humanTime(elapsed);
                 }else{
                     status = "solve: ";
                     status += (phase >= 0 && phase < phaseCount) ? Loom::phases[phase].label : "pocinje";
@@ -757,6 +888,7 @@ int main(int argc, char** argv){
             }
             ui.separator();
             ui.label("DATOTEKE");
+            if(ui.button("Start motion from text")) openMotionWorkflow();
             ui.label(tail(browser.at.string(), size_t(std::max(8.0f, (layout.media.width - 30.0f) / 12.0f))));
             if(ui.selectable("^ mapa iznad", false)){
                 browser.at = browser.at.parent_path();
@@ -764,7 +896,7 @@ int main(int argc, char** argv){
                 mediaScroll = 0.0f;
             }
             for(const fs::path& folder : browser.folders){
-                if(ui.selectable("> " + folder.filename().string(), false)){
+                if(ui.folderRow(folder.filename().string(), false)){
                     browser.at = folder;
                     browser.refresh();
                     mediaScroll = 0.0f;
@@ -839,7 +971,35 @@ int main(int argc, char** argv){
         ui.dock("Svojstva", layout.properties, &propertiesScroll);
         {
             Warp::Entity* entity = focus == Focus::Entity ? stage.get(selected) : nullptr;
-            if(focus == Focus::Media && selectedMedia >= 0 && selectedMedia < int(stage.media.size())){
+            if(motionWorkflowOpen){
+                ui.label("WEAVERMOTION");
+                ui.value("engine", "NVIDIA Kimodo / SOMA RP v1.1");
+                ui.label("TEXT TO MOTION PROMPT");
+                const std::string promptLabel = motionPrompt.empty() ? "(klikni i upiši prompt)" : motionPrompt;
+                if(ui.selectable(Treadle::fitText(promptLabel + (motionPromptFocused ? "|" : ""),
+                                                  layout.properties.width - 28.0f, theme.textScale),
+                                 motionPromptFocused)){
+                    motionPromptFocused = true;
+                }
+                ui.label("Klikni polje pa tipkaj; Backspace briše; Enter generira.");
+                ui.slider("trajanje", &motionDuration, 1.0f, 10.0f, "s");
+                ui.value("tekst encoder", "LLM2Vec na CPU-u");
+                const fs::path runner = fs::path(LOOM_ROOT_DIR) /
+                                        "tools/weavermotion/.venv-clean/bin/kimodo_gen";
+                ui.value("Kimodo runner", fs::is_regular_file(runner) ? "spreman" : "nije instaliran");
+                const fs::path motion = newestMotionInBrowser();
+                ui.value("zadnji BVH", motion.empty() ? "nema u ovoj mapi" : motion.filename().string());
+                const fs::path biped = fs::path("/home/danijel/Downloads/Meshy_AI_Clockwork_Sentinel_biped/Meshy_AI_Clockwork_Sentinel_biped_Animation_Running_withSkin.fbx");
+                ui.value("WeaverMascott", fs::exists(biped) ? "rigged FBX pronađen" : "FBX nije pronađen");
+                if(ui.button("Generiraj animaciju")) startMotionGeneration();
+                if(ui.button("Uvezi BVH iz mape")) importNewestMotion();
+                if(ui.button("Ocisti prompt")) motionPrompt.clear();
+                if(ui.button("Zatvori WeaverMotion")){
+                    motionWorkflowOpen = false;
+                    motionPromptFocused = false;
+                }
+                ui.label("Viewport zasad prikazuje animirani Kimodo kostur; Loom još ne deformira skinned FBX mesh.");
+            }else if(focus == Focus::Media && selectedMedia >= 0 && selectedMedia < int(stage.media.size())){
                 const Warp::Media media = stage.media[size_t(selectedMedia)];
                 ui.value("snimka", Treadle::fitText(fs::path(media.path).filename().string(), 150.0f, theme.textScale));
                 char text[64];
@@ -1153,6 +1313,7 @@ int main(int argc, char** argv){
         //== POGLED: mis i tipke, tek kad suicelje nije uzelo mis ==================================
         const Treadle::Rect& viewportRect = layout.viewport;
         const bool overViewport = viewportRect.contains(float(cursorX), float(cursorY)) && !ui.wantsMouse();
+        if(leftDown && !leftWasDown && overViewport) openMotionWorkflow();
         const Loom::ViewCamera pickCamera = Loom::viewCameraFor(stage, frame, viewportRect, view);
 
         //Strelice odabranog: vide se i hvataju prije okretanja pogleda
@@ -1237,6 +1398,31 @@ int main(int argc, char** argv){
         rightWasDown = rightDown;
         lastX = cursorX; lastY = cursorY;
 
+        if(motionWorkflowOpen){
+            keys.pressed(window, GLFW_KEY_SPACE);
+            keys.pressed(window, GLFW_KEY_K);
+            keys.pressed(window, GLFW_KEY_V);
+            keys.pressed(window, GLFW_KEY_B);
+            keys.pressed(window, GLFW_KEY_W);
+            keys.pressed(window, GLFW_KEY_E);
+            keys.pressed(window, GLFW_KEY_S);
+            keys.pressed(window, GLFW_KEY_RIGHT);
+            keys.pressed(window, GLFW_KEY_LEFT);
+            keys.pressed(window, GLFW_KEY_HOME);
+            keys.pressed(window, GLFW_KEY_END);
+            keys.pressed(window, GLFW_KEY_F);
+            keys.pressed(window, GLFW_KEY_0);
+            keys.pressed(window, GLFW_KEY_KP_0);
+            keys.pressed(window, GLFW_KEY_DELETE);
+            const bool enter = keys.pressed(window, GLFW_KEY_ENTER);
+            const bool keypadEnter = keys.pressed(window, GLFW_KEY_KP_ENTER);
+            const bool escape = keys.pressed(window, GLFW_KEY_ESCAPE);
+            if(motionPromptFocused && (enter || keypadEnter)) startMotionGeneration();
+            if(escape){
+                motionWorkflowOpen = false;
+                motionPromptFocused = false;
+            }
+        }else{
         if(keys.pressed(window, GLFW_KEY_SPACE)) playing = !playing;
         if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
         if(keys.pressed(window, GLFW_KEY_V)) showPlate = !showPlate;
@@ -1276,6 +1462,8 @@ int main(int argc, char** argv){
             if(ui.menuOpen("pogled") || ui.menuOpen("media") || ui.menuOpen("entitet") || ui.menuOpen("projekt") ||
                ui.menuOpen("novi") || ui.menuOpen("izlaz")) ui.closeMenu();
             else if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
+        }
+
         }
 
         //== CRTANJE =================================================================================

@@ -1,12 +1,15 @@
-// Izvoz rekonstrukcije u COLMAP-ov format - most prema treningu gaussian splattinga.
+// Exporting the reconstruction into COLMAP's format - the bridge toward gaussian splatting
+// training.
 //
-// Treneri ocekuju bas taj format, pa je ovo tocka na kojoj nas solve prelazi dalje. Jedino sto
-// ovdje moze tiho promasiti je KONVENCIJA: COLMAP zapisuje rotaciju i pomak iz svijeta u kameru, u
-// klasicnoj konvenciji (+Z naprijed, +Y dolje), a nasa Pose je obrnuta.
+// Trainers expect exactly that format, so this is the point where our solve moves on. The only
+// thing that can silently miss here is the CONVENTION: COLMAP writes rotation and translation
+// from world to camera, in the classic convention (+Z forward, +Y down), and our Pose is
+// inverted.
 //
-// Zato test cita natrag VLASTITI zapis i projicira po COLMAP-ovim pravilima. Uz to ide pozitivna
-// kontrola: ista projekcija BEZ zrcaljenja mora ispasti ocito kriva. Bez nje test ne bi razlikovao
-// dvije konvencije - a kriva konvencija znaci trening koji da kasu i krivnju koja se trazi drugdje.
+// So the test reads back its OWN export and projects by COLMAP's rules. Along comes a positive
+// control: the same projection WITHOUT the mirroring must come out obviously wrong. Without it
+// the test could not tell the two conventions apart - and a wrong convention means training
+// that yields garbage and blame that is sought elsewhere.
 #include "TestHarness.h"
 
 #include <Engine/ColmapExport.h>
@@ -27,7 +30,7 @@ struct ColmapImage{
     glm::dquat rotation{1.0, 0.0, 0.0, 0.0};
     glm::dvec3 translation{0.0};
     std::string name;
-    std::vector<std::pair<glm::dvec2, uint32_t>> pixels;   //piksel i id tocke
+    std::vector<std::pair<glm::dvec2, uint32_t>> pixels;   //pixel and point id
 };
 
 }
@@ -54,7 +57,7 @@ int main(){
     if(!written) return report.result();
 
     // -------------------------------------------------------------------------------
-    // Citanje natrag
+    // Reading back
     // -------------------------------------------------------------------------------
 
     double fx = 0, fy = 0, cx = 0, cy = 0;
@@ -125,22 +128,22 @@ int main(){
         fmt("fx %.3f, fy %.3f, cx %.3f, cy %.3f, %ux%u", fx, fy, cx, cy, width, height));
 
     // -------------------------------------------------------------------------------
-    // Projekcija po COLMAP-ovim pravilima mora pogoditi zapisane piksele
+    // Projection by COLMAP's rules must hit the stored pixels
     // -------------------------------------------------------------------------------
 
-    //TRI ODVOJENE TVRDNJE, jer prva verzija ovog testa mijesala je dvije: usporedjivala je
-    //projekciju rekonstruiranih tocaka sa ZASUMLJENIM opazanjima i trazila poklapanje na 0.01 px.
-    //Ta razlika je sama reprojekcijska greska rekonstrukcije (medijan 0.53 px) - dakle mjerila se
-    //kvaliteta solvea umjesto ispravnosti konvencije
-    double worstAgainstEngine = 0.0;     //konvencija: isti broj kroz dva razlicita puta
-    double worstAgainstStored = 0.0;     //sadrzaj: u fileu su prava opazanja
-    double worstWithoutMirror = 0.0;     //kontrola: zapis bez zrcaljenja mora promasiti
+    //THREE SEPARATE CLAIMS, because the first version of this test mixed two: it compared the
+    //projection of reconstructed points with NOISY observations and demanded agreement to
+    //0.01 px. That difference is the reconstruction's own reprojection error (median 0.53 px)
+    //- so it measured solver quality instead of convention correctness
+    double worstAgainstEngine = 0.0;     //convention: same number through two different paths
+    double worstAgainstStored = 0.0;     //content: the real observations are in the file
+    double worstWithoutMirror = 0.0;     //control: a record without mirroring must miss
     size_t compared = 0;
 
     for(const ColmapImage& image : images){
         const glm::dmat3 rotation = glm::mat3_cast(glm::normalize(image.rotation));
 
-        //Ime kadra nosi redni broj kamere, isto kako ga je izvoz zapisao
+        //The frame name carries the camera index, as the export wrote it
         const uint32_t camera = uint32_t(std::stoul(image.name.substr(6, 4)));
 
         for(const auto& entry : image.pixels){
@@ -148,12 +151,12 @@ int main(){
             const uint32_t point = entry.second - 1;
 
             const glm::dvec3 inCamera = rotation * points[entry.second] + image.translation;
-            if(inCamera.z <= 0.0) continue;   //COLMAP: +Z naprijed
+            if(inCamera.z <= 0.0) continue;   //COLMAP: +Z forward
 
             const glm::dvec2 projected(cx + fx * inCamera.x / inCamera.z,
                                        cy + fy * inCamera.y / inCamera.z);
 
-            //Isti piksel, ali kroz Engineovu projekciju i nasu konvenciju
+            //Same pixel, but through the Engine's projection and our convention
             glm::vec2 mine;
             if(!Engine::project(state.poses[camera], scene.intrinsics, state.points[point], mine)) continue;
 
@@ -161,8 +164,8 @@ int main(){
             worstAgainstStored = std::max(worstAgainstStored, glm::length(projected - entry.first));
             ++compared;
 
-            //KONTROLA: zapis bez zrcaljenja. M * R_colmap vraca R' - tocno ono sto bi zapisao
-            //netko tko je preskocio prijelaz izmedju konvencija
+            //CONTROL: a record without mirroring. M * R_colmap returns R' - exactly what someone
+            //who skipped the convention switch would have written
             glm::dmat3 unmirrored = rotation;
             for(int column = 0; column < 3; ++column){
                 unmirrored[column][1] = -unmirrored[column][1];

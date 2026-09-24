@@ -7,19 +7,19 @@ CameraIntrinsics CameraIntrinsics::fromProjection(const glm::mat4& projection, u
         throw std::runtime_error("CameraIntrinsics: an image with no size has no intrinsics");
     }
 
-    //Piksel iz clip prostora: px = (x_ndc * 0.5 + 0.5) * width, a x_ndc = clip.x / clip.w.
-    //Za perspektivnu projekciju je clip.w = -z_view, pa ispada
+    //Pixel from clip space: px = (x_ndc * 0.5 + 0.5) * width, and x_ndc = clip.x / clip.w.
+    //For a perspective projection clip.w = -z_view, so it works out to
     //
     //    px = (0.5 * width * m00) * x_view / (-z_view) + 0.5 * width * (1 - m20)
     //
-    //sto je tocno oblik px = fx * x / dubina + cx. Odatle dva reda ispod
+    //which is exactly the form px = fx * x / depth + cx. Hence the two rows below
     CameraIntrinsics out;
     out.fx = 0.5f * float(width) * projection[0][0];
     out.fy = 0.5f * float(height) * projection[1][1];
     out.cx = 0.5f * float(width) * (1.0f - projection[2][0]);
     out.cy = 0.5f * float(height) * (1.0f - projection[2][1]);
 
-    //m22 = -far/(far-near), m32 = -far*near/(far-near). Dvije jednadzbe, dvije nepoznanice
+    //m22 = -far/(far-near), m32 = -far*near/(far-near). Two equations, two unknowns
     const float m22 = projection[2][2];
     const float m32 = projection[3][2];
 
@@ -36,8 +36,8 @@ CameraIntrinsics CameraIntrinsics::fromProjection(const glm::mat4& projection, u
 }
 
 float CameraIntrinsics::horizontalFov(uint32_t width) const{
-    //Dvije polovice odvojeno, jer glavna tocka ne mora biti u sredini. Kad jest, ovo se svede
-    //na uobicajeno 2*atan(width / (2*fx))
+    //The two halves separately, because the principal point need not be centered. When it is,
+    //this reduces to the usual 2*atan(width / (2*fx))
     const float focal = std::abs(fx);
     return std::atan((float(width) - cx) / focal) + std::atan(cx / focal);
 }

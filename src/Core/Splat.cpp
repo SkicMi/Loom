@@ -14,11 +14,12 @@ glm::vec3 activateScale(const glm::vec3& logScale){
 }
 
 glm::quat activateRotation(const glm::vec4& stored){
-    //glm::quat prima (w, x, y, z), a zapis nabraja rot_0..rot_3 istim redom
+    //glm::quat takes (w, x, y, z), and the record enumerates rot_0..rot_3 in the same order
     const glm::quat raw(stored.x, stored.y, stored.z, stored.w);
 
-    //Duljina nula nije rotacija. Takav gaussian u zapisu ne bi trebao postojati, ali ako se
-    //pojavi bolje je da bude neokrenut nego da cijela matrica postane NaN i otruje sve dalje
+    //Zero length is not a rotation. Such a gaussian should not exist in the record, but if one
+    //shows up it is better that it end up unrotated than that the whole matrix turn into NaN and
+    //poison everything downstream
     const float length = std::sqrt(raw.w*raw.w + raw.x*raw.x + raw.y*raw.y + raw.z*raw.z);
     if(length <= 0.0f){
         return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
@@ -27,7 +28,7 @@ glm::quat activateRotation(const glm::vec4& stored){
 }
 
 glm::vec3 colorFromSH0(const glm::vec3& dc){
-    //Nulti SH bazis je konstanta 0.5 * sqrt(1/pi)
+    //The zeroth SH basis is the constant 0.5 * sqrt(1/pi)
     constexpr float sh0 = 0.28209479177387814f;
     return glm::vec3(0.5f) + sh0 * dc;
 }
@@ -37,7 +38,7 @@ glm::vec3 colorFromSH(const glm::vec3& dc,
                       uint32_t coeffsPerChannel,
                       uint32_t degree,
                       const glm::vec3& direction){
-    //Stupanj 0 je jedini koji ne treba smjer, pa se i ne racuna kroz njega
+    //Degree 0 is the only one that needs no direction, so it is not even computed through it
     glm::vec3 result = colorFromSH0(dc);
     if(degree == 0 || rest == nullptr || coeffsPerChannel == 0){
         return result;
@@ -45,20 +46,20 @@ glm::vec3 colorFromSH(const glm::vec3& dc,
 
     const float length = glm::length(direction);
     if(length <= 0.0f){
-        return result;   //kamera tocno u gaussianu: smjera nema, ostaje ravna boja
+        return result;   //camera exactly at the gaussian: no direction, flat color remains
     }
     const glm::vec3 d = direction / length;
     const float x = d.x, y = d.y, z = d.z;
 
-    //Koeficijent k kanala c. Ovdje i nigdje drugdje zivi raspored po kanalima
+    //Coefficient k of channel c. Here and nowhere else does the per-channel layout live
     const auto sh = [&](uint32_t k){
         return glm::vec3(rest[0 * coeffsPerChannel + k],
                          rest[1 * coeffsPerChannel + k],
                          rest[2 * coeffsPerChannel + k]);
     };
 
-    //Konstante su vrijednosti realnih sfernih harmonika, iste koje koristi i trening. Predznaci
-    //su dio bazisa (Condon-Shortley), pa se ne smiju "pojednostaviti"
+    //The constants are values of real spherical harmonics, the same ones training uses. The signs
+    //are part of the basis (Condon-Shortley), so they must not be "simplified"
     constexpr float c1 = 0.4886025119029199f;
 
     result += -c1 * y * sh(0) + c1 * z * sh(1) - c1 * x * sh(2);
@@ -100,8 +101,8 @@ glm::vec3 colorFromSH(const glm::vec3& dc,
 glm::mat3 covariance3D(const glm::vec3& scale, const glm::quat& rotation){
     const glm::mat3 R = glm::mat3_cast(rotation);
 
-    //M = R * S, pa je kovarijanca M * M'. Mnozenje stupaca umjesto pune dijagonalne matrice:
-    //isti rezultat, i vidi se da S samo rasteze osi rotacije
+    //M = R * S, so the covariance is M * M'. Multiplying columns instead of the full diagonal
+    //matrix: same result, and it is clear that S only stretches the rotation axes
     glm::mat3 M;
     M[0] = R[0] * scale.x;
     M[1] = R[1] * scale.y;
@@ -135,8 +136,9 @@ bool prepare(const Splat& splat,
         return false;
     }
 
-    //Ogranicenje omjera se izvodi iz same slike: dopusta se pola sirine preko ruba, sto je
-    //dovoljno da mrlja koja jos zahvaca kadar bude tocna, a dalje od toga se ionako ne vidi
+    //The ratio limit is derived from the image itself: half a width over the edge is allowed,
+    //which is enough for a blotch that still reaches the frame to be correct, and beyond that it
+    //is not visible anyway
     const float limitX = 1.3f * principalX / focalX;
     const float limitY = 1.3f * principalY / std::fabs(focalY);
 
@@ -146,7 +148,7 @@ bool prepare(const Splat& splat,
 
     const float determinant = screen[0][0] * screen[1][1] - screen[0][1] * screen[1][0];
     if(determinant <= 0.0f){
-        return false;   //elipsa bez povrsine se ne da invertirati, a ni vidjeti
+        return false;   //an ellipse with no area cannot be inverted, or seen
     }
 
     const float inverse = 1.0f / determinant;
@@ -159,14 +161,15 @@ bool prepare(const Splat& splat,
     out.conicOpacityDepth.y = splat.opacity;
     out.conicOpacityDepth.z = depth;
 
-    //POLUMJER NA KOJEM SE MRLJA ODSIJECA: tri sigme po duzoj osi elipse.
+    //THE RADIUS AT WHICH THE BLOTCH GETS CUT OFF: three sigmas along the ellipse's longer axis.
     //
-    //Duza os je veca svojstvena vrijednost kovarijance, a za matricu 2x2 se dobije bez ikakve
-    //iteracije: sredina traga plus korijen iz razlike kvadrata. Pod korijenom stoji donja
-    //granica jer ga zaokruzivanje zna gurnuti malo ispod nule za gotovo kruzne mrlje.
+    //The longer axis is the covariance's larger eigenvalue, and for a 2x2 matrix it comes out
+    //without any iteration: half the trace plus the root of the difference of squares. A lower
+    //bound stands under the root, because rounding can push it slightly below zero for nearly
+    //circular blotches.
     //
-    //Tri sigme drze 98.89 % mase (1 - exp(-4.5)); ostatak je rep koji se u osam bita ionako ne
-    //vidi, a placao bi se pločicama koje splat jedva dira
+    //Three sigmas hold 98.89% of the mass (1 - exp(-4.5)); the rest is a tail that is not
+    //visible in eight bits anyway, and would be paid for in tiles the splat barely touches
     const float mid = 0.5f * (screen[0][0] + screen[1][1]);
     const float spread = std::sqrt(std::max(0.1f, mid * mid - determinant));
     out.conicOpacityDepth.w = std::ceil(3.0f * std::sqrt(mid + spread));
@@ -182,20 +185,20 @@ glm::mat2 covariance2D(const glm::mat3& covariance,
                        float blur){
     const glm::vec3 viewPosition = glm::vec3(view * glm::vec4(position, 1.0f));
 
-    //Kamera gleda niz -Z, pa je dubina pozitivna kad je tocka ispred nje
+    //Camera looks down -Z, so depth is positive when the point is in front of it
     const float depth = -viewPosition.z;
     if(depth <= 0.0f){
         return glm::mat2(0.0f);
     }
 
-    //Omjer prema osi se ogranicava PRIJE nego udje u Jakobijan. Jakobijan je tocan samo blizu
-    //tocke u kojoj je uzet; na rubu kadra bi razvukao mrlju preko pola ekrana. Ogranicava se
-    //samo ono sto ulazi u derivaciju - sama dubina ostaje prava
+    //The ratio to the axis is clamped BEFORE it enters the Jacobian. The Jacobian is exact only
+    //near the point where it is taken; at the frame edge it would stretch the blotch across half
+    //the screen. Only what enters the derivative is clamped - the depth itself stays real
     const float limitedX = std::clamp(viewPosition.x / depth, -tangentLimitX, tangentLimitX) * depth;
     const float limitedY = std::clamp(viewPosition.y / depth, -tangentLimitY, tangentLimitY) * depth;
 
-    //Derivacija projekcije (x/z, y/z) pomnozena zaristem. Tako se dobiju pikseli po jedinici
-    //scene, i zato su fx i fy u pikselima
+    //The projection derivative (x/z, y/z) multiplied by the focal lengths. That gives pixels per
+    //scene unit, which is why fx and fy are in pixels
     const float inverseDepth = 1.0f / depth;
     const float inverseDepth2 = inverseDepth * inverseDepth;
 
@@ -205,7 +208,7 @@ glm::mat2 covariance2D(const glm::mat3& covariance,
     J[1][1] = focalY * inverseDepth;
     J[2][1] = focalY * limitedY * inverseDepth2;
 
-    //Samo rotacija pogleda: pomak ne mijenja oblik mrlje
+    //Only the view rotation: a translation does not change the shape of the blotch
     const glm::mat3 W = glm::mat3(view);
     const glm::mat3 T = J * W;
 
@@ -277,8 +280,9 @@ bool insideBox(const glm::vec3& point,
                const glm::vec3& center,
                const glm::vec3& halfExtent,
                const glm::quat& orientation){
-    //U sustav kutije: konjugat rotira NATRAG. Kvaternion se normalizira jer kutija dolazi iz
-    //suicelja, a ondje nitko ne jamci duljinu - nenormiran bi tiho promijenio velicinu kutije
+    //Into the box's frame: the conjugate rotates BACK. The quaternion is normalized because the
+    //box comes from the UI, and there nobody guarantees length - an unnormalized one would
+    //silently change the size of the box
     const glm::vec3 local = glm::conjugate(glm::normalize(orientation)) * (point - center);
 
     return std::fabs(local.x) <= halfExtent.x

@@ -12,9 +12,9 @@ struct ImageData{
     size_t pixelCount() const{return size_t(extent.width) * extent.height;}
 };
 
-//Jesu li bajtovi u redu B,G,R,A. Swapchain gotovo uvijek pregovori bas eB8G8R8A8Srgb, pa slika
-//spremljena kao da je RGBA ima zamijenjeno crveno i plavo - a to je greska koja se u prozoru NE
-//vidi, jer prozor cita isti format kojim je pisano. Zato se poredak pita formatu, ne pamti napamet
+//Whether the bytes are in B,G,R,A order. The swapchain almost always negotiates eB8G8R8A8Srgb, so an
+//image saved as if it were RGBA has red and blue swapped - a bug the window does NOT show, because it
+//reads the same format it was written in. So the order is asked of the format, not remembered by heart
 inline bool isBgraFormat(vk::Format format){
     switch(format){
         case vk::Format::eB8G8R8A8Unorm:
@@ -48,11 +48,11 @@ inline uint32_t bytesPerPixel(vk::Format format){
         case vk::Format::eB8G8R8A8Unorm:
             return 4;
 
-        //Cetiri puna float-a. Slika pozicija, ne boje
+        //Four full floats. An image of positions, not colours
         case vk::Format::eR32G32B32A32Sfloat:
             return 16;
 
-        //Jedan kanal. Karta dubine iz filea nije boja i nema sto raditi u cetiri
+        //One channel. A depth map from a file is not a colour and has no business in four
         case vk::Format::eR32Sfloat:
             return 4;
         case vk::Format::eR16Unorm:

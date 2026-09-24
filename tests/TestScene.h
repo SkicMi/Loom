@@ -7,15 +7,15 @@
 #include <cstdint>
 #include <vector>
 
-//Koliko kuta smije otici na sam ZAPIS dubine, prije nego se racunu ista prigovori.
+//How much angle may go into the depth WRITE itself before the computation complains.
 //
-//Zapisana dubina je float32: na vrijednosti d njen korak je d * 2^-23. Kroz obrat
-//linearizacije taj korak u pravim jedinicama iznosi (far-near) * D^2 / (near*far) puta
-//toliko, a normala ga vidi kao nagib te visine nad sirinom jednog piksela. Sve je poznato,
-//pa se prag racuna umjesto da se bira okom.
+//Stored depth is a float32: at value d its step is d * 2^-23. Through the reverse of
+//linearization that step is (far-near) * D^2 / (near*far) times as much in real units,
+//and the normal sees it as a slope of that height over the width of one pixel. Everything
+//is known, so the threshold is computed rather than picked by eye.
 //
-//Vrijedi za ravne plohe okrenute prema kameri; ploha pod ostrim kutom ima veci korak dubine
-//po pikselu, pa je ovo donja granica i mjereni broj se uvijek i ispisuje
+//Holds for flat surfaces facing the camera; a surface at a sharp angle has a bigger depth
+//step per pixel, so this is the lower bound and the measured number is always printed
 inline float depthPrecisionAngle(float viewDepth, const CameraIntrinsics& intrinsics){
     const float n = intrinsics.nearPlane;
     const float f = intrinsics.farPlane;
@@ -28,16 +28,17 @@ inline float depthPrecisionAngle(float viewDepth, const CameraIntrinsics& intrin
     return glm::degrees(std::atan(unitsPerStep / pixelSize));
 }
 
-//Najveci nagib zrcalnog clana pow(cos, shininess) po kutu. Postize se na cos^2 = (s-1)/s
+//Steepest slope of the specular term pow(cos, shininess) per angle. Attained at cos^2 = (s-1)/s
 inline float specularSlope(float shininess){
     if(shininess <= 1.0f) return 1.0f;
     const float cosine = std::sqrt((shininess - 1.0f) / shininess);
     return shininess * std::pow(cosine, shininess - 1.0f) * std::sqrt(1.0f - cosine * cosine);
 }
 
-//Koliko se izracunato svjetlo smije razlikovati samo zato sto normala dolazi iz zapisane
-//dubine umjesto iz trokuta. Difuzni clan se s kutom mijenja najvise 1:1, zrcalni najvise
-//specularSlope puta - i oboje je pomnozeno bojom svjetla, koja nije veca od 1
+//How much computed light may differ just because the normal comes from stored depth
+//rather than from the triangle. The diffuse term changes with angle at most 1:1, the
+//specular at most specularSlope times - and both are multiplied by the light color,
+//which is no greater than 1
 inline float lightingTolerance(float viewDepth, const CameraIntrinsics& intrinsics, float shininess){
     const float radians = glm::radians(depthPrecisionAngle(viewDepth, intrinsics));
     return radians * (1.0f + specularSlope(shininess));

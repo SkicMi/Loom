@@ -70,6 +70,10 @@ class VulkanRenderer{
 
     VulkanImage* depthImage = nullptr;
 
+    //Zajednicki bazen descriptor setova, onaj koji fajl LoomInitializer napravi. Svi materijali
+    //iz njega uzimaju setove; suicelje crta zbog atlasa jos jedan
+    const vk::raii::DescriptorPool& getDescriptorPool() const {return descriptorPool;}
+
 
     
     bool beginFrame();

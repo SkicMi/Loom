@@ -1,36 +1,36 @@
-// Camera solve kao SNIMKA: prava snimka udje, a izadje let kroz ono sto je solver nasao.
+// Camera solve as SHOT: a real shot goes in, and out comes a flight through what the solver found.
 //
-//   ./SolveMovie virtual [kadrova] [luk u stupnjevima] [izlazna mapa]
-//   ./SolveMovie snimka.mp4 [korak] [kadrova] [vidno polje] [izlazna mapa]
+//   ./SolveMovie virtual [frames] [arc in degrees] [output directory]
+//   ./SolveMovie shot.mp4 [step] [frames] [field of view] [output directory]
 //
-// Dva nacina, i razlika medju njima je cijeli smisao:
+// Two modes, and the difference between them is the whole point:
 //
-//   virtual      Loom sam nacrta scenu i vodi kameru poznatim putem. Solver dobije SAMO PIKSELE.
-//                Istina je poznata, pa se rijesena putanja crta preko prave i promasaj se vidi
-//   snimka       prava datoteka. Istine nema, pa se crta samo ono sto je solver nasao
+//   virtual      Loom draws the scene itself and drives the camera along a known path. The solver gets ONLY PIXELS.
+//                The truth is known, so the solved trajectory is drawn over the real one and the miss shows
+//   snimka       a real file. There is no truth, so only what the solver found is drawn
 //
-// Zasto uopce: dosad se rjesenje branilo brojkama (reprojekcija, broj rijesenih kamera). Brojka
-// kaze je li rjesenje konzistentno, ali ne kaze IZGLEDA LI PUTANJA KAO PUTANJA. Oko to vidi
-// odmah - trzaj, zavoj koji se vraca u sebe, kamera koja odleti - a nijedna od dvije mjere to ne
-// mora primijetiti.
+// Why at all: so far the solution was defended with numbers (reprojection, count of solved cameras). A number
+// says whether the solution is consistent, but not whether THE PATH LOOKS LIKE A PATH. The eye sees it
+// at once - a jolt, a loop that turns back on itself, a camera that flies off - and neither of the two measures
+// necessarily notices.
 //
-// Tri cina, svaki gleda istu stvar s druge strane:
+// Three acts, each views the same thing from the other side:
 //
-//   1. obilazak      pogled kruzi, a kamere se pale REDOM kojim su snimljene - pa se vidi kako
-//                    putanja nastaje, a ne samo kako izgleda gotova
-//   2. odozgo        isti oblak, pogled se spusta; tlocrt putanje je najstroziji sudac zavoja
-//   3. voznja        pogled SJEDNE u rijesenu kameru i prolazi njezinim putem. Ako su poze krive,
-//                    oblak ce se tresti - a to se iz brojke ne vidi
+//   1. orbit         the view circles, and cameras light up IN THE ORDER they were shot - so you see how
+//                    the path is born, not just how the finished one looks
+//   2. top-down      the same cloud, the view descends; the path's floor plan is the strictest judge of a loop
+//   3. ride          the view SITS in the solved camera and travels its path. If poses are wrong,
+//                    the cloud will shake - and no number shows that
 //
-// STO JE OVDJE PRIKAZ A STO REZULTAT. Rezultat su poze i tocke; sve ostalo je prikaz i tako je i
-// oznaceno:
+// WHAT IS DISPLAY AND WHAT IS RESULT HERE. The result is poses and points; everything else is display and it is
+// marked as such:
 //
-//   mjerilo            rekonstrukcija ga nema (prvi pomak je jedinicni), pa se putanja rastegne
-//                      na stalnu velicinu samo da uvijek stane u kadar
-//   gore               iz slika se ne zna gdje je gore. Uzima se prosjecna "gore" os kamera -
-//                      snimatelj drzi kameru uspravno - i to je pretpostavka, ne mjerenje
-//   odbacene tocke     tocke jako daleko od sredista oblaka se ne crtaju. One SU u rezultatu;
-//                      samo bi razvukle kadar toliko da se ostalo ne vidi
+//   scale              reconstruction has none (the first step is unit), so the path is stretched
+//                      to a fixed size just so it always fits in the frame
+//   up                 the images do not say where up is. The average "up" axis of the cameras is taken -
+//                      the shooter holds the camera level - and that is an assumption, not a measurement
+//   dropped points     points far from the cloud's centre are not drawn. They ARE in the result;
+//                      they would only stretch the frame so wide the rest could not be seen
 #include <Loom/Loom.h>
 
 #include "Core/CameraIntrinsics.h"

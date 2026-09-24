@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <vector>
 
 namespace{
 
@@ -23,6 +24,22 @@ bool isSrgb(vk::Format format){
     }
 }
 
+//Slikovni dio atlasa iz FontData.h: jedno-kanalna pokrivenost, izgladjena obicnim linearnim
+//filterom. Bez mip lanaca i bez ponavljanja: tekst se nikad ne smanjuje, a rub tinte smije
+//gledati samo u praznu marginu celije, ne u susjedno slovo
+Texture makeAtlas(const VulkanDevice& device, const VulkanCommand& command){
+    int width = 0, height = 0;
+    const unsigned char* pixels = Treadle::fontAtlas(width, height);
+
+    TextureConfig config;
+    config.format = vk::Format::eR8Unorm;
+    config.filter = vk::Filter::eLinear;
+    config.addressMode = vk::SamplerAddressMode::eClampToEdge;
+    config.generateMipmaps = false;
+
+    return Texture(device, command, pixels, vk::Extent2D{uint32_t(width), uint32_t(height)}, config);
+}
+
 }
 
 PipelineConfig UiPainter::makeConfig(vk::Format colorFormat){
@@ -31,15 +48,15 @@ PipelineConfig UiPainter::makeConfig(vk::Format colorFormat){
     config.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/ui.vert.spv";
     config.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/ui.frag.spv";
 
-    //Vlastiti raspored vrha, ne Loomov Vertex: suicelje ima dvije koordinate i boju s
-    //prozirnoscu, a normala i texCoord bi bili 20 bajtova po vrhu koje nitko ne cita
+    //Vlastiti raspored vrha, ne Loomov Vertex: suicelje zivi U PIKSLIMA, a vrh nosi i podatke
+    //kojima fragment shader oblikuje cetverokut (srediste, pola, radius, rezim, UV)
     vk::VertexInputBindingDescription binding;
     binding.binding = 0;
     binding.stride = sizeof(Treadle::Vertex);
     binding.inputRate = vk::VertexInputRate::eVertex;
     config.vertexBindings = {binding};
 
-    std::vector<vk::VertexInputAttributeDescription> attributes(2);
+    std::vector<vk::VertexInputAttributeDescription> attributes(5);
     attributes[0].location = 0;
     attributes[0].binding = 0;
     attributes[0].format = vk::Format::eR32G32Sfloat;
@@ -49,12 +66,28 @@ PipelineConfig UiPainter::makeConfig(vk::Format colorFormat){
     attributes[1].binding = 0;
     attributes[1].format = vk::Format::eR32G32B32A32Sfloat;
     attributes[1].offset = offsetof(Treadle::Vertex, r);
+
+    attributes[2].location = 2;
+    attributes[2].binding = 0;
+    attributes[2].format = vk::Format::eR32G32Sfloat;
+    attributes[2].offset = offsetof(Treadle::Vertex, centerX);
+
+    //u, v (tekst) i pola dolaze zajedno, pa je jedan atribut cetiri broja
+    attributes[3].location = 3;
+    attributes[3].binding = 0;
+    attributes[3].format = vk::Format::eR32G32B32A32Sfloat;
+    attributes[3].offset = offsetof(Treadle::Vertex, u);
+
+    attributes[4].location = 4;
+    attributes[4].binding = 0;
+    attributes[4].format = vk::Format::eR32G32B32A32Sfloat;
+    attributes[4].offset = offsetof(Treadle::Vertex, radius);
     config.vertexAttributes = attributes;
 
-    //Bez seta 0 i bez descriptora: shader ne cita ni kameru ni teksturu. Cjevovod koji bi ih
-    //deklarirao trazio bi vezanje seta koji nitko ne puni
+    //Bez podataka okvira, s atlasom: set 0 je prazan, set 1 je atlas. Cjevovod koji bi
+    //deklarirao vezanje koje nitko ne puni ne napravi desni layout ni desni pool
     config.useFrameData = false;
-    config.descriptorBindings.clear();
+    config.descriptorBindings = {Texture::getLayoutBinding(0)};
 
     config.pushConstantSize = sizeof(Push);
     config.pushConstantStages = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
@@ -68,7 +101,7 @@ PipelineConfig UiPainter::makeConfig(vk::Format colorFormat){
     config.depthTestEnable = false;
     config.depthWriteEnable = false;
 
-    //Slika stope se na suicelje ne primjenjuje: tekst od pet piksela nacrtan u grubljem
+    //Slika stope se na suicelje ne primjenjuje: tekst od nekoliko piksela nacrtan u grubljem
     //rasteru postane mrlja
     config.allowShadingRateAttachment = false;
 
@@ -77,13 +110,46 @@ PipelineConfig UiPainter::makeConfig(vk::Format colorFormat){
 
 UiPainter::UiPainter(const VulkanDevice& device,
                      const VulkanCommand& command,
+                     const vk::raii::DescriptorPool& descriptorPool,
                      vk::Format colorFormat,
                      vk::Format depthFormat,
                      uint32_t maxVertices)
 : device(device),
   maxVertices(maxVertices),
   srgbTarget(isSrgb(colorFormat)),
-  pipeline(device, makeConfig(colorFormat), colorFormat, depthFormat){
+  pipeline(device, makeConfig(colorFormat), colorFormat, depthFormat),
+  atlas(makeAtlas(device, command)),
+  descriptorPool(descriptorPool){
+
+    //Prazan set 0: cjevovod nema podatke okvira, ali mu layout seta 0 postoji i treba ga
+    //vezati. Isti uzorak kao Material -- dio setova iz zajednickog bazena
+    vk::DescriptorSetAllocateInfo emptyInfo;
+    emptyInfo.descriptorPool = *descriptorPool;
+    emptyInfo.setSetLayouts(*pipeline.getFrameSetLayout());
+    vk::raii::DescriptorSets emptySets(device.getDevice(), emptyInfo);
+    emptyFrameSet = std::move(emptySets[0]);
+
+    //Set 1: atlas. Napise se JEDNOM jer je atlas stalan; vezanje istog seta u svakom kadru
+    //je sigurno za razliku od prepisivanja (Vulkan zakida dok kartica jos cita)
+    vk::DescriptorSetAllocateInfo atlasInfo;
+    atlasInfo.descriptorPool = *descriptorPool;
+    atlasInfo.setSetLayouts(*pipeline.getMaterialSetLayout());
+    vk::raii::DescriptorSets atlasSets(device.getDevice(), atlasInfo);
+    atlasSet = std::move(atlasSets[0]);
+
+    const SampledImage sampled = atlas.getSampled();
+    vk::DescriptorImageInfo imageInfo;
+    imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    imageInfo.imageView = sampled.view;
+    imageInfo.sampler = sampled.sampler;
+
+    vk::WriteDescriptorSet atlasWrite;
+    atlasWrite.dstSet = *atlasSet;
+    atlasWrite.dstBinding = 0;
+    atlasWrite.dstArrayElement = 0;
+    atlasWrite.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    atlasWrite.setImageInfo(imageInfo);
+    device.getDevice().updateDescriptorSets(atlasWrite, nullptr);
 
     //Sest indeksa na svaka cetiri vrha, jer je sve pravokutnik. Zaokruzeno navise da broj
     //vrhova koji nije visekratnik cetiri ne prekoraci polje indeksa
@@ -134,6 +200,12 @@ void UiPainter::draw(VulkanRenderer& renderer, const Treadle::DrawList& list,
     const vk::raii::CommandBuffer& commandBuffer = renderer.borrowCommands();
 
     commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.getPipeline());
+
+    //Set 0 (prazan) pa set 1 (atlas). Oba layouta postoje u cjevovodu pa se oba vezu; jedinstvo
+    //Treadlea je da slovo na ekranu i UV u atlasu dolaze iz istog racuna
+    const std::vector<vk::DescriptorSet> descriptorSets = {*emptyFrameSet, *atlasSet};
+    commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+        *pipeline.getPipelineLayout(), 0, descriptorSets, {});
 
     Push push;
     push.screenWidth = float(width);

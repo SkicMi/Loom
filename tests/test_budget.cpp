@@ -1,29 +1,32 @@
-// B1: budzet kadra - sto se u kadru smije dogoditi, i koliko smije kostati
+// B1: frame budget - what may happen in a frame, and how much it may cost
 //
-// Svih 45 testova prije ovoga mjeri PIKSELE. Trostruko sporiji Loom prolazi ih sve bez ijedne
-// rijeci, jer nijedan ne pita koliko je posla trebalo. Ovaj pita.
+// All 45 tests before this one measure PIXELS. A three times slower Loom passes them all
+// without a word, because none asks how much work it took. This one asks.
 //
-// Vrijeme je pritom mjera koju je lako kriviti. Tri stvari su probane, i dvije su odbacene
-// mjerenjem prije nego su napisane kao tvrdnja:
+// Time is a measure that is easy to blame. Three things were tried, and two were rejected
+// by measurement before being written down as a claim:
 //
-//   milisekunda po kadru   isti kod je 0.81 ms na GTX 1650 i 6.5 ms na lavapipeu. Prag koji
-//                          prolazi tamo ne hvata nista ovdje
-//   omjer prema praznom    prazan kadar mjeri SLANJE naredbi, posao drivera a ne GPU-a:
-//     kadru                omjer je 5.4 ovdje i 16 tamo
-//   mjerna sipka           compute lanac cjelobrojnih operacija, kao jedinica tudjeg posla
-//                          koji Loom ne moze promijeniti. Rasap je ispao 30x (275 milijuna
-//                          lanaca po kadru ovdje, 9 milijuna tamo) - jer ALU i rasterizacija
-//                          ne skaliraju zajedno izmedju kartice i softverskog rasterizatora.
-//                          Gore od onoga sto je trebala zamijeniti, pa je bacena
+//   milliseconds per frame   the same code is 0.81 ms on GTX 1650 and 6.5 ms on lavapipe.
+//                            A threshold that passes there catches nothing here
+//   ratio to the empty       the empty frame measures COMMAND SUBMISSION, driver work, not
+//     frame                  GPU: the ratio is 5.4 here and 16 there
+//   measuring rod            a compute chain of integer ops, as a unit of someone else's
+//                            work that Loom cannot change. Scatter came out 30x (275 million
+//                            chains per frame here, 9 million there) - because ALU and
+//                            rasterization don't scale together between the card and the
+//                            software rasterizer. Worse than what it was meant to replace,
+//                            so it was dropped
 //
-// Ostaje ono sto JEST prenosivo, i to su prve dvije provjere: da kadar ne alocira, i da cijena
-// po objektu ne raste s brojem objekata. Stropovi su brojevi o STROJU, pa ih drzi klasa
-// uredjaja i tako su i zapisani - jedan za cijeli kadar, jedan za sam piksel.
+// What remains is what IS portable, and that is the first two checks: that a frame does not
+// allocate, and that the per-object price does not grow with the number of objects. The
+// ceilings are numbers about the MACHINE, so the device class holds them and they were
+// written that way - one for the whole frame, one for the pixel itself.
 //
-// I jedna stvar koju je mjerenje ispravilo usput: prva scena su bile 25 sitnih kugli, i u njoj
-// je trostruko skuplji fragment shader prosao kroz sve provjere a da se nijedan broj nije
-// pomakao. Zato scena sad ima plohu preko cijelog kadra, i zato se ista scena mjeri i na
-// cetiri puta vise piksela: ta razlika je jedino mjesto gdje se sjencanje vidi samo.
+// And one thing the measurement fixed along the way: the first scene was 25 small spheres,
+// and in it a three times more expensive fragment shader passed every check without a single
+// number moving. That is why the scene now has a surface across the whole frame, and why the
+// same scene is also measured at four times more pixels: that difference is the only place
+// where shading shows up alone.
 #include "TestHarness.h"
 #include "TestScene.h"
 #include "Core/LoomConfig.h"
@@ -98,12 +101,13 @@ int main(){
     colorConfig.keepDepth = true;
     RenderTarget colorTarget(loom.device, size, colorConfig);
 
-    //ISTA SCENA, CETIRI PUTA VISE PIKSELA.
+    //SAME SCENE, FOUR TIMES MORE PIXELS.
     //
-    //Kadar u cjelini je na kartici ovoga reda tvrdoglav: dodati fragment shaderu 220 sinusa
-    //po pikselu digne ga za 16 posto, jer ga drze draw pozivi a ne fragmenti. Razlika izmedju
-    //ova dva kadra nema tu manu - draw pozivi su isti, prolaz sjena je isti, razlikuje se samo
-    //786432 dodatnih piksela. To je onda cijena SJENCANJA i nicega drugog
+    //A whole frame on a card of this order is stubborn: adding 220 sines to the fragment
+    //shader per pixel lifts it 16 percent, because draw calls hold it, not fragments. The
+    //difference between these two frames lacks that flaw - draw calls are the same, the
+    //shadow pass is the same, only 786432 extra pixels differ. That is then the price of
+    //SHADING and nothing else
     const vk::Extent2D bigSize{size.width * 2, size.height * 2};
     RenderTarget bigTarget(loom.device, bigSize, colorConfig);
 
@@ -121,12 +125,14 @@ int main(){
 
     const std::vector<glm::mat4> models = grid();
 
-    //Ploha stoji iza kugli i ispunjava kadar - fragmentni posao koji scena inace ne bi imala
+    //The surface sits behind the spheres and fills the frame - fragment work the scene
+    //would otherwise not have
     const glm::mat4 backdrop = glm::translate(glm::mat4(1.0f), {0.0f, 0.0f, -1.0f})
                              * glm::scale(glm::mat4(1.0f), glm::vec3(6.0f));
 
-    //Kadar se mjeri ZAJEDNO s cekanjem na GPU. Bez toga bi se mjerilo samo koliko traje slanje
-    //naredbi - a to je onaj dio posla koji regresija u sjencanju uopce ne dira
+    //The frame is measured TOGETHER with waiting on the GPU. Without it only command-submission
+    //time would be measured - and that is the part of the work a shading regression does not
+    //touch at all
     auto frameInto = [&](size_t count, const RenderTarget& target){
         const auto started = std::chrono::steady_clock::now();
 
@@ -139,10 +145,11 @@ int main(){
 
             loom.renderer.beginPass(target);
 
-            //Ploha preko cijelog kadra, i to UVIJEK, i u praznom kadru. Bez nje scena nije
-            //fragmentno vezana: 25 sitnih kugli trosi draw pozive, pa je trostruko skuplji
-            //fragment shader kroz mjerenje prosao a da se broj nije ni pomakao. Buduci da je
-            //u svakom kadru, ispada iz granicne cijene po objektu i ne kvari drugu provjeru
+            //A surface across the whole frame, ALWAYS, even in the empty frame. Without it the
+            //scene is not fragment-bound: 25 small spheres spend draw calls, so a three times
+            //more expensive fragment shader passed through the measurement without a number
+            //moving. Since it is in every frame, it falls out of the boundary per-object price
+            //and does not break the second check
             primitives.plane(backdrop);
 
             for(size_t i = 0; i < count; ++i) primitives.sphere(models[i]);
@@ -157,12 +164,12 @@ int main(){
 
     auto frame = [&](size_t count){ return frameInto(count, colorTarget); };
 
-    //Zagrijavanje: prvi kadrovi grade mesheve, materijale i cjevovode. Kad bi se i oni mjerili,
-    //mjerilo bi se gradjenje a ne crtanje
+    //Warm-up: the first frames build meshes, materials and pipelines. If those were measured
+    //too, building would be measured instead of drawing
     for(int i = 0; i < 5; ++i) frame(models.size());
 
     // -------------------------------------------------------------------------------
-    // Kadar ne smije alocirati
+    // A frame must not allocate
     // -------------------------------------------------------------------------------
 
     const MemoryStats before = loom.device.getAllocator().getStats();
@@ -174,10 +181,11 @@ int main(){
     for(int i = 0; i < frames; ++i) few.push_back(frame(5));
     for(int i = 0; i < frames; ++i) empty.push_back(frame(0));
 
-    //NAIZMJENICE, i razlika se uzima po PARU. Dva odvojena niza pa razlika njihovih minimuma
-    //je previse nervozna: dovoljno je da veliki kadar uhvati tudji posao na stroju a mali ne,
-    //i broj skoci trostruko (vidjeno 0.070 do 0.244 kroz cetiri pokretanja). Par je snimljen
-    //u istom trenutku, pa ga opterecenje pomakne cijelog
+    //INTERLEAVED, and the difference is taken per PAIR. Two separate arrays and then the
+    //difference of their minima is too nervous: it is enough that a big frame catches someone
+    //else's work on the machine and a small one does not, and the number jumps threefold
+    //(seen 0.070 to 0.244 across four runs). A pair is recorded at the same moment, so load
+    //shifts it whole
     for(int i = 0; i < 3; ++i) frameInto(models.size(), bigTarget);
 
     std::vector<double> pairs;
@@ -190,9 +198,9 @@ int main(){
     const MemoryStats after = loom.device.getAllocator().getStats();
     const uint64_t made = VulkanAllocator::getAllocationsMade();
 
-    //Dvije razlicite tvrdnje, i trebaju obje: broj koji stoji kaze da nista nije ostalo za
-    //sobom, a broj koji je NAPRAVLJEN kaze da se nista nije ni dogodilo. Alokacija koja se u
-    //istom kadru oslobodi je nevidljiva prvome, a skupa jednako kao i svaka druga
+    //Two different claims, and both are needed: the standing count says nothing was left
+    //behind, and the MADE count says nothing even happened. An allocation freed in the same
+    //frame is invisible to the first, and costs the same as any other
     report.check("kadar ne alocira",
         made == 0 &&
         after.allocationCount == before.allocationCount && after.blockCount == before.blockCount,
@@ -202,24 +210,25 @@ int main(){
             before.blockCount, after.blockCount));
 
     // -------------------------------------------------------------------------------
-    // Cijena po objektu ne smije rasti s brojem objekata
+    // Per-object price must not grow with the number of objects
     // -------------------------------------------------------------------------------
 
     const double fullMedian = median(full);
     const double emptyMedian = median(empty);
 
-    //Najbolji kadar, ne medijan: medijan hvata i tudji posao na stroju, pa je omjer ispod
-    //njega znao skociti s 0.9 na 0.55 bez ijedne izmjene u kodu. Najbolji kadar je ono sto je
-    //kod sposoban napraviti kad ga se pusti, i to je jedina brojka koja se smije usporedjivati
+    //Best frame, not median: the median also catches someone else's work on the machine, so
+    //the ratio under it was known to jump from 0.9 to 0.55 without a single code change.
+    //The best frame is what the code can do when let loose, and that is the only number
+    //allowed for comparison
     const double fullBest = *std::min_element(full.begin(), full.end());
     const double fewBest = *std::min_element(few.begin(), few.end());
     const double emptyBest = *std::min_element(empty.begin(), empty.end());
 
-    //Prazan kadar se oduzima jer je fiksni trosak prolaza: ostaje sam crtez. Ovo je jedina
-    //vremenska tvrdnja koja ne ovisi o kartici. Izmjereno na najboljim kadrovima: 0.84 kroz
-    //cetiri pokretanja na GTX 1650, i 0.60 do 1.12 na lavapipeu, gdje je prazan kadar
-    //dovoljno malen da ga tudji posao na stroju zaljulja. Prag 2.0 je iznad svega toga, a
-    //kvadratna cijena bi ovdje dala peticu
+    //The empty frame is subtracted because it is the fixed cost of the pass: only the drawing
+    //remains. This is the only timing claim that does not depend on the card. Measured on
+    //the best frames: 0.84 across four runs on GTX 1650, and 0.60 to 1.12 on lavapipe, where
+    //the empty frame is small enough for someone else's work on the machine to rock it.
+    //Threshold 2.0 is above all that, and a quadratic price would score a five here
     const double perObjectMany = (fullBest - emptyBest) / double(models.size());
     const double perObjectFew = (fewBest - emptyBest) / 5.0;
     const double growth = perObjectMany / perObjectFew;
@@ -230,48 +239,53 @@ int main(){
             perObjectMany, models.size(), perObjectFew, growth));
 
     // -------------------------------------------------------------------------------
-    // I strop, koji je broj o OVOM stroju
+    // And a ceiling, which is a number about THIS machine
     // -------------------------------------------------------------------------------
 
     const double best = fullBest;
 
-    //Dva broja, jer su dvije klase uredjaja i na obje se ovo vrti. Izmjereno: 0.81 ms na
-    //GTX 1650, 6.3 do 7.1 ms na lavapipeu - strop je oko cetiri puta iznad toga. Hvata samo
-    //grubu regresiju, i to je posteno reci: sam kadar drze draw pozivi, pa sporiji fragment
-    //shader ovdje ne bi ni pisnuo. Njega hvata provjera iznad
-    //Cijena sjencanja: sve osim piksela je u oba kadra isto, pa razlika pripada njima
-    //MEDIJAN para, ne najbolji: najbolji uzima onaj par u kojem je veliki kadar slucajno bio
-    //brz a mali spor, pa je izmjerio nulu (0.001 ns kroz pet pokretanja, uz 3.065 na sljedecem).
-    //Sum je oko prave vrijednosti simetrican, pa ga medijan skrati a rub ne
+    //Two numbers, because there are two classes of devices and both run this. Measured: 0.81 ms
+    //on GTX 1650, 6.3 to 7.1 ms on lavapipe - the ceiling is about four times above that. It
+    //only catches gross regression, and it is fair to say so: the frame itself is held by
+    //draw calls, so a slower fragment shader would not even squeak here. The check above
+    //catches it
+    //Shading price: everything except pixels is the same in both frames, so the difference
+    //belongs to them
+    //Median of the pairs, not the best: the best grabs that pair where the big frame happened
+    //to be fast and the small slow, so it measured zero (0.001 ns across five runs, next to
+    //3.065 on the following one). The noise is symmetric around the true value, so the
+    //median cuts it and the tail does not
     const double bestPair = median(pairs);
     const double extraPixels = double(bigSize.width) * bigSize.height - double(size.width) * size.height;
-    const double perPixel = 1.0e6 * bestPair / extraPixels;   //nanosekunde po pikselu
+    const double perPixel = 1.0e6 * bestPair / extraPixels;   //nanoseconds per pixel
 
-    //Izmjereno kroz sest pokretanja: 0.100 do 0.109 ns po pikselu na GTX 1650, i 6.15 do 6.61
-    //na lavapipeu - pa je i ovaj strop po klasi uredjaja, na dva i pol puta iznad najgoreg. Mutacija
-    //koja fragmentu doda 220 sinusa dize ovaj broj sedam puta i obara ovu provjeru, dok
-    //cijeli kadar ostaje na 0.96 ms i strop od 3 ms mirno prolazi. Zato su to dva broja
-    //TRI KLASE, ne dvije. Integrirana kartica nije ni jedno ni drugo: dijeli memoriju s
-    //procesorom i usput crta cijeli desktop, pa joj je i rasap veci. Pet pokretanja na
-    //Intel UHD (CML GT2), i to dvaput - jer se usput otkrilo da se projekt dotad gradio
-    //bez ijedne optimizacije:
+    //Measured across six runs: 0.100 to 0.109 ns per pixel on GTX 1650, and 6.15 to 6.61 on
+    //lavapipe - so this ceiling is also per device class, two and a half times above the
+    //worst. A mutation that adds 220 sines to the fragment lifts this number sevenfold and
+    //fails this check, while the whole frame stays at 0.96 ms and the 3 ms ceiling passes
+    //calmly. That is why there are two numbers
+    //THREE CLASSES, not two. An integrated card is neither: it shares memory with the CPU
+    //and draws the whole desktop on the side, so its scatter is bigger too. Five runs on
+    //Intel UHD (CML GT2), twice - because it surfaced along the way that until then the
+    //project was built without a single optimization:
     //
-    //                      -O0 (najgori od pet)   -O2 (najgori od pet)
-    //   kadar                    4.33 ms                1.42 ms      3.0 puta brze
-    //   sjencanje                1.67 ns/px             1.58 ns/px   nepromijenjeno
-    //   cijena po objektu        0.116 ms               0.036 ms     3.2 puta brze
+    //                      -O0 (worst of five)   -O2 (worst of five)
+    //   frame                    4.33 ms                1.42 ms      3.0x faster
+    //   shading                  1.67 ns/px             1.58 ns/px   unchanged
+    //   price per object         0.116 ms               0.036 ms     3.2x faster
     //
-    //TO JE MJERENJE KOJE OPRAVDAVA DVA ODVOJENA BROJA. Kadar drze draw pozivi, a slanje
-    //naredbi je posao procesora i prevodilac ga ubrzava trostruko. Sjencanje je posao
-    //kartice i prevodilac mu ne moze nista - isti broj do na sum. Da su ta dva stopa bila
-    //jedan, ova se razlika ne bi vidjela nigdje.
+    //THAT IS THE MEASUREMENT THAT JUSTIFIES TWO SEPARATE NUMBERS. Draw calls hold the frame,
+    //and submitting commands is CPU work and the compiler speeds it up threefold. Shading is
+    //the card's work and a compiler cannot help it - the same number up to noise. If those
+    //two rates were one, this difference would not show anywhere.
     //
-    //Stropovi su isti faktori koje nose i druge dvije klase: oko 3.5 puta iznad najgoreg
-    //kadra i oko 2.5 puta iznad najgoreg sjencanja.
+    //The ceilings are the same factors the other two classes carry: about 3.5x above the
+    //worst frame and about 2.5x above the worst shading.
     //
-    //OGRADA: stropovi za karticu i za softverski rasterizator (3.0 i 24.0 ms) izmjereni su
-    //PRIJE nego je build dobio -O2, pa su po gornjem odnosu vjerojatno oko tri puta prelabavi.
-    //Ne diram ih napamet - trebaju isto ovakvo mjerenje na svom uredjaju
+    //SCOPE NOTE: the ceilings for the card and the software rasterizer (3.0 and 24.0 ms) were
+    //measured BEFORE the build got -O2, so by the ratio above they are probably about three
+    //times too loose. I won't touch them from memory - they need the same kind of measurement
+    //on your own device
     const vk::PhysicalDeviceType deviceType = loom.device.getDeviceType();
     const bool software = deviceType == vk::PhysicalDeviceType::eCpu;
     const bool integrated = deviceType == vk::PhysicalDeviceType::eIntegratedGpu;

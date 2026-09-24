@@ -31,7 +31,7 @@ inline LayoutAccess accessForLayout(vk::ImageLayout layout){
                     vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite};
 
         case vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR:
-            //Cita se prije rasterizacije, jer odlucuje koliko ce se puta sjenciti
+            //Read before rasterization, because it decides how often each block gets shaded
             return {vk::PipelineStageFlagBits2::eFragmentShadingRateAttachmentKHR,
                     vk::AccessFlagBits2::eFragmentShadingRateAttachmentReadKHR};
 

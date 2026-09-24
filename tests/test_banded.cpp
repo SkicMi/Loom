@@ -1,17 +1,19 @@
-// Trakasto rjesavanje: isti odgovor kao gusto, samo bez posla koji je dokazano nula.
+// Banded solving: the same answer as dense, just without the work that is provably zero.
 //
-// ZASTO JE OVO VRIJEDNO. Schurova dopuna u bundleu rjesava se gusto, O(n^3), i to je zid prema
-// vecim scenama: izmjereno, osam puta vise kamera znaci 548 puta skuplje rjesavanje. A matrica je
-// na pravoj snimci 84.2 posto tocno nula, i to vrpcasto rasporedjeno - nijedan par kamera
-// udaljeniji od 39 ne dijeli nijednu tocku.
+// WHY THIS MATTERS. The Schur complement in bundle is solved dense, O(n^3), and that is a wall
+// against bigger scenes: measured, eight times more cameras means 548 times more expensive
+// solving. And on a real shot the matrix is 84.2 percent exactly zero, in bands - no pair of
+// cameras more than 39 apart shares a single point.
 //
-// TVRDNJA KOJU OVAJ TEST BRANI nije "priblizno isto" nego BIT PO BIT ISTO. Preskacu se iskljucivo
-// clanovi koji su tocno nula, a dodavanje nule ne mijenja nijedan bit. Da se popusti na "blizu
-// je", ovo bi bila druga metoda s drugim zaokruzivanjem i zlatni hash bundlea bi pao - a nitko ne
-// bi znao je li pao zbog greske ili zbog dozvoljene razlike.
+// WHAT THIS TEST DEFENDS is not "roughly the same" but BIT FOR BIT THE SAME. Only terms that
+// are exactly zero are skipped, and adding zero changes no bit. If "close enough" were
+// allowed this would be a different method with different rounding and the bundle golden hash
+// would fail - and nobody would know whether it failed from an error or from an allowed
+// difference.
 //
-// Uz to ide NEGATIVNA KONTROLA: ista matrica koja NIJE vrpcasta, rjesena kao da jest, mora dati
-// ocito kriv odgovor. Bez nje test ne bi razlikovao "radi" od "slucajno prolazi".
+// On top come the NEGATIVE CONTROL: the same matrix that is NOT banded, solved as if it were,
+// must give an obviously wrong answer. Without it the test could not tell "works" from
+// "passes by luck".
 #include "TestHarness.h"
 
 #include <Engine/Dense.h>
@@ -23,7 +25,7 @@
 
 namespace{
 
-//Jednostavan ponovljiv generator - ne treba nam kvaliteta, treba nam isti niz svaki put
+//Simple repeatable generator - we don't need quality, we need the same sequence every time
 struct Rng{
     uint64_t state = 0x9E3779B97F4A7C15ull;
     double next(){
@@ -32,8 +34,8 @@ struct Rng{
     }
 };
 
-//Vrpcasta simetricna pozitivno definitna matrica: A = L L', gdje je L donja trokutasta unutar
-//vrpce. Time je vrpca tocno onakva kakvu tvrdimo, a sustav sigurno rjesiv
+//Banded symmetric positive definite matrix: A = L L' where L is lower triangular within the
+//band. That makes the band exactly what we claim, and the system certainly solvable
 std::vector<double> bandedSpd(int n, int halfWidth, Rng& rng){
     std::vector<double> lower(size_t(n) * size_t(n), 0.0);
     for(int row = 0; row < n; ++row){
@@ -41,7 +43,7 @@ std::vector<double> bandedSpd(int n, int halfWidth, Rng& rng){
         for(int column = from; column < row; ++column){
             lower[size_t(row * n + column)] = rng.next() * 2.0 - 1.0;
         }
-        lower[size_t(row * n + row)] = 1.0 + rng.next() * 2.0;   //pozitivna dijagonala
+        lower[size_t(row * n + row)] = 1.0 + rng.next() * 2.0;   //positive diagonal
     }
 
     std::vector<double> full(size_t(n) * size_t(n), 0.0);
@@ -62,7 +64,7 @@ int main(){
 
     Rng rng;
 
-    //-- bit po bit isto, na vise velicina i sirina ------------------------------------------
+    //-- bit for bit the same, across sizes and widths -----------------------------------------
     bool allIdentical = true;
     double worstDifference = 0.0;
     int checked = 0;
@@ -92,19 +94,19 @@ int main(){
     report.check("bit po bit isto kao gusto", allIdentical && checked >= 6,
         fmt("%d sustava, najveca razlika %.3e", checked, worstDifference));
 
-    //-- negativna kontrola: prekratka vrpca MORA promasiti ----------------------------------
+    //-- negative control: a too-short band MUST miss ------------------------------------------
     //
-    //Bez ovoga test ne bi razlikovao ispravan rjesavac od onoga koji slucajno prolazi jer su
-    //matrice bile lake
+    //Without this the test could not tell a correct solver from one that passes by luck
+    //because the matrices were easy
     {
         const int n = 80;
-        const std::vector<double> matrix = bandedSpd(n, 20, rng);   //stvarna polusirina 20
+        const std::vector<double> matrix = bandedSpd(n, 20, rng);   //actual half-width 20
         std::vector<double> right(size_t(n), 0.0);
         for(int i = 0; i < n; ++i) right[size_t(i)] = rng.next() * 2.0 - 1.0;
 
         std::vector<double> dense, tooNarrow;
         Engine::solveDense(matrix, right, n, dense);
-        const bool solved = Engine::solveBanded(matrix, right, n, 3, tooNarrow);   //laz: 3
+        const bool solved = Engine::solveBanded(matrix, right, n, 3, tooNarrow);   //lie: 3
 
         double worst = 0.0;
         if(solved){
@@ -116,7 +118,7 @@ int main(){
             fmt("najveca razlika %.3e", worst));
     }
 
-    //-- rjesenje stvarno rjesava sustav ------------------------------------------------------
+    //-- the solution actually solves the system ------------------------------------------------
     {
         const int n = 120, halfWidth = 8;
         const std::vector<double> matrix = bandedSpd(n, halfWidth, rng);
@@ -135,10 +137,10 @@ int main(){
         report.check("A x = b stvarno vrijedi", worst < 1e-9, fmt("najgori ostatak %.3e", worst));
     }
 
-    //-- i da se isplati ----------------------------------------------------------------------
+    //-- and that it pays off -------------------------------------------------------------------
     //
-    //Brzina nije tvrdnja o ispravnosti, ali cijela svrha ovoga je usteda - pa ako je nema, nesto
-    //je krivo shvaceno
+    //Speed is not a claim about correctness, but the whole point of this is the saving - so
+    //if it isn't there, something was misunderstood
     {
         const int n = 600, halfWidth = 12;
         const std::vector<double> matrix = bandedSpd(n, halfWidth, rng);

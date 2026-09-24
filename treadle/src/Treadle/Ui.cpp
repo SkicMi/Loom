@@ -45,6 +45,8 @@ void Ui::begin(const Input& newInput, float width, float height){
 
     list.clear();
     overlay.clear();
+    list.cornerRadius = theme.widgetRadius;
+    overlay.cornerRadius = theme.widgetRadius;
     panelOpen = false;
     panelDocked = false;
     scrollTarget = nullptr;
@@ -106,7 +108,7 @@ void Ui::panel(const std::string& title, float x, float y, float width){
     //Zakrpa visine ga je zatim razvukla preko cijele plohe i dobila se bijela crta uz lijevi
     //rub teksta, dok prave pozadine nije bilo. Nista nije puklo i nijedan broj nije bio kriv
     panelVertexBase = list.vertices.size();
-    list.rect(panelBox.x, panelBox.y, panelBox.width, 1.0f, theme.panel);
+    list.rectFlat(panelBox.x, panelBox.y, panelBox.width, 1.0f, theme.panel);
 
     //OBRUB IDE NA KRAJ, u closePanel(). Prvo je stajao ovdje, a closePanel ga je odsijecanjem
     //polja crtao iznova kad se visina sazna - i time odbacivao SVE sto je u medjuvremenu
@@ -245,7 +247,7 @@ bool Ui::button(const std::string& text){
     if(row.hot && pressed[uint32_t(MouseButton::Left)]) activeId = id;
 
     list.rect(row.box, held ? theme.active : (row.hot ? theme.hot : theme.control));
-    drawLabelIn(row.box, text, theme.text);
+    drawLabelIn(row.box, text, held ? theme.textOnAccent : theme.text);
 
     //Klik se javlja na PRITISAK, ne na otpustanje. Otpustanje je ono sto radi Blender, i
     //bolje je za gumb koji se moze predomisliti - ali ovdje je odziv vazniji, jer je gumb
@@ -301,13 +303,22 @@ bool Ui::slider(const std::string& name, float* target, float low, float high,
     list.rect(row.box.x, row.box.y, row.box.width * share, row.box.height,
               activeId == id ? theme.active : theme.accent);
 
-    drawLabelIn(row.box, name, theme.text);
+    //Oznaka i vrijednost leze NA zlatnoj ispuni kad ih ispuna pokrije: tada se pisu dark
+    //tamnom kaduljom da ostanu citljive, a inace svijetlom. Prozirno ili polovicno preklapanje
+    //ne mijenja boju - tu tekst ionako prelazi preko ruba pa je svijetli citljiviji
+    const float labelX = row.box.x + theme.padding * 0.6f;
+    const float labelWidth = textWidth(name, theme.textScale);
+    const float fillRight = row.box.x + row.box.width * share;
+    const bool labelOnGold = fillRight >= labelX + labelWidth;
+    list.text(labelX, row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
+              name, labelOnGold ? theme.textOnAccent : theme.text, theme.textScale);
 
     const std::string reading = formatNumber(*target) + unit;
     const float width = textWidth(reading, theme.textScale);
-    list.text(row.box.x + row.box.width - width - theme.padding * 0.6f,
-              row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
-              reading, theme.text, theme.textScale);
+    const float readX = row.box.x + row.box.width - width - theme.padding * 0.6f;
+    const bool readOnGold = fillRight > readX + width * 0.5f;
+    list.text(readX, row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
+              reading, readOnGold ? theme.textOnAccent : theme.text, theme.textScale);
 
     return *target != before;
 }
@@ -353,7 +364,7 @@ bool Ui::choice(const std::string& name, const std::vector<std::string>& options
 
         const float textLeft = box.x + (box.width - textWidth(options[option], theme.textScale)) * 0.5f;
         list.text(textLeft, box.y + (box.height - textHeight(theme.textScale)) * 0.5f,
-                  options[option], theme.text, theme.textScale);
+                  options[option], chosen ? theme.textOnAccent : theme.text, theme.textScale);
 
         if(hot && pressed[uint32_t(MouseButton::Left)] && !chosen){
             *index = int(option);
@@ -368,7 +379,30 @@ bool Ui::selectable(const std::string& text, bool selected){
     if(!row.visible) return false;
     if(selected) list.rect(row.box, theme.accent);
     else if(row.hot) list.rect(row.box, theme.hot);
-    drawLabelIn(row.box, fitText(text, row.box.width - theme.padding * 1.2f, theme.textScale), theme.text);
+    drawLabelIn(row.box, fitText(text, row.box.width - theme.padding * 1.2f, theme.textScale),
+                selected ? theme.textOnAccent : theme.text);
+    return row.hot && pressed[uint32_t(MouseButton::Left)];
+}
+
+bool Ui::folderRow(const std::string& name, bool selected){
+    const Row row = nextRow(theme.rowHeight);
+    if(!row.visible) return false;
+    if(selected) list.rect(row.box, theme.accent);
+    else if(row.hot) list.rect(row.box, theme.hot);
+
+    //Zlatni znak mape lijevo, pa ime: znak zamjenjuje tekstni predznak ">" koji je prije rekao
+    //da je ovo mapa, i prvi pogled odmah vidi sto je folder a sto snimka
+    const float icon = 15.0f;
+    const float iconX = row.box.x + theme.padding * 0.6f;
+    const float iconY = row.box.y + (row.box.height - icon) * 0.5f;
+    list.folderIcon(iconX, iconY, icon, selected ? theme.title : theme.accent);
+
+    const float textLeft = iconX + icon + theme.spacing * 0.7f;
+    const float room = row.box.x + row.box.width - textLeft - theme.padding * 0.5f;
+    list.text(textLeft, row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
+              fitText(name, room, theme.textScale),
+              selected ? theme.textOnAccent : theme.text, theme.textScale);
+
     return row.hot && pressed[uint32_t(MouseButton::Left)];
 }
 
@@ -392,7 +426,8 @@ Ui::TreeClick Ui::treeRow(const std::string& text, int depth, bool hasChildren, 
     const float textLeft = arrow.x + arrow.width;
     const float room = row.box.x + row.box.width - textLeft - theme.padding * 0.5f;
     list.text(textLeft, row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
-              fitText(text, room, theme.textScale), theme.text, theme.textScale);
+              fitText(text, room, theme.textScale),
+              selected ? theme.textOnAccent : theme.text, theme.textScale);
 
     if(!(row.hot && pressed[uint32_t(MouseButton::Left)])) return TreeClick::None;
     if(hasChildren && arrow.contains(input.mouseX, input.mouseY)) return TreeClick::Toggle;
@@ -438,7 +473,7 @@ bool Ui::beginMenu(const std::string& id){
     menuWidestText = 0.0f;
 
     menuVertexBase = list.vertices.size();
-    list.rect(x, y, width, 1.0f, Color{theme.panel.r, theme.panel.g, theme.panel.b, 1.0f});
+    list.rectFlat(x, y, width, 1.0f, Color{theme.panel.r, theme.panel.g, theme.panel.b, 1.0f});
     cursorY = y + theme.padding * 0.4f;
     return true;
 }
@@ -509,8 +544,9 @@ bool Ui::dragField(uint64_t id, const Rect& box, float* target, float speed){
     }
     list.rect(box, activeId == id ? theme.active : (hot ? theme.hot : theme.control));
     const std::string reading = fitText(formatNumber(*target), box.width - 6.0f, theme.textScale);
+    const Color ink = (activeId == id) ? theme.textOnAccent : theme.text;
     list.text(box.x + (box.width - textWidth(reading, theme.textScale)) * 0.5f,
-              box.y + (box.height - textHeight(theme.textScale)) * 0.5f, reading, theme.text, theme.textScale);
+              box.y + (box.height - textHeight(theme.textScale)) * 0.5f, reading, ink, theme.textScale);
     return *target != before;
 }
 

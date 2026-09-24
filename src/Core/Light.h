@@ -22,16 +22,16 @@ struct LightConfig{
     glm::vec3 color = {1.0f, 1.0f, 1.0f};
     float intensity = 1.0f;
 
-    //TON JE TON, A NE I SVJETLINA.
+    //TONE IS TONE, NOT BRIGHTNESS.
     //
-    //Boja svjetla mnozi svaki kanal, pa svaki ton koji nije bijel ujedno oduzima svjetla:
-    //{1, 0.82, 0.55} nosi luminanciju 0.839, dakle sesnaest posto manje od bijelog na istom
-    //intensityju. Dok je to tako, dvije boje se ne daju usporediti - razlika u tonu nosi i
-    //razliku u svjetlini.
+    //A light's color multiplies every channel, so any tone that is not white also takes light
+    //away: {1, 0.82, 0.55} carries luminance 0.839, hence sixteen percent less than white at
+    //the same intensity. While that is so, two colors cannot be compared - a difference in tone
+    //also carries a difference in brightness.
     //
-    //S ovim upaljenim se boja normalizira na jedinicnu luminanciju, pa intensity ostane
-    //jedina stvar koja kaze KOLIKO, a boja jedina koja kaze KAKO. Iskljuceno je po defaultu
-    //jer bi inace svaka postojeca scena s obojenim svjetlom promijenila svjetlinu
+    //With this on, the color is normalized to unit luminance, so intensity stays the only thing
+    //that says HOW MUCH, and color the only thing that says HOW. Off by default, because
+    //otherwise every existing scene with a colored light would change its brightness
     bool normalizeColor = false;
 
     //Shadow map projection. A directional light has no position - it is a direction and
@@ -109,8 +109,9 @@ class Light{
     void setRange(float newRange) {config.range = newRange;}
     void setColor(const glm::vec3& newColor) {config.color = newColor;}
 
-    //Boja recena kao temperatura. Ne cuva se Kelvin nego boja koja iz njega izade - inace bi
-    //postojala dva izvora iste istine, pa bi setColor i setTemperature mogli ostati u sporu
+    //Color spoken as a temperature. It is not the Kelvin that is kept but the color that comes out
+    //of it - otherwise there would be two sources of the same truth, and setColor and
+    //setTemperature could end up at odds
     void setTemperature(float kelvin) {config.color = colorFromKelvin(kelvin);}
     void setNormalizeColor(bool normalize) {config.normalizeColor = normalize;}
     void setIntensity(float newIntensity) {config.intensity = newIntensity;}

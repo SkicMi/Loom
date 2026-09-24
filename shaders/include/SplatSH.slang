@@ -1,12 +1,12 @@
-// Sferni harmonici: boja koja ovisi o smjeru pogleda.
+// Spherical harmonics: colour that depends on the view direction.
 //
-// Ovo je blizanac SplatMath::colorFromSH iz Core/Splat.cpp i mora mu odgovarati do zadnjeg
-// bita. Dva primjerka postoje jer jedan govori C++ a drugi Slang - a ne zato sto je netko
-// zaboravio. Zato TEST USPOREDJUJE JEDAN S DRUGIM na pravim podacima: to je jedina obrana od
-// toga da se s vremenom raziđu.
+// This is the twin of SplatMath::colorFromSH in Core/Splat.cpp and must match it down to the
+// last bit. Two copies exist because one speaks C++ and the other Slang - not because someone
+// forgot. So THE TEST COMPARES THE ONE WITH THE OTHER on real data: that is the only defence
+// against them drifting apart over time.
 //
-// RASPORED KOEFICIJENATA JE PO KANALIMA: prvih coeffsPerChannel su crveni, pa zeleni, pa plavi.
-// Izmjereno korelacijom na pravoj sceni (0.84 po kanalima, 0.00 po koeficijentima).
+// THE COEFFICIENT LAYOUT IS BY CHANNEL: the first coeffsPerChannel are red, then green, then
+// blue. Measured by correlation on a real scene (0.84 by channels, 0.00 by coefficients).
 
 float3 shColor(RWStructuredBuffer<float> rest, uint base, uint coeffsPerChannel,
                uint degree, float3 dc, float3 direction){
@@ -24,7 +24,7 @@ float3 shColor(RWStructuredBuffer<float> rest, uint base, uint coeffsPerChannel,
     const float3 d = direction / length;
     const float x = d.x, y = d.y, z = d.z;
 
-    //Koeficijent k kanala c. Ovdje i nigdje drugdje zivi raspored po kanalima
+    //Coefficient k of channel c. The by-channel layout lives here and nowhere else
     float3 sh0 = float3(rest[base + 0*coeffsPerChannel + 0], rest[base + 1*coeffsPerChannel + 0], rest[base + 2*coeffsPerChannel + 0]);
     float3 sh1 = float3(rest[base + 0*coeffsPerChannel + 1], rest[base + 1*coeffsPerChannel + 1], rest[base + 2*coeffsPerChannel + 1]);
     float3 sh2 = float3(rest[base + 0*coeffsPerChannel + 2], rest[base + 1*coeffsPerChannel + 2], rest[base + 2*coeffsPerChannel + 2]);

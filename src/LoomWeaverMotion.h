@@ -22,11 +22,43 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Loom{
+
+// Quote one argument for the existing popen based job launcher.
+inline std::string shellQuoteArgument(std::string_view argument){
+    std::string quoted;
+    quoted.reserve(argument.size() + 2);
+    quoted.push_back(char(39));
+    for(const char character : argument){
+        if(character == char(39)) quoted += std::string(1, char(39)) + char(92) + char(39) + char(39);
+        else quoted.push_back(character);
+    }
+    quoted.push_back(char(39));
+    return quoted;
+}
+
+inline std::string buildWeaverMotionCommand(const std::filesystem::path& executable,
+                                           std::string_view prompt,
+                                           float durationSeconds,
+                                           const std::filesystem::path& outputStem){
+    if(!std::isfinite(durationSeconds)) durationSeconds = 5.0f;
+    durationSeconds = std::clamp(durationSeconds, 1.0f, 10.0f);
+    char duration[32];
+    std::snprintf(duration, sizeof(duration), "%.2f", double(durationSeconds));
+
+    return "TEXT_ENCODER_MODE=local TEXT_ENCODER_DEVICE=cpu " +
+           shellQuoteArgument(executable.string()) + " " + shellQuoteArgument(prompt) +
+           " --model 'Kimodo-SOMA-RP-v1.1' --duration " + duration +
+           " --num_samples 1 --output " + shellQuoteArgument(outputStem.string()) +
+           " --bvh --bvh_standard_tpose";
+}
 
 struct WeaverMotionImportReport{
     Warp::Id group = Warp::None;

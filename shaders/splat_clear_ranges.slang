@@ -1,5 +1,5 @@
-// Rasponi se ciste svaki kadar. Pločica koju nijedan splat ne dira mora ostati prazna, a ne
-// zadrzati ono sto je u njoj pisalo prosli put - kamera se pomakla, scena nije.
+// Ranges are cleared every frame. A tile no splat touches must stay empty, not keep whatever
+// was written into it last time - the camera moved, the scene didn't.
 struct Params{
     uint tileCount;
     uint padding0;

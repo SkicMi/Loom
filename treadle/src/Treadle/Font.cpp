@@ -1,155 +1,107 @@
-#include "Treadle/Draw.h"
+#include "Treadle/Font.h"
+#include "Treadle/FontData.h"
+
+#include <algorithm>
+#include <vector>
 
 namespace Treadle{
+
 namespace{
 
-//=============================================================================================
-// Font 5x7, napisan kao SLIKE a ne kao tablica bajtova.
-//
-// Uobicajeni zapis je pet hex bajtova po slovu. Takva se tablica ne da procitati: greska u
-// jednom bitu je slovo s rupom, a nista je u kodu ne razlikuje od ispravnog broja. Ovako je
-// svako slovo vidljivo u izvoru i pogreska se primijeti citanjem.
-//
-// Sedam redaka odozgo prema dolje, odvojenih kosom crtom, pet stupaca po retku.
-//
-// MALA SLOVA POCINJU U TRECEM RETKU, sva. Prva verzija je p, q, g i y pocinjala jedan redak
-// vise, pa su bila visoka kao velika - "splatova" se citalo kao "sPlatova". U sedam redaka
-// nema mjesta za pravi silazni potez, pa ga nose zadnja dva retka; to je uobicajen kompromis
-// za font ove velicine i jedini koji drzi visinu malih slova jednakom.
-// Pokriva 32..126 - sve sto se s tipkovnice moze napisati. Naslovi su bez kvacica, isto kao
-// komentari u ostatku projekta: font s njima bio bi dvostruko dulji, a nijedna oznaka ih ne
-// treba da bi se razumjela.
-//=============================================================================================
-const char* const glyphs[] = {
-    /*   */ "...../...../...../...../...../...../.....",
-    /* ! */ "..#../..#../..#../..#../..#../...../..#..",
-    /* " */ ".#.#./.#.#./...../...../...../...../.....",
-    /* # */ ".#.#./.#.#./#####/.#.#./#####/.#.#./.#.#.",
-    /* $ */ "..#../.####/#.#../.###./..#.#/####./..#..",
-    /* % */ "##.../##..#/...#./..#../.#.../#..##/...##",
-    /* & */ ".##../#..#./#.#../.#.../#.#.#/#..#./.##.#",
-    /* ' */ "..#../..#../...../...../...../...../.....",
-    /* ( */ "...#./..#../.#.../.#.../.#.../..#../...#.",
-    /* ) */ ".#.../..#../...#./...#./...#./..#../.#...",
-    /* * */ "...../.#.#./..#../#####/..#../.#.#./.....",
-    /* + */ "...../..#../..#../#####/..#../..#../.....",
-    /* , */ "...../...../...../...../...../..##./..#..",
-    /* - */ "...../...../...../#####/...../...../.....",
-    /* . */ "...../...../...../...../...../.##../.##..",
-    /* / */ "....#/...#./..#../.#.../#..../...../.....",
-    /* 0 */ ".###./#...#/#..##/#.#.#/##..#/#...#/.###.",
-    /* 1 */ "..#../.##../..#../..#../..#../..#../.###.",
-    /* 2 */ ".###./#...#/....#/...#./..#../.#.../#####",
-    /* 3 */ "#####/...#./..#../...#./....#/#...#/.###.",
-    /* 4 */ "...#./..##./.#.#./#..#./#####/...#./...#.",
-    /* 5 */ "#####/#..../####./....#/....#/#...#/.###.",
-    /* 6 */ "..##./.#.../#..../####./#...#/#...#/.###.",
-    /* 7 */ "#####/....#/...#./..#../.#.../.#.../.#...",
-    /* 8 */ ".###./#...#/#...#/.###./#...#/#...#/.###.",
-    /* 9 */ ".###./#...#/#...#/.####/....#/...#./.##..",
-    /* : */ "...../.##../.##../...../.##../.##../.....",
-    /* ; */ "...../.##../.##../...../.##../..#../.#...",
-    /* < */ "...#./..#../.#.../#..../.#.../..#../...#.",
-    /* = */ "...../...../#####/...../#####/...../.....",
-    /* > */ ".#.../..#../...#./....#/...#./..#../.#...",
-    /* ? */ ".###./#...#/....#/...#./..#../...../..#..",
-    /* @ */ ".###./#...#/#.###/#.###/#.##./#..../.###.",
-    /* A */ "..#../.#.#./#...#/#...#/#####/#...#/#...#",
-    /* B */ "####./#...#/#...#/####./#...#/#...#/####.",
-    /* C */ ".###./#...#/#..../#..../#..../#...#/.###.",
-    /* D */ "###../#..#./#...#/#...#/#...#/#..#./###..",
-    /* E */ "#####/#..../#..../####./#..../#..../#####",
-    /* F */ "#####/#..../#..../####./#..../#..../#....",
-    /* G */ ".###./#...#/#..../#.###/#...#/#...#/.####",
-    /* H */ "#...#/#...#/#...#/#####/#...#/#...#/#...#",
-    /* I */ ".###./..#../..#../..#../..#../..#../.###.",
-    /* J */ "....#/....#/....#/....#/#...#/#...#/.###.",
-    /* K */ "#...#/#..#./#.#../##.../#.#../#..#./#...#",
-    /* L */ "#..../#..../#..../#..../#..../#..../#####",
-    /* M */ "#...#/##.##/#.#.#/#.#.#/#...#/#...#/#...#",
-    /* N */ "#...#/##..#/#.#.#/#..##/#...#/#...#/#...#",
-    /* O */ ".###./#...#/#...#/#...#/#...#/#...#/.###.",
-    /* P */ "####./#...#/#...#/####./#..../#..../#....",
-    /* Q */ ".###./#...#/#...#/#...#/#.#.#/#..#./.##.#",
-    /* R */ "####./#...#/#...#/####./#.#../#..#./#...#",
-    /* S */ ".####/#..../#..../.###./....#/....#/####.",
-    /* T */ "#####/..#../..#../..#../..#../..#../..#..",
-    /* U */ "#...#/#...#/#...#/#...#/#...#/#...#/.###.",
-    /* V */ "#...#/#...#/#...#/#...#/#...#/.#.#./..#..",
-    /* W */ "#...#/#...#/#...#/#.#.#/#.#.#/##.##/#...#",
-    /* X */ "#...#/#...#/.#.#./..#../.#.#./#...#/#...#",
-    /* Y */ "#...#/#...#/.#.#./..#../..#../..#../..#..",
-    /* Z */ "#####/....#/...#./..#../.#.../#..../#####",
-    /* [ */ ".###./.#.../.#.../.#.../.#.../.#.../.###.",
-    /* \ */ "#..../.#.../..#../...#./....#/...../.....",
-    /* ] */ ".###./...#./...#./...#./...#./...#./.###.",
-    /* ^ */ "..#../.#.#./#...#/...../...../...../.....",
-    /* _ */ "...../...../...../...../...../...../#####",
-    /* ` */ ".#.../..#../...../...../...../...../.....",
-    /* a */ "...../...../.###./....#/.####/#...#/.####",
-    /* b */ "#..../#..../####./#...#/#...#/#...#/####.",
-    /* c */ "...../...../.####/#..../#..../#..../.####",
-    /* d */ "....#/....#/.####/#...#/#...#/#...#/.####",
-    /* e */ "...../...../.###./#...#/#####/#..../.###.",
-    /* f */ "..##./.#..#/.#.../####./.#.../.#.../.#...",
-    /* g */ "...../...../.####/#...#/.####/....#/.###.",
-    /* h */ "#..../#..../####./#...#/#...#/#...#/#...#",
-    /* i */ "..#../...../.##../..#../..#../..#../.###.",
-    /* j */ "...#./...../...#./...#./...#./#..#./.##..",
-    /* k */ "#..../#..../#..#./#.#../##.../#.#../#..#.",
-    /* l */ ".##../..#../..#../..#../..#../..#../.###.",
-    /* m */ "...../...../##.#./#.#.#/#.#.#/#...#/#...#",
-    /* n */ "...../...../####./#...#/#...#/#...#/#...#",
-    /* o */ "...../...../.###./#...#/#...#/#...#/.###.",
-    /* p */ "...../...../####./#...#/####./#..../#....",
-    /* q */ "...../...../.####/#...#/.####/....#/....#",
-    /* r */ "...../...../#.##./##..#/#..../#..../#....",
-    /* s */ "...../...../.####/#..../.###./....#/####.",
-    /* t */ ".#.../.#.../####./.#.../.#.../.#..#/..##.",
-    /* u */ "...../...../#...#/#...#/#...#/#..##/.##.#",
-    /* v */ "...../...../#...#/#...#/#...#/.#.#./..#..",
-    /* w */ "...../...../#...#/#...#/#.#.#/#.#.#/.#.#.",
-    /* x */ "...../...../#...#/.#.#./..#../.#.#./#...#",
-    /* y */ "...../...../#...#/#...#/.####/....#/.###.",
-    /* z */ "...../...../#####/...#./..#../.#.../#####",
-    /* { */ "...##/..#../..#../.#.../..#../..#../...##",
-    /* | */ "..#../..#../..#../..#../..#../..#../..#..",
-    /* } */ "##.../..#../..#../...#./..#../..#../##...",
-    /* ~ */ "...../...../.#..#/#.#.#/#..#./...../.....",
-};
+//Sve metrike u logickim jedinicama (za scale = 1: jedna jedinica je kFontAtlasScale atlas
+//piksela). Gradi se jednom; tablica kFontGlyphs je generirana i u njene brojeve se ne dira
+const std::vector<GlyphMetrics>& buildGlyphMetrics(){
+    static const std::vector<GlyphMetrics> metrics = []{
+        const float unit = 1.0f / float(kFontAtlasScale);
+        std::vector<GlyphMetrics> table(kFontGlyphCount);
 
-constexpr char firstGlyph = ' ';
-constexpr char lastGlyph = '~';
+        for(int index = 0; index < kFontGlyphCount; ++index){
+            const FontGlyphData& glyph = kFontGlyphs[index];
+            GlyphMetrics& metric = table[index];
 
-//Tablica mora pokriti tocno raspon koji tvrdi da pokriva. Jedan redak koji nedostaje pomakao
-//bi SVA slova iza njega za jedno mjesto, pa bi natpisi bili citljivi ali krivi - greska koja
-//se ne prijavljuje nego se cita
-static_assert(sizeof(glyphs) / sizeof(glyphs[0]) == size_t(lastGlyph - firstGlyph + 1),
-              "font nema tocno onoliko slova koliko raspon 32..126 trazi");
+            //Gdje u atlasu pocinje tinta: u svojoj celiji, pomaknuta za marginu i ispun
+            const int column = glyph.cell % kFontCols;
+            const int row    = glyph.cell / kFontCols;
+            const float inkX = float(column * kFontCellPx + kFontPadPx + glyph.bearingPx);
+            const float inkY = float(row    * kFontCellPx + kFontPadPx + glyph.topPx);
+
+            metric.advance = float(glyph.advancePx) * unit;
+            metric.bearing = float(glyph.bearingPx) * unit;
+            metric.top     = float(glyph.topPx)    * unit;
+            metric.width   = float(glyph.inkWidthPx)  * unit;
+            metric.height  = float(glyph.inkHeightPx) * unit;
+
+            //UV interval tinte se gradi iz ISTE mjere kao i odsjececi, pa se slika i okvir
+            //ne mogu raziici: geometry Treadle svodi na logicke, UV ostaje u atlas pikselima
+            metric.u0 = inkX / float(kFontAtlasWidth);
+            metric.v0 = inkY / float(kFontAtlasHeight);
+            metric.u1 = (inkX + float(glyph.inkWidthPx))  / float(kFontAtlasWidth);
+            metric.v1 = (inkY + float(glyph.inkHeightPx)) / float(kFontAtlasHeight);
+        }
+        return table;
+    }();
+    return metrics;
+}
+
+//Razmak: sirina onolika koliko tipkovnica trazi, bez ijedne tinte. Za znak koji font ne zna i
+//za prazno polje - nepoznat znak nije greska programa nego natpisa, a natpis s rupom se vidi
+const GlyphMetrics& spaceMetrics(){
+    static const GlyphMetrics space = []{
+        const float unit = 1.0f / float(kFontAtlasScale);
+        GlyphMetrics metric;
+        metric.advance = float(kFontGlyphs[0].advancePx) * unit;
+        return metric;
+    }();
+    return space;
+}
 
 }
 
-bool glyphPixel(char character, int column, int row){
-    if(column < 0 || column >= glyphWidth || row < 0 || row >= glyphHeight) return false;
+const GlyphMetrics& glyphMetrics(char character){
+    if(character < kFontFirst || character > kFontLast) return spaceMetrics();
+    return buildGlyphMetrics()[int(character) - kFontFirst];
+}
 
-    //Sve izvan tablice se crta kao prazno, ne kao kockica ili upitnik. Znak koji font ne zna
-    //nije greska u programu nego u natpisu, a natpis s rupom se vidi
-    if(character < firstGlyph || character > lastGlyph) return false;
-
-    //Redak je (glyphWidth + 1) znakova dug: pet stupaca i kosa crta iza njih
-    const char* picture = glyphs[int(character) - int(firstGlyph)];
-    return picture[row * (glyphWidth + 1) + column] == '#';
+const unsigned char* fontAtlas(int& width, int& height){
+    width = kFontAtlasWidth;
+    height = kFontAtlasHeight;
+    return kFontAtlasPixels;
 }
 
 float textWidth(const std::string& value, float scale){
     if(value.empty()) return 0.0f;
 
-    //Zadnji znak ne nosi razmak iza sebe, jer razmak postoji tek izmedju dva znaka
-    return (float(value.size()) * float(glyphAdvance) - 1.0f) * scale;
+    float advance = 0.0f;
+    float overhang = 0.0f;
+    for(char character : value){
+        const GlyphMetrics& glyph = glyphMetrics(character);
+        advance += glyph.advance;
+        //Zadnje slovo smije viriti preko svog advancea (kursevi, j, kose crte). Vraca se s
+        //najvecim prevjesom u retku, jer se ne zna koje ce slovo biti zadnje
+        overhang = std::max(overhang, glyph.bearing + glyph.width - glyph.advance);
+    }
+    return (advance + overhang) * scale;
 }
 
 float textHeight(float scale){
-    return float(glyphHeight) * scale;
+    return float(kFontLinePx) / float(kFontAtlasScale) * scale;
+}
+
+std::string fitText(const std::string& value, float width, float scale){
+    if(textWidth(value, scale) <= width) return value;
+
+    //".." stane garantirano: sirina se mjeri istim racunom koji crtanje koristi
+    const float budget = width - textWidth("..", scale);
+    if(budget <= 0.0f) return "";
+
+    float pen = 0.0f;
+    size_t count = 0;
+    for(; count < value.size(); ++count){
+        const float next = pen + glyphMetrics(value[count]).advance * scale;
+        if(next > budget) break;
+        pen = next;
+    }
+    return value.substr(0, count) + "..";
 }
 
 }

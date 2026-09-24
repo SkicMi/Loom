@@ -75,25 +75,25 @@ class LoomInitializer{
     //time - frame N at N/fps - or the same export twice will not give the same frames
     double getTime() const {return window ? window->getTime() : 0.0;}
 
-    //-- gradnja stvari kojima trebaju cetiri stvari iz ovog objekta ------------------------
+    //-- building things that need four things from this object -----------------------------
     //
-    //Material je do sada trazio device, command, pool, pipeline, sliku i podatke - sest
-    //argumenata od kojih cetiri dolaze odavde. Pozivatelj ih je prepisivao svaki put i nije
-    //imao nikakav izbor u njima, sto je definicija suvisnog argumenta
+    //Material so far wanted device, command, pool, pipeline, image and data - six arguments of
+    //which four come from here. The caller copied them every time and had no choice in them,
+    //which is the very definition of a redundant argument
     Material createMaterial(const VulkanGraphicsPipeline& pipeline,
                             SampledImage image,
                             const MaterialData& data = {}) const {
         return Material(device, command, descriptorPool, pipeline, image, data);
     }
 
-    //Bez teksture: materijal koji nosi samo svoje podatke
+    //Without a texture: a material that carries only its own data
     Material createMaterial(const VulkanGraphicsPipeline& pipeline,
                             const MaterialData& data) const {
         return Material(device, command, descriptorPool, pipeline, data);
     }
 
-    //Proizvoljan payload umjesto MaterialData, za shader koji na set 1 binding 1 ocekuje
-    //nesto svoje
+    //An arbitrary payload instead of MaterialData, for a shader that expects something of its own
+    //at set 1 binding 1
     Material createMaterial(const VulkanGraphicsPipeline& pipeline,
                             SampledImage image,
                             const void* payload, size_t size) const {

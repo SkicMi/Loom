@@ -47,8 +47,8 @@ struct PrimitivesConfig{
     vk::CullModeFlags cullMode = vk::CullModeFlagBits::eBack;
     bool depthTest = true;
 
-    //Uz depth prepass glavni prolaz vise ne treba pisati dubinu - ona je vec tocna - i smije
-    //testirati eEqual, cime se svaki piksel sjenca tocno jednom bez obzira na preklapanje
+    //With a depth prepass the main pass no longer needs to write depth - it is already correct - and
+    //may test eEqual, which shades every pixel exactly once regardless of overlap
     bool depthWrite = true;
     vk::CompareOp depthCompare = vk::CompareOp::eLess;
 };

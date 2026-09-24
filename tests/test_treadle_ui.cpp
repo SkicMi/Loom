@@ -53,41 +53,45 @@ int main(){
     //-- font ---------------------------------------------------------------------------------
     {
         bool everyGlyphDrawn = true;
+        bool uvInRange = true;
         for(char character = '!'; character <= '~'; ++character){
-            bool any = false;
-            for(int row = 0; row < Treadle::glyphHeight && !any; ++row){
-                for(int column = 0; column < Treadle::glyphWidth && !any; ++column){
-                    any = Treadle::glyphPixel(character, column, row);
-                }
-            }
-            if(!any) everyGlyphDrawn = false;
+            const Treadle::GlyphMetrics& glyph = Treadle::glyphMetrics(character);
+            if(glyph.width <= 0.0f || glyph.height <= 0.0f) everyGlyphDrawn = false;
+            if(glyph.u0 < 0.0f || glyph.u1 > 1.0f || glyph.v0 < 0.0f || glyph.v1 > 1.0f ||
+               glyph.u1 < glyph.u0 || glyph.v1 < glyph.v0) uvInRange = false;
         }
 
-        bool spaceBlank = true;
-        for(int row = 0; row < Treadle::glyphHeight; ++row){
-            for(int column = 0; column < Treadle::glyphWidth; ++column){
-                if(Treadle::glyphPixel(' ', column, row)) spaceBlank = false;
-            }
-        }
+        const Treadle::GlyphMetrics& space = Treadle::glyphMetrics(' ');
+        const Treadle::GlyphMetrics& unknown = Treadle::glyphMetrics('\n');
 
-        report.check("font pun", everyGlyphDrawn, "svaki znak 33..126 ima upaljenu tocku");
-        report.check("razmak prazan", spaceBlank, "' ' nema nijednu upaljenu tocku");
-        report.check("izvan raspona", !Treadle::glyphPixel('\n', 0, 0) && !Treadle::glyphPixel('\t', 2, 3),
-                     "nepoznat znak se crta kao prazno");
+        report.check("font pun", everyGlyphDrawn, "svaki znak 33..126 ima tinte u atlasu");
+        report.check("UV u granicama", uvInRange, "ni jedan okvir tinte ne izlazi iz atlasa");
+        report.check("razmak prazan", space.width == 0.0f && space.height == 0.0f && space.advance > 0.0f,
+                     "' ' ima korak olovke ali nema tinte");
+        report.check("izvan raspona", unknown.width == 0.0f && unknown.advance == space.advance,
+                     "nepoznat znak se crta kao razmak");
     }
 
     //-- sirina teksta ------------------------------------------------------------------------
     {
         Treadle::DrawList list;
         const float scale = 2.0f;
-        const float promised = Treadle::textWidth("Obrisi", scale);
-        list.text(0.0f, 0.0f, "Obrisi", Treadle::Color{1,1,1,1}, scale);
+        const std::string text = "Obrisi";
+        const float promised = Treadle::textWidth(text, scale);
+        list.text(0.0f, 0.0f, text, Treadle::Color{1,1,1,1}, scale);
 
-        //Zadnje slovo je 'i' i ne puni svih pet stupaca, pa nacrtano smije biti uze od
-        //obecanog - ali nikad sire, jer bi tada raspored racunao s premalim brojem
+        //Izmjerena sirina mora biti TOcNA, ne samo manja od obecane: raspored racuna PRIJE
+        //crtanja i s tim brojem pomice dalje widgete, pa odstupanje odgadja samo udarac.
+        //Tocan racun je isti koji crtanje radi: koraci svih slova osim zadnjeg, pa okvir
+        //zadnjeg (bearing + sirina)
+        float pen = 0.0f;
+        for(size_t i = 0; i + 1 < text.size(); ++i) pen += Treadle::glyphMetrics(text[i]).advance;
+        const Treadle::GlyphMetrics& last = Treadle::glyphMetrics(text.back());
+        const float expected = (pen + last.bearing) * scale + last.width * scale;
+
         const float drawn = rightmost(list);
-        report.check("sirina teksta", drawn <= promised + 0.001f && drawn > promised - 4.0f * scale,
-                     fmt("obecano %.1f, nacrtano do %.1f", double(promised), double(drawn)));
+        report.check("sirina teksta", std::fabs(drawn - expected) < 0.001f && drawn <= promised + 0.001f,
+                     fmt("obecano %.1f, tocno %.1f, nacrtano do %.1f", double(promised), double(expected), double(drawn)));
 
         report.check("prazan tekst", Treadle::textWidth("", scale) == 0.0f, "nema sirine");
     }
@@ -107,6 +111,22 @@ int main(){
         list.clear();
         list.rect(10.0f, 20.0f, 0.0f, 40.0f, Treadle::Color{1,0,0,1});
         report.check("nulta sirina", list.vertices.empty(), "ne proizvodi trokute");
+    }
+
+    //-- mapa ---------------------------------------------------------------------------------
+    {
+        Treadle::DrawList list;
+        list.folderIcon(10.0f, 20.0f, 20.0f, Treadle::Color{1,1,0,1});
+
+        //Znak mape su DVA ravna pravokutnika: traka (uza) i tijelo (sira). Osam vrhova i
+        //dvanaest indeksa, sve u svom okviru, a donji rub trake dotice gornji rub tijela
+        const bool shape = list.vertices.size() == 8 && list.indices.size() == 12;
+        const bool inBox = shape && list.vertices[0].x == 10.0f && list.vertices[0].y == 20.0f
+            && list.vertices[6].x == 30.0f && list.vertices[6].y == 40.0f
+            && list.vertices[2].y == list.vertices[4].y
+            && list.vertices[6].x > list.vertices[2].x;
+        report.check("znak mape", shape && inBox,
+                     "traka pa tijelo, bez razmaka, u okviru sirine size");
     }
 
     //-- gumb ---------------------------------------------------------------------------------
@@ -146,6 +166,54 @@ int main(){
 
         //Isti ulaz jos jednom: gumb je i dalje dolje, ali pritisak je bio prosli kadar
         report.check("drzanje", !oneFrame(input).clicked, "drzanje ne okida drugi put");
+    }
+
+    //-- red mape --------------------------------------------------------------------------------
+    {
+        Treadle::Ui ui;
+        Treadle::Input input;
+        bool clicked = false;
+
+        auto oneFrame = [&](Treadle::Input state, bool selected){
+            clicked = false;
+            ui.begin(state, 800.0f, 600.0f);
+            ui.panel("Projekt", 20.0f, 20.0f, 220.0f);
+            clicked = ui.folderRow("snimke", selected);
+            ui.end();
+            return ui.drawn();
+        };
+
+        const Treadle::Theme& theme = ui.style();
+        const float rowY = 20.0f + theme.padding + Treadle::textHeight(theme.textScale)
+                         + theme.spacing + 1.0f + theme.spacing + theme.rowHeight * 0.5f;
+        input.mouseX = 60.0f; input.mouseY = rowY;
+
+        //Znak mape je dvostruki ravni pravokutnik: uza traka i siri oblik. Ime stoji pokraj
+        const Treadle::DrawList& drawn = oneFrame(input, false);
+        bool hasTab = false, hasBody = false;
+        for(size_t i = 0; i + 3 < drawn.vertices.size(); i += 4){
+            const float width = drawn.vertices[i + 2].x - drawn.vertices[i].x;
+            if(drawn.vertices[i].mode < 0.5f){
+                if(width > 7.0f && width < 10.0f) hasTab = true;
+                if(width > 14.0f && width < 16.0f) hasBody = true;
+            }
+        }
+        report.check("red mape", !clicked && hasTab && hasBody,
+                     "znak mape (traka + tijelo) pored imena, bez klika");
+
+        input.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        oneFrame(input, false);
+        report.check("ulaz u mapu", clicked, "pritisak na red mape ulazi u nju");
+
+        //Odabrana mapa zadrzi znak: crta se i sa zlatnom podlogom odabira
+        input.down[uint32_t(Treadle::MouseButton::Left)] = false;
+        const Treadle::DrawList& selected = oneFrame(input, true);
+        bool iconSurvives = false;
+        for(size_t i = 0; i + 3 < selected.vertices.size(); i += 4){
+            const float width = selected.vertices[i + 2].x - selected.vertices[i].x;
+            if(width > 14.0f && width < 16.0f) iconSurvives = true;
+        }
+        report.check("mapa u odabiru", iconSurvives, "znak ne nestane kad se red odabere");
     }
 
     //-- klizac -------------------------------------------------------------------------------
@@ -293,11 +361,12 @@ int main(){
             if(width >= 199.0f && height > 40.0f) hasBackground = true;
 
             //I nista visoko ne smije stajati UNUTAR plohe: uspravna crta preko cijele plohe
-            //je upravo ono kako se ta greska pokazala. Lijeva i desna traka obruba su uske i
-            //visoke po definiciji, pa se rubovi izuzimaju
-            const float x = drawn.vertices[i].x;
-            const bool onEdge = x < 20.0f + 3.0f || x > 20.0f + 200.0f - 3.0f;
-            if(width < 4.0f && !onEdge) tallest = std::max(tallest, height);
+            //je upravo ono kako se ta greska pokazala. Slova su uski pravokutnici (znamenka
+            //i polumjer visine 42), a zaobljeni gumb je squaret s radiusom - ni jedno ni
+            //drugo nije greska koju ovaj test trazi, pa se gledaju samo ravni (mode 0)
+            //cetverokuti
+            const float mode = drawn.vertices[i].mode;
+            if(width < 4.0f && mode < 0.5f) tallest = std::max(tallest, height);
         }
 
         report.check("pozadina plohe", hasBackground, "pun pravokutnik preko cijele plohe");

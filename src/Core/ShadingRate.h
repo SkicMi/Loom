@@ -1,30 +1,32 @@
 #pragma once
 #include <cstdint>
 
-//Koliko piksela dijeli jedno izvrsavanje fragment shadera.
+//How many pixels share one fragment shader execution.
 //
-//Rasterizacija, dubina i pokrivenost ostaju po pikselu - mijenja se samo koliko puta se
-//SJENCANJE racuna. Zato je ovo ustedjivanje bez gubitka geometrije: rub trokuta je jednako
-//ostar na 2x2 kao i na 1x1, a boja unutar bloka je jedna.
+//Rasterization, depth and coverage stay per pixel - only how many times SHADING is computed
+//changes. Hence this is a saving without losing geometry: a triangle's edge is just as sharp
+//at 2x2 as at 1x1, and the color within a block is one.
 //
-//Namjerno bez ijednog Vulkan tipa: isti pojam treba i stepenici 1, a Vulkanovo pakiranje
-//(log2 sirine u gornja dva bita, log2 visine u donja) je detalj koji se dogada nize.
+//Deliberately without a single Vulkan type: ladder 1 needs the same notion, and Vulkan's
+//packing (log2 of width in the top two bits, log2 of height in the bottom two) is a detail
+//that happens below.
 enum class ShadingRate{
-    Full,       //1x1 - jedno sjencanje po pikselu, kako je oduvijek bilo
-    Wide,       //2x1 - dva piksela u sirinu dijele jedno
+    Full,       //1x1 - one shading per pixel, as it has always been
+    Wide,       //2x1 - two pixels in width share one
     Tall,       //1x2
-    Quarter,    //2x2 - cetvrtina posla
-    Sixteenth   //4x4 - sesnaestina, i vidljivo grubo
+    Quarter,    //2x2 - a quarter of the work
+    Sixteenth   //4x4 - a sixteenth, and visibly coarse
 };
 
-//Sto se dogodi kad i materijal i slika stope imaju misljenje o istom pikselu.
+//What happens when both the material and the shading rate image have an opinion about the same
+//pixel.
 //
-//Po defaultu odlucuje grublje od dvoje, jer je materijalova zadana stopa Full - pa slika
-//stope, koja zna za udaljenost, ima zadnju rijec. Materijal koji to ne zeli (zrcalo,
-//refleksija, lice) kaze Critical i slika ga vise ne dira.
+//By default the coarser of the two wins, because the material's default rate is Full - so the
+//rate image, which knows about distance, has the last word. A material that does not want that
+//(mirror, reflection, face) says Critical and the image no longer touches it.
 enum class ShadingImportance{
-    Normal,     //slika stope smije ovo pogrubiti
-    Critical    //ovo se sjenca stopom koju je materijal rekao, i tocka
+    Normal,     //the rate image may coarsen this
+    Critical    //this gets shaded at whatever rate the material said, and that is that
 };
 
 struct ShadingRateExtent{
@@ -43,7 +45,7 @@ inline ShadingRateExtent shadingRateExtent(ShadingRate rate){
     return {1,1};
 }
 
-//Koliko se puta manje sjenca. Za 2x2 je cetiri
+//How many times less shading. For 2x2 it is four
 inline uint32_t shadingRateSavings(ShadingRate rate){
     const ShadingRateExtent extent = shadingRateExtent(rate);
     return extent.width * extent.height;

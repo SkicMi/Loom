@@ -1,22 +1,23 @@
-// Izvoz i uvoz moraju biti isto preslikavanje u dva smjera.
+// Export and import must be the same mapping in both directions.
 //
-// Konvencija je jedino sto ovdje moze TIHO promasiti. COLMAP rotaciju i pomak vodi iz svijeta u
-// kameru, u klasicnoj konvenciji (+Z naprijed, +Y dolje); nasa Pose je obrnuta (kamera u svijet,
-// -Z naprijed), a nas fy je negativan. Svaka od tih triju razlika je prilika da se predznak izgubi
-// - i nijedna se ne vidi kao greska, nego kao rekonstrukcija koja je "nekako kriva".
+// The convention is the only thing that can SILENTLY miss here. COLMAP carries rotation and
+// translation from world to camera, in the classic convention (+Z forward, +Y down); our Pose
+// is inverted (camera to world, -Z forward), and our fy is negative. Each of those three
+// differences is a chance to lose a sign - and none shows up as an error, but as a
+// reconstruction that is "somehow wrong".
 //
-// Zato se ovdje ne provjerava racun nego KRUG: poznata rekonstrukcija se izveze, procita natrag i
-// mora se vratiti ista. Ako se predznak izgubi u jednom smjeru, krug se ne zatvori; ako se izgubi
-// u OBA smjera jednako, zatvorio bi se lazno - pa se zato posebno provjerava i da procitane poze
-// projiciraju opazanja na ista mjesta.
+// So here not the math is checked but the ROUND TRIP: a known reconstruction is exported,
+// read back, and must come back the same. If a sign is lost in one direction the circle does
+// not close; if it is lost EQUALLY in both directions it would close falsely - so it is also
+// checked separately that the read-back poses project the observations onto the same places.
 //
-// Sto se brani:
+// What is defended:
 //
-//   poze          polozaj i orijentacija se vrate isti kroz izvoz pa uvoz
-//   intrinsike    zarista i glavna tocka prezive, ukljucujuci nas negativan fy
-//   tocke         3D polozaji se vrate isti
-//   projekcija    procitani model projicira opazanja tamo gdje su i bila - provjera koja ne ovisi
-//                 o tome je li ista greska napravljena dvaput
+//   poses          position and orientation come back the same through export then import
+//   intrinsics     focal points and the principal point survive, including our negative fy
+//   points         3D positions come back the same
+//   projection     the read-back model projects observations where they were - a check that
+//                  does not depend on whether the same error was made twice
 #include "TestHarness.h"
 
 #include <Engine/ColmapExport.h>
@@ -32,7 +33,7 @@
 int main(){
     TestReport report("COLMAP izvoz i uvoz zatvaraju krug");
 
-    // Poznata scena: kamere po luku, tocke razasute
+    // Known scene: cameras along an arc, points scattered
     Engine::SyntheticConfig sceneConfig;
     sceneConfig.cameraCount = 8;
     sceneConfig.pointCount = 120;
@@ -73,7 +74,8 @@ int main(){
             back.reconstruction.poses.size(), original.poses.size(),
             back.reconstruction.points.size(), original.points.size()));
 
-    //Prag je u jedinicama scene: zapis ide kroz tekst, pa se gubi na znamenkama a ne na racunu
+    //Threshold is in scene units: the export goes through text, so loss happens on digits, not
+    //on math
     double worstPosition = 0.0, worstAngle = 0.0;
     const size_t cameras = std::min(back.reconstruction.poses.size(), original.poses.size());
     for(size_t camera = 0; camera < cameras; ++camera){
@@ -97,8 +99,8 @@ int main(){
     report.check("tocke prezive krug", worstPoint < 1e-3,
         fmt("najgora razlika %.2e", worstPoint));
 
-    //Nas fy je negativan; COLMAP-ov je pozitivan. Ako se predznak izgubi, ovo je jedino mjesto
-    //gdje se to vidi kao broj, a ne kao cudna rekonstrukcija
+    //Our fy is negative; COLMAP's is positive. If the sign is lost, this is the only place it
+    //shows as a number, not as a strange reconstruction
     report.check("intrinsike prezive krug, ukljucujuci predznak fy",
         std::fabs(double(back.intrinsics.fx - scene.intrinsics.fx)) < 1e-2 &&
         std::fabs(double(back.intrinsics.fy - scene.intrinsics.fy)) < 1e-2 &&
@@ -108,8 +110,9 @@ int main(){
             double(back.intrinsics.fx), double(scene.intrinsics.fx),
             double(back.intrinsics.fy), double(scene.intrinsics.fy)));
 
-    //NEZAVISNA PROVJERA: ista greska napravljena u oba smjera bi gornje testove prosla. Ovo ne -
-    //ovdje se procitani model suoci s opazanjima koja nikad nisu prosla kroz pretvorbu
+    //INDEPENDENT CHECK: the same error made in both directions would pass the checks above. This
+    //one won't - here the read-back model faces observations that never went through the
+    //conversion
     report.check("procitani model projicira opazanja na njihova mjesta",
         back.reconstruction.medianReprojection < 0.01,
         fmt("medijan reprojekcije %.4f px kroz %zu opazanja",

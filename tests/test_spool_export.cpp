@@ -43,7 +43,7 @@ int main(){
     std::filesystem::remove_all(work);
 
     // -------------------------------------------------------------------------------
-    // Zapis pa citanje mora vratiti iste bajtove
+    // Write then read must return the same bytes
     // -------------------------------------------------------------------------------
 
     const Spool::Image pattern = makePattern(37, 23);   //neither square nor a power of two
@@ -76,7 +76,7 @@ int main(){
             compressed.different));
 
     // -------------------------------------------------------------------------------
-    // BGRA u RGBA
+    // BGRA -> RGBA
     // -------------------------------------------------------------------------------
 
     const uint8_t bgra[] = {  10, 20, 30, 40,    50, 60, 70, 80 };
@@ -93,7 +93,7 @@ int main(){
             bgra[0], bgra[1], bgra[2], bgra[3]));
 
     // -------------------------------------------------------------------------------
-    // Numeriranje sekvence
+    // Sequence numbering
     // -------------------------------------------------------------------------------
 
     Spool::SequenceConfig sequenceConfig;
@@ -110,7 +110,7 @@ int main(){
         "shot_0000, shot_0009, shot_0010 - sortiraju se kako se i gledaju");
 
     // -------------------------------------------------------------------------------
-    // I ono pravo: headless render postaje sekvenca na disku
+    // And the real one: headless render becomes a sequence on disk
     // -------------------------------------------------------------------------------
 
     const vk::Extent2D size{192,192};
@@ -209,7 +209,7 @@ int main(){
         fmt("prvi i zadnji frame razlikuju se u %zu bajtova", moved.different));
 
     // -------------------------------------------------------------------------------
-    // Granice
+    // Limits
     // -------------------------------------------------------------------------------
 
     bool unknownFormatThrew = false;

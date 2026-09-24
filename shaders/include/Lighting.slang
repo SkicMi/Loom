@@ -1,11 +1,12 @@
-//Osvjetljenje: sve sto je zajednicko svakome tko sjenca plohu.
+//Lighting: everything shared by whoever shades a surface.
 //
-//Stajalo je dvaput, doslovno prepisano, u triangle.slang i textured.slang - devedeset redaka
-//koji se moraju slagati u zadnjem bitu da bi dvije slike iste scene bile ista slika. Sada
-//stoji jednom, i relight nad G-bufferom racuna istim kodom kao i crtez preko mesha.
+//It used to sit twice, literally copy-pasted, in triangle.slang and textured.slang - ninety
+//lines that had to agree down to the last bit for two images of the same scene to be the same
+//image. Now it sits once, and relight over the G-buffer computes with the same code as drawing
+//over the mesh.
 //
-//To nije urednost nego tvrdnja koja se inace ne bi dala dokazati: "isto svjetlo" znaci ISTI
-//KOD, a ne dva koda koja rade isto.
+//That is not tidiness but a claim that could not otherwise be proven: "the same light" means
+//THE SAME CODE, not two pieces of code that happen to work the same.
 
 
 struct FrameData{
@@ -36,8 +37,9 @@ struct GpuLight{
 //depth - it returns how much of the 2x2 neighbourhood passed "is my reference nearer than
 //what is stored here", filtered by the same hardware that does bilinear. That free 2x2 is
 //why a shadow edge is not a staircase
-//Velicina dolazi iz CMakea kroz -D, isti broj koji vidi i C++. Prije je stajala ovdje kao
-//literal uz komentar da se mora poklapati - a da se raziđe, pipeline bi se svejedno preveo
+//The size comes from CMake via -D, the same number C++ sees. It used to sit here as a
+//literal with a comment that it had to match - but if they drifted, the pipeline would still
+//compile
 [[vk::binding(2,0)]] Sampler2DShadow shadowMaps[LOOM_MAX_SHADOW_MAPS];
 
 //1.0 fully lit, 0.0 fully shadowed. A light without a map bound (params.y == 0) returns 1.0
@@ -56,8 +58,8 @@ float shadowVisibility(GpuLight light, float3 worldPos){
 
     //The bias is subtracted from the reference, not added to the stored depth: a fragment
     //has to be nearer than the map by this much before it counts as lit
-    //Indeks dolazi iz svjetla, a petlja po svjetlima ide jednako u svakoj invokaciji, pa je
-    //dinamicki uniforman - sto je tocno ono sto shaderSampledImageArrayDynamicIndexing trazi
+//The index comes from the light, and the loop over lights runs identically in every invocation,
+//so it is dynamically uniform - exactly what shaderSampledImageArrayDynamicIndexing asks for
     return shadowMaps[int(light.shadow.x)].SampleCmpLevelZero(uv, proj.z - light.params.z);
 }
 
@@ -88,19 +90,21 @@ float cubeVisibility(GpuLight light, float3 worldPos){
 }
 
 
-//Jedna ploha, sva svjetla. base je albedo, worldPos i N su u svjetskom prostoru, V gleda od
-//plohe prema kameri.
+//One surface, all lights. base is albedo, worldPos and N are in world space, V points from
+//the surface toward the camera.
 //
-//Odavde nadalje je svejedno je li ploha dosla iz mesha ili iz slike dubine - sve sto ova
-//funkcija zna je gdje je tocka, kamo gleda i koje je boje
-//Zaklon koji shadeSurface ne zna sam izracunati.
+//From here on it does not matter whether the surface came from a mesh or from a depth image -
+//all this function knows is where the point is, which way it faces and what colour it has
+//An occlusion that shadeSurface cannot compute itself.
 //
-//Sjenu iz karte sjena Loom vec racuna ovdje. Ali kad se svjetlo ubacuje u snimku, karte
-//sjena nema - postoji samo ono sto se vidi u kadru, i zaklon se mora TRAZITI kroz tu istu
-//dubinu. Taj racun ne pripada osvjetljenju nego prolazu koji ima dubinu pri ruci.
+//Loom already computes shadow-map shadows here. But when light is inserted into a photo,
+//there is no shadow map - only what is visible in the frame, and the occluder has to be LOOKED
+//FOR through that same depth. That computation belongs not to lighting but to the pass that
+//has the depth at hand.
 //
-//Zato je zaklon parametar. Crtez preko mesha ubaci NoOcclusion, koja se prevede u nista, pa
-//taj put ne placa ni jednu instrukciju - a osvjetljenje ostaje jedna funkcija za oba puta
+//That is why occlusion is a parameter. Mesh drawing passes NoOcclusion, which compiles to
+//nothing, so that path does not pay a single instruction - and lighting stays one function
+//for both paths
 interface IOcclusion{
     float visibility(GpuLight light, float3 worldPos);
 }
@@ -109,12 +113,12 @@ struct NoOcclusion : IOcclusion{
     float visibility(GpuLight light, float3 worldPos){ return 1.0; }
 }
 
-//Doprinos svih svjetala, dodan na ono sto je vec bilo.
+//Contribution of all lights, added on top of what was already there.
 //
-//start postoji zbog kompozicije: kad se svjetlo ubacuje u snimku, ono sto je vec na slici
-//JEST pocetna vrijednost, pa se zbraja istim redom kojim bi se zbrajalo da je scena crtana
-//odjednom. Da kompozicija zbraja na kraju, zbroj bi se razlikovao u zadnjem bitu - a onda
-//se "isto svjetlo" vise ne bi dalo dokazati, samo izjaviti
+//start exists for compositing: when light is inserted into a photo, what is already in the
+//image IS the starting value, so it accumulates in the same order as if the scene had been
+//drawn at once. If compositing added at the end, the sum would differ in the last bit - and
+//then "the same light" could no longer be proven, only asserted
 float3 accumulateLight<T : IOcclusion>(float3 start, float3 base, float3 worldPos,
                                        float3 N, float3 V,
                                        float shininess, float specularStrength,
@@ -143,12 +147,12 @@ float3 accumulateLight<T : IOcclusion>(float3 start, float3 base, float3 worldPo
 
         float3 H = normalize(L + V);
 
-        //OMOTANI DIFUZ. Lambert pada u nulu tocno na dot(N,L) = 0, pa je terminator ostar rub
-        //i svaka greska u normali se na njemu vidi kao mrlja. Kad normale dolaze iz
-        //PROCIJENJENE dubine to nije rijetkost nego pravilo.
-        //
-        //Omatanje pomice tu nulu unatrag i preslikava raspon natrag u 0..1, pa svjetlo malo
-        //zade iza ruba. Nula je tocno Lambert: (dot + 0) / (1 + 0) je dot
+//WRAPPED DIFFUSE. Lambert drops to zero exactly at dot(N,L) = 0, so the terminator is a sharp
+//edge and every normal error shows on it as a smudge. When the normals come from ESTIMATED
+//depth that is not a rarity but the rule.
+//
+//Wrapping pushes that zero back and remaps the range into 0..1, so light creeps a little past
+//the edge. Zero is exactly Lambert: (dot + 0) / (1 + 0) is dot
         float diffuse = max((dot(N,L) + diffuseWrap) / (1.0 + diffuseWrap), 0.0);
         float specular = pow(max(dot(N,H),0.0), shininess) * specularStrength;
 
@@ -164,8 +168,8 @@ float3 accumulateLight<T : IOcclusion>(float3 start, float3 base, float3 worldPo
             visibility = shadowVisibility(light, worldPos);
         }
 
-        //Zaklon iz kadra mnozi ono sto je karta sjena vec rekla. Svjetlo koje je zaklonjeno
-        //jednim od ta dva puta zaklonjeno je - drugi ga ne moze vratiti
+//Frame occlusion multiplies what the shadow map already said. Light blocked by either of the
+//two paths is blocked - the other one cannot bring it back
         visibility *= occlusion.visibility(light, worldPos);
 
         lit += base * light.color.rgb * diffuse * attenuation * visibility;
@@ -181,7 +185,7 @@ float3 accumulateLight(float3 start, float3 base, float3 worldPos, float3 N, flo
                            diffuseWrap, NoOcclusion());
 }
 
-//Ploha osvijetljena od nule: ambijent pa svjetla. Ono sto crtez preko mesha oduvijek radi
+//A surface lit from scratch: ambient, then lights. What mesh drawing has always done
 float3 shadeSurface(float3 base, float3 worldPos, float3 N, float3 V,
                     float shininess, float specularStrength, float diffuseWrap = 0.0){
     return accumulateLight(base * frame.ambientColor.rgb, base, worldPos, N, V,

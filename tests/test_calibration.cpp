@@ -1,13 +1,13 @@
-// 2b: kalibracija - relativna dubina u metre.
+// 2b: calibration - relative depth into meters.
 //
-// Ovo je jedino mjesto na kojem se procjena spaja sa stvarnim svijetom, i zato jedino na
-// kojem se moze pogrijesiti tako da slika i dalje izgleda uvjerljivo. Svjetlo pada po
-// inverznom kvadratu i treba METRE: scena skalirana dvostruko izgleda kao scena s upola
-// slabijim svjetlom, a nista u njoj ne izgleda kao greska.
+// This is the only place where the estimate meets the real world, and therefore the only
+// place it can go wrong so that the image still looks convincing. Light falls off with the
+// inverse square and needs METERS: a scene scaled twice looks like a scene with half the
+// light, and nothing in it looks like an error.
 //
-// Model daje nesto proporcionalno RECIPROCNOJ udaljenosti i ne zna ni razmjer ni pomak - dva
-// broja, dvije nepoznanice. Zato su i dvije poznate udaljenosti tocno dovoljne, i zato se
-// pravac trazi u prostoru reciprocnih udaljenosti a ne udaljenosti.
+// The model gives something proportional to the RECIPROCAL distance and knows neither scale
+// nor offset - two numbers, two unknowns. That is why two known distances are exactly
+// enough, and why the line is found in reciprocal-distance space rather than distance space.
 #include "TestHarness.h"
 
 #include "Vulkan/PositionMap.h"
@@ -21,7 +21,7 @@ int main(){
     TestReport report("2b kalibracija");
 
     // -------------------------------------------------------------------------------
-    // Raspon: sto znace krajevi karte
+    // Range: what the ends of the map mean
     // -------------------------------------------------------------------------------
 
     {
@@ -33,8 +33,8 @@ int main(){
             fmt("vrijednost 1 -> %.4f m, vrijednost 0 -> %.4f m", 
                 mapping.distanceAt(1.0f), mapping.distanceAt(0.0f)));
 
-        //Sredina karte NIJE sredina raspona, i to je cijela poanta. Harmonijska sredina od
-        //1.5 i 20 je 2*1.5*20/21.5 = 2.79, ne 10.75
+        //The middle of the map is NOT the middle of the range, and that is the whole point. The
+        //harmonic mean of 1.5 and 20 is 2*1.5*20/21.5 = 2.79, not 10.75
         const float middle = mapping.distanceAt(0.5f);
         const float harmonic = 2.0f * 1.5f * 20.0f / (1.5f + 20.0f);
         const float arithmetic = 0.5f * (1.5f + 20.0f);
@@ -46,13 +46,13 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Dvije poznate udaljenosti
+    // Two known distances
     // -------------------------------------------------------------------------------
 
-    //Ovo je kalibracija kakva se stvarno radi: ne zna se raspon karte niti je treba
-    //normalizirati, pokaze se na dvije stvari u slici i kaze koliko su daleko
+    //This is calibration as it is really done: the range of the map is unknown and need not
+    //be normalized; you point at two things in the image and say how far they are
     {
-        //Karta koja NIJE normalizirana - kakvu model i izbaci
+        //A map that is NOT normalized - the kind the model emits
         const float rawNear = 3721.0f;
         const float rawFar = 418.0f;
 
@@ -64,7 +64,7 @@ int main(){
             fmt("%.1f -> %.4f m (rekli smo 2.4), %.1f -> %.4f m (rekli smo 17)",
                 rawNear, mapping.distanceAt(rawNear), rawFar, mapping.distanceAt(rawFar)));
 
-        //I da je ostatak karte na pravcu kroz te dvije tocke - u reciprocnom prostoru
+        //And that the rest of the map is on the line through those two points - in reciprocal space
         const float middleValue = 0.5f * (rawNear + rawFar);
         const float expected = 1.0f / (0.5f * (1.0f / 2.4f + 1.0f / 17.0f));
 
@@ -75,11 +75,11 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // fromRange je poseban slucaj fromReferences
+    // fromRange is a special case of fromReferences
     // -------------------------------------------------------------------------------
 
-    //Ako to nije tocno, dva puta racunamo istu stvar - a dva racuna iste stvari se prije ili
-    //poslije raziđu
+    //If that is not exact we compute the same thing twice - and two computations of the same
+    //thing sooner or later diverge
     {
         const DepthMapping viaRange = DepthMapping::fromRange(1.5f, 20.0f);
         const DepthMapping viaReferences = DepthMapping::fromReferences(1.0f, 1.5f, 0.0f, 20.0f);
@@ -97,18 +97,18 @@ int main(){
     // -------------------------------------------------------------------------------
 
     {
-        const DepthMapping mapping = DepthMapping::metric(0.001f);   //milimetri u metre
+        const DepthMapping mapping = DepthMapping::metric(0.001f);   //millimeters to meters
         report.check("metricka karta se samo skalira",
             std::abs(mapping.distanceAt(2400.0f) - 2.4f) < 1e-5f,
             fmt("2400 -> %.5f m", mapping.distanceAt(2400.0f)));
     }
 
     // -------------------------------------------------------------------------------
-    // Sto se MORA odbiti
+    // What MUST be refused
     // -------------------------------------------------------------------------------
 
-    //Kalibracija koja se tiho slozi s besmislicom je kalibracija koja ce jednom tiho slagati
-    //cijelu scenu
+    //A calibration that quietly agrees with nonsense is a calibration that will one day quietly
+    //lie about the whole scene
     struct Case{
         const char* what;
         std::function<void()> run;
@@ -134,12 +134,12 @@ int main(){
                       : fmt("%zu je proslo: %s", accepted, names.c_str()));
 
     // -------------------------------------------------------------------------------
-    // I da se dvostruka scena stvarno vidi kao dvostruka
+    // And that a doubled scene really reads as doubled
     // -------------------------------------------------------------------------------
 
-    //Ovo je greska zbog koje kalibracija uopce postoji. Ista karta, dvostruko krivo
-    //procijenjen raspon: svaka udaljenost se udvostruci, pa svjetlo koje pada po inverznom
-    //kvadratu na istom mjestu daje CETIRI puta manje svjetla
+    //This is the error that justifies calibration existing at all. Same map, range
+    //mis-estimated by a factor of two: every distance doubles, so light falling by the
+    //inverse square at the same spot gives FOUR times less light
     {
         const DepthMapping right = DepthMapping::fromRange(2.0f, 20.0f);
         const DepthMapping doubled = DepthMapping::fromRange(4.0f, 40.0f);

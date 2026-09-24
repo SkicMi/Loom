@@ -1,12 +1,13 @@
-// Kljuc dubine po SPLATU, i poredak koji ce ga pratiti kroz sort.
+// Depth key per SPLAT, plus an order array that follows it through the sort.
 //
-// Sortira se 742 tisuce splatova umjesto pet milijuna parova. Brojanje i sirenje onda idu tim
-// poretkom, pa parovi nastaju vec poredani sprijeda natrag - i ostaje samo sort po pločici, koji
-// je stabilan i taj poredak ne dira. Slika je ista kao kad su se sortirali parovi: jednake
-// dubine i dalje ostaju poredane po indeksu splata, jer je i ovaj sort stabilan.
+// This sorts 742 thousand splats instead of five million pairs. Counting and expanding then
+// follow that order, so pairs are born already sorted front to back - and only the per-tile
+// sort remains, which is stable and leaves that order alone. The picture matches the old
+// pair-based sort: equal depths still stay ordered by splat index, because this sort is stable
+// too.
 //
-// Splat koji se ne crta (polumjer nula) dobiva kljuc kao i svaki drugi. Gdje zavrsi svejedno je:
-// brojanje mu da nula pločica, i nijedan par ne nastane.
+// A splat that is not drawn (zero radius) gets a key like any other. Where it ends up does not
+// matter: counting gives it zero tiles, and no pair is ever created.
 
 struct Params{
     uint splatCount;
@@ -22,8 +23,8 @@ struct Params{
 [[vk::binding(1,0)]] RWStructuredBuffer<uint> keys;
 [[vk::binding(2,0)]] RWStructuredBuffer<uint> order;
 
-//Isti pretvarac koji radi RadixSort::keyFromFloat na procesoru: pozitivnima se okrene bit
-//predznaka, negativnima svi. Dubina je pozitivna, ali funkcija koja radi za pola ulaza je mina
+//Same converter as RadixSort::keyFromFloat on the CPU: positives flip the sign bit, negatives
+//flip all bits. Depth is positive, but a function that only works for half its inputs is a trap
 uint keyFromFloat(float value){
     const uint bits = asuint(value);
     return (bits & 0x80000000u) != 0 ? ~bits : (bits | 0x80000000u);

@@ -68,7 +68,7 @@ int main(){
     LoomInitializer loom(config);
 
     // -------------------------------------------------------------------------------
-    // Geometrija, prije nego je itko nacrtao
+    // Geometry, before anyone drew it
     // -------------------------------------------------------------------------------
 
     const Wound plane = inspect(LoomShapes::planeVertices(), LoomShapes::planeIndices());
@@ -123,7 +123,7 @@ int main(){
     report.check("plane lezi u XZ", planeIsFlat, "svi vrhovi na y = 0, normala +Y");
 
     // -------------------------------------------------------------------------------
-    // Granice
+    // Limits
     // -------------------------------------------------------------------------------
 
     bool tinySphereThrew = false;
@@ -137,7 +137,7 @@ int main(){
     report.check("sfera preko 16 bita", hugeSphereThrew, "baca iznimku umjesto omotanih indeksa");
 
     // -------------------------------------------------------------------------------
-    // Crtanje: jedan poziv po obliku
+    // Drawing: one call per shape
     // -------------------------------------------------------------------------------
 
     LoomShapes::Primitives shapes(loom);

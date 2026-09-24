@@ -33,11 +33,11 @@ class Material{
         const void* data,
         size_t size);
 
-    //Vise slika odjednom, vezanih redom na bindinge 0, 1, 2... a payload na onaj iza njih.
+    //Several images at once, bound in order to bindings 0, 1, 2... and the payload to the one after them.
     //
-    //Postoji zbog G-buffera: pozicije i normale su dvije slike koje opisuju istu plohu i
-    //nijedna od njih nije "tekstura ovog objekta". Materijal s jednom slikom je i dalje isti
-    //materijal - ovo je nadogradnja, ne zamjena
+    //Exists for the G-buffer: positions and normals are two images describing the same surface and
+    //neither of them is "this object's texture". A material with a single image is still the same
+    //material - this is an upgrade, not a replacement
     Material(const VulkanDevice& device,
         const VulkanCommand& command,
         const vk::raii::DescriptorPool& pool,
@@ -53,16 +53,16 @@ class Material{
     Material(Material&&) = default;
     
 
-    //Koliko piksela dijeli jedno sjencanje ovog materijala.
+    //How many pixels share a single shading of this material.
     //
-    //Stoji na materijalu, a ne na pipelineu, jer je to odluka o VAZNOSTI: pod u daljini i
-    //zrcalo u prvom planu mogu dijeliti pipeline i ne bi trebali dijeliti stopu. Uredaj koji
-    //to ne podrzava crta jednako, samo bez ustede
+    //Lives on the material, not on the pipeline, because it is a decision about IMPORTANCE: the floor in the
+    //distance and a mirror in the foreground can share a pipeline and should not share a rate. A device that
+    //does not support it draws the same, just without the saving
     void setShadingRate(ShadingRate rate) {shadingRate = rate;}
     ShadingRate getShadingRate() const {return shadingRate;}
 
-    //Smije li slika stope pogrubiti ovaj materijal. Critical je nacin da refleksija ostane
-    //ostra i kad je daleko - jer je udaljenost dobra procjena vaznosti, ali nije savrsena
+    //May the rate image coarsen this material. Critical is a way for a reflection to stay
+    //sharp even when it is far - distance is a good estimate of importance, but not a perfect one
     void setImportance(ShadingImportance value) {importance = value;}
     ShadingImportance getImportance() const {return importance;}
 
@@ -101,8 +101,8 @@ class Material{
     ShadingImportance importance = ShadingImportance::Normal;
     mutable std::vector<SampledImage> images;
 
-    //Na koji binding ide payload. Jedna slika ostavlja ga na 1, kako je oduvijek bilo; N
-    //slika ga gura na N, jer bindingi ispod pripadaju slikama
+    //Which binding the payload goes to. One image leaves it at 1, as it always was; N
+    //images push it to N, because the bindings below belong to images
     uint32_t dataBinding = 1;
     std::vector<vk::raii::DescriptorSet> descriptorSets;
     mutable std::vector<VulkanBuffer> dataBuffers;

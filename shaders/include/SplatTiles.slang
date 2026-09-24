@@ -1,15 +1,15 @@
-// Zajednicki dio binninga: koje pločice jedan splat zahvaca.
+// Shared part of binning: which tiles one splat covers.
 //
-// Ovo je include a ne dva puta prepisano, i to je jedina obrana od greske koja se ovdje ne bi
-// vidjela: brojanje i sirenje MORAJU dati isti okvir. Da se razidju, prefiksni zbroj bi
-// rezervirao jedan broj mjesta a sirenje zapisalo drugi - i to bi se pojavilo kao splatovi
-// koji nedostaju ili kao tudji podaci u tudjem dijelu polja, sto oboje izgleda kao greska
-// negdje sasvim drugdje.
+// This is an include and not copy-pasted twice, and that is the only defence against an
+// error that would not show up here: counting and expanding MUST produce the same bounds.
+// If they drifted, the prefix sum would reserve one number of slots and expanding would
+// write another - which would show up as missing splats or as foreign data in someone
+// else's part of the array, both looking like a bug somewhere entirely different.
 
-//Sto rasterizator cita o jednom splatu. Tri float4, isti raspored kao SplatMath::PreparedSplat
+//What the rasterizer reads about one splat. Three float4s, same layout as SplatMath::PreparedSplat
 struct SplatData{
-    float4 centerConic;        //xy sredina u pikselima, zw conic.x i conic.y
-    float4 conicOpacityDepth;  //x conic.z, y neprozirnost, z dubina, w polumjer u pikselima
+    float4 centerConic;        //xy centre in pixels, zw conic.x and conic.y
+    float4 conicOpacityDepth;  //x conic.z, y opacity, z depth, w radius in pixels
     float4 color;
 };
 
@@ -21,8 +21,8 @@ SplatData readSplat(RWStructuredBuffer<float4> splats, uint index){
     return splat;
 }
 
-//Okvir u pločicama: x0, y0 ukljucivo, x1, y1 iskljucivo. Prazan okvir (x1 <= x0) znaci da
-//splat ne dira nijednu pločicu - iza kamere je ili je ispao izvan kadra
+//Bounds in tiles: x0, y0 inclusive, x1, y1 exclusive. Empty bounds (x1 <= x0) mean the
+//splat touches no tile - it is behind the camera or projected off frame
 int4 tileBounds(float2 center, float radius, uint2 grid, uint tileSize){
     const int2 first = int2(floor((center - radius) / float(tileSize)));
     const int2 last  = int2(floor((center + radius) / float(tileSize)));
@@ -37,26 +37,28 @@ float conicForm(float a, float b, float c, float x, float y){
     return a * x * x + 2.0 * b * x * y + c * y * y;
 }
 
-//MOZE LI SPLAT NACRTATI IJEDAN PIKSEL OVE PLOČICE. False samo kad je sigurno da ne moze.
+//CAN THE SPLAT DRAW A SINGLE PIXEL OF THIS TILE. False only when it surely cannot.
 //
-//Okvir iznad je kvadrat oko kruga od tri sigme, a vidljiva mrlja je elipsa - cesto izduzena i
-//poluprozirna, pa puno manja. Izmjereno na train_7000: 61 % parova iz okvira nigdje u svojoj
-//pločici ne nacrta nista, a crtanje ih svejedno obidje za svaki piksel.
+//The bounds above are a square around the three-sigma circle, and the visible blob is an
+//ellipse - often elongated and translucent, so much smaller. Measured on train_7000: 61 %
+//of the pairs from the bounds draw nothing anywhere in their tile, and drawing still visits
+//them all, for every pixel.
 //
-//Piksel se nacrta samo ako je (1) unutar kruga polumjera i (2) alfa >= 1/255. Alfa je najvise
-//opacity * exp(power), pa (2) znaci da je kvadratni oblik conica q <= 2 ln(255 opacity). Oba
-//skupa su konveksna, pa je dovoljna NAJBLIZA tocka pravokutnika centara piksela: ako je i ona
-//izvan, izvan su svi.
+//A pixel is drawn only if it is (1) inside the radius circle and (2) alpha >= 1/255. Alpha
+//is at most opacity * exp(power), so (2) means the conic's quadratic form is q <= 2 ln(255
+//opacity). Both sets are convex, so the NEAREST point of the pixel-centre rectangle
+//suffices: if even it is outside, all are.
 //
-//Blizanac SplatMath::touchesTile, isti redoslijed operacija. Brojanje i sirenje ga zovu oboje -
-//da se razidju, zbroj bi rezervirao jedan broj mjesta a sirenje zapisalo drugi.
+//Twin of SplatMath::touchesTile, same order of operations. Counting and expanding both call
+//it - if they drifted, the sum would reserve one number of slots and expanding would write
+//another.
 bool splatTouchesTile(SplatData splat, int tx, int ty, uint tileSize){
     const float opacity = splat.conicOpacityDepth.y;
     if(opacity < 1.0 / 255.0){
-        return false;   //alfa nije veca od neprozirnosti ni u samom sredistu
+        return false;   //alpha is not above the opacity even at the centre
     }
 
-    //Pomak = sredina - tocka, od prvog do zadnjeg centra piksela u pločici
+    //Offset = centre - point, from the first to the last pixel centre in the tile
     const float size = float(tileSize);
     const float xLo = splat.centerConic.x - (float(tx) * size + size - 0.5);
     const float xHi = splat.centerConic.x - (float(tx) * size + 0.5);
@@ -71,11 +73,11 @@ bool splatTouchesTile(SplatData splat, int tx, int ty, uint tileSize){
     }
 
     if(xLo <= 0.0 && xHi >= 0.0 && yLo <= 0.0 && yHi >= 0.0){
-        return true;   //sredina je u pločici
+        return true;   //the centre is in the tile
     }
 
-    //Najmanji q na rubu pravokutnika: na svakom rubu je to parabola, pa joj je minimum u tjemenu
-    //odrezanom na rub
+    //Smallest q on the rectangle edge: each edge is a parabola, so its minimum is at the
+    //vertex clamped to the edge
     const float a = splat.centerConic.z;
     const float b = splat.centerConic.w;
     const float c = splat.conicOpacityDepth.x;
@@ -84,7 +86,7 @@ bool splatTouchesTile(SplatData splat, int tx, int ty, uint tileSize){
     best = min(best, conicForm(a, b, c, clamp(-b * yLo / a, xLo, xHi), yLo));
     best = min(best, conicForm(a, b, c, clamp(-b * yHi / a, xLo, xHi), yHi));
 
-    //Rub za zaokruzivanje: radije par vise nego piksel manje
+    //Rounding headroom: rather one pair more than one pixel fewer
     const float threshold = 2.0 * log(255.0 * opacity);
     return best <= threshold * 1.001 + 1e-3;
 }

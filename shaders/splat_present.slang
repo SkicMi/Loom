@@ -1,13 +1,13 @@
-// Splat scena na ekran, uz jedan ispravak boje koji se ne vidi nigdje drugdje.
+// Splat scene to the screen, with one color fix that appears nowhere else.
 //
-// GAUSSIAN SPLATTING SE TRENIRA NA sRGB SLIKAMA. Ono sto iz njega ispadne kao "boja" su
-// vrijednosti u sRGB prostoru, a ne linearno svjetlo - trening ih je birao tako da se slozu s
-// pikselima fotografija. Loomov swapchain je eB8G8R8A8Srgb i sam kodira linearno u sRGB pri
-// pisanju, pa bi te vrijednosti bile kodirane DRUGI PUT: slika ispadne isprana, kao da joj je
-// netko dignuo svjetlinu.
+// GAUSSIAN SPLATTING IS TRAINED ON sRGB IMAGES. What comes out of it as "color" are values in
+// sRGB space, not linear light - training chose them to match photograph pixels. Loom's
+// swapchain is eB8G8R8A8Srgb and itself encodes linear to sRGB on write, so those values would
+// be encoded a SECOND TIME: the picture comes out washed out, as if someone lifted the
+// brightness.
 //
-// Zato se ovdje radi obrnuto od kodiranja - sRGB natrag u linearno - da bi ono sto swapchain
-// zapise bilo tocno ono sto je trening vidio.
+// So here we run the encoding backwards - sRGB back to linear - so what the swapchain writes
+// is exactly what training saw.
 struct MaterialData{
     float4 baseColor;
     float shininess;
@@ -32,8 +32,8 @@ VSOutput vertexMain(uint vertexIndex : SV_VertexID){
     return output;
 }
 
-//Sluzbena sRGB krivulja, ne pow(2.2): razlikuju se u tamnim tonovima, a sjene su upravo ono
-//sto je u ovoj sceni bilo isprano
+//Official sRGB curve, not pow(2.2): they differ in the dark tones, and shadows are exactly
+//what was washed out in this scene
 float3 srgbToLinear(float3 color){
     return select(color <= 0.04045, color / 12.92, pow((color + 0.055) / 1.055, 2.4));
 }

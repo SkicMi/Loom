@@ -1,20 +1,23 @@
-// Sto se o kameri da doznati iz same datoteke, i odakle se to zna.
+// What can be learned about the camera from the file itself, and where that is known from.
 //
-// Ovo su cisti podaci - nema ni slike ni kartice - pa se testira tako da se SourceFacts sastavi
-// rukom i provjeri sto iz njih ispadne.
+// These are pure data - no image, no card - so it is tested by assembling SourceFacts by
+// hand and checking what comes out of them.
 //
-// ZASTO JE OVO VRIJEDNO TESTA. Pretpostavka o zarisnoj ulazi u svaku pozu koju solver vrati, a
-// pretpostavka koja se predstavlja kao procitani podatak je gora od nikakve: citatelj nema kako
-// razlikovati. Zato se ovdje ne provjerava samo VRIJEDNOST nego i IZVOR.
+// WHY THIS IS WORTH TESTING. The focal-length assumption enters every pose the solver
+// returns, and an assumption posing as a read piece of data is worse than none: the reader
+// has no way to tell them apart. That is why here not just the VALUE is checked but also
+// the SOURCE.
 //
-// Sto se brani:
+// What is defended:
 //
-//   generican handler   ime zapisa koje svaki kontejner popuni ("Video Media Handler") ne smije
-//                       postati proizvodjac. Sony ZV-E10 II je tako izlazio kao kamera tog imena
-//   pravi handler       ime koje stvarno odaje proizvodjaca ("GoPro AVC encoder") se i dalje cita
-//   telemetrija         zapis s vremenskim oznakama koji nije ni slika ni zvuk je telemetrija,
-//                       a ne samo GoProov gpmd. Sonyjevih 66 MB se prijavljivalo kao "nema"
-//   izvor               kad se nista ne zna, izvor mora biti Assumed - ne Metadata
+//   generic handler   a track name every container fills in ("Video Media Handler") must not
+//                     become a manufacturer. Sony ZV-E10 II used to come out as a camera of
+//                     that name
+//   real handler      a name that actually reveals the manufacturer ("GoPro AVC encoder") is
+//                     still read
+//   telemetry         a timed track that is neither image nor sound is telemetry, not just
+//                     GoPro's gpmd. Sony's 66 MB used to be reported as "none"
+//   source            when nothing is known, the source must be Assumed - not Metadata
 #include "TestHarness.h"
 
 #include <Engine/CameraHints.h>
@@ -46,7 +49,7 @@ int main(){
     TestReport report("sto kamera o sebi govori");
 
     // -------------------------------------------------------------------------------
-    // Generican naziv zapisa nije proizvodjac
+    // A generic track name is not a manufacturer
     // -------------------------------------------------------------------------------
 
     {
@@ -64,11 +67,11 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Ali handler koji STVARNO odaje proizvodjaca se i dalje cita
-    // -------------------------------------------------------------------------------
+// But a handler that REALLY reveals the manufacturer is still read
+// -------------------------------------------------------------------------------
     //
-    // Bez ove provjere bi se popravak gornjeg mogao "rijesiti" tako da se handler nikad ne cita,
-    // a onda bi GoPro i DJI izgubili jedini trag koji imaju
+    // Without this check the fix for the above could be "solved" by never reading the handler
+    // at all, and then GoPro and DJI would lose the only trace they have
 
     {
         Engine::SourceFacts facts = base();
@@ -82,7 +85,7 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Telemetrija je svaki zapis s vremenskim oznakama, ne samo GoProov
+    // Telemetry is any timed track, not just GoPro's
     // -------------------------------------------------------------------------------
 
     {
@@ -107,7 +110,7 @@ int main(){
     }
 
     // -------------------------------------------------------------------------------
-    // Izravan podatak pobjedjuje tablicu, a tablica pretpostavku
+    // Direct data beats the table, and the table beats the assumption
     // -------------------------------------------------------------------------------
 
     {
@@ -126,7 +129,7 @@ int main(){
                 known.horizontalFieldOfView, Engine::sourceName(known.focalSource),
                 unknown.horizontalFieldOfView, Engine::sourceName(unknown.focalSource)));
 
-        //Zarisna mora slijediti vidno polje, a ne stajati zasebno
+        //The focal length must follow the field of view, not sit separately
         const double expected = (0.5 * double(facts.width))
                               / std::tan(0.5 * known.horizontalFieldOfView * 3.14159265358979 / 180.0);
         report.check("zarisna se slaze s vidnim poljem",

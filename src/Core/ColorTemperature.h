@@ -1,55 +1,56 @@
 #pragma once
 #include <glm/glm.hpp>
 
-//BOJA SVJETLA, RECENA KAO TEMPERATURA.
+//LIGHT COLOR, SPOKEN AS A TEMPERATURE.
 //
-//Svjetlo je i dosad imalo boju - tri broja koja mnoze i difuz i zrcalni clan. Problem nije
-//bio u tome sto se boja ne da postaviti, nego u tome sto se ne da postaviti a da se pritom
-//ne promijeni i KOLICINA svjetla. Trojac {1, 0.82, 0.55}, koji je stajao zakucan u LoomAppu,
-//ima Rec.709 luminanciju 0.839: taj "topli ton" je ujedno bio svjetlo slabije za sesnaest
-//posto. Dvije takve boje se onda ne daju usporediti, jer razlika u tonu nosi i razliku u
-//svjetlini - ista zamka zbog koje se zrnatost polusjene morala mjeriti na faktoru
-//vidljivosti a ne na zatamnjenju.
+//Light already had a color before - three numbers multiplying both the diffuse and the
+//specular term. The problem was not that a color cannot be set, but that it cannot be set
+//without also changing the AMOUNT of light. The triplet {1, 0.82, 0.55}, which sat hardcoded
+//in LoomApp, has Rec.709 luminance 0.839: that "warm tone" was at the same time light sixteen
+//percent dimmer. Two such colors cannot then be compared, because a difference in tone also
+//carries a difference in brightness - the same trap that forced penumbra grain to be measured
+//on the visibility factor rather than on darkening.
 //
-//Temperatura to rjesava sama od sebe, i to je jedini razlog zasto je ovdje ima. Crno tijelo
-//se racuna preko kromatičnosti (x, y), a Y - koji JEST luminancija - se pritom zada kao 1.
-//Zato boja iz Kelvina po konstrukciji nosi tocno jedinicnu luminanciju, pa mijenja iskljucivo
-//ton. Izmjereno na nizu 2000-25000 K: luminancija ostaje 1.0000 do na 5e-5.
+//Temperature solves that on its own, and that is the only reason it is here. The black body is
+//computed via chromaticity (x, y), and Y - which IS luminance - is set to 1 in the process.
+//So a color from Kelvin carries exactly unit luminance by construction, and changes nothing but
+//the tone. Measured over a range of 2000-25000 K: luminance stays 1.0000 to within 5e-5.
 
-//Rec.709 luminancija linearne boje. To je doslovno red za Y iz matrice XYZ -> linearni sRGB,
-//pa ovo nije "neka formula za svjetlinu" nego ista definicija koju koristi i pretvorba ispod
+//Rec.709 luminance of a linear color. This is literally the Y row from the XYZ -> linear sRGB
+//matrix, so this is not "some formula for brightness" but the same definition the conversion
+//below uses
 inline float luminance(const glm::vec3& linear){
     return 0.2126f * linear.r + 0.7152f * linear.g + 0.0722f * linear.b;
 }
 
-//Ista boja, s luminancijom tocno 1. Time intensity ostaje jedina stvar koja mijenja kolicinu
-//svjetla, a boja jedina koja mijenja ton
+//The same color, with luminance exactly 1. That way intensity stays the only thing changing
+//the amount of light, and color the only thing changing the tone
 inline glm::vec3 normalizeLuminance(const glm::vec3& linear){
     const float y = luminance(linear);
     return (y > 1e-6f) ? linear / y : linear;
 }
 
-//Boja crnog tijela na zadanoj temperaturi, u LINEARNOM sRGB-u.
+//The black body color at a given temperature, in LINEAR sRGB.
 //
-//Cetiri koraka, i svaki ima svoj razlog:
+//Four steps, and each one has its reason:
 //
-//  1. T -> (x, y) na Planckovom lokusu. Kubna aproksimacija (Kim et al.), jer je tocan racun
-//     integral Planckovog zracenja preko tri CIE krivulje - a to je tablica koja bi ovdje
-//     stajala samo da bi dala istih pet decimala
-//  2. (x, y) + Y = 1 -> XYZ. Ovdje se odlucuje ono glavno: zadaje se JEDINICNA luminancija,
-//     pa temperatura mijenja samo kromatičnost
-//  3. XYZ -> linearni sRGB, matricom za Rec.709 primare i D65 bijelu
-//  4. odrezivanje negativnog. Ispod otprilike 1900 K crveno-narancasta boja crnog tijela
-//     izlazi iz sRGB trokuta i plavi kanal ispadne negativan; tamo se boja vise ne moze
-//     prikazati nego samo primaknuti rubu gamuta
+//  1. T -> (x, y) on the Planckian locus. Cubic approximation (Kim et al.), because the exact
+//     computation of the Planck radiation integral over three CIE curves - a table that would
+//     sit here only to give the same five decimals
+//  2. (x, y) + Y = 1 -> XYZ. This is where the key decision is made: UNIT luminance is set,
+//     so temperature changes only the chromaticity
+//  3. XYZ -> linear sRGB, with the matrix for Rec.709 primaries and D65 white
+//  4. clamping the negative. Below roughly 1900 K the red-orange black body color exits the
+//     sRGB triangle and the blue channel comes out negative; there the color can no longer be
+//     displayed, only moved toward the edge of the gamut
 //
-//POSTENO O TOME STO OVO NIJE: 6500 K nije sRGB bijelo. Kanali se izjednace tek na 6532 K, i
-//ni tamo nisu jednaki - zeleni je 5.6% nizi od druga dva. Nije greska aproksimacije nego
-//stanje stvari: D65 je dnevno svjetlo, a dnevno svjetlo nije crno tijelo, pa Planckov lokus
-//kroz bijelu tocku sRGB-a uopce ne prolazi
+//HONEST ABOUT WHAT THIS IS NOT: 6500 K is not sRGB white. Channels equalize only at 6532 K,
+//and even there they are not equal - green is 5.6% lower than the other two. It is not an error
+//of the approximation but the way things are: D65 is daylight, and daylight is not a black
+//body, so the Planckian locus does not pass through sRGB's white point at all
 inline glm::vec3 colorFromKelvin(float kelvin){
-    //Izvan ovog raspona aproksimacija ne vrijedi, a i nema sto ponuditi: ispod je boja davno
-    //izasla iz gamuta, iznad se vise ne mijenja
+    //Outside this range the approximation does not hold, and there is nothing to offer either:
+    //below, the color has long since left the gamut; above, it no longer changes
     const double t = double(glm::clamp(kelvin, 1500.0f, 25000.0f));
 
     double x;
@@ -60,8 +61,8 @@ inline glm::vec3 colorFromKelvin(float kelvin){
         x = -3.0258469e9 / (t*t*t) + 2.1070379e6 / (t*t) + 0.2226347e3 / t + 0.240390;
     }
 
-    //Tri komada krivulje, jer je lokus na donjem kraju previse zakrivljen da bi ga jedan
-    //polinom pratio na pet decimala
+    //Three pieces of the curve, because at its low end the locus is too curved for a single
+    //polynomial to follow it to five decimals
     double y;
     if(t <= 2222.0){
         y = -1.1063814*x*x*x - 1.34811020*x*x + 2.18555832*x - 0.20219683;
@@ -73,7 +74,7 @@ inline glm::vec3 colorFromKelvin(float kelvin){
         y =  3.0817580*x*x*x - 5.87338670*x*x + 3.75112997*x - 0.37001483;
     }
 
-    //Y = 1: svjetlo nosi jedinicnu luminanciju, a x i y kazu samo kamo je obojeno
+    //Y = 1: the light carries unit luminance, and x and y only say where it is colored
     const double X = x / y;
     const double Y = 1.0;
     const double Z = (1.0 - x - y) / y;

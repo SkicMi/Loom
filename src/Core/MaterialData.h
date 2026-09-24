@@ -8,11 +8,11 @@ struct MaterialData{
     float shininess = 32.0f;
     float specularStrength = 1.0f;
 
-    //Omotani difuz: koliko svjetlo zalazi IZA ruba na kojem Lambert pada u nulu.
+    //Wrapped diffuse: how far light reaches PAST the edge where Lambert falls to zero.
     //
-    //Ostar terminator svaku gresku u normali pretvori u mrlju, a normale iz procijenjene
-    //dubine su pune gresaka. Nula je tocno Lambert i zato je default - ovo se ukljucuje ondje
-    //gdje se zna da su normale procjena
+    //A sharp terminator turns every normal error into a blotch, and normals from estimated
+    //depth are full of errors. Zero is exactly Lambert and therefore the default - this gets
+    //enabled where the normals are known to be estimates
     float diffuseWrap = 0.0f;
     float padding1 = 0.0f;
 };

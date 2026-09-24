@@ -1,7 +1,7 @@
-// Prefiksni zbroj, prolaz 3 od 3: svakom bloku se doda sto ide prije njega.
+// Prefix sum, pass 3 of 3: add what comes before a block to every block.
 //
-// Prolaz 1 je unutar bloka vec dao ispravan zbroj, prolaz 2 je rekao gdje blok pocinje.
-// Ovdje se to samo zbroji - i zato je ovo jedini prolaz bez ijedne barijere.
+// Pass 1 already produced the correct within-block sum, pass 2 said where each block starts.
+// Here the two are just added up - which is why this is the only pass without a barrier.
 struct Params{
     uint count;
     uint blockCount;
@@ -30,8 +30,8 @@ void computeMain(uint3 threadId : SV_GroupThreadID, uint3 groupId : SV_GroupID){
         }
     }
 
-    //Ukupan zbroj: pomak zadnjeg bloka plus ono sto zadnji blok nosi. Prolaz 1 je taj zbroj
-    //vec spremio u total[0] prije nego ga je prolaz 2 prepisao pomakom
+    //Total sum: the last block's offset plus what the last block carries. Pass 1 left that sum
+    //in total[0] before pass 2 overwrote it with the offset
     if(groupId.x == params.blockCount - 1 && threadId.x == 0){
         total[0] += offset;
     }

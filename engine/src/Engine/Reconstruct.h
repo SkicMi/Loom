@@ -6,311 +6,338 @@
 namespace Engine{
 
 //=============================================================================================
-// Cijeli lanac: iz samih opazanja do poza i tocaka, bez ijedne poznate poze.
+// The whole chain: from raw observations to poses and points, with not a single known pose.
 //
-//   1 pocetni par     dvije kamere, relativna poza RANSAC-om (S4). Prva kamera postaje ishodiste
-//   2 prve tocke      triangulacija onoga sto oba kadra vide (S1)
-//   3 nova kamera     PnP iz vec rijesenih tocaka (S2), pa triangulacija onoga sto ta kamera
-//                     otkljucava
-//   4 bundle          poze i tocke zajedno (S3), s Huberom (S5)
+//   1 initial pair   two cameras, relative pose via RANSAC (S4). The first camera becomes the origin
+//   2 first points   triangulate what both frames see (S1)
+//   3 new camera     PnP from the already-solved points (S2), then triangulate what that camera
+//                    unlocks
+//   4 bundle         poses and points together (S3), with Huber (S5)
 //
-// POCETNI PAR: uzima se najudaljeniji kadar koji s prvim jos dijeli dovoljno tocaka, jer sitna
-// baza znaci lose odredjenu dubinu (S1 je odbio bazu od milimetra).
+// INITIAL PAIR: take the farthest frame that still shares enough points with the first, because a
+// narrow baseline means poorly determined depth (S1 rejected a one-millimeter baseline).
 //
-// KOLIKO TO VRIJEDI, IZMJERENO NA DVIJE SCENE - jer prva sama po sebi zavarava:
+// HOW MUCH THAT IS WORTH, MEASURED ON TWO SCENES - because the first alone is misleading:
 //
-//   luk 80 st    susjedni par daje ISTI rezultat do zadnje znamenke; razlikuje se samo mjerilo
-//                (0.62 naspram 0.097). Kasniji bundle izravna razliku
-//   luk 6 st     susjedni par: rotacija 3.29 st, tocke 21.7 m, reprojekcija 1.28 px
-//                siroki par:   rotacija 0.021 st, tocke 0.079 m, reprojekcija 0.527 px
+//   80 deg arc    a neighboring pair gives THE SAME result to the last digit; only the scale
+//                 differs (0.62 vs 0.097). A later bundle irons out the difference
+//   6 deg arc     neighboring pair: rotation 3.29 deg, points 21.7 m, reprojection 1.28 px
+//                 wide pair:   rotation 0.021 deg, points 0.079 m, reprojection 0.527 px
 //
-// Dakle sirok par nije ukras, ali se to vidi tek kad je cijeli luk uzak - kad ni najsira baza nije
-// siroka. Na prvoj sceni sam to pokusao dokazati i nisam mogao; dokaz je dala tek druga.
+// So a wide pair is not decoration, but it only shows once the whole arc is narrow - when even
+// the widest baseline is not wide. I tried to prove this on the first scene and could not; the
+// second one finally did.
 //
-// SIRINA LUKA MEDJUTIM JEST BITNA, i to za TOCKE a ne za kamere. Izmjereno na istoj sceni:
+// THE WIDTH OF THE ARC IS IMPORTANT THOUGH, and for POINTS rather than cameras. Measured on the
+// same scene:
 //
-//   luk kamera     6 st     11 st    23 st    46 st    80 st
-//   tocke        0.079 m   0.082    0.012    0.0074   0.0056
-//   kamere       0.021 st  0.070    0.036    0.045    0.021
+//   camera arc    6 deg   11 deg   23 deg   46 deg   80 deg
+//   points      0.079 m   0.082    0.012    0.0074   0.0056
+//   cameras     0.021 deg  0.070    0.036    0.045    0.021
 //
-// Sve kamere se rijese u svakom slucaju - drzi ih mnostvo tocaka - a dubina tocaka trpi, jer je
-// kut pod kojim se zraka sijeku malen.
+// All cameras get solved either way - a wealth of points holds them up - while point depth
+// suffers, because the angle at which the rays meet is small.
 //
-// PNP TREBA POCETNU POZU, a P3P jos nemamo. Nova kamera zato krece od poze najblizeg vec
-// rijesenog kadra. Za snimku iz drona je to razumno - susjedni kadrovi su blizu - i u S2 je
-// izmjereno da PnP stize i s metra i petnaest stupnjeva promasaja. Kad zatreba pravi P3P, ovo je
-// mjesto gdje ulazi.
+// PNP NEEDS AN INITIAL POSE, and we do not have P3P yet. A new camera therefore starts from the
+// pose of the nearest already-solved frame. For a drone shot that is reasonable - neighboring
+// frames are close - and in S2 PnP was measured to arrive even from a meter and fifteen degrees
+// of misalignment. When a real P3P is needed, this is where it goes in.
 //
-// MJERILO OSTAJE SLOBODNO: pomak pocetnog para je jedinicni, pa je cijela rekonstrukcija tocna do
-// jednog broja. Isto kao u S3 i S5.
+// THE SCALE STAYS FREE: the initial pair's translation is unit, so the whole reconstruction is
+// correct up to one number. Same as in S3 and S5.
 //=============================================================================================
 
-//Unaprijed, jer ReconstructConfig::onProgress govori o njoj a ona je opisana nize
+//Forward-declared, because ReconstructConfig::onProgress speaks of it and it is described below
 struct Reconstruction;
 
 struct ReconstructConfig{
     RansacConfig ransac;
     double huberPixels = 2.0;
 
-    //Koliko piksela smije promasiti kamera da bi se prihvatila kao rijesena
+    //How many pixels a camera may miss to be accepted as solved
     double acceptPixels = 4.0;
 
-    //Najmanje vec rijesenih tocaka koje nova kamera mora vidjeti
+    //Minimum number of already-solved points a new camera must see
     uint32_t minPointsForPose = 12;
 
-    //Koliko se parova provjeri pri izboru pocetnog para. Mjera nije koliko tocaka par dijeli nego
-    //koliko ih se iz njega dade triangulirati, a to trazi RANSAC po paru - pa se provjerava samo
-    //najprometnije. Vidi komentar uz izbor u Reconstruct.cpp
+    //How many pairs are checked when choosing the initial pair. The measure is not how many points
+    //a pair shares but how many can actually be triangulated from it, and that demands RANSAC per
+    //pair - so only the busiest are checked. See the comment next to the choice in Reconstruct.cpp
     uint32_t initialPairCandidates = 30;
 
-    //ZADANI POCETNI PAR, za mjerenje. Kad su oba ista, par se bira kao i inace. Postoji zato sto je
-    //pitanje "je li kriv izbor pocetnog para ili sve ostalo" inace nemjerljivo
+    //FORCED INITIAL PAIR, for measurement. When both are equal, the pair is chosen as usual. It
+    //exists because the question "is the initial pair choice wrong or everything else" would
+    //otherwise be unmeasurable
     uint32_t forceInitialA = 0, forceInitialB = 0;
 
     //=========================================================================================
-    // KOLIKO SE POCETNIH PAROVA ISPROBA DO KRAJA.
+    // HOW MANY INITIAL PAIRS ARE TRIED TO COMPLETION.
     //
-    // Cijela rekonstrukcija visi o prvom paru, i izmjereno je koliko: na istom grafu par 86-89 daje
-    // 4.69 st greske rotacije, a par 80-89 daje 119.94 st. Oba prolaze sve provjere koje izbor
-    // para ima - dovoljno tocaka, dovoljan kut, dvoprizorna poza rijesena - pa se razlika NE VIDI
-    // dok se ne izgradi cijela scena.
+    // The whole reconstruction hangs on the first pair, and how much was measured: on the same
+    // graph pair 86-89 gives 4.69 deg of rotation error while pair 80-89 gives 119.94 deg. Both
+    // pass every check the pair choice has - enough points, enough angle, two-view pose
+    // solved - so the difference is NOT SEEN until the whole scene is built.
     //
-    // Zato se ovdje ne bira nego POKUSAVA: prvih nekoliko kandidata se izgradi do kraja i zadrzi se
-    // najbolji. Mjera je broj rijesenih kamera, pa medijan kuta pod kojim se zrake sijeku - vidi
-    // Reconstruction::medianTriangulationAngle. Reprojekcija se NE koristi, jer ona krivo rjesenje
-    // ne prijavi: ono se samo sa sobom slaze jednako dobro kao ispravno.
+    // So this does not choose but TRIES: the first few candidates are built to completion and the
+    // best is kept. The measure is the number of solved cameras, then the median angle at which
+    // the rays meet - see Reconstruction::medianTriangulationAngle. Reprojection is NOT used,
+    // because it does not report a wrong solution: it agrees with itself just as well as a
+    // correct one.
     //
-    // ZADANO CETIRI. Izmjereno na cetiri razlicita grafa iste snimke, protiv COLMAP-ovog rjesenja:
+    // DEFAULT FOUR. Measured on four different graphs of the same shot, against COLMAP's
+    // solution:
     //
-    //   graf                          jedan pokusaj   cetiri pokusaja
-    //   binarni, bacanje                  6.60 st          6.60 st
-    //   binarni, rastavljanje svj. 2      4.69 st          4.69 st
-    //   SIFT                            163.80 st         10.71 st
-    //   rastavljanje bez praga          119.08 st          4.65 st
+    //   graph                        one trial     four trials
+    //   binary, discard                 6.60 deg       6.60 deg
+    //   binary, split witnesses 2       4.69 deg       4.69 deg
+    //   SIFT                          163.80 deg      10.71 deg
+    //   split without threshold       119.08 deg       4.65 deg
     //
-    // Gdje je prvi izbor bio dobar, ne mijenja nista - doslovno, jer izabere isti par. Gdje nije,
-    // razlika je dvadeset do trideset puta.
+    // Where the first choice was good it changes nothing - literally, because it picks the same
+    // pair. Where it was not, the difference is twenty to thirty times.
     //
-    // CETIRI NIJE UVIJEK DOSTA. Jedan od ta cetiri grafa (rastavljanje uz tri svjedoka) ostaje
-    // kriv i nakon cetiri pokusaja - 126.48 st - a s OSAM padne na 5.75 st, uz bazu 4.67 i smjer
-    // koraka 1.97. Kad rjesenje izgleda lose a medianTriangulationAngle je bitno uzi nego sto graf
-    // dopusta, prvo sto vrijedi probati je vise pokusaja.
+    // FOUR IS NOT ALWAYS ENOUGH. One of those four graphs (split with three witnesses) stays
+    // wrong even after four trials - 126.48 deg - and with EIGHT drops to 5.75 deg, with a
+    // baseline of 4.67 and direction of travel of 1.97. When a solution looks bad and
+    // medianTriangulationAngle is noticeably narrower than the graph allows, the first thing
+    // worth trying is more trials.
     //
-    // CIJENA JE CETVEROSTRUKO VRIJEME: 325 s po pokusaju na 101 kadru 4K snimke. To je svjesna
-    // razmjena - solver koji tiho vrati putanju krivu 119 stupnjeva nije upotrebljiv ni koliko god
-    // brz bio.
+    // THE COST IS FOUR TIMES THE TIME: 325 s per trial on 101 frames of a 4K shot. That is a
+    // deliberate trade - a solver that silently returns a trajectory wrong by 119 degrees is
+    // unusable no matter how fast it is.
     //
-    // Jedan znaci kao prije - uzme se prvi izbor i s njim se ide do kraja
+    // One means as before - take the first choice and go with it to completion
     //=========================================================================================
     uint32_t initialPairTrials = 4;
 
-    //Puni pokusaji s vec odabranim pocetnim parovima nemaju zajednicko promjenjivo stanje i mogu
-    //se graditi istodobno. False postoji kao referentni put za bit-identicni test i mjerenje;
-    //izbor parova i pravilo pobjednika moraju ostati isti u oba nacina.
+    //Full trials with already-chosen initial pairs share no mutable state and can be built
+    //concurrently. False exists as a reference path for the bit-identical test and measurement;
+    //the pair choice and winner rule must stay the same in both modes.
     bool parallelInitialPairTrials = true;
 
 
     //=========================================================================================
-    // DRUGO MISLJENJE ZA KAMERU KOJA SE ZAGLAVILA.
+    // A SECOND OPINION FOR A STUCK CAMERA.
     //
-    // Kamera se registrira PnP-om nad tockama koje u tom trenutku postoje, i tada moze sjesti u
-    // krivo rjesenje - obicno kad su te tocke bile lose triangulirane. Globalni bundle je poslije
-    // ne izvlaci: on radi lokalne korake, a kriva poza je u drugom minimumu.
+    // A camera is registered via PnP over the points that exist at that moment, and can then land
+    // in a wrong solution - usually when those points were poorly triangulated. A later global
+    // bundle does not pull it out: it makes local steps, and a wrong pose sits in another minimum.
     //
-    // Izmjereno: SIFT-ov graf daje zaokret iz kadra u kadar 0.101 st medijan, a NAJGORI korak
-    // 26.072 st - dakle jedna jedina kamera nosi cijelu gresku.
+    // Measured: the SIFT graph gives a frame-to-frame turn of 0.101 deg median, and the WORST
+    // step 26.072 deg - so a single camera carries the whole error.
     //
-    // Ovdje se takva kamera prepozna po tome sto joj je vlastita reprojekcija visestruko veca od
-    // opce, pa joj se poza racuna IZNOVA - i to polazeci od susjedne rijesene kamere, ne od
-    // vlastite, jer bi se inace vratila u isti minimum. Zamjena se prihvaca samo ako je bolja.
+    // Here such a camera is recognized by its own reprojection being several times larger than
+    // the overall one, so its pose is recomputed - starting from a neighboring solved camera, not
+    // from its own, because it would otherwise fall back into the same minimum. The replacement
+    // is accepted only if better.
     //
-    // ZADANO ISKLJUCENO, JER NE OKIDA. Na SIFT-ovom grafu gdje jedna kamera nosi 26 st greske,
-    // nijedna kamera nema reprojekciju trostruko iznad opce - zaglavljena kamera je SAMODOSLJEDNO
-    // kriva, jer je registrirana nad tockama koje su i same krive. Ista pouka kao svugdje danas:
-    // reprojekcija ne prijavi krivo rjesenje.
+    // DEFAULT OFF, BECAUSE IT DOES NOT FIRE. On the SIFT graph where one camera carries 26 deg of
+    // error, no camera has a reprojection three times above the overall one - the stuck camera is
+    // SELF-CONSISTENTLY wrong, because it was registered over points that are themselves wrong.
+    // The same lesson as everywhere today: reprojection does not report a wrong solution.
     //
-    // Ostaje jer je detektor sam po sebi ispravan za drugu vrstu kvara - kameru koja je losa a to
-    // se na njoj i vidi. Broj je koliko puta veca od opce reprojekcije smije biti
+    // It stays because the detector is in itself right for another kind of fault - a camera that
+    // is bad and it shows on it. The number is how many times above the overall reprojection it
+    // may be
     //=========================================================================================
     double rescueFactor = 0.0;
 
     //=========================================================================================
-    // DETEKTOR KOJI OKIDA: NAGLI SKOK U NIZU.
+    // THE DETECTOR THAT FIRES: A SUDDEN JUMP IN THE SEQUENCE.
     //
-    // Za snimku vrijedi nesto sto reprojekcija ne zna - kadrovi idu redom, pa se kamera izmedju dva
-    // susjedna kadra pomakne malo. Zaglavljena kamera se time prepozna odmah: na SIFT-ovom grafu je
-    // zaokret iz kadra u kadar 0.101 st medijan, a najgori korak 26.072 st - dvjesto pedeset puta.
+    // There is something about a shot that reprojection does not know - frames go in order, so a
+    // camera moves little between two neighboring frames. A stuck camera is thereby recognized
+    // right away: on the SIFT graph the frame-to-frame turn is 0.101 deg median, and the worst
+    // step 26.072 deg - two hundred fifty times.
     //
-    // Sumnjiva je kamera kroz koju je put DULJI nego preko nje: zbroj dvaju susjednih zaokreta
-    // naspram zaokreta izmedju njezinih susjeda. Za ispravnu kameru su ta dva gotovo jednaka, jer
-    // se zaokreti zbrajaju oko iste osi; za zaokrenutu je razlika dvostruki zaokret.
+    // A camera is suspect when the path THROUGH it is LONGER than the path ACROSS it: the sum of
+    // the two adjacent turns versus the turn between its neighbors. For a correct camera these
+    // two are nearly equal, because the turns add up around the same axis; for a rotated one the
+    // difference is the double turn.
     //
-    // Pravilo "oba susjedna koraka su velika" NE radi, i to je izmjereno: zaokret krive kamere se s
-    // jedne strane zbraja s gibanjem a s druge oduzima. Kamera zaokrenuta 25 st uz korak od 11.46
-    // daje susjedne korake 36.32 i 13.90 - jedan golem, drugi posve obican.
+    // The rule "both neighboring steps are large" does NOT work, and that was measured: a wrong
+    // camera's turn adds to the motion on one side and subtracts on the other. A camera rotated
+    // 25 deg with a step of 11.46 gives neighboring steps of 36.32 and 13.90 - one huge, the
+    // other perfectly ordinary.
     //
-    // Nula iskljucuje. Broj je koliko puta veci od medijana korak smije biti.
+    // Zero disables. The number is how many times above the median a step may be.
     //
-    // VRIJEDI SAMO ZA NIZ. Kad redni brojevi kamera nisu redoslijed snimanja, ovo nema smisla i
-    // mora ostati iskljuceno
+    // ONLY VALID FOR A SEQUENCE. When the camera indices are not the shooting order, this makes
+    // no sense and must stay disabled
     //=========================================================================================
     double stepOutlierFactor = 0.0;
 
     //=========================================================================================
-    // SVAKO KOLIKO SE OPAZANJE IZDVAJA IZ RACUNA, da posluzi kao provjera.
+    // HOW OFTEN AN OBSERVATION IS HELD OUT OF THE COMPUTATION, to serve as a check.
     //
-    // Nula iskljucuje i rjesenje je tada bit po bit isto kao prije. Deset znaci da svako deseto
-    // opazanje ne ulazi u racun nego se na kraju njime rjesenje PROVJERAVA.
+    // Zero disables and the solution is then bit-for-bit the same as before. Ten means every
+    // tenth observation does not enter the computation but is instead used at the end to CHECK
+    // the solution.
     //
-    // Izdvaja se samo ono cija tocka i bez njega ostaje vidjena iz barem tri kadra - inace bi se
-    // umjesto provjere dobio kraci trag, a to je mijenjanje ulaza a ne mjerenje
+    // Only that observation is held out whose point still stays seen from at least three frames
+    // without it - otherwise instead of a check you would get a shorter track, and that is
+    // changing the input, not measuring
     //=========================================================================================
     uint32_t holdOutEvery = 0;
 
     //=========================================================================================
-    // SAV: MJESTO NA KOJEM SE LANAC PRESIDRAO.
+    // SEAM: THE PLACE WHERE THE CHAIN RESEEDED.
     //
-    // Izmjereno na SIFT-ovom grafu: nas zaokret iz kadra u kadar je 0.101 st medijan, ali kod
-    // kadra 37 iznosi 22.977 st a kod kadra 65 jos 24.093 - dok je stvarni oko 2 st. Izmedju tih
-    // mjesta se sve slaze. Snimka je time razlomljena na tri dijela, svaki uredan u sebi, spojena
-    // dvama zaokretima od po dvadesetak stupnjeva.
+    // Measured on the SIFT graph: our frame-to-frame turn is 0.101 deg median, but at frame 37 it
+    // is 22.977 deg and at frame 65 a further 24.093 - while the real one is about 2 deg. Between
+    // those places everything agrees. The shot is thereby broken into three parts, each tidy in
+    // itself, joined by two turns of about twenty degrees each.
     //
-    // NIJE ISKOCENA KAMERA - ta bi dala dva losa koraka zaredom, a ovdje je los samo jedan pa se
-    // sve iza njega nastavlja uredno. Nije ni uzak most: preko kadra 65 prelazi 2026 tocaka, od
-    // kojih 1039 prezivi ciscenje. Nije ni izbor pocetnog para: osam pokusaja daje isto.
+    // It is NOT an out-of-place camera - that would give two bad steps in a row, while here only
+    // one is bad and everything after it continues neatly. It is not a narrow bridge either: 2026
+    // points cross frame 65, of which 1039 survive cleaning. It is not the initial pair choice
+    // either: eight trials give the same.
     //
-    // Ono sto ostaje jest da su kamere iza sava registrirane dok su tocke ispred jos bile lose, pa
-    // su sjele krivo i povukle svoje tocke za sobom. Ovdje se to rastavlja: pozе od sava nadalje se
-    // odbacuju, tocke se slozu iznova samo iz glave niza, i rep se registrira ponovno - sada nad
-    // tockama koje su bitno bolje nego kad je prvi put pokusao.
+    // What remains is that the cameras behind the seam were registered while the points ahead
+    // were still bad, so they sat down wrong and pulled their points along. Here this is
+    // dismantled: the poses from the seam onward are discarded, the points are rebuilt from just
+    // the head of the sequence, and the tail is registered again - now over points that are
+    // considerably better than when it first tried.
     //
-    // Zadrzava se samo ako je ishod bolji, istom mjerom kao kod pocetnih parova.
+    // It is kept only if the outcome is better, measured the same way as for initial pairs.
     //
-    // Nula iskljucuje. Broj je koliko puta veci od medijana NAS VLASTITI korak smije biti; ova
-    // provjera ne trazi nikakvu istinu izvana.
+    // Zero disables. The number is how many times above the median OUR OWN step may be; this
+    // check does not ask for any external truth.
     //
-    // ZADANO DESET, i cijena je nula kad sava nema: trazenje se izvodi nad rjesenjem koje bi se
-    // ionako izgradilo, pa se dodatni racun placa samo kad se sav stvarno nadje. Izmjereno na
-    // glavnom putu prave snimke: nula savova i rezultat bit po bit isti kao bez ovoga. Na
-    // SIFT-ovom putu, gdje savova ima: rotacija bez poravnanja 56.900 -> 27.900 st.
+    // DEFAULT TEN, and the cost is zero when there is no seam: the search runs on the solution
+    // that would be built anyway, so the extra computation is paid only when a seam is actually
+    // found. Measured on the main path of a real shot: zero seams and a result bit-for-bit
+    // identical to without this. On the SIFT path, where there are seams: rotation without
+    // alignment 56.900 -> 27.900 deg.
     //
-    // Krivo prepoznat sav kosta vrijeme a ne kakvocu, jer se popravak zadrzava samo ako savova
-    // bude MANJE.
+    // A wrongly detected seam costs time, not quality, because the fix is kept only if there are
+    // FEWER seams.
     //
-    // VRIJEDI SAMO ZA NIZ. Kad redni brojevi kamera nisu redoslijed snimanja, ovo treba ugasiti
+    // ONLY VALID FOR A SEQUENCE. When the camera indices are not the shooting order, this should
+    // be switched off
     //=========================================================================================
     double seamFactor = 10.0;
 
     //=========================================================================================
-    // KOJI SE DIO NIZA ZADRZAVA, a sve izvan njega gradi iznova. Puni ga popravak sava sam;
-    // pozivatelj ga ne dira. keepTo nula znaci bez ogranicenja.
+    // WHICH PART OF THE SEQUENCE IS KEPT, and everything outside it is rebuilt. The seam fix
+    // fills it itself; the caller does not touch it. A keepTo of zero means no limit.
     //
-    // ZASTO RASPON A NE SAMO "ODBACI REP". Prvo sam odbacivao kamere od sava nadalje, i to je
-    // popravilo drugi sav ali ne i prvi - jer je SIDRO bilo u odbacenom dijelu. Pocetni par ovog
-    // rjesenja je 81-83, a savovi su kod 37 i 65; odbacivanjem repa od 37 ostane samo glava niza
-    // [0..36], a to je bas onaj tamni dio snimke koji COLMAP nije uspio registrirati uopce - pa se
-    // rep ponovno presidri na slabo.
+    // WHY A RANGE AND NOT JUST "DISCARD THE TAIL". First I discarded cameras from the seam
+    // onward, and that fixed the second seam but not the first - because the ANCHOR was in the
+    // discarded part. The initial pair of this solution is 81-83, and the seams are at 37 and 65;
+    // discarding the tail from 37 leaves only the head of the sequence [0..36], and that is
+    // exactly the dark part of the shot that COLMAP failed to register at all - so the tail
+    // reseeds weakly again.
     //
-    // Ispravno je zadrzati dio koji SADRZI POCETNI PAR, jer je on jedini za koji se zna da je
-    // gradjen iz dobrog sjemena, i sve ostalo registrirati prema njemu
+    // The correct thing is to keep the part that CONTAINS THE INITIAL PAIR, because it is the
+    // only one known to be built from good seed, and register everything else relative to it
     //=========================================================================================
     uint32_t keepFrom = 0, keepTo = 0;
 
-    //Gradi li se rep iznova nakon sto se odsjecak zadrzi. Popravak sava ga gradi - to mu je svrha;
-    //odrezivanje na zdravi odsjecak ga NE gradi, jer bi time vratilo ono sto je upravo odrezano
+    //Whether the tail is rebuilt after the segment is kept. The seam fix builds it - that is its
+    //purpose; trimming to a healthy segment does NOT build it, because that would bring back
+    //exactly what was just cut off
     bool reAddAfterTrim = true;
 
     //=========================================================================================
-    // NAJVECI ZDRAVI ODSJECAK UMJESTO SVE-ILI-NISTA.
+    // THE LARGEST HEALTHY SEGMENT INSTEAD OF ALL-OR-NOTHING.
     //
-    // Kad se lanac presidri i popravak ne uspije, rjesenje se proteze preko loma: dva dijela
-    // snimke koja se medjusobno ne slazu za dvadesetak stupnjeva, a svaki je u sebi uredan.
-    // Isporuciti takvo rjesenje znaci isporuciti nesto sto je tiho krivo.
+    // When the chain reseeds and the fix fails, the solution stretches across a break: two parts
+    // of the shot that disagree with each other by about twenty degrees, while each is tidy in
+    // itself. Delivering such a solution means delivering something silently wrong.
     //
-    // Ovdje se umjesto toga zadrzi NAJDULJI niz kadrova bez sava unutar sebe, i to se jasno
-    // prijavi. Pedeset ispravnih kamera je upotrebljivo; osamdeset kamera preko loma nije.
+    // Here, instead, the LONGEST run of frames with no seam inside it is kept, and that is
+    // clearly reported. Fifty correct cameras are usable; eighty cameras across a break are not.
     //
-    // Ne pali se sam od sebe jer mijenja sto alat isporucuje - tko ga upali, mora znati da izlaz
-    // moze imati manje kamera nego sto je snimka imala kadrova
+    // It does not turn on by itself because it changes what the tool delivers - whoever turns it
+    // on must know that the output may have fewer cameras than the shot had frames
     //=========================================================================================
     bool keepLargestHealthySegment = false;
 
-    //Parovi koje ne treba ponovno probati. Puni ga visestruki pokusaj sam; pozivatelj ga ne dira
+    //Pairs that should not be tried again. The multi-trial fills it itself; the caller does not
+    //touch it
     std::vector<std::pair<uint32_t, uint32_t>> skipInitialPairs;
 
     //=========================================================================================
-    // KOLIKO DALEKO MORA BITI SLJEDECI POKUSAJ od onih koji su vec probani, u kadrovima.
+    // HOW FAR THE NEXT TRIAL MUST BE from the ones already tried, in frames.
     //
-    // Zamisao je bila da svi pokusaji ne zavrse u istom dijelu snimke: kandidati su poredani po
-    // broju zajednickih tocaka, a to je svojstvo PODRUCJA - gdje je tekstura bogata, ondje svi
-    // parovi dijele mnogo. Na 101 kadru su sva cetiri izabrana para bila izmedju kadra 80 i 99.
+    // The idea was that not all trials end up in the same part of the shot: candidates are sorted
+    // by the number of shared points, and that is a property of the REGION - where texture is
+    // rich, all pairs share a lot. On 101 frames all four chosen pairs were between frames 80 and
+    // 99.
     //
-    // ZADANO NULA, DAKLE ISKLJUCENO - i to je izmjereno. Uz razmak od 12 kadrova (101 podijeljeno
-    // na osam):
+    // DEFAULT ZERO, THAT IS, DISABLED - and that was measured. With a spread of 12 frames (101
+    // divided into eight):
     //
-    //                          bez razmicanja   s razmicanjem
-    //   rastavljanje bez praga     4.65 st        119.08 st
-    //   rastavljanje, svjedoka 3 126.48 st        142.98 st
-    //   SIFT                      10.71 st          9.71 st
+    //                          without spread   with spread
+    //   split without threshold     4.65 deg       119.08 deg
+    //   split, witnesses 3         126.48 deg       142.98 deg
+    //   SIFT                      10.71 deg          9.71 deg
     //
-    // Razlog je jednostavan kad se vidi: dobri parovi zive BAS u tom susjedstvu. Na ovoj snimci je
-    // najbolji par 90-92, a prvi izbor 82-85 - sredista su im sedam kadrova razmaknuta, dakle
-    // razmicanje od dvanaest ga izbaci. Bogato podrucje nije zamka nego mjesto gdje se scena
-    // stvarno dade rijesiti.
+    // The reason is simple once seen: good pairs live RIGHT in that neighborhood. On this shot
+    // the best pair is 90-92, and the first choice 82-85 - their centers are seven frames apart,
+    // so a spread of twelve throws it out. A rich region is not a trap but the place where the
+    // scene can actually be solved.
     //
-    // Mjeri se razmak sredista para
+    // The spread of a pair's center is measured
     //=========================================================================================
     uint32_t initialPairSpread = 0;
 
-    //PARALAKSA. Koliko se dubini smije vjerovati ne odlucuje kut sam po sebi nego kut zajedno sa
-    //zaristem i sumom, pa se prag ne zadaje nego IZVODI:
+    //PARALLAX. How much depth is to be trusted is decided not by the angle by itself but by the
+    //angle together with the focal length and noise, so the threshold is not given but DERIVED:
     //
-    //    sum od s piksela na zaristu f daje relativnu gresku dubine  s / (f * kut u radijanima)
-    //    pa je najmanji smisleni kut                                 s / (f * dopustena greska)
+    //    a noise of s pixels at focal length f gives a relative depth error of
+    //                                                         s / (f * angle in radians)
+    //    so the smallest meaningful angle is                       s / (f * allowed error)
     //
-    //Zato ovdje stoji ono sto se stvarno trazi - kolika se greska dubine prihvaca - a ne kut.
-    //Isti broj onda vrijedi i za mobitel i za dron i za GoPro, jer se zariste razlikuje a
-    //zahtjev ne. Nula gasi provjeru i vraca ponasanje otprije S10.
+    //That is why what is actually demanded stands here - how much depth error is accepted - and
+    //not the angle. The same number then holds for a phone, a drone, and a GoPro, because the
+    //focal length differs and the requirement does not. Zero disables the check and restores the
+    //previous S10 behavior.
     //
-    //Izmjereno na dronskoj snimci (f = 649 px, 24 kadra): bez provjere p90 udaljenosti tocaka je
-    //362304 dosega putanje - cisto smece koje reprojekcija ne kaznjava jer daleka tocka uredno
-    //reprojicira ma gdje po svojoj zraki bila. Uz 0.15 rep nestane (p99 = 0.87), 218 tocaka
-    //ostane, svih 24 kamera ostane, a reprojekcija se ne pomakne (0.191 px)
+    //Measured on a drone shot (f = 649 px, 24 frames): without the check the p90 of point
+    //distance is 362304 ranges of the trajectory - pure garbage that reprojection does not punish
+    //because a distant point reprojects cleanly wherever it is along its ray. With 0.15 the tail
+    //disappears (p99 = 0.87), 218 points remain, all 24 cameras remain, and the reprojection does
+    //not move (0.191 px)
     double maxRelativeDepthError = 0.15;
 
-    //APSOLUTNI POD ZA PARALAKSU, u stupnjevima. Izveden prag iznad je geometrijski tocan - duza
-    //optika razlucuje kutove finije, pa joj za istu preciznost dubine treba manji kut - ali
-    //dubina nije jedino sto se od tocke trazi. Tocka koja se vidi pod tri stotinke stupnja je za
-    //postavljanje SLJEDECE KAMERE prakticki degenerirana ma kako dobro joj dubina ispala.
+    //ABSOLUTE FLOOR FOR PARALLAX, in degrees. The derived threshold above is geometrically
+    //correct - longer optics resolve angles more finely, so they need a smaller angle for the
+    //same depth precision - but depth is not the only thing demanded of a point. A point seen at
+    //three hundredths of a degree is practically degenerate for placing the NEXT CAMERA however
+    //well its depth turns out.
     //
-    //Zato je ovo pod, a ne zamjena: uzima se ono sto je strože. Bez njega isti broj 0.15 na
-    //dronskoj snimci (f = 649) znaci 0.294 stupnja, a na 4K snimci (f = 5285) samo 0.036 -
-    //osam puta labavije, na istoj postavci.
+    //So this is a floor, not a replacement: the stricter of the two is taken. Without it the
+    //same number 0.15 on a drone shot (f = 649) means 0.294 degrees, and on a 4K shot (f = 5285)
+    //only 0.036 - eight times looser, on the same setting.
     //
-    //Izmjereno na COLMAP-ovim korespondencijama (65 kamera), prag prihvacanja 4 px:
+    //Measured on COLMAP's correspondences (65 cameras), acceptance threshold 4 px:
     //
-    //   pod   kamere      tocke   reprojekcija
-    //   0.0  45 od 65     15984     1.742 px
-    //   0.5  65 od 65     26498     1.146 px
+    //   floor   cameras   points   reprojection
+    //   0.0   45 of 65     15984     1.742 px
+    //   0.5   65 of 65     26498     1.146 px
     //
-    //COLMAP na istim podacima filtrira ispod 1.5 stupnja (filter_min_tri_angle).
+    //COLMAP on the same data filters below 1.5 degrees (filter_min_tri_angle).
     //
-    //ZADANO 1.0, i to je odlucila DRUGA snimka od one gore. Na COLMAP-ovim korespondencijama je
-    //svejedno - 0.5, 1.0 i 1.5 daju isti rezultat do zadnje znamenke (0.735 px, 65 od 65 kamera,
-    //polozaj 0.2 posto, rotacija 0.51 st). Na nasima nije:
+    //DEFAULT 1.0, and that was decided by the SECOND shot, not the one above. On COLMAP's
+    //correspondences it makes no difference - 0.5, 1.0 and 1.5 give the same result to the last
+    //digit (0.735 px, 65 of 65 cameras, position 0.2 percent, rotation 0.51 deg). On ours it
+    //does:
     //
-    //   pod   kamere    polozaj   rotacija
-    //   0.5   74/101     21.2 %   176.81 st
-    //   1.0   96/101      4.4 %     7.09 st
-    //   1.5   86/101      6.3 %    10.56 st
+    //   floor   cameras   position   rotation
+    //   0.5    74/101     21.2 %    176.81 deg
+    //   1.0    96/101      4.4 %      7.09 deg
+    //   1.5    86/101      6.3 %     10.56 deg
     //
-    //Dakle broj koji dobar ulaz ne osjeti, los ulaz osjeti jako - i zato stoji ondje gdje je
-    //losem ulazu najbolje, a dobrom svejedno
+    //So a number that a good input does not feel, a bad input feels strongly - and that is why it
+    //sits where it is best for bad input and indifferent to good
     double minParallaxDegrees = 1.0;
 
-    //Sum u pikselima koji se pripisuje pracenju uglova. Nije mjerenje nego pretpostavka, i zato
-    //stoji ovdje gdje se vidi. Mjerena reprojekcija bi bila kriva zamjena: bundle je namjesti na
-    //podatke pa ispadne manja od pravog suma, i prag bi izasao prenizak
+    //The noise in pixels attributed to corner tracking. It is not a measurement but an
+    //assumption, and that is why it stands here where it can be seen. A measured reprojection
+    //would be a wrong substitute: bundle fits it to the data so it turns out smaller than the
+    //real noise, and the threshold would come out too low
     double assumedPixelNoise = 0.5;
 
     uint32_t bundleIterations = 15;
