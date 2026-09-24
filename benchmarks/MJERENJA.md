@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (111 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (121 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -32,6 +32,7 @@ Iz `benchmarks/mjerenja.jsonl` (111 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 22:45 | C0257 | cijela snimka, zadana f 4650 (stara samokalibracija) | 231 | 1175 | 229/229 | 265968 | 1.205 | 2.974 | 2.530 | 4650 |  | 125.70 | 230.70 | 262.90 | 290.80 | solve jednak kao f 4259 (2.974 prema 2.981 px) - samokalibracija ovdje luta | zapisano_px=1.474, izlaz=e_f4650 |
 | 2026-09-24 22:54 | C0257 | pokusaji pocetnog para: svaki svoj dio jezgri (60 kadrova iz cachea) |  |  |  |  |  |  |  |  |  |  |  | 56.80 |  | zadrzano: puna obrada 75.8->56.8 i 57.9->47.6 s, izlaz isti do bita (mjereno uz pokuse) |  |
 | 2026-09-24 23:05 | C0257 | cijela snimka, zadana f 4259 k1 -0.025 (nova samokalibracija) | 231 | 1210 | 229/229 | 266441 | 1.209 | 2.981 | 2.530 | 4259 |  | 167.20 | 220.90 | 1525 | 279.80 |  | zapisano_px=1.482, izlaz=e_f4259, faze_s=pracenje i graf 437.3, brzi kandidat 125.2, puna obrada 286.8, provjere 0.0, slike kadrova 78.0, pune slicice i USD 280.0, COLMAP i provjera 1.9 |
+| 2026-09-24 23:23 | C0257 | cijela snimka, f 4259, subpikselni uglovi | 231 | 1050 | 229/229 | 247002 | 1.152 | 2.705 | 2.410 | 4259 |  | 138.50 | 176.10 | 1301 | 266.90 | solve bolji (izdvojeni 2.705 prema 2.981 px), splat nije - ostaje iskljuceno | zapisano_px=1.371, izlaz=e_subpix, faze_s=pracenje i graf 365.0, brzi kandidat 84.4, puna obrada 251.9, provjere 0.0, slike kadrova 77.5, pune slicice i USD 267.2, COLMAP i provjera 3.4 |
 
 ## trening
 
@@ -59,6 +60,7 @@ Iz `benchmarks/mjerenja.jsonl` (111 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 22:18 | C0257 | cijela snimka, novi solve, 15000 koraka | 15000 | 1920x1080 | 1500000 | 957 | 25.34 | 20.91 | 0.790 | najbolje dosad: izdvojeni PSNR +1.0 dB (1080p) / +1.2 dB (4K), SSIM bolji na 39/39, najgori kadar 17.8 -> 20.9 dB | kamera=classic, izlaz=t_novi.ply, izdvojenih=39 |
 | 2026-09-24 22:55 | C0257 | E1 f 4650, 7000 koraka | 7000 | 1920x1080 | 1500000 | 568 | 24.87 | 19.78 | 0.794 |  | kamera=classic, izlaz=e_f4650.ply, izdvojenih=39 |
 | 2026-09-24 23:15 | C0257 | E2 f 4259, 7000 koraka | 7000 | 1920x1080 | 1500000 | 547 | 25.20 | 21.07 | 0.809 |  | kamera=classic, izlaz=e_f4259.ply, izdvojenih=39 |
+| 2026-09-24 23:32 | C0257 | E3 f 4259 + subpiksel, 7000 koraka | 7000 | 1920x1080 | 1500000 | 540 | 24.83 | 21.16 | 0.798 |  | kamera=classic, izlaz=e_subpix.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -79,6 +81,8 @@ Iz `benchmarks/mjerenja.jsonl` (111 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 22:55 | C0257 | E1 f 4650 | 3840x2160 | 24.75 | 0.786 | 0.091 | 39 |  |  | psnr_medijan=24.79, splat=e_f4650.ply |
 | 2026-09-24 23:15 | C0257 | E2 f 4259 | 1920x1080 | 25.24 | 0.801 | 0.324 | 39 |  |  | psnr_medijan=25.20, splat=e_f4259.ply |
 | 2026-09-24 23:15 | C0257 | E2 f 4259 | 3840x2160 | 25.16 | 0.826 | 0.103 | 39 |  |  | psnr_medijan=25.15, splat=e_f4259.ply |
+| 2026-09-24 23:32 | C0257 | E3 f 4259 + subpiksel | 1920x1080 | 25.16 | 0.798 | 0.306 | 39 |  |  | psnr_medijan=24.83, splat=e_subpix.ply |
+| 2026-09-24 23:33 | C0257 | E3 f 4259 + subpiksel | 3840x2160 | 25.09 | 0.824 | 0.098 | 39 |  |  | psnr_medijan=24.78, splat=e_subpix.ply |
 
 ## usporedba
 
@@ -128,6 +132,12 @@ Iz `benchmarks/mjerenja.jsonl` (111 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d1) | PSNR dB | 0.414 | 0.138 | 22/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d1, b=q_e_f4259_d1 |
 | 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d1) | SSIM | 0.040 | 0.001 | 39/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d1, b=q_e_f4259_d1 |
 | 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d1) | ostrina | 0.012 | 0.003 | 27/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d1, b=q_e_f4259_d1 |
+| 2026-09-24 23:33 | C0257 | subpikselni uglovi prema bez, f 4259, 7000 koraka (d2) | PSNR dB | -0.080 | 0.073 | 16/39 | odbaceno: SSIM losiji na 30/39, ostrina -5 %, PSNR u sumu | a=q_e_f4259_d2, b=q_e_subpix_d2 |
+| 2026-09-24 23:33 | C0257 | subpikselni uglovi prema bez, f 4259, 7000 koraka (d2) | SSIM | -0.003 | 0.001 | 9/39 | odbaceno: SSIM losiji na 30/39, ostrina -5 %, PSNR u sumu | a=q_e_f4259_d2, b=q_e_subpix_d2 |
+| 2026-09-24 23:33 | C0257 | subpikselni uglovi prema bez, f 4259, 7000 koraka (d2) | ostrina | -0.018 | 0.008 | 10/39 | odbaceno: SSIM losiji na 30/39, ostrina -5 %, PSNR u sumu | a=q_e_f4259_d2, b=q_e_subpix_d2 |
+| 2026-09-24 23:33 | C0257 | subpikselni uglovi prema bez, f 4259, 7000 koraka (d1) | PSNR dB | -0.075 | 0.072 | 16/39 | odbaceno: SSIM losiji na 30/39, ostrina -5 %, PSNR u sumu | a=q_e_f4259_d1, b=q_e_subpix_d1 |
+| 2026-09-24 23:33 | C0257 | subpikselni uglovi prema bez, f 4259, 7000 koraka (d1) | SSIM | -0.002 | 0.001 | 11/39 | odbaceno: SSIM losiji na 30/39, ostrina -5 %, PSNR u sumu | a=q_e_f4259_d1, b=q_e_subpix_d1 |
+| 2026-09-24 23:33 | C0257 | subpikselni uglovi prema bez, f 4259, 7000 koraka (d1) | ostrina | -0.005 | 0.002 | 15/39 | odbaceno: SSIM losiji na 30/39, ostrina -5 %, PSNR u sumu | a=q_e_f4259_d1, b=q_e_subpix_d1 |
 
 ## dekodiranje
 
