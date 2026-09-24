@@ -123,7 +123,7 @@ def main():
                 path = images / name
                 if not path.exists():
                     continue
-                truth = torch.from_numpy(np.asarray(Image.open(path).convert("RGB").resize((width, height), Image.BILINEAR))).to(device).float() / 255.0
+                truth = torch.from_numpy(np.array(Image.open(path).convert("RGB").resize((width, height), Image.BILINEAR))).to(device).float() / 255.0
                 drawn, _, _ = gsplat.rasterization(means[subset], quats[subset], scales[subset], opacities[subset],
                                                    colour[subset], view[None], K[None], width, height, sh_degree=None, packed=True)
                 errors.append(float(((drawn[0].clamp(0, 1) - truth) ** 2).mean()))
