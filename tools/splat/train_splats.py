@@ -203,7 +203,8 @@ def main():
     ap.add_argument("model", help="mapa s cameras.txt, images.txt, points3D.txt")
     ap.add_argument("images", help="mapa sa slikama")
     ap.add_argument("output", help="gdje spremiti PLY")
-    ap.add_argument("--steps", type=int, default=7000)
+    ap.add_argument("--steps", type=int, default=15000,
+                    help="15000: ostrina +19 %% prema 7000 uz isti PSNR na izdvojenim kadrovima; 30000 ostrije, ali pocinje pamtiti snimljene kadrove (benchmarks/MJERENJA.md)")
     ap.add_argument("--downscale", type=int, default=2, help="4K je za 12 GB previse; 2 znaci pola")
     ap.add_argument("--sh-degree", type=int, default=3)
     ap.add_argument("--loss", choices=["l1", "ssim"], default="ssim",

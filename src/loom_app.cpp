@@ -293,7 +293,7 @@ int main(int argc, char** argv){
     const int steps[] = {1, 5, 10, 20};
     int stepIndex = 2;
     float frameCount = 231.0f;
-    float trainSteps = 7000.0f;
+    float trainSteps = 15000.0f;
     After afterJob = After::Nothing;
     std::string jobVideo;                 //snimka koja se solva, za kameru u sceni
     bool wasRunning = false;
