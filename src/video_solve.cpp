@@ -49,6 +49,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <filesystem>
 #include <future>
 #include <string>
@@ -527,6 +528,12 @@ int main(int realArgc, char** realArgv){
     bool focalFromMetadata = false;
     //--dense-points N: pune slicice prate najvise N tocaka po odsjecku, ravnomjerno po kadru (0 = sve)
     uint32_t densePoints = 0;
+    //--then "naredba": pokrene se cim je COLMAP zapisan (prije punih slicica), ispis ide ovamo s
+    //oznakom [trening], a VideoSolve na kraju ceka da zavrsi. Editor tako trenira splat dok se
+    //lokaliziraju medjukadrovi
+    std::string thenCommand;
+    std::thread thenWorker;
+    int thenStatus = 0;
     //--dense-two-way: pune slicice i od sljedeceg kljucnog natrag, pa spojene (localiseEveryFrame).
     //ISKLJUCENO dok se ne izmjeri prema pouzdanoj istini: referenca iz solvea svakog 5. kadra
     //zavrsila je u drugom rjesenju (sidra 11 st razlike), pa usporedba nije nista rekla
@@ -545,6 +552,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--focal-from-metadata") focalFromMetadata = true;
         else if(std::string(realArgv[i]) == "--dense-one-way") denseOneWay = true;
         else if(std::string(realArgv[i]) == "--dense-two-way") denseOneWay = false;
+        else if(std::string(realArgv[i]) == "--then" && i + 1 < realArgc) thenCommand = realArgv[++i];
         else if(std::string(realArgv[i]) == "--dense-points" && i + 1 < realArgc) densePoints = uint32_t(std::max(0, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
@@ -1097,6 +1105,8 @@ int main(int realArgc, char** realArgv){
             const double fov = 2.0 * std::atan(0.5 * double(info.width) /
                                                double(automatic.measuredIntrinsics.fx)) *
                                180.0 / 3.14159265358979;
+            std::printf("    samokalibracija po koracima: parovi kadrova %.1f, rekonstrukcija %.1f, zajednicki bundle %.1f s\n",
+                        automatic.graphSeconds, automatic.reconstructSeconds, automatic.bundleSeconds);
             std::printf("  samokalibracija: f %.2f px, k1 %.5f, vidno polje %.2f st; "
                         "%u/%u kamera, reprojekcija %.3f px\n",
                         double(automatic.measuredIntrinsics.fx),
@@ -1678,6 +1688,24 @@ int main(int realArgc, char** realArgv){
         const std::vector<glm::u8vec3> colours =
             Engine::pointColours(best, solveObservations, colourImages, shrinkColour);
 
+        //=================================================================================
+        // COLMAP ODMAH, PRIJE PUNIH SLICICA. Trener splatova treba samo kljucne kadrove i
+        // njihove poze - a pune slicice (poza svakog kadra, za matchmove) su 5.5 minuta na
+        // cijeloj C0257. Zato se COLMAP zapise prije njih, a --then pokrene trening odmah: kartica
+        // trenira dok procesor lokalizira medjukadrove
+        //=================================================================================
+        const bool colmapWritten = Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours);
+        if(colmapWritten && !thenCommand.empty()){
+            std::printf("  --then: pokrecem uz pune slicice: %s\n", thenCommand.c_str());
+            thenWorker = std::thread([&thenCommand, &thenStatus]{
+                FILE* pipe = popen((thenCommand + " 2>&1").c_str(), "r");
+                if(!pipe){ thenStatus = -1; return; }
+                char line[4096];
+                while(std::fgets(line, sizeof(line), pipe)) std::printf("  [trening] %s", line);
+                thenStatus = pclose(pipe);
+            });
+        }
+
 
         //=================================================================================
         // I USD, ZA VFX ALAT. COLMAP tekst ide treneru splatova, ali u Nuke, Houdini ili Blender
@@ -1775,7 +1803,7 @@ int main(int realArgc, char** realArgv){
         }
 
         phaseClock.mark("pune slicice i USD");
-        if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours)){
+        if(colmapWritten){
             std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
 
             //=============================================================================
@@ -1855,5 +1883,12 @@ int main(int realArgc, char** realArgv){
     }
     phaseClock.mark("COLMAP i provjera");
     phaseClock.print();
+    if(thenWorker.joinable()){
+        const auto waitStarted = std::chrono::steady_clock::now();
+        thenWorker.join();
+        std::printf("  --then gotov (cekano jos %.1f s nakon solvea), izlaz %d\n",
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - waitStarted).count(), thenStatus);
+        if(thenStatus != 0) return 1;
+    }
     return 0;
 }

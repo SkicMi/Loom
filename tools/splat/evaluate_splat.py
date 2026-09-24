@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--motion-blur", type=int, default=0, help="kao u treneru: K trenutaka ekspozicije (trazi rolling)")
     ap.add_argument("--out", default="")
     ap.add_argument("--compare", nargs=2, default=None)
+    ap.add_argument("--renders", default="", help="mapa u koju se spreme iscrtani izdvojeni kadrovi (PNG), za gledanje okom")
     ap.add_argument("--opis", default="",
                     help="sto se mjeri; s njim ocjena i usporedba idu u dnevnik mjerenja (benchmarks/mjerenja.jsonl)")
     args = ap.parse_args()
@@ -134,6 +135,9 @@ def main():
             if picture.size != (width, height): picture = picture.resize((width, height), Image.LANCZOS)
             truth = torch.from_numpy(np.array(picture)).to(device).float() / 255
             shown = drawn[0][..., :3].clamp(0, 1)
+            if args.renders:
+                Path(args.renders).mkdir(parents=True, exist_ok=True)
+                Image.fromarray((shown.cpu().numpy() * 255).astype(np.uint8)).save(Path(args.renders) / name)
             mse = float(((shown - truth) ** 2).mean())
             #SSIM (isti kao u treneru) i OSTRINA: energija Laplacea nacrtanog prema snimljenom, po
             #svjetlini. 1 = jednako ostro kao snimka, manje = mutnije

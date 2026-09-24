@@ -1,4 +1,6 @@
 #include "Engine/SelfCalibration.h"
+
+#include <chrono>
 #include "Engine/Dense.h"
 
 #include <algorithm>
@@ -583,9 +585,13 @@ SelfCalibratedReconstruction reconstructSelfCalibrated(
     SelfCalibratedReconstruction result;
     result.measuredIntrinsics = templateCamera;
     result.flatIntrinsics = templateCamera;
+    using Clock = std::chrono::steady_clock;
+    auto since = [](Clock::time_point from){ return std::chrono::duration<double>(Clock::now() - from).count(); };
+    auto started = Clock::now();
 
     const ViewGraphCalibrationResult graph = estimateViewGraphFocal(
         rawObservations, cameraCount, pointCount, templateCamera, calibrationConfig.viewGraph);
+    result.graphSeconds = since(started);
     result.graphStatus = graph.status;
     result.graphFocalPixels = graph.focalPixels;
     if(!graph.determined){
@@ -603,8 +609,11 @@ SelfCalibratedReconstruction reconstructSelfCalibrated(
     for(Observation& observation : result.flatObservations)
         observation.pixel = undistort(result.measuredIntrinsics, observation.pixel);
 
+    started = Clock::now();
     result.reconstruction = reconstruct(result.flatObservations, cameraCount, pointCount,
                                         result.flatIntrinsics, reconstructConfig);
+    result.reconstructSeconds = since(started);
+    started = Clock::now();
     if(!result.reconstruction.ok){
         result.status = SelfCalibrationStatus::IllConditioned;
         return result;
@@ -621,6 +630,7 @@ SelfCalibratedReconstruction reconstructSelfCalibrated(
     const JointSelfCalibrationResult refined = selfCalibrateBundle(
         usedRaw, result.reconstruction.poses, result.reconstruction.points,
         result.measuredIntrinsics, calibrationConfig);
+    result.bundleSeconds = since(started);
     result.status = refined.status;
     if(!refined.determined) return result;
 

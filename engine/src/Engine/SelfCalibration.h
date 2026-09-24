@@ -127,6 +127,8 @@ struct SelfCalibratedReconstruction{
     SelfCalibrationStatus status = SelfCalibrationStatus::InsufficientData;
     double graphFocalPixels = 0.0;
     bool determined = false;
+    //Samo za ispis: koliko je trajao koji korak
+    double graphSeconds = 0.0, reconstructSeconds = 0.0, bundleSeconds = 0.0;
 };
 
 SelfCalibratedReconstruction reconstructSelfCalibrated(

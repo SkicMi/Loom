@@ -269,6 +269,8 @@ def main():
                     help="ekspozicija u kadrovima (1/100 s pri 50 fps = 0.5); 0 cita camera_metadata.txt")
     ap.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
                     help="na kraju makni floatere (floaters.py): nevidljive i mrlje uz kameru")
+    ap.add_argument("--finish-full-res", type=int, default=0,
+                    help="jos toliko koraka NA PUNOJ RAZLUCIVOSTI nakon --steps (postupno: grubo pa fino)")
     ap.add_argument("--opis", default="",
                     help="sto se ovim treningom mjeri; ide u dnevnik mjerenja (benchmarks/mjerenja.jsonl)")
     args = ap.parse_args()
@@ -342,10 +344,12 @@ def main():
 
     depthMaps = []
     views, pictures, viewsEnd = [], [], []
+    pictureNames = []
     for name, view in frames:
         path = Path(args.images) / name
         if not path.exists():
             continue
+        pictureNames.append(name)
         picture = Image.open(path).convert("RGB").resize((width, height), Image.LANCZOS)
         pictures.append(torch.from_numpy(np.asarray(picture, dtype=np.uint8)))
         if rowViews:
@@ -390,6 +394,8 @@ def main():
             heldOut.extend(range(start, min(start + block, len(pictures))))
         keep = [i for i in range(len(pictures)) if i not in set(heldOut)]
         heldPictures = [pictures[i] for i in heldOut]
+        heldNames = [pictureNames[i] for i in heldOut]
+        pictureNames = [pictureNames[i] for i in keep]
         heldViews = [views[i] for i in heldOut]
         heldViewsEnd = [viewsEnd[i] for i in heldOut]
         pictures = [pictures[i] for i in keep]
@@ -569,7 +575,27 @@ def main():
           f"rasterizacija {args.rasterize}, zasicenje od {args.saturation}")
     generator = torch.Generator(device="cpu").manual_seed(20260915)
 
-    for step in range(args.steps):
+    #POSTUPNO PO RAZLUCIVOSTI (--finish-full-res). Na pola razlucivosti geometrija i boje nadju
+    #mjesto brzo, ali 4K pogled iz takvog splata je razvucena slika od 1080p (ostrina na 4K 0.10
+    #od snimke). Izravno na 4K od pocetka 7000 koraka je premalo (ostrina 0.070) - pa se prvo
+    #trenira grubo, a zadnji koraci idu na punoj razlucivosti i dodaju fini detalj
+    def loadAt(names, factor):
+        out = []
+        for name in names:
+            picture = Image.open(Path(args.images) / name).convert("RGB")
+            if factor > 1: picture = picture.resize((camera["width"] // factor, camera["height"] // factor), Image.LANCZOS)
+            out.append(torch.from_numpy(np.asarray(picture, dtype=np.uint8)))
+        return torch.stack(out)
+
+    for step in range(args.steps + args.finish_full_res):
+        if step == args.steps and args.finish_full_res > 0 and scale > 1:
+            scale = 1
+            width, height = camera["width"], camera["height"]
+            K = torch.tensor([[camera["fx"], 0, camera["cx"]], [0, camera["fy"], camera["cy"]], [0, 0, 1]],
+                             dtype=torch.float32, device=device)
+            pictures = loadAt(pictureNames, 1)
+            if heldOut: heldPictures = loadAt(heldNames, 1)
+            print(f"  puna razlucivost od koraka {step}: {width}x{height}, jos {args.finish_full_res} koraka", flush=True)
         index = int(torch.randint(len(pictures), (1,), generator=generator))
         truth = pictures[index].to(device, non_blocking=True).float() / 255.0
 
@@ -671,7 +697,7 @@ def main():
             print(f"  granica dosegnuta u {step}. koraku: {params['means'].shape[0]} gaussiana, "
                   f"zgusnjavanje staje")
 
-        if step % 500 == 0 or step == args.steps - 1:
+        if step % 500 == 0 or step == args.steps + args.finish_full_res - 1:
             extra = f"  dubina {lastDepthTerm:.4f} (tezina {args.depth_weight})" if len(depthMaps) else ""
             if args.anisotropy_weight > 0.0: extra += f"  iglice {lastNeedles:.3f} (tezina {args.anisotropy_weight})"
             print(f"  {step:5d}  gubitak {loss.item():.4f}  gaussiana {params['means'].shape[0]}{extra}")
@@ -770,7 +796,7 @@ def main():
     #Dnevnik mjerenja: svaki trening ostavi redak, da se kroz vrijeme vidi kamo se ide
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
     from mjerenja import upisi, snimka_modela
-    upisi(dict(vrsta="trening", snimka=snimka_modela(model), opis=args.opis, koraka=args.steps,
+    upisi(dict(vrsta="trening", snimka=snimka_modela(model), opis=args.opis, koraka=args.steps + args.finish_full_res,
                razlucivost=f"{width}x{height}", gaussiana=int(params["means"].shape[0]),
                vrijeme_s=round(time.time() - started), kamera=args.camera_model,
                izlaz=Path(args.output).name, **(heldScore if heldOut else {})))
