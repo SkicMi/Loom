@@ -52,8 +52,9 @@ def iz_solvea(log, vrijeme=None):
     if konacno:
         a, b, t, r = konacno[-1]
         z["kamera"], z["tocaka"], z["reprojekcija_px"] = f"{a}/{b}", int(t), float(r)
-    if (v := re.findall(r"provjera bez istine: .*?reprojekcija ([\d.]+) px .*? omjer ([\d.]+)", text)):
-        z["izdvojeni_px"], z["omjer_izdvojenih"] = float(v[-1][0]), float(v[-1][1])
+    if (v := re.findall(r"provjera bez istine([^:]*): .*?reprojekcija ([\d.]+) px .*? omjer ([\d.]+)", text)):
+        z["izdvojeni_px"], z["omjer_izdvojenih"] = float(v[-1][1]), float(v[-1][2])
+        if "BRZOG" in v[-1][0]: z["izdvojeni_od"] = "brzog kandidata"
     if (v := broj(r"provjera zapisanog: .*?reprojekcija ([\d.]+) px")): z["zapisano_px"] = v[-1]
     if (v := re.findall(r"Zapisano u (\S+) \(cameras.txt", text)):
         z["izlaz"] = Path(v[-1]).name

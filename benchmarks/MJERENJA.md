@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (78 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (80 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -26,6 +26,8 @@ Iz `benchmarks/mjerenja.jsonl` (78 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 21:40 | C0257 | graf s kartice: kandidati po razmaku kadrova + izbor po tockama |  |  | 59/59 | 79897 | 1.227 | 4.745 | 3.680 | 4650 |  |  |  | 54.30 |  | dobro rjesenje (80k tocaka, 1.227 px) | zapisano_px=1.483, izlaz=s_gpu, napomena=izdvojeni_px je s brzog kandidata, ne s isporucenog rjesenja |
 | 2026-09-24 21:40 | C0257 | graf s procesora: kandidati po razmaku kadrova + izbor po tockama |  |  | 59/59 | 79807 | 1.192 | 2.863 | 2.400 | 4650 |  |  |  | 21.90 |  | brzi kandidat zadrzan (79.8k, 1.192 px, izdvojeni omjer 2.40); losija puna obrada odbacena | zapisano_px=1.500, izlaz=s_cpu, napomena=izdvojeni_px je s brzog kandidata, ne s isporucenog rjesenja |
 | 2026-09-24 21:40 | C0257 | kontrola svaki 7. kadar: kandidati po razmaku + izbor po tockama | 60 | 277 | 57/57 | 75839 | 1.258 | 4.707 | 3.460 | 4650 |  | 22.20 | 43.90 | 59.40 | 72.00 | zadrzano: 22.7k -> 75.8k tocaka, baza 1.63 -> 8.39 st, 1.40 -> 1.258 px | zapisano_px=1.599, izlaz=s7, napomena=izdvojeni_px je s brzog kandidata, ne s isporucenog rjesenja |
+| 2026-09-24 22:03 | C0257 | cijela snimka (231), sva ubrzanja i novi izbor pocetnog para | 231 | 1320 | 229/229 | 266449 | 1.209 | 4.452 | 3.550 | 4259 | -0.025 | 100.30 | 161.30 | 206.10 | 272.90 | 42m13 -> 21m59, isto rjesenje po kamerama/tockama/reprojekciji; samokalibracija f 4259 (prije 4650) | zapisano_px=1.482, izlaz=solve_novi, izdvojeni_od=brzog kandidata (90/229 kamera) - ne vrijedi |
+| 2026-09-24 22:06 | C0257 | 60 kadrova iz cachea grafa: paralelni zapis slika + --measure-held-out |  |  | 59/59 | 79897 | 1.227 | 2.864 | 2.400 | 4650 |  |  |  | 104.20 |  | zadrzano: slike iste do bajta, zapis 59 slika 13.1 s; izdvojeni na isporucenom 2.864 px (omjer 2.40) umjesto brzog 4.745 | zapisano_px=1.483, izlaz=w_gpu |
 
 ## trening
 

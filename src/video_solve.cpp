@@ -359,6 +359,10 @@ int main(int realArgc, char** realArgv){
     bool gpuFeatures = true;
     //--initial-pairs N: koliko pocetnih parova puna obrada gradi do kraja (ReconstructConfig::initialPairTrials)
     uint32_t initialPairs = 0;
+    //--measure-held-out: kad puna obrada zamijeni brzi kandidat, jos jedna rekonstrukcija s istim
+    //pocetnim parom i izdvojenim opazanjima - samo da provjera bez istine mjeri ISPORUCENO rjesenje.
+    //Bez nje ta provjera ostaje s brzog kandidata i tako se i ispise
+    bool measureHeldOut = false;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
@@ -369,6 +373,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--gpu-match") gpuMatch = true;
         else if(std::string(realArgv[i]) == "--cpu-match") gpuMatch = false;
         else if(std::string(realArgv[i]) == "--cpu-features") gpuFeatures = false;
+        else if(std::string(realArgv[i]) == "--measure-held-out") measureHeldOut = true;
         else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
         else positional.push_back(realArgv[i]);
@@ -1088,6 +1093,7 @@ int main(int realArgc, char** realArgv){
     std::vector<double> reprojectionOf;
     uint32_t heldOutCount = 0;
     double heldOutError = 0.0, heldOutAgainst = 0.0;
+    bool heldOutFromFast = false;     //provjera bez istine je s brzog kandidata, a isporucuje se puna obrada
     if(automaticallyCalibrated){
         //Samokalibracija je vec izgradila tocno onaj brzi kandidat koji bi solveWith ovdje ponovno
         //gradio. Nakon joint bundlea osvjezila je i reprojekciju, held-out mjeru i bazu, pa ga se
@@ -1197,6 +1203,22 @@ int main(int realArgc, char** realArgv){
         if(polishedBetter){
             best = polished.first;
             bestIntrinsics = polished.second;
+            heldOutFromFast = true;
+            if(measureHeldOut){
+                Engine::ReconstructConfig measure = reconstructionConfig(true);
+                measure.forceInitialA = best.initialA;
+                measure.forceInitialB = best.initialB;
+                measure.initialPairTrials = 1;
+                measure.holdOutEvery = 10;
+                const Engine::Reconstruction measured = Engine::reconstruct(solveObservations, cameraCount, pointCount,
+                                                                            bestIntrinsics, measure);
+                if(measured.ok && measured.heldOutObservations > 0){
+                    heldOutCount = measured.heldOutObservations;
+                    heldOutError = measured.heldOutReprojection;
+                    heldOutAgainst = measured.medianReprojection;
+                    heldOutFromFast = false;
+                }
+            }
             std::printf("  nakon pune obrade: %u od %u kamera, %u tocaka, reprojekcija %.3f px, baza %.2f st\n",
                         best.posedCameras, cameraCount, best.solvedPoints,
                         best.medianReprojection, best.medianTriangulationAngle);
@@ -1295,8 +1317,9 @@ int main(int realArgc, char** realArgv){
 
     if(heldOutCount > 0 && heldOutAgainst > 0.0){
         const double ratio = heldOutError / heldOutAgainst;
-        std::printf("  provjera bez istine: %u izdvojenih opazanja, reprojekcija %.3f px "
+        std::printf("  provjera bez istine%s: %u izdvojenih opazanja, reprojekcija %.3f px "
                     "naspram %.3f na koristenima - omjer %.2f\n",
+                    heldOutFromFast ? " (BRZOG KANDIDATA, ne isporucenog - vidi --measure-held-out)" : "",
                     heldOutCount, heldOutError, heldOutAgainst, ratio);
         if(ratio > 2.5){
             std::printf("             UPOZORENJE: rjesenje se bitno slabije slaze s onim sto nije "
@@ -1385,6 +1408,20 @@ int main(int realArgc, char** realArgv){
         std::vector<std::vector<uint8_t>> colourStore(cameraCount);
         std::vector<Engine::ColourImage> colourImages(cameraCount);
 
+        //=================================================================================
+        // ZAPIS USPOREDO. Jedan 4K PNG je 1.4 s kodiranja (stb, razina 6), a kadrova je 229 - pa
+        // je zapis slika bio vise minuta na jednoj dretvi. Kadar se preda dretvi i citanje ide
+        // dalje; najvise dvanaest ih je u letu (po 33 MB). Datoteke su iste do bajta
+        //=================================================================================
+        std::vector<std::future<void>> writing;
+        auto waitForSlot = [&](size_t most){
+            while(writing.size() > most){
+                writing.front().get();
+                writing.erase(writing.begin());
+            }
+        };
+
+        const auto exportStarted = std::chrono::steady_clock::now();
         Spool::VideoReader again(path);
         uint32_t fileIndex = 0, trackedIndex = 0, written = 0;
         while(!again.atEnd() && trackedIndex < used){
@@ -1409,11 +1446,6 @@ int main(int realArgc, char** realArgv){
                 }
                 exportPixels = flatPixels.data();
             }
-            if(!cameraOnly){
-                Spool::savePng((imageDirectory / name).string(),
-                               Spool::imageFromPixels(exportPixels, frame.width, frame.height));
-                ++written;
-            }
 
             const uint32_t w = frame.width / shrinkColour, h = frame.height / shrinkColour;
             colourStore[place].assign(size_t(w) * h * 4, 0);
@@ -1426,9 +1458,21 @@ int main(int realArgc, char** realArgv){
                 }
             }
             colourImages[place] = Engine::ColourImage{colourStore[place].data(), w, h, w};
+            //Boje su vec izvadjene, pa pikseli mogu otici dretvi koja pise
+            if(!cameraOnly){
+                waitForSlot(11);
+                std::vector<uint8_t> owned = flatPixels.empty() ? frame.pixels : std::move(flatPixels);
+                writing.push_back(std::async(std::launch::async,
+                    [target = (imageDirectory / name).string(), pixels = std::move(owned), width = frame.width, height = frame.height]{
+                        Spool::savePng(target, Spool::imageFromPixels(pixels.data(), width, height));
+                    }));
+                ++written;
+            }
         }
+        waitForSlot(0);
         if(cameraOnly) std::printf("Samo kamera: slike kadrova se ne zapisuju (splat ih trazi, matchmove ne)\n");
-        else std::printf("Zapisano %u slika u %s\n", written, imageDirectory.string().c_str());
+        else std::printf("Zapisano %u slika u %s (%.1f s s citanjem snimke)\n", written, imageDirectory.string().c_str(),
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - exportStarted).count());
 
         //=================================================================================
         // IZVOZE SE OPAZANJA S KOJIMA JE RIJESENO, ne ona iz trackera.

@@ -68,7 +68,8 @@ struct SaveConfig{
     int pngCompression = 6;
 };
 
-//Writes a PNG. Creates the directories above the file if they are not there yet.
+//Writes a PNG. Creates the directories above the file if they are not there yet. Safe to call from
+//several threads at once as long as they all use the same compression level.
 //Throws with the path rather than returning false: a frame that silently failed to write
 //leaves a hole in a sequence that nobody notices until the sequence is played
 void savePng(const std::string& path, const Image& image, const SaveConfig& config = {});

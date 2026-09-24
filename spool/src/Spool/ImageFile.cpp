@@ -117,7 +117,11 @@ void savePng(const std::string& path, const Image& image, const SaveConfig& conf
         std::filesystem::create_directories(target.parent_path(), code);
     }
 
-    stbi_write_png_compression_level = std::clamp(config.pngCompression, 0, 9);
+    //stb keeps the level in a global. Several threads write frames at once (VideoSolve's export),
+    //always with the same level, so it is only written when it actually changes - otherwise every
+    //call would be a racing write of the same value
+    const int level = std::clamp(config.pngCompression, 0, 9);
+    if(stbi_write_png_compression_level != level) stbi_write_png_compression_level = level;
 
     const int stride = static_cast<int>(image.width) * 4;
     const int written = stbi_write_png(path.c_str(),
