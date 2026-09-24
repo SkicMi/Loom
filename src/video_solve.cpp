@@ -1004,7 +1004,12 @@ int main(int realArgc, char** realArgv){
     //STO SNIMKA KAZE O SEBI. Kad je kamera prepoznata, ne pogadja se od nule nego se provjeri uski
     //pojas oko onoga sto pise - a kad nije, sirok raspon i uz to jasno receno da je to pogadjanje
     std::vector<double> candidates;
-    if(fieldOfView > 0.0){
+    if(calibrated){
+        //cameras.txt zadaje zarisnu, a solveWith tada vidno polje ne gleda - svaki kandidat bio bi
+        //isti solve ponovljen. Na 60 kadrova C0257 to je bilo sedam puta 17 s istog rezultata
+        candidates.push_back(2.0 * std::atan(0.5 * double(measured.width) / double(measured.fx)) *
+                             180.0 / 3.14159265358979);
+    }else if(fieldOfView > 0.0){
         candidates.push_back(fieldOfView);
     }else if(automaticallyCalibrated){
         candidates.push_back(2.0 * std::atan(0.5 * double(info.width) /

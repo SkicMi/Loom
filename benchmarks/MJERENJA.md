@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (58 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (60 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -15,6 +15,8 @@ Iz `benchmarks/mjerenja.jsonl` (58 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 19:35 | C0257 | 60 kadrova, zadana kalibracija (uz trening na kartici) | 60 | 568 | 59/59 | 79913 | 1.225 | 4.549 | 3.460 | 4650 |  | 48.20 | 171.30 | 166.60 | 86.90 | polaziste brzog uzorka | zapisano_px=1.483, izlaz=k_base |
 | 2026-09-24 19:58 | C0257 | 60 kadrova, zadana kalibracija, --track-scale 2 | 60 | 531 | 59/59 | 25588 | 1.361 | 4.220 | 3.350 | 4650 |  | 11.80 | 163.90 | 228.80 | 39.90 | -37 s; pune slicice 2x brze, ali rekonstrukcija sporija i 3x manje tocaka - provjeriti | zapisano_px=2.249, izlaz=k_D |
 | 2026-09-24 19:58 | C0257 | 60 kadrova, zadana kalibracija, --track-scale 4 | 60 | 458 | 56/56 | 34164 | 1.329 | 2.935 | 2.390 | 4650 |  | 9.800 | 148.10 | 166.50 | 50.00 | -110 s, izdvojeni 2.94 px (osnova 4.55) - obecavajuce, potvrditi na punoj snimci | zapisano_px=2.150, izlaz=k_E |
+| 2026-09-24 20:01 | C0257 | 60 kadrova, zadana kalibracija, --keyframes-only | 60 | 463 | 59/59 | 79913 | 1.225 | 4.549 | 3.460 | 4650 |  | 29.40 | 158.50 | 188.80 |  | -105 s, isto rjesenje; preskace pune slicice - za splat dovoljno, za VFX kameru po kadru ne | zapisano_px=1.483, izlaz=k_F |
+| 2026-09-24 20:10 | C0257 | 60 kadrova, zadana kalibracija: jedan kandidat vidnog polja umjesto 7 | 60 | 547 | 59/59 | 79913 | 1.225 | 4.549 | 3.460 | 4650 |  | 44.90 | 219.10 | 73.70 | 89.90 | zadrzano: isti izlaz bit za bit, rekonstrukcija 167->74 s (ukupno zasumljeno: isao uz solve G i trening) | zapisano_px=1.483, izlaz=k_H |
 
 ## trening
 
