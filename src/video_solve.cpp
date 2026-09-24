@@ -1463,6 +1463,9 @@ int main(int realArgc, char** realArgv){
             //METAPODACI KAMERE (Spool/CameraMetadata.h): vrijeme ekspozicije i citanja za trener -
             //zamucenje pokretom i rolling shutter se modeliraju tek kad se zna koliko traju
             {
+                //Iz koje snimke je model - dnevnik mjerenja (tools/bench/mjerenja.py) po tome zna na cemu se mjerilo
+                std::ofstream(std::filesystem::path(outputDirectory) / "izvor.txt") << path << "\n";
+
                 const Spool::CameraMetadata camera = Spool::readCameraMetadata(path);
                 if(camera.present){
                     std::ofstream note(std::filesystem::path(outputDirectory) / "camera_metadata.txt");

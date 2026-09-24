@@ -21,15 +21,25 @@ import gsplat
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from train_splats import read_cameras, read_images
 from clean_splats import read_ply
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+from mjerenja import upisi, snimka_modela
 
 
-def compare(a_path, b_path):
-    a, b = np.load(a_path), np.load(b_path)
-    d = b - a
-    se = d.std(ddof=1) / math.sqrt(len(d))
-    print(f"A {a.mean():.3f} dB (medijan {np.median(a):.3f}), B {b.mean():.3f} dB (medijan {np.median(b):.3f})")
-    print(f"B - A po kadru: prosjek {d.mean():+.3f} dB (+-{se:.3f} standardna pogreska), medijan {np.median(d):+.3f}, "
-          f"B bolji na {int((d > 0).sum())} od {len(d)}")
+def compare(a_path, b_path, opis=""):
+    A, B = np.load(a_path), np.load(b_path)
+    A = A if A.ndim == 2 else A[:, None]
+    B = B if B.ndim == 2 else B[:, None]
+    names = ["PSNR dB", "SSIM", "ostrina"]
+    for k in range(min(A.shape[1], B.shape[1])):
+        a, b = A[:, k], B[:, k]
+        d = b - a
+        se = d.std(ddof=1) / math.sqrt(len(d))
+        print(f"{names[k]:8s} A {a.mean():.4f} (medijan {np.median(a):.4f}), B {b.mean():.4f} (medijan {np.median(b):.4f}); "
+              f"B - A po kadru {d.mean():+.4f} (+-{se:.4f}), B bolji na {int((d > 0).sum())} od {len(d)}")
+        if opis:
+            upisi(dict(vrsta="usporedba", opis=opis, mjera=names[k], razlika=round(float(d.mean()), 4),
+                       pogreska=round(float(se), 4), bolji_kadrova=f"{int((d > 0).sum())}/{len(d)}",
+                       a=Path(a_path).stem, b=Path(b_path).stem))
 
 
 def main():
@@ -43,9 +53,11 @@ def main():
     ap.add_argument("--motion-blur", type=int, default=0, help="kao u treneru: K trenutaka ekspozicije (trazi rolling)")
     ap.add_argument("--out", default="")
     ap.add_argument("--compare", nargs=2, default=None)
+    ap.add_argument("--opis", default="",
+                    help="sto se mjeri; s njim ocjena i usporedba idu u dnevnik mjerenja (benchmarks/mjerenja.jsonl)")
     args = ap.parse_args()
     if args.compare:
-        compare(*args.compare)
+        compare(*args.compare, opis=args.opis)
         return
 
     device = "cuda"
@@ -91,6 +103,8 @@ def main():
     a = src.index("    def rotationLog(R):"); b = src.index("    def draw(view, viewEnd, degree, mode):")
     exec("\n".join(line[4:] for line in src[a:b].split("\n")), globals())
 
+    from train_splats import ssim, gaussian_window
+    window = gaussian_window(11, 1.5, device)
     psnrs = []
     with torch.no_grad():
         for i in held:
@@ -108,12 +122,33 @@ def main():
             else:
                 drawn, _, _ = gsplat.rasterization(means, quats, scales, opacities, sh, vm, K[None], width, height,
                                                    sh_degree=degree, **extra)
-            truth = torch.from_numpy(np.array(Image.open(model / "images" / name).convert("RGB").resize((width, height), Image.LANCZOS))).to(device).float() / 255
-            mse = float(((drawn[0][..., :3].clamp(0, 1) - truth) ** 2).mean())
-            psnrs.append(10 * math.log10(1 / max(mse, 1e-12)))
+            picture = Image.open(model / "images" / name).convert("RGB")
+            if picture.size != (width, height): picture = picture.resize((width, height), Image.LANCZOS)
+            truth = torch.from_numpy(np.array(picture)).to(device).float() / 255
+            shown = drawn[0][..., :3].clamp(0, 1)
+            mse = float(((shown - truth) ** 2).mean())
+            #SSIM (isti kao u treneru) i OSTRINA: energija Laplacea nacrtanog prema snimljenom, po
+            #svjetlini. 1 = jednako ostro kao snimka, manje = mutnije
+            structure = float(ssim(shown, truth, window, 11))
+            #Laplace NAKON Gaussova zamucenja (sigma 1.5 px): mjeri rubove i detalje, ne sum senzora i
+            #kompresije, koji na 3x3 Laplaceu snimke nadjaca sve (auto-ISO do 1250)
+            def laplace(img):
+                g = (img * torch.tensor([0.299, 0.587, 0.114], device=device)).sum(-1)[None, None]
+                blur = window.to(g.dtype)
+                g = torch.nn.functional.conv2d(g, blur, padding=5)
+                k = torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]], device=device, dtype=g.dtype)[None, None]
+                return float(torch.nn.functional.conv2d(g, k)[..., 8:-8, 8:-8].pow(2).mean())
+            sharp = laplace(shown) / max(laplace(truth), 1e-12)
+            psnrs.append((10 * math.log10(1 / max(mse, 1e-12)), structure, sharp))
     psnrs = np.array(psnrs)
-    print(f"{len(psnrs)} izdvojenih kadrova: prosjek {psnrs.mean():.3f} dB, medijan {np.median(psnrs):.3f}, najgori {psnrs.min():.2f}")
+    print(f"{len(psnrs)} izdvojenih kadrova ({width}x{height}): PSNR prosjek {psnrs[:, 0].mean():.3f} dB, "
+          f"SSIM {psnrs[:, 1].mean():.4f}, ostrina {psnrs[:, 2].mean():.3f}")
     if args.out: np.save(args.out, psnrs)
+    if args.opis:
+        upisi(dict(vrsta="ocjena", snimka=snimka_modela(model), opis=args.opis, razlucivost=f"{width}x{height}",
+                   psnr=round(float(psnrs[:, 0].mean()), 3), psnr_medijan=round(float(np.median(psnrs[:, 0])), 3),
+                   ssim=round(float(psnrs[:, 1].mean()), 4), ostrina=round(float(psnrs[:, 2].mean()), 3),
+                   kadrova=len(psnrs), splat=Path(args.splat).name))
 
 
 if __name__ == "__main__":

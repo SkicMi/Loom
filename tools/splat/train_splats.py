@@ -11,7 +11,7 @@ KONVENCIJA. COLMAP rotaciju i pomak vodi iz SVIJETA U KAMERU (+Z naprijed, +Y do
 trazi bas tu matricu - pa se ovdje, za razliku od ColmapImporta, NE pretvara nista. To je jedino
 mjesto gdje se dvije konvencije ne moraju pomiriti, i zato je najlakse promasiti u drugu stranu.
 """
-import argparse, math, os, struct, sys
+import argparse, math, os, struct, sys, time
 from pathlib import Path
 
 #Fragmentacija je odnijela 3.16 GB od 11.49 pri prvom punom treningu - memorija je bila rezervirana
@@ -267,7 +267,10 @@ def main():
                     help="ekspozicija u kadrovima (1/100 s pri 50 fps = 0.5); 0 cita camera_metadata.txt")
     ap.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
                     help="na kraju makni floatere (floaters.py): nevidljive i mrlje uz kameru")
+    ap.add_argument("--opis", default="",
+                    help="sto se ovim treningom mjeri; ide u dnevnik mjerenja (benchmarks/mjerenja.jsonl)")
     args = ap.parse_args()
+    started = time.time()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -727,6 +730,8 @@ def main():
                 ssims.append(float(ssim(shown, truth, window, windowSize)))
 
             psnrs.sort(); ssims.sort()
+            heldScore = dict(psnr_medijan=psnrs[len(psnrs)//2], psnr_najgori=psnrs[0],
+                             ssim_medijan=ssims[len(ssims)//2], izdvojenih=len(psnrs))
             print(f"OCJENA na {len(psnrs)} izdvojenih kadrova: "
                   f"PSNR medijan {psnrs[len(psnrs)//2]:.2f} dB (najgori {psnrs[0]:.2f}, najbolji {psnrs[-1]:.2f}), "
                   f"SSIM medijan {ssims[len(ssims)//2]:.3f}")
@@ -751,6 +756,14 @@ def main():
 
         difference = float((truth - rendered[0][..., :3].clamp(0, 1)).abs().mean())
         print(f"Usporedba: {preview}  (lijevo snimljeno, desno nacrtano; razlika {difference:.4f})")
+
+    #Dnevnik mjerenja: svaki trening ostavi redak, da se kroz vrijeme vidi kamo se ide
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+    from mjerenja import upisi, snimka_modela
+    upisi(dict(vrsta="trening", snimka=snimka_modela(model), opis=args.opis, koraka=args.steps,
+               razlucivost=f"{width}x{height}", gaussiana=int(params["means"].shape[0]),
+               vrijeme_s=round(time.time() - started), kamera=args.camera_model,
+               izlaz=str(args.output), **(heldScore if heldOut else {})))
 
 
 if __name__ == "__main__":
