@@ -997,12 +997,16 @@ int main(int argc, char** argv){
                 browser.refresh();
                 mediaScroll = 0.0f;
             }
+            //Ulazak u mapu tek nakon petlje: refresh() puni browser.folders iznova, pa bi petlja
+            //nastavila po oslobodenoj memoriji (i 'folder' bi pokazivao u nju)
+            fs::path enter;
             for(const fs::path& folder : browser.folders){
-                if(ui.folderRow(folder.filename().string(), false)){
-                    browser.at = folder;
-                    browser.refresh();
-                    mediaScroll = 0.0f;
-                }
+                if(ui.folderRow(folder.filename().string(), false)) enter = folder;
+            }
+            if(!enter.empty()){
+                browser.at = enter;
+                browser.refresh();
+                mediaScroll = 0.0f;
             }
             for(const fs::path& video : browser.videos){
                 if(ui.selectable("+ " + video.filename().string(), false)){
