@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (150 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (154 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -176,4 +176,13 @@ Iz `benchmarks/mjerenja.jsonl` (150 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 18:30 | C0257 | ffmpeg, niti | 12.40 |  |
 | 2026-09-24 18:30 | C0257 | NVDEC | 13.40 |  |
 | 2026-09-24 18:30 | C0257 | Spool s nitima | 31.20 |  |
+
+## pune_slicice
+
+| datum | snimka | opis | vrijeme_s | drift_kut_medijan | drift_kut_p90 | drift_polozaj_medijan_posto | drift_polozaj_p90_posto | odluka | ostalo |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-09-25 00:35 | C0257 | --dense-points 0 (60 kljucnih, 532 medjukadra) | 104.30 | 0.049 | 0.103 | 2.270 | 9.080 | polaziste (izlaz isti do bajta) |  |
+| 2026-09-25 00:35 | C0257 | --dense-points 4000 (60 kljucnih, 532 medjukadra) | 38.30 | 0.049 | 0.120 | 2.350 | 10.73 | medijan isti, p90 +16 %; 2.7x brze - opcija |  |
+| 2026-09-25 00:35 | C0257 | --dense-points 2000 (60 kljucnih, 532 medjukadra) | 22.20 | 0.051 | 0.131 | 2.410 | 10.80 | p90 +27 % |  |
+| 2026-09-25 00:35 | C0257 | --dense-points 1000 (60 kljucnih, 532 medjukadra) | 13.40 | 0.062 | 0.146 | 3.600 | 12.78 | losije |  |
 

@@ -96,13 +96,18 @@ struct DenseTrack{
     //odsjecak, pa u radnicima (zbroj po dretvama) piramida, pracenje i poza
     double decodeSeconds = 0.0, graySeconds = 0.0, waitSeconds = 0.0;
     double pyramidSeconds = 0.0, trackSeconds = 0.0, poseSeconds = 0.0;
+    //PROVJERA NA SLJEDECEM KLJUCNOM: lanac se prati jos jedan kadar dalje, do kljucnog kadra cija je
+    //poza iz bundlea, i mjeri se koliko se promasi - kut i pomak kao dio medijanskog koraka izmedju
+    //kljucnih kadrova. To je drift lanca, jedina mjera tocnosti punih slicica bez istine izvana
+    std::vector<double> checkAngles, checkShifts;
 };
 
 DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
                               const Engine::Reconstruction& solved,
                               const std::vector<Engine::Observation>& observations,
                               const std::vector<uint32_t>& keyframeFrames,
-                              const Engine::Intrinsics& intrinsics){
+                              const Engine::Intrinsics& intrinsics,
+                              uint32_t maxPoints = 0){
     DenseTrack out;
     if(step <= 1 || keyframeFrames.empty()) return out;
 
@@ -147,6 +152,8 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     //=====================================================================================
     struct Segment{
         int keyframe = -1;
+        int checkKeyframe = -1;                 //sljedeci kljucni, za provjeru drifta
+        std::vector<uint8_t> checkGray;
         std::vector<uint32_t> sources;
         std::vector<std::vector<uint8_t>> grays;
     };
@@ -154,6 +161,7 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         uint32_t localised = 0, failed = 0;
         std::vector<uint32_t> inliers;
         double pyramidSeconds = 0.0, trackSeconds = 0.0, poseSeconds = 0.0;
+        std::vector<double> checkAngles, checkShifts;
     };
     using Clock = std::chrono::steady_clock;
     auto since = [](Clock::time_point from){ return std::chrono::duration<double>(Clock::now() - from).count(); };
@@ -166,6 +174,25 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         Engine::Pyramid previous;
         Engine::Pose lastPose = solved.poses[size_t(segment.keyframe)];
         std::vector<Engine::PointObservation> active = perKeyframe[size_t(segment.keyframe)];
+        //NAJVISE maxPoints, RAVNOMJERNO PO KADRU (--dense-points). Poza jednog kadra ne treba
+        //osam tisuca tocaka, a pracenje svake je gotovo sav trosak punih slicica. Mreza 16x9, u
+        //svakoj celiji najvise jednak dio, redom kojim su tocke vec poredane - pa je izbor
+        //odredjen i ne ovisi o dretvama
+        if(maxPoints > 0 && active.size() > maxPoints && width > 0 && height > 0){
+            constexpr uint32_t cellsX = 16, cellsY = 9;
+            const uint32_t perCell = std::max(1u, maxPoints / (cellsX * cellsY));
+            std::vector<uint32_t> taken(cellsX * cellsY, 0);
+            std::vector<Engine::PointObservation> spread;
+            spread.reserve(maxPoints);
+            for(const Engine::PointObservation& one : active){
+                const uint32_t cx = std::min(cellsX - 1, uint32_t(std::max(0.0f, one.pixel.x) * float(cellsX) / float(width)));
+                const uint32_t cy = std::min(cellsY - 1, uint32_t(std::max(0.0f, one.pixel.y) * float(cellsY) / float(height)));
+                if(taken[cy * cellsX + cx] >= perCell) continue;
+                ++taken[cy * cellsX + cx];
+                spread.push_back(one);
+            }
+            active = std::move(spread);
+        }
         for(size_t i = 0; i < segment.sources.size(); ++i){
             const Engine::GrayImage image{segment.grays[i].data(), width, height, width};
             const auto pyramidStarted = Clock::now();
@@ -217,6 +244,25 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
             segment.grays[i].clear();
             segment.grays[i].shrink_to_fit();
         }
+        if(segment.checkKeyframe >= 0 && active.size() >= 12 && !segment.checkGray.empty()){
+            const Engine::GrayImage image{segment.checkGray.data(), width, height, width};
+            Engine::Pyramid pyramid(image, trackConfig.levels);
+            std::vector<Engine::PointObservation> moved;
+            for(const Engine::PointObservation& one : active){
+                glm::vec2 landed;
+                if(Engine::trackPoint(previous, pyramid, one.pixel, landed, trackConfig)) moved.push_back({one.point, landed});
+            }
+            if(moved.size() >= 12){
+                const Engine::PoseSolveResult check = Engine::solvePose(solved.points, moved, intrinsics, lastPose, poseConfig);
+                if(check.solved){
+                    const Engine::Pose& truth = solved.poses[size_t(segment.checkKeyframe)];
+                    const glm::quat turn = glm::inverse(truth.orientation) * check.pose.orientation;
+                    result.checkAngles.push_back(glm::degrees(2.0 * std::asin(std::min(1.0, double(glm::length(glm::vec3(turn.x, turn.y, turn.z)))))));
+                    const double step = glm::length(truth.position - solved.poses[size_t(segment.keyframe)].position);
+                    if(step > 1e-9) result.checkShifts.push_back(glm::length(check.pose.position - truth.position) / step);
+                }
+            }
+        }
         return result;
     };
 
@@ -251,7 +297,17 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         int keyframe = -1;
         if(isUsed && usedIndex < keyframeOfUsed.size()) keyframe = keyframeOfUsed[usedIndex];
 
+        std::vector<uint8_t> gray;
+        if(keyframe >= 0 || current.keyframe >= 0){
+            const auto grayStarted = Clock::now();
+            gray = toGray(frame);
+            out.graySeconds += since(grayStarted);
+        }
         if(keyframe >= 0){
+            if(current.keyframe >= 0 && size_t(keyframe) < solved.posed.size() && solved.posed[size_t(keyframe)]){
+                current.checkKeyframe = keyframe;
+                current.checkGray = gray;
+            }
             launch(std::move(current));
             current = Segment{};
             current.keyframe = keyframe;
@@ -259,9 +315,7 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         //Kadrovi prije prvog kljucnog nemaju odakle krenuti - kao i prije, ostaju bez poze
         if(current.keyframe >= 0){
             current.sources.push_back(sourceIndex);
-            const auto grayStarted = Clock::now();
-            current.grays.push_back(toGray(frame));
-            out.graySeconds += since(grayStarted);
+            current.grays.push_back(std::move(gray));
         }
 
         if(isUsed) ++usedIndex;
@@ -277,6 +331,8 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         out.failed += one.failed;
         inlierCounts.insert(inlierCounts.end(), one.inliers.begin(), one.inliers.end());
         out.pyramidSeconds += one.pyramidSeconds;
+        out.checkAngles.insert(out.checkAngles.end(), one.checkAngles.begin(), one.checkAngles.end());
+        out.checkShifts.insert(out.checkShifts.end(), one.checkShifts.begin(), one.checkShifts.end());
         out.trackSeconds += one.trackSeconds;
         out.poseSeconds += one.poseSeconds;
     }
@@ -420,6 +476,8 @@ int main(int realArgc, char** realArgv){
     //ekvivalent 36.8 mm daje f 3925 px, a splat je s tim 1.1 dB losiji nego sa samokalibracijom
     //(f 4259; SSIM losiji na svih 39 kadrova). Ekvivalent ne opisuje stvarni kadar videa
     bool focalFromMetadata = false;
+    //--dense-points N: pune slicice prate najvise N tocaka po odsjecku, ravnomjerno po kadru (0 = sve)
+    uint32_t densePoints = 0;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
@@ -432,6 +490,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--cpu-features") gpuFeatures = false;
         else if(std::string(realArgv[i]) == "--measure-held-out") measureHeldOut = true;
         else if(std::string(realArgv[i]) == "--focal-from-metadata") focalFromMetadata = true;
+        else if(std::string(realArgv[i]) == "--dense-points" && i + 1 < realArgc) densePoints = uint32_t(std::max(0, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
         else positional.push_back(realArgv[i]);
@@ -1587,7 +1646,7 @@ int main(int realArgc, char** realArgv){
             if(step > 1 && !keyframesOnly){
                 const auto denseStarted = std::chrono::steady_clock::now();
                 const DenseTrack dense = localiseEveryFrame(path, step, best, solveObservations,
-                                                            keyframeFrames, bestIntrinsics);
+                                                            keyframeFrames, bestIntrinsics, densePoints);
                 const double denseSeconds = std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - denseStarted).count();
 
@@ -1602,6 +1661,14 @@ int main(int realArgc, char** realArgv){
                                 "pracenje %.1f, poza %.1f s (zbroj po dretvama)\n",
                                 dense.decodeSeconds, dense.graySeconds, dense.waitSeconds,
                                 dense.pyramidSeconds, dense.trackSeconds, dense.poseSeconds);
+                    if(!dense.checkAngles.empty()){
+                        std::vector<double> angles = dense.checkAngles, shifts = dense.checkShifts;
+                        std::sort(angles.begin(), angles.end());
+                        std::sort(shifts.begin(), shifts.end());
+                        auto at = [](const std::vector<double>& v, double q){ return v.empty() ? 0.0 : v[std::min(v.size() - 1, size_t(q * double(v.size())))]; };
+                        std::printf("    drift do sljedeceg kljucnog (%zu odsjecaka): kut medijan %.4f st, p90 %.4f; polozaj medijan %.2f %%, p90 %.2f %% koraka\n",
+                                    angles.size(), at(angles, 0.5), at(angles, 0.9), 100.0 * at(shifts, 0.5), 100.0 * at(shifts, 0.9));
+                    }
 
                     forExport.poses = dense.poses;
                     forExport.posed = dense.posed;

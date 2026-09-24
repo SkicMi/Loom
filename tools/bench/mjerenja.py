@@ -96,6 +96,7 @@ STUPCI = {
     "ocjena": ["datum", "snimka", "opis", "razlucivost", "psnr", "ssim", "ostrina", "kadrova", "gaussiana", "odluka"],
     "usporedba": ["datum", "snimka", "opis", "mjera", "razlika", "pogreska", "bolji_kadrova", "odluka"],
     "dekodiranje": ["datum", "snimka", "opis", "vrijeme_s"],
+    "pune_slicice": ["datum", "snimka", "opis", "vrijeme_s", "drift_kut_medijan", "drift_kut_p90", "drift_polozaj_medijan_posto", "drift_polozaj_p90_posto", "odluka"],
 }
 
 
