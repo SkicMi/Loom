@@ -186,8 +186,9 @@ int main(int argc, char** argv){
                            loom.getColorFormat(), vk::Format::eUndefined, 1u << 20);
     //Sloj IZNAD meseva: strelice, krugovi i alat plohe. Tocke i mreza su ispod njih - crte nemaju
     //dubinu, pa bi gusti zid tocaka iza kocke inace prekrio cijelu kocku
+    //Kapacitet: odabir plohe istakne do 12000 tocaka (po 4 vrha), plus strelice i disk plohe
     UiPainter overlayPainter(loom.device, loom.command, loom.getDescriptorPool(),
-                             loom.getColorFormat(), vk::Format::eUndefined, 1u << 16);
+                             loom.getColorFormat(), vk::Format::eUndefined, 1u << 17);
 
     //Argumenti: prva mapa, pa zastavice za snimku (vidi zaglavlje)
     fs::path startAt = fs::current_path();

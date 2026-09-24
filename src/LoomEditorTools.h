@@ -213,7 +213,8 @@ inline bool surfaceToolMouse(SurfaceTool& tool, bool leftDown, bool leftWasDown,
 inline void paintSurfaceTool(const SurfaceTool& tool, const ViewCamera& camera, Treadle::DrawList& list){
     const Treadle::Color gold{1.0f, 0.82f, 0.30f, 0.95f};
     if(tool.dragging) list.outline(tool.rect(), 1.5f, gold);
-    const size_t stride = std::max<size_t>(1, tool.selected.size() / 20000);
+    //Najvise 12000 istaknutih tocaka: vise se na zaslonu ionako ne razlikuje, a sloj ima granicu
+    const size_t stride = std::max<size_t>(1, (tool.selected.size() + 11999) / 12000);
     for(size_t i = 0; i < tool.selected.size(); i += stride){
         glm::vec2 p;
         if(project(camera, tool.selected[i], p) && camera.rect.contains(p.x, p.y)) list.rect(p.x - 1.5f, p.y - 1.5f, 3.0f, 3.0f, {1.0f, 0.9f, 0.4f, 0.8f});
