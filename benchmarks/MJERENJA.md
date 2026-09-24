@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (98 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (111 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -29,8 +29,9 @@ Iz `benchmarks/mjerenja.jsonl` (98 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 22:03 | C0257 | cijela snimka (231), sva ubrzanja i novi izbor pocetnog para | 231 | 1320 | 229/229 | 266449 | 1.209 | 4.452 | 3.550 | 4259 | -0.025 | 100.30 | 161.30 | 206.10 | 272.90 | 42m13 -> 21m59, isto rjesenje po kamerama/tockama/reprojekciji; samokalibracija f 4259 (prije 4650) | zapisano_px=1.482, izlaz=solve_novi, izdvojeni_od=brzog kandidata (90/229 kamera) - ne vrijedi |
 | 2026-09-24 22:06 | C0257 | 60 kadrova iz cachea grafa: paralelni zapis slika + --measure-held-out |  |  | 59/59 | 79897 | 1.227 | 2.864 | 2.400 | 4650 |  |  |  | 104.20 |  | zadrzano: slike iste do bajta, zapis 59 slika 13.1 s; izdvojeni na isporucenom 2.864 px (omjer 2.40) umjesto brzog 4.745 | zapisano_px=1.483, izlaz=w_gpu |
 | 2026-09-24 22:35 | C0257 | pune slicice: odsjecci serijski iznutra, 12 u letu (60 kadrova iz cachea) |  |  |  |  |  |  |  |  |  |  |  |  | 166.50 | odbaceno: isti izlaz, ali 166 s prema 94 s (mjereno uz pokuse) |  |
-| 2026-09-24 22:45 | C0257 | cijela snimka, zadana f 4650 (stara samokalibracija) | 231 | 1175 | 229/229 | 265968 | 1.205 | 2.974 | 2.530 | 4650 |  | 125.70 | 230.70 | 262.90 | 290.80 |  | zapisano_px=1.474, izlaz=e_f4650 |
+| 2026-09-24 22:45 | C0257 | cijela snimka, zadana f 4650 (stara samokalibracija) | 231 | 1175 | 229/229 | 265968 | 1.205 | 2.974 | 2.530 | 4650 |  | 125.70 | 230.70 | 262.90 | 290.80 | solve jednak kao f 4259 (2.974 prema 2.981 px) - samokalibracija ovdje luta | zapisano_px=1.474, izlaz=e_f4650 |
 | 2026-09-24 22:54 | C0257 | pokusaji pocetnog para: svaki svoj dio jezgri (60 kadrova iz cachea) |  |  |  |  |  |  |  |  |  |  |  | 56.80 |  | zadrzano: puna obrada 75.8->56.8 i 57.9->47.6 s, izlaz isti do bita (mjereno uz pokuse) |  |
+| 2026-09-24 23:05 | C0257 | cijela snimka, zadana f 4259 k1 -0.025 (nova samokalibracija) | 231 | 1210 | 229/229 | 266441 | 1.209 | 2.981 | 2.530 | 4259 |  | 167.20 | 220.90 | 1525 | 279.80 |  | zapisano_px=1.482, izlaz=e_f4259, faze_s=pracenje i graf 437.3, brzi kandidat 125.2, puna obrada 286.8, provjere 0.0, slike kadrova 78.0, pune slicice i USD 280.0, COLMAP i provjera 1.9 |
 
 ## trening
 
@@ -56,6 +57,8 @@ Iz `benchmarks/mjerenja.jsonl` (98 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 19:57 | C0257 | trening na punoj 4K (--downscale 1), granica 1.5M | 7000 | 3840x2160 | 1500000 | 1065 | 24.48 | 17.29 | 0.778 |  | kamera=classic, izlaz=r4k.ply, izdvojenih=39 |
 | 2026-09-24 20:27 | C0257 | 30000 koraka, granica 1.5M | 30000 | 1920x1080 | 1500000 | 1626 | 24.29 | 17.31 | 0.757 | ostrije (+32 % 1080p, +49 % 4K), ali PSNR -0.25 i SSIM -0.004 - pocinje se prilagodjavati snimljenim kadrovima | kamera=classic, izlaz=k30000.ply, izdvojenih=39 |
 | 2026-09-24 22:18 | C0257 | cijela snimka, novi solve, 15000 koraka | 15000 | 1920x1080 | 1500000 | 957 | 25.34 | 20.91 | 0.790 | najbolje dosad: izdvojeni PSNR +1.0 dB (1080p) / +1.2 dB (4K), SSIM bolji na 39/39, najgori kadar 17.8 -> 20.9 dB | kamera=classic, izlaz=t_novi.ply, izdvojenih=39 |
+| 2026-09-24 22:55 | C0257 | E1 f 4650, 7000 koraka | 7000 | 1920x1080 | 1500000 | 568 | 24.87 | 19.78 | 0.794 |  | kamera=classic, izlaz=e_f4650.ply, izdvojenih=39 |
+| 2026-09-24 23:15 | C0257 | E2 f 4259, 7000 koraka | 7000 | 1920x1080 | 1500000 | 547 | 25.20 | 21.07 | 0.809 |  | kamera=classic, izlaz=e_f4259.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -72,6 +75,10 @@ Iz `benchmarks/mjerenja.jsonl` (98 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 20:27 | C0257 | 30000 koraka | 3840x2160 | 23.92 | 0.776 | 0.130 | 39 |  |  | psnr_medijan=24.07, splat=k30000.ply |
 | 2026-09-24 22:19 | C0257 | novi solve, 15000 koraka | 1920x1080 | 25.48 | 0.802 | 0.379 | 39 |  |  | psnr_medijan=25.34, splat=t_novi.ply |
 | 2026-09-24 22:19 | C0257 | novi solve, 15000 koraka | 3840x2160 | 25.40 | 0.826 | 0.129 | 39 |  |  | psnr_medijan=25.29, splat=t_novi.ply |
+| 2026-09-24 22:55 | C0257 | E1 f 4650 | 1920x1080 | 24.88 | 0.784 | 0.310 | 39 |  |  | psnr_medijan=24.87, splat=e_f4650.ply |
+| 2026-09-24 22:55 | C0257 | E1 f 4650 | 3840x2160 | 24.75 | 0.786 | 0.091 | 39 |  |  | psnr_medijan=24.79, splat=e_f4650.ply |
+| 2026-09-24 23:15 | C0257 | E2 f 4259 | 1920x1080 | 25.24 | 0.801 | 0.324 | 39 |  |  | psnr_medijan=25.20, splat=e_f4259.ply |
+| 2026-09-24 23:15 | C0257 | E2 f 4259 | 3840x2160 | 25.16 | 0.826 | 0.103 | 39 |  |  | psnr_medijan=25.15, splat=e_f4259.ply |
 
 ## usporedba
 
@@ -115,6 +122,12 @@ Iz `benchmarks/mjerenja.jsonl` (98 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d1) | PSNR dB | 1.173 | 0.218 | 30/39 | stvarno (>3.5 pogreske) | a=q_k15000_d1, b=q_novi_d1 |
 | 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d1) | SSIM | 0.048 | 0.002 | 39/39 | stvarno (>3.5 pogreske) | a=q_k15000_d1, b=q_novi_d1 |
 | 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d1) | ostrina | 0.022 | 0.006 | 28/39 |  | a=q_k15000_d1, b=q_novi_d1 |
+| 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d2) | PSNR dB | 0.362 | 0.141 | 22/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d2, b=q_e_f4259_d2 |
+| 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d2) | SSIM | 0.017 | 0.002 | 38/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d2, b=q_e_f4259_d2 |
+| 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d2) | ostrina | 0.014 | 0.006 | 26/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d2, b=q_e_f4259_d2 |
+| 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d1) | PSNR dB | 0.414 | 0.138 | 22/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d1, b=q_e_f4259_d1 |
+| 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d1) | SSIM | 0.040 | 0.001 | 39/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d1, b=q_e_f4259_d1 |
+| 2026-09-24 23:15 | C0257 | f 4259 prema f 4650, isti lanac, 7000 koraka (d1) | ostrina | 0.012 | 0.003 | 27/39 | zarisna je uzrok: 4259 bolja (solve je ne razlikuje) | a=q_e_f4650_d1, b=q_e_f4259_d1 |
 
 ## dekodiranje
 
