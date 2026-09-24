@@ -96,8 +96,19 @@ def main():
     views = [torch.from_numpy(view).float().to(device) for _, view in frames]
     depths = floaters.view_depths(torch.from_numpy(points).to(device), views)
 
+    #Uz rolling shutter (VideoSolve zapise rs_top/rs_bottom) kadar se mjeri redak po redak, kao
+    #sto ga je trener i crtao
+    viewsEnd = None
+    if (model / "rs_top" / "images.txt").exists() and (model / "rs_bottom" / "images.txt").exists():
+        top = dict(read_images(model / "rs_top" / "images.txt"))
+        bottom = dict(read_images(model / "rs_bottom" / "images.txt"))
+        views = [torch.from_numpy(top[name]).float().to(device) for name, _ in frames]
+        viewsEnd = [torch.from_numpy(bottom[name]).float().to(device) for name, _ in frames]
+        print("Rolling shutter: kadrovi se mjere redak po redak (rs_top/rs_bottom)")
+
     started = time.time()
-    most, seen, nearest = floaters.measure(means, quats, scales, opacities, views, K, width, height, depths, args.visible)
+    most, seen, nearest = floaters.measure(means, quats, scales, opacities, views, K, width, height, depths, args.visible,
+                                           views_end=viewsEnd)
     keep, invisible, byCamera = floaters.keep_mask(most, seen, nearest, args.visible, args.few_views, args.near)
     kept = int(keep.sum())
     print(f"Izmjereno na {len(views)} kadrova ({width}x{height}) za {time.time() - started:.1f} s")

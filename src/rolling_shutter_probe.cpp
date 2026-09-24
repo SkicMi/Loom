@@ -19,6 +19,7 @@
 #include <Engine/ColmapImport.h>
 #include <Engine/Dense.h>
 #include <Engine/Reconstruct.h>
+#include <Engine/RollingShutter.h>
 #include <Engine/ResidualField.h>
 
 #include <algorithm>
@@ -86,6 +87,14 @@ int main(int argc, char** argv){
         return 1;
     }
     const std::string directory = argv[1];
+    //ROLLING_APPLY: isto sto VideoSolve radi na kraju - rs_top/rs_bottom uz rezultat
+    if(std::getenv("ROLLING_APPLY")){
+        RollingShutterResult rolling;
+        std::string report;
+        const bool ok = rollingShutterForResult(directory, rolling, report);
+        std::printf("rolling shutter: %s%s\n", report.c_str(), ok && rolling.used ? " - rs_top/rs_bottom written" : "");
+        return ok ? 0 : 1;
+    }
     ColmapModel model;
     if(!readColmapText(directory, model)){ std::printf("Cannot read the COLMAP model in %s\n", directory.c_str()); return 1; }
     const Intrinsics k = model.intrinsics;
@@ -162,6 +171,14 @@ int main(int argc, char** argv){
     std::vector<double> readouts;
     for(int i = 2; i < argc; ++i) readouts.push_back(std::atof(argv[i]));
     if(readouts.empty()) for(int i = -12; i <= 12; i += 2) readouts.push_back(0.1 * i);
+
+    //ROLLING_ESTIMATE: isto sto VideoSolve zove (Engine/RollingShutter.h), na ovom modelu
+    if(std::getenv("ROLLING_ESTIMATE")){
+        const RollingShutterResult r = estimateRollingShutter(model.observations, poses, points, k, linear, angular);
+        std::printf("estimateRollingShutter: used %d, readout %.3f, held-out %.3f -> %.3f px, %u bundles\n",
+                    int(r.used), r.readout, r.heldOutGlobal, r.heldOutBest, r.bundles);
+        return 0;
+    }
 
     //ROLLING_WRITE=mapa: zavrsni bundle na SVIM opazanjima uz prvo zadano vrijeme citanja, pa se
     //model zapise za trening - sredina kadra u mapi, gornji i donji redak u mapa/rs_top i

@@ -343,6 +343,30 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
     //Celija je velika tocno minDistance, pa ugao blizi od toga MORA biti u istoj ili susjednoj
     //celiji - provjera je time ista provjera, samo nad devet celija umjesto nad svime. Poredak
     //kandidata se ne dira, pa je i popis uglova isti do zadnjeg bita
+    //=========================================================================================
+    // SUBPIKSELNI POLOZAJ (TrackConfig::subpixel): Foerstnerov ugao (refineCorner) na ISTOJ slici
+    // na kojoj je nadjen.
+    //
+    // Graf poklapanja trazi uglove na slici smanjenoj cetiri puta, pa je bez ovoga svaki ugao na
+    // 4K tocan na cetiri piksela - izmjereno na C0257: dvije trecine koordinata lezi tocno na
+    // mrezi od 4 px, a medijan ostatka je 1.5 px. I gore od kvantizacije: vrh Shi-Tomasijevog
+    // odziva uz Gaussov prozor ne lezi na uglu nego je pomaknut prema unutra, pa se iz drugog
+    // pogleda pomakne drukcije.
+    //
+    // Dotjerivanje NA PUNOJ SLICI je vec probano i stetilo je (vidi
+    // MatchGraphConfig::refineAtFullResolution): unutar cetiri piksela 4K slike ima drugih, sitnijih
+    // uglova, pa opazanja istog traga skoce na razlicite. Ovdje se ostaje na skali na kojoj je ugao
+    // nadjen. Izmjereno na sintetici (test_subpixel_corners), medijan greske pomaka na punoj slici:
+    //
+    //   cijeli piksel         2.854 px
+    //   parabola kroz odziv   1.436 px
+    //   Foerstner, poluprozor 3 / 5 / 8     0.408 / 0.161 / 0.228 px
+    //=========================================================================================
+    std::vector<glm::vec2> refined;
+    auto subpixelPosition = [&](const glm::vec2& start){
+        return refineCorner(image, start, 5, 3.0f, 10);
+    };
+
     const float cellSize = std::max(1.0f, config.minDistance);
     const int32_t cellsX = int32_t(float(image.width) / cellSize) + 2;
     const int32_t cellsY = int32_t(float(image.height) / cellSize) + 2;
@@ -381,9 +405,12 @@ std::vector<glm::vec2> detectCorners(const GrayImage& image, const TrackConfig& 
         if(farEnough){
             grid[size_t(cy) * size_t(cellsX) + size_t(cx)].push_back(uint32_t(corners.size()));
             corners.push_back(position);
+            if(config.subpixel) refined.push_back(subpixelPosition(position));
         }
     }
-    return corners;
+    //Razmak se provjeravao na cijelim pikselima, pa je IZBOR uglova isti s dotjerivanjem i bez
+    //njega; mijenja se samo polozaj
+    return config.subpixel ? refined : corners;
 }
 
 glm::vec2 refineCorner(const GrayImage& image, const glm::vec2& start,

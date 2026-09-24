@@ -17,6 +17,7 @@
 #include <Engine/ResidualField.h>
 #include <Engine/ColmapExport.h>
 #include <Engine/Upright.h>
+#include <Engine/RollingShutter.h>
 #include <Engine/UsdExport.h>
 
 #include "LoomSnapshot.h"
@@ -276,9 +277,16 @@ int main(int realArgc, char** realArgv){
     // matchmove moraju napisati i svi prije njega
     //=====================================================================================
     bool cameraOnly = false;
+    //--subpixel-corners: uglovi grafa poklapanja dobiju subpikselni polozaj (TrackConfig::subpixel,
+    //Foerstner na smanjenoj slici). Bez njega su na 4K tocni na cetiri piksela
+    bool subpixelCorners = false;
+    //--no-rolling-shutter: bez mjerenja vremena citanja i bez rs_top/rs_bottom (Engine/RollingShutter.h)
+    bool rollingShutter = true;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
+        else if(std::string(realArgv[i]) == "--subpixel-corners") subpixelCorners = true;
+        else if(std::string(realArgv[i]) == "--no-rolling-shutter") rollingShutter = false;
         else positional.push_back(realArgv[i]);
     }
     const int argc = int(positional.size());
@@ -332,7 +340,7 @@ int main(int realArgc, char** realArgv){
     const uint64_t sourceBytes = std::filesystem::file_size(path, fileError);
     const int64_t sourceWriteTime = fileError ? 0 : int64_t(
         std::filesystem::last_write_time(path, fileError).time_since_epoch().count());
-    const uint64_t buildSignature = cacheSignature(how, fieldOfView);
+    const uint64_t buildSignature = cacheSignature(subpixelCorners ? how + "+subpixel" : how, fieldOfView);
 
     uint32_t used = 0;
     std::vector<uint32_t> keyframeFrames;
@@ -538,6 +546,7 @@ int main(int realArgc, char** realArgv){
                 const uint32_t perFrame = std::min(20000u, uint32_t(megapixels * 1000.0));
 
                 graphConfig.detect.maxCorners = perFrame;
+                graphConfig.detect.subpixel = subpixelCorners;
                 graphConfig.detect.minDistance = 12.0f;
                 graphConfig.describe.ratio = 0.9f;        //vidi mjerenje u MatchGraph.cpp
                 graphConfig.describe.maxDistance = 96;
@@ -1229,6 +1238,7 @@ int main(int realArgc, char** realArgv){
         const std::vector<glm::u8vec3> colours =
             Engine::pointColours(best, solveObservations, colourImages, shrinkColour);
 
+
         //=================================================================================
         // I USD, ZA VFX ALAT. COLMAP tekst ide treneru splatova, ali u Nuke, Houdini ili Blender
         // ne ide nista - a bez toga rjesenje ne izlazi iz naseg lanca u alat u kojem se radi
@@ -1245,6 +1255,7 @@ int main(int realArgc, char** realArgv){
             //=============================================================================
             Engine::Reconstruction forExport = best;
             int exportStep = int(step);
+
 
             if(step > 1){
                 const auto denseStarted = std::chrono::steady_clock::now();
@@ -1264,6 +1275,7 @@ int main(int realArgc, char** realArgv){
                     forExport.poses = dense.poses;
                     forExport.posed = dense.posed;
                     exportStep = 1;
+
                 }else{
                     std::printf("  pune slicice nisu uspjele (%u medjukadrova), izvozi se svaki %u. kadar\n",
                                 between, step);
@@ -1311,6 +1323,20 @@ int main(int realArgc, char** realArgv){
 
         if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours)){
             std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
+
+            //=============================================================================
+            // ROLLING SHUTTER: koliko traje citanje senzora i poze gornjeg i donjeg retka za
+            // trener - nad upravo zapisanim modelom i kamera.usda (Engine/RollingShutter.h)
+            //=============================================================================
+            if(rollingShutter){
+                const auto rollingStarted = std::chrono::steady_clock::now();
+                Engine::RollingShutterResult rolling;
+                std::string rollingReport;
+                const bool rollingOk = Engine::rollingShutterForResult(outputDirectory, rolling, rollingReport);
+                std::printf("  rolling shutter: %s, %.1f s%s\n", rollingReport.c_str(),
+                            std::chrono::duration<double>(std::chrono::steady_clock::now() - rollingStarted).count(),
+                            rollingOk && rolling.used ? " - rs_top/rs_bottom zapisani" : "");
+            }
 
             //=============================================================================
             // IZLAZ SE CITA NATRAG I PROVJERAVA.

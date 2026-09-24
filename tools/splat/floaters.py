@@ -50,11 +50,13 @@ def view_depths(points, views):
     return out
 
 
-def measure(means, quats, scales, opacities, views, K, width, height, depths, visible=0.5):
+def measure(means, quats, scales, opacities, views, K, width, height, depths, visible=0.5, views_end=None):
     """Po gaussiani: najveci broj piksela u jednom kadru, u koliko kadrova oboji barem 'visible'
     piksela, i najmanji omjer njezine dubine i dubine scene medju tim kadrovima.
 
-    scales i opacities su AKTIVIRANI (exp, sigmoid); views su svijet-u-kameru 4x4 na kartici."""
+    scales i opacities su AKTIVIRANI (exp, sigmoid); views su svijet-u-kameru 4x4 na kartici.
+    views_end: uz rolling shutter poze DONJEG retka (views su tada gornjeg) - kadar se crta
+    redak po redak, kao u treningu"""
     n = means.shape[0]
     device = means.device
     most = torch.zeros(n, device=device)
@@ -62,9 +64,16 @@ def measure(means, quats, scales, opacities, views, K, width, height, depths, vi
     nearest = torch.full((n,), float("inf"), device=device)
     ones = torch.ones(n, 1, device=device, requires_grad=True)
     means, quats, scales, opacities = (t.detach() for t in (means, quats, scales, opacities))
-    for view, depth in zip(views, depths):
-        drawn, _, _ = gsplat.rasterization(means, quats, scales, opacities, ones, view[None], K[None],
-                                           width, height, sh_degree=None, packed=True)
+    for index, (view, depth) in enumerate(zip(views, depths)):
+        if views_end is not None:
+            from gsplat.cuda._wrapper import RollingShutterType
+            drawn, _, _ = gsplat.rasterization(means, quats, scales, opacities, ones, view[None], K[None],
+                                               width, height, sh_degree=None, packed=False, with_ut=True, with_eval3d=True,
+                                               rolling_shutter=RollingShutterType.ROLLING_TOP_TO_BOTTOM,
+                                               viewmats_rs=views_end[index][None])
+        else:
+            drawn, _, _ = gsplat.rasterization(means, quats, scales, opacities, ones, view[None], K[None],
+                                               width, height, sh_degree=None, packed=True)
         ones.grad = None
         drawn.sum().backward()
         weight = ones.grad[:, 0]

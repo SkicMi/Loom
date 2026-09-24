@@ -40,6 +40,11 @@ struct TrackConfig{
     uint32_t maxCorners = 600;
     float minDistance = 12.0f;
 
+    //SUBPIKSELNI POLOZAJ UGLA: Foerstner na istoj slici (vidi detectCorners). Zadano iskljuceno,
+    //pa je dosadasnje pracenje bit po bit isto; ukljucuje ga VideoSolve za graf poklapanja, gdje
+    //se uglovi traze na smanjenoj slici i bez ovoga su na 4K tocni na cetiri piksela
+    bool subpixel = false;
+
     //Prag je RELATIVAN prema najboljem uglu u slici: apsolutni bi na tamnoj snimci nasao nista,
     //a na kontrastnoj sve
     float quality = 0.01f;

@@ -31,6 +31,7 @@ add_library(Engine STATIC
     src/Engine/Triangulate.cpp
     src/Engine/SolvePose.cpp
     src/Engine/Bundle.cpp
+    src/Engine/RollingShutter.cpp
     src/Engine/TwoView.cpp
     src/Engine/Reconstruct.cpp
     src/Engine/ScaleSpace.cpp

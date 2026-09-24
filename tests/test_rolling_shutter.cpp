@@ -15,6 +15,7 @@
 #include "TestHarness.h"
 
 #include <Engine/Bundle.h>
+#include <Engine/RollingShutter.h>
 
 #include <cmath>
 
@@ -147,6 +148,24 @@ int main(){
     const double stillGlobal = solveWith(still, 0.0), stillModel = solveWith(still, rowTime);
     report.check("kamera koja stoji: rowTime ne mijenja nista", std::fabs(stillGlobal - stillModel) < 1e-4 && stillModel < 1e-3,
         fmt("bez %.6f, s %.6f px", stillGlobal, stillModel));
+
+    //estimateRollingShutter (ono sto VideoSolve zove): samo nadje vrijeme citanja na izdvojenim
+    //opazanjima i uzme model; na mirnoj kameri ga ne uzme
+    {
+        std::vector<glm::vec3> linear, angular;
+        rollingShutterVelocities(noisy.poses, noisy.times, linear, angular);
+        RollingShutterConfig config;
+        config.iterations = 30;
+        const RollingShutterResult found = estimateRollingShutter(noisy.observations, noisy.poses, noisy.points,
+                                                                   noisy.intrinsics, linear, angular, config);
+        rollingShutterVelocities(still.poses, still.times, linear, angular);
+        const RollingShutterResult none = estimateRollingShutter(still.observations, still.poses, still.points,
+                                                                  still.intrinsics, linear, angular, config);
+        report.check("procjena nadje vrijeme citanja uz sum i uzme model; na mirnoj kameri ne",
+            found.used && std::fabs(found.readout - 0.8) < 0.15 && found.top.size() == noisy.poses.size() && !none.used,
+            fmt("nadjeno %.2f kadra (istina 0.8), izdvojeni %.3f -> %.3f px; mirna: %s", found.readout,
+                found.heldOutGlobal, found.heldOutBest, none.used ? "UZETO" : "nije uzeto"));
+    }
 
     return report.result();
 }

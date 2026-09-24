@@ -243,6 +243,15 @@ def main():
                     help="L1 kazna na velicinu u mjerilu scene (MCMC rad: 0.01); krupne mrlje se smanje")
     #Izmjereno na izdvojenim kadrovima (floaters.py): PSNR prosjek 24.37 -> 24.70 dB, a splat
     #cetiri puta manji. --no-clean ga iskljucuje
+    #MODEL KAMERE PRI CRTANJU. classic je dosadasnji (EWA, jedna poza po kadru). ut je gsplatov
+    #3DGUT s istom jednom pozom - kontrola, da se vidi koliko mijenja sam nacin projekcije. rolling
+    #je 3DGUT s ROLLING SHUTTEROM: gornji redak u pozi iz model/rs_top, donji iz model/rs_bottom
+    #(RollingShutterProbe ih zapise), a izmedju se poza mijenja redak po redak
+    #ZADANO auto: rolling kad VideoSolve uz rezultat zapise rs_top i rs_bottom (izmjerio je rolling
+    #shutter), inace classic. Izmjereno na C0257, 39 izdvojenih kadrova: rolling 25.52 dB, ista
+    #scena bez njega (ut) 23.43, classic 24.46
+    ap.add_argument("--camera-model", choices=["auto", "classic", "ut", "rolling"], default="auto",
+                    help="auto: rolling kad postoje rs_top/rs_bottom, inace classic")
     ap.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
                     help="na kraju makni floatere (floaters.py): nevidljive i mrlje uz kameru")
     args = ap.parse_args()
@@ -254,7 +263,13 @@ def main():
     model = Path(args.model)
     camera = read_cameras(model / "cameras.txt")
     frames = read_images(model / "images.txt")
-    points, colours = read_points(model / "points3D.txt")
+    if args.camera_model == "auto":
+        args.camera_model = "rolling" if (model / "rs_top" / "images.txt").exists() and \
+                                         (model / "rs_bottom" / "images.txt").exists() else "classic"
+    #Uz rolling shutter i pocetne tocke iz bundlea s njim (rs_top ih nosi), da poze i tocke budu iz
+    #istog rjesenja
+    points, colours = read_points(model / ("rs_top" if args.camera_model == "rolling" else ".") / "points3D.txt")
+    print(f"Model kamere: {args.camera_model}")
     print(f"Model: {len(frames)} kamera, {len(points)} tocaka, {camera['width']}x{camera['height']}")
 
     # -------------------------------------------------------------------------------
@@ -296,15 +311,29 @@ def main():
                 f"Karte se povezuju po redoslijedu, pa moraju biti napravljene bas iz ove mape slika.")
         depthFor = {name: path for name, path in zip(allImages, allDepths)}
 
+    #Rolling shutter: poze gornjeg i donjeg retka, po imenu slike
+    rowViews = {}
+    if args.camera_model == "rolling":
+        for which in ("rs_top", "rs_bottom"):
+            listed = model / which / "images.txt"
+            if not listed.exists():
+                raise SystemExit(f"{listed} ne postoji - napravi ga s RollingShutterProbe (ROLLING_WRITE)")
+            rowViews[which] = {name: view for name, view in read_images(listed)}
+
     depthMaps = []
-    views, pictures = [], []
+    views, pictures, viewsEnd = [], [], []
     for name, view in frames:
         path = Path(args.images) / name
         if not path.exists():
             continue
         picture = Image.open(path).convert("RGB").resize((width, height), Image.LANCZOS)
         pictures.append(torch.from_numpy(np.asarray(picture, dtype=np.uint8)))
-        views.append(torch.from_numpy(view).float())
+        if rowViews:
+            views.append(torch.from_numpy(rowViews["rs_top"][name]).float())
+            viewsEnd.append(torch.from_numpy(rowViews["rs_bottom"][name]).float())
+        else:
+            views.append(torch.from_numpy(view).float())
+            viewsEnd.append(torch.from_numpy(view).float())
 
         if args.depth:
             pfm = depthFor.get(name)
@@ -342,8 +371,10 @@ def main():
         keep = [i for i in range(len(pictures)) if i not in set(heldOut)]
         heldPictures = [pictures[i] for i in heldOut]
         heldViews = [views[i] for i in heldOut]
+        heldViewsEnd = [viewsEnd[i] for i in heldOut]
         pictures = [pictures[i] for i in keep]
         views = [views[i] for i in keep]
+        viewsEnd = [viewsEnd[i] for i in keep]
         if len(depthMaps): depthMaps = [depthMaps[i] for i in keep]
         print(f"Izdvojeno {len(heldPictures)} kadrova za ocjenu, trenira se na {len(pictures)}")
 
@@ -353,9 +384,11 @@ def main():
 
     pictures = torch.stack(pictures)
     views = torch.stack(views).to(device)
+    viewsEnd = torch.stack(viewsEnd).to(device)
     if heldOut:
         heldPictures = torch.stack(heldPictures)
         heldViews = torch.stack(heldViews).to(device)
+        heldViewsEnd = torch.stack(heldViewsEnd).to(device)
     gigabytes = pictures.numel() / (1 << 30)
     print(f"Slike: {len(pictures)} kom, {width}x{height} ({gigabytes:.1f} GB u radnoj memoriji)")
 
@@ -427,6 +460,22 @@ def main():
     # -------------------------------------------------------------------------------
     # Trening
     # -------------------------------------------------------------------------------
+    #Jedno mjesto koje crta, za trening, ocjenu i pregled - pa sva tri crtaju istim modelom kamere
+    from gsplat.cuda._wrapper import RollingShutterType
+    usesUt = args.camera_model != "classic"
+    def draw(view, viewEnd, degree, mode):
+        extra = dict(packed=True)
+        if usesUt:
+            extra = dict(packed=False, with_ut=True, with_eval3d=True)
+            if args.camera_model == "rolling":
+                extra.update(rolling_shutter=RollingShutterType.ROLLING_TOP_TO_BOTTOM, viewmats_rs=viewEnd)
+        colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
+        return gsplat.rasterization(
+            means=params["means"], quats=params["quats"],
+            scales=torch.exp(params["scales"]), opacities=torch.sigmoid(params["opacities"]),
+            colors=colours_sh, viewmats=view, Ks=K[None], width=width, height=height,
+            sh_degree=degree, rasterize_mode=args.rasterize, render_mode=mode, **extra)
+
     windowSize = 11
     window = gaussian_window(windowSize, 1.5, device)
     lastDepthTerm = 0.0
@@ -439,16 +488,9 @@ def main():
         index = int(torch.randint(len(pictures), (1,), generator=generator))
         truth = pictures[index].to(device, non_blocking=True).float() / 255.0
 
-        colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
-        rendered, alpha, info = gsplat.rasterization(
-            means=params["means"], quats=params["quats"],
-            scales=torch.exp(params["scales"]), opacities=torch.sigmoid(params["opacities"]),
-            colors=colours_sh, viewmats=views[index:index+1], Ks=K[None],
-            width=width, height=height,
-            sh_degree=min(args.sh_degree, step // 1000),   #niži redovi prvi, kao u izvornom radu
-            rasterize_mode=args.rasterize,
-            render_mode="RGB+ED" if len(depthMaps) else "RGB",
-            packed=True)
+        rendered, alpha, info = draw(views[index:index+1], viewsEnd[index:index+1],
+                                     min(args.sh_degree, step // 1000),     #niži redovi prvi, kao u izvornom radu
+                                     "RGB+ED" if len(depthMaps) else "RGB")
 
         strategy.step_pre_backward(params, optimizers, state, step, info)
 
@@ -532,7 +574,7 @@ def main():
         if args.strategy == "mcmc":
             strategy.step_post_backward(params, optimizers, state, step, info, lr=rates["means"])
         else:
-            strategy.step_post_backward(params, optimizers, state, step, info, packed=True)
+            strategy.step_post_backward(params, optimizers, state, step, info, packed=not usesUt)
         for optimizer in optimizers.values():
             optimizer.step()
 
@@ -560,7 +602,8 @@ def main():
         depths = floaters.view_depths(torch.from_numpy(points).to(device), viewList)
         most, seen, nearest = floaters.measure(
             params["means"], params["quats"], torch.exp(params["scales"]), torch.sigmoid(params["opacities"]),
-            viewList, K, width, height, depths)
+            viewList, K, width, height, depths,
+            views_end=[viewsEnd[i] for i in range(len(viewsEnd))] if args.camera_model == "rolling" else None)
         keep, invisible, byCamera = floaters.keep_mask(most, seen, nearest)
         before = params["means"].shape[0]
         for key in list(params.keys()):
@@ -601,13 +644,8 @@ def main():
             colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
             psnrs, ssims = [], []
             for i in range(len(heldPictures)):
-                shown, _, _ = gsplat.rasterization(
-                    means=params["means"], quats=params["quats"],
-                    scales=torch.exp(params["scales"]), opacities=torch.sigmoid(params["opacities"]),
-                    colors=colours_sh, viewmats=heldViews[i:i+1], Ks=K[None],
-                    width=width, height=height, sh_degree=args.sh_degree,
-                    rasterize_mode=args.rasterize,
-                    render_mode="RGB+ED" if len(depthMaps) else "RGB", packed=True)
+                shown, _, _ = draw(heldViews[i:i+1], heldViewsEnd[i:i+1], args.sh_degree,
+                                   "RGB+ED" if len(depthMaps) else "RGB")
 
                 truth = heldPictures[i].to(device).float() / 255.0
                 shown = shown[0]
@@ -624,13 +662,8 @@ def main():
     with torch.no_grad():
         which = len(pictures) // 2
         colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
-        rendered, _, _ = gsplat.rasterization(
-            means=params["means"], quats=params["quats"],
-            scales=torch.exp(params["scales"]), opacities=torch.sigmoid(params["opacities"]),
-            colors=colours_sh, viewmats=views[which:which+1], Ks=K[None],
-            width=width, height=height, sh_degree=args.sh_degree,
-            rasterize_mode=args.rasterize,
-            render_mode="RGB+ED" if len(depthMaps) else "RGB", packed=True)
+        rendered, _, _ = draw(views[which:which+1], viewsEnd[which:which+1], args.sh_degree,
+                              "RGB+ED" if len(depthMaps) else "RGB")
 
         truth = pictures[which].to(device).float() / 255.0
         side = torch.cat([truth, rendered[0][..., :3].clamp(0, 1)], dim=1)     # lijevo snimljeno, desno nacrtano
