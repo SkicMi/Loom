@@ -19,6 +19,10 @@ namespace Spool{
 //   e40a           dva broja ciji je omjer VJEROJATNO vrijeme citanja senzora u kadrovima: na
 //                  C0257 je 0.562, a iz same snimke je izmjereno 0.55-0.60 (Engine/RollingShutter)
 //                  - pretpostavka dok se ne potvrdi na drugom nacinu snimanja
+//   8005 / 8004    zarisna objektiva, stvarna i ekvivalent za 35 mm (skup objektiva, RDD 18). Zapis
+//                  je 16 bita: gornja cetiri su predznacni dekadski eksponent, donjih dvanaest
+//                  mantisa, u metrima - b708 = 1800e-5 m = 18 mm. Na C0257 (Sigma 18-50 na 18 mm)
+//                  ekvivalent je 36.8 mm, dakle 2.04 puta: APS-C 1.53 i jos oko 1.33 reza videa
 //   e435 / e439 / e43b   ziroskop: uzoraka u sekundi, jedinica po stupnju u sekundi, i uzorci
 //                        (po tri osi, 16 bita) - osi su u koordinatama senzora kamere, ne slike
 //
@@ -33,6 +37,8 @@ struct CameraMetadata{
     double exposureSeconds = 0.0;      //prvi kadar; 0 kad se ne zna
     double readoutFrames = 0.0;        //vidi e40a gore; 0 kad se ne zna
     std::vector<uint32_t> isoPerFrame;
+    double focalMillimetres = 0.0;            //prvi kadar; 0 kad se ne zna
+    double equivalentFocalMillimetres = 0.0;  //za 35 mm, s rezom koji kamera sama uracuna
 
     uint32_t gyroRate = 0;             //uzoraka u sekundi
     float gyroUnitsPerDegreePerSecond = 0.0f;

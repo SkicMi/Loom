@@ -1,6 +1,7 @@
 #include "CameraMetadata.h"
 
 #include <cstring>
+#include <cmath>
 #include <map>
 
 extern "C"{
@@ -12,6 +13,13 @@ namespace{
 
 uint32_t be32(const uint8_t* p){ return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]); }
 uint16_t be16(const uint8_t* p){ return uint16_t((p[0] << 8) | p[1]); }
+
+//RDD 18 duljina: gornja cetiri bita predznacni dekadski eksponent, donjih dvanaest mantisa, u metrima
+double lensMetres(uint16_t value){
+    int exponent = int(value >> 12);
+    if(exponent >= 8) exponent -= 16;
+    return double(value & 0x0fff) * std::pow(10.0, double(exponent));
+}
 
 //Lokalne oznake svih KLV skupova jednog uzorka: oznaka -> vrijednost (zadnja pobjedjuje)
 std::map<uint16_t, std::vector<uint8_t>> localTags(const uint8_t* data, size_t size){
@@ -64,6 +72,8 @@ CameraMetadata readCameraMetadata(const std::string& path){
                 if(has(0x8106, 8)){ const auto& v = tags.at(0x8106); const uint32_t d = be32(v.data() + 4); if(d) out.framesPerSecond = double(be32(v.data())) / double(d); }
                 if(has(0x8109, 8)){ const auto& v = tags.at(0x8109); const uint32_t d = be32(v.data() + 4); if(d) out.exposureSeconds = double(be32(v.data())) / double(d); }
                 if(has(0xe40a, 8)){ const auto& v = tags.at(0xe40a); const uint32_t a = be32(v.data()); if(a) out.readoutFrames = double(be32(v.data() + 4)) / double(a); }
+                if(has(0x8005, 2)) out.focalMillimetres = 1000.0 * lensMetres(be16(tags.at(0x8005).data()));
+                if(has(0x8004, 2)) out.equivalentFocalMillimetres = 1000.0 * lensMetres(be16(tags.at(0x8004).data()));
                 if(has(0xe435, 4)) out.gyroRate = be32(tags.at(0xe435).data());
                 if(has(0xe439, 4)){ const uint32_t bits = be32(tags.at(0xe439).data()); float f; std::memcpy(&f, &bits, 4); out.gyroUnitsPerDegreePerSecond = f; }
             }

@@ -1620,10 +1620,14 @@ int main(int realArgc, char** realArgv){
                     std::ofstream note(std::filesystem::path(outputDirectory) / "camera_metadata.txt");
                     note << "source " << camera.source << "\nframes_per_second " << camera.framesPerSecond
                          << "\nexposure_seconds " << camera.exposureSeconds << "\nexposure_frames " << camera.exposureFrames()
-                         << "\nreadout_frames_metadata " << camera.readoutFrames << "\n";
-                    std::printf("  metapodaci kamere (%s): ekspozicija 1/%.0f s = %.2f kadra, citanje %.3f kadra\n",
+                         << "\nreadout_frames_metadata " << camera.readoutFrames
+                         << "\nfocal_millimetres " << camera.focalMillimetres
+                         << "\nequivalent_focal_millimetres " << camera.equivalentFocalMillimetres << "\n";
+                    std::printf("  metapodaci kamere (%s): ekspozicija 1/%.0f s = %.2f kadra, citanje %.3f kadra, "
+                                "objektiv %.1f mm (ekvivalent %.1f mm)\n",
                                 camera.source.c_str(), camera.exposureSeconds > 0.0 ? 1.0 / camera.exposureSeconds : 0.0,
-                                camera.exposureFrames(), camera.readoutFrames);
+                                camera.exposureFrames(), camera.readoutFrames,
+                                camera.focalMillimetres, camera.equivalentFocalMillimetres);
                 }
             }
             if(rollingShutter){

@@ -29,6 +29,12 @@ int main(){
             fmt("%u kadrova @ %.2f fps, ekspozicija 1/%.0f s, citanje %.3f kadra, ziroskop %u Hz (%zu uzoraka, %.1f jed. po st/s)",
                 m.frames, m.framesPerSecond, m.exposureSeconds > 0 ? 1.0 / m.exposureSeconds : 0.0, m.readoutFrames,
                 m.gyroRate, m.gyro.size(), double(m.gyroUnitsPerDegreePerSecond)));
+        //Zarisna objektiva: zoom je izmedju krajeva, a ekvivalent je veci od stvarne (APS-C i rez)
+        report.check("Sony snimka: zarisna objektiva",
+            m.focalMillimetres > 5.0 && m.focalMillimetres < 400.0 &&
+            m.equivalentFocalMillimetres > 1.4 * m.focalMillimetres && m.equivalentFocalMillimetres < 3.0 * m.focalMillimetres,
+            fmt("%.1f mm, ekvivalent %.1f mm (%.2f puta)", m.focalMillimetres, m.equivalentFocalMillimetres,
+                m.focalMillimetres > 0 ? m.equivalentFocalMillimetres / m.focalMillimetres : 0.0));
     }
     return report.result();
 }
