@@ -112,8 +112,8 @@ inline WeaverMotionImportReport importWeaverMotionClip(Warp::Stage& stage,
                                                        const std::string& name,
                                                        const MotionPlacement& placement = {}){
     WeaverMotionImportReport report;
-    if(clip.joints.empty()){ report.problem = "klip nema zglobova"; return report; }
-    if(clip.frames.empty()){ report.problem = "klip nema kadrova"; return report; }
+    if(clip.joints.empty()){ report.problem = "clip has no joints"; return report; }
+    if(clip.frames.empty()){ report.problem = "clip has no frames"; return report; }
 
     //Kadar klipa -> kadar scene
     const bool adopt = placement.sceneFps <= 0.0;
@@ -124,7 +124,7 @@ inline WeaverMotionImportReport importWeaverMotionClip(Warp::Stage& stage,
     //visina ostaje - tlo klipa je y = 0
     const glm::vec3 rootStart = clip.joints[0].offset + (clip.frames[0].translations.empty()
                                                          ? glm::vec3(0.0f) : clip.frames[0].translations[0]);
-    const Warp::Id group = stage.create(name.empty() ? "Pokret" : name, placement.parent);
+    const Warp::Id group = stage.create(name.empty() ? "Motion" : name, placement.parent);
     stage.get(group)->local.translation = placement.position - placement.scale * glm::vec3(rootStart.x, 0.0f, rootStart.z);
     stage.get(group)->local.scale = glm::vec3(placement.scale);
 
@@ -132,7 +132,7 @@ inline WeaverMotionImportReport importWeaverMotionClip(Warp::Stage& stage,
     for(size_t i = 0; i < clip.joints.size(); ++i){
         const Engine::WeaverMotion::Joint& joint = clip.joints[i];
         const Warp::Id parent = joint.parent >= 0 && size_t(joint.parent) < i ? ids[size_t(joint.parent)] : group;
-        ids[i] = stage.create(joint.name.empty() ? "Zglob" : joint.name, parent);
+        ids[i] = stage.create(joint.name.empty() ? "Joint" : joint.name, parent);
         Warp::Entity& entity = *stage.get(ids[i]);
         entity.local.translation = joint.offset;
         entity.joint = Warp::Joint{};

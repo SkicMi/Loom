@@ -68,10 +68,10 @@ float readFloat(const uint8_t* record, const Property& property){
 const Property* require(const Layout& layout, const std::string& name, const std::string& path){
     const Property* property = layout.find(name);
     if(!property){
-        fail(path, "glava ne nabraja svojstvo '" + name + "'");
+        fail(path, "the header does not list property '" + name + "'");
     }
     if(!isFloat32(property->type)){
-        fail(path, "svojstvo '" + name + "' je '" + property->type + "', a ocekuje se float");
+        fail(path, "property '" + name + "' is '" + property->type + "', expected float");
     }
     return property;
 }
@@ -87,8 +87,8 @@ uint32_t degreeFromRestCount(size_t restCount, const std::string& path){
         case 45: return 3;
         default: break;
     }
-    fail(path, "glava nosi " + std::to_string(restCount) +
-               " f_rest svojstava, a stupanj sfernih harmonika trazi 0, 9, 24 ili 45");
+    fail(path, "the header has " + std::to_string(restCount) +
+               " f_rest properties; a spherical harmonics degree needs 0, 9, 24 or 45");
 }
 
 }
@@ -96,12 +96,12 @@ uint32_t degreeFromRestCount(size_t restCount, const std::string& path){
 GaussianCloud loadGaussianPly(const std::string& path){
     std::ifstream file(path, std::ios::binary);
     if(!file){
-        fail(path, "datoteka se ne da otvoriti");
+        fail(path, "the file cannot be opened");
     }
 
     std::string line;
     if(!std::getline(file, line)){
-        fail(path, "prazna datoteka");
+        fail(path, "empty file");
     }
     //Fileovi pisani na Windowsu nose \r koji ovdje nema nikakvo znacenje
     const auto trim = [](std::string& text){
@@ -109,7 +109,7 @@ GaussianCloud loadGaussianPly(const std::string& path){
     };
     trim(line);
     if(line != "ply"){
-        fail(path, "ne pocinje s 'ply'");
+        fail(path, "does not start with 'ply'");
     }
 
     Layout layout;
@@ -131,7 +131,7 @@ GaussianCloud loadGaussianPly(const std::string& path){
             std::string format;
             words >> format;
             if(format != "binary_little_endian"){
-                fail(path, "zapis je '" + format + "', a citac zna samo binary_little_endian");
+                fail(path, "format is '" + format + "'; only binary_little_endian is read");
             }
             sawFormat = true;
             continue;
@@ -156,8 +156,8 @@ GaussianCloud loadGaussianPly(const std::string& path){
             if(type == "list"){
                 //Lista je promjenjive duljine, pa se preko nje ne da preskociti bez citanja.
                 //Na vertexu je nema u nijednom 3DGS fileu, i bolje je stati nego nagadjati
-                fail(path, "vertex nosi 'property list', a duljina takvog svojstva se ne da "
-                           "izracunati iz glave");
+                fail(path, "vertex has a 'property list', whose length cannot be "
+                           "computed from the header");
             }
 
             Property property;
@@ -166,7 +166,7 @@ GaussianCloud loadGaussianPly(const std::string& path){
 
             const size_t size = sizeOfType(type);
             if(size == 0){
-                fail(path, "nepoznat tip svojstva '" + type + "'");
+                fail(path, "unknown property type '" + type + "'");
             }
 
             property.offset = layout.stride;
@@ -180,9 +180,9 @@ GaussianCloud loadGaussianPly(const std::string& path){
         }
     }
 
-    if(!sawFormat)    fail(path, "glava ne kaze u kojem je zapisu");
-    if(!sawEndHeader) fail(path, "glava nema 'end_header'");
-    if(vertexCount == 0) fail(path, "glava ne nabraja nijedan vertex");
+    if(!sawFormat)    fail(path, "the header does not say which format it is");
+    if(!sawEndHeader) fail(path, "the header has no 'end_header'");
+    if(vertexCount == 0) fail(path, "the header lists no vertices");
 
     //Pokazivaci se uzimaju tek kad je vektor gotov: rast vektora bi ih inace obesmislio
     for(const Property& property : layout.properties){
@@ -206,7 +206,7 @@ GaussianCloud loadGaussianPly(const std::string& path){
     //Normale su u zapisu prisutne ali nista ne nose, pa fileovi koji ih izostave nisu greska
     for(int i = 3; i < 6; ++i){
         if(fixed[i] && !isFloat32(fixed[i]->type)){
-            fail(path, "normala nije float");
+            fail(path, "normal is not float");
         }
     }
 
@@ -216,7 +216,7 @@ GaussianCloud loadGaussianPly(const std::string& path){
         const Property* property = layout.find("f_rest_" + std::to_string(i));
         if(!property) break;
         if(!isFloat32(property->type)){
-            fail(path, "f_rest_" + std::to_string(i) + " nije float");
+            fail(path, "f_rest_" + std::to_string(i) + " is not float");
         }
         rest.push_back(property);
     }
@@ -250,8 +250,8 @@ GaussianCloud loadGaussianPly(const std::string& path){
 
         file.read(reinterpret_cast<char*>(chunk.data()), wanted);
         if(file.gcount() != wanted){
-            fail(path, "glava obecava " + std::to_string(vertexCount) + " gaussiana, a datoteka "
-                       "zavrsava na " + std::to_string(first + size_t(file.gcount()) / layout.stride));
+            fail(path, "the header promises " + std::to_string(vertexCount) + " gaussians, but the file "
+                       "ends at " + std::to_string(first + size_t(file.gcount()) / layout.stride));
         }
 
         for(size_t offset = 0; offset < howMany; ++offset){
@@ -285,13 +285,13 @@ void saveGaussianPly(const std::string& path,
                      const GaussianCloud& cloud,
                      const std::vector<uint8_t>& keep){
     if(!keep.empty() && keep.size() != cloud.count()){
-        failWrite(path, "keep ima " + std::to_string(keep.size()) + " ulaza, a oblak " +
-                   std::to_string(cloud.count()) + " gaussiana");
+        failWrite(path, "keep has " + std::to_string(keep.size()) + " entries, but the cloud has " +
+                   std::to_string(cloud.count()) + " gaussians");
     }
     if(cloud.shRest.size() != cloud.count() * cloud.restStride){
-        failWrite(path, "oblak nosi " + std::to_string(cloud.shRest.size()) + " koeficijenata, a " +
-                   std::to_string(cloud.count()) + " gaussiana po " +
-                   std::to_string(cloud.restStride) + " trazi " +
+        failWrite(path, "the cloud has " + std::to_string(cloud.shRest.size()) + " coefficients, but " +
+                   std::to_string(cloud.count()) + " gaussians at " +
+                   std::to_string(cloud.restStride) + " need " +
                    std::to_string(cloud.count() * cloud.restStride));
     }
 
@@ -304,7 +304,7 @@ void saveGaussianPly(const std::string& path,
     if(file.has_parent_path()) std::filesystem::create_directories(file.parent_path());
 
     std::ofstream out(path, std::ios::binary);
-    if(!out) failWrite(path, "ne mogu otvoriti za pisanje");
+    if(!out) failWrite(path, "cannot open for writing");
 
     //REDOSLIJED SVOJSTAVA JE ONAJ KOJIM IH NABRAJA REFERENTNI 3DGS. Citac ih trazi po imenu pa
     //bi mu svaki poredak odgovarao, ali tudji alati nisu svi tako oprezni
@@ -355,7 +355,7 @@ void saveGaussianPly(const std::string& path,
     flush();
 
     out.flush();
-    if(!out) failWrite(path, "pisanje nije uspjelo do kraja");
+    if(!out) failWrite(path, "writing did not complete");
 }
 
 }

@@ -114,8 +114,8 @@ int main(){
     {
         const Warp::Entity* camera = stage.get(imported.camera);
         report.check("grana je /snimka s kamerom i tockama",
-            imported.problem.empty() && stage.path(imported.camera) == "/snimka/Kamera" &&
-            stage.path(imported.points) == "/snimka/Tocke" && imported.splat == Warp::None,
+            imported.problem.empty() && stage.path(imported.camera) == "/snimka/Camera" &&
+            stage.path(imported.points) == "/snimka/Points" && imported.splat == Warp::None,
             stage.path(imported.camera) + ", " + stage.path(imported.points));
         report.check("kamera nosi objektiv i snimku",
             camera && camera->camera && camera->camera->focalPixels == 1500.0f && camera->camera->width == 1920 &&

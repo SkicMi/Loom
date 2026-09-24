@@ -215,7 +215,7 @@ int main(){
         std::string problem;
         const bool refused = !Warp::loadProject(cut, untouched, problem);
         report.check("odrezana datoteka se odbija, scena ostaje", refused && untouched.find("/Ostaje") != Warp::None &&
-                                                                   problem.find("redak") != std::string::npos,
+                                                                   problem.find("line ") != std::string::npos,
             problem.substr(0, 90));
     }
 

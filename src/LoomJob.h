@@ -51,15 +51,15 @@ struct Phase{
 // prazan bijeli zid provede vise vremena u poklapanju, bogata tekstura u potpisima. Zato u prozoru
 // pise "jos oko", ne tocan broj
 inline const Phase phases[] = {
-    {"Snimka ",            "citanje snimke",             0.01},
-    {"kljucnih kadrova",   "pracenje i kljucni kadrovi", 0.08},
-    {"prostor mjerila:",   "znacajke i poklapanje",      0.29},
-    {"graf poklapanja:",   "graf spojen",                0.33},
-    {"samokalibracija:",   "zariste",                    0.37},
-    {"nakon pune obrade",  "rekonstrukcija",             0.46},
-    {"slika u ",           "zapis slika",                0.64},
-    {"pune slicice:",      "pune slicice",               0.82},
-    {"Zapisano u",         "gotovo",                     1.00},
+    {"Snimka ",            "reading video",             0.01},
+    {"kljucnih kadrova",   "tracking and keyframes", 0.08},
+    {"prostor mjerila:",   "features and matching",      0.29},
+    {"graf poklapanja:",   "match graph",                0.33},
+    {"samokalibracija:",   "focal length",                    0.37},
+    {"nakon pune obrade",  "reconstruction",             0.46},
+    {"slika u ",           "writing images",                0.64},
+    {"pune slicice:",      "full-size frames",               0.82},
+    {"Zapisano u",         "done",                     1.00},
 };
 
 //Sto se trenutno vrti. Oba posla su vanjski procesi koji ispisuju napredak, pa ih jedna te ista
@@ -152,13 +152,13 @@ struct KnownFailure{
 };
 
 inline const KnownFailure knownFailures[] = {
-    {"Ninja is required",      "gsplatu treba `ninja` u PATH-u da prevede CUDA dio"},
-    {"out of memory",          "kartica je puna - zatvori sto jos crta pa probaj ponovno"},
-    {"No module named",        "u .venv fali paket; provjeri instalaciju"},
-    {"Premalo kljucnih",       "snimka je prekratka ili se kamera ne mice dovoljno"},
-    {"nema dovoljno",          "snimka nije dala dovoljno zajednickih tocaka"},
-    {"No such file",           "putanja ne postoji - provjeri mapu snimke"},
-    {"NEOPTIMIZIRAN BUILD",    "alat je preveden bez -O2; vidi naredbu u ispisu"},
+    {"Ninja is required",      "gsplat needs `ninja` on PATH to compile its CUDA part"},
+    {"out of memory",          "the GPU is out of memory - close what else is rendering and try again"},
+    {"No module named",        "a package is missing from .venv; check the installation"},
+    {"Premalo kljucnih",       "the video is too short or the camera does not move enough"},
+    {"nema dovoljno",          "the video did not give enough shared points"},
+    {"No such file",           "the path does not exist - check the video folder"},
+    {"NEOPTIMIZIRAN BUILD",    "the tool was built without -O2; see the command in Output"},
 };
 
 inline std::string explainFailure(const std::vector<std::string>& lines){
@@ -193,8 +193,8 @@ inline std::string humanTime(double seconds){
 //=============================================================================================
 inline void warnIfUnoptimised(){
 #ifndef __OPTIMIZE__
-    std::printf("\n  !! NEOPTIMIZIRAN BUILD - mjerenja ne vrijede, a alat je oko cetiri puta "
-                "sporiji.\n     Popravak: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo\n\n");
+    std::printf("\n  !! UNOPTIMISED BUILD - measurements are not valid and the tool is about four times "
+                "slower.\n     Fix: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo\n\n");
 #endif
 }
 

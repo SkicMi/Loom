@@ -659,8 +659,8 @@ int main(int argc, char** argv){
 
     auto saveProjectNow = [&]() -> bool{
         if(projectPath.empty()){
-            projectPath = browser.at / "loom_projekt.usda";
-            for(int n = 2; fs::exists(projectPath); ++n) projectPath = browser.at / ("loom_projekt_" + std::to_string(n) + ".usda");
+            projectPath = browser.at / "loom_project.usda";
+            for(int n = 2; fs::exists(projectPath); ++n) projectPath = browser.at / ("loom_project_" + std::to_string(n) + ".usda");
         }
         const auto started = std::chrono::steady_clock::now();
         std::string error;
@@ -669,7 +669,7 @@ int main(int argc, char** argv){
             autosave.discard(projectPath);
             if(wasUntitled) autosave.discard({});
             char text[256];
-            std::snprintf(text, sizeof(text), "spremljeno: %s (%.1f s)", projectPath.filename().string().c_str(),
+            std::snprintf(text, sizeof(text), "Saved %s (%.1f s)", projectPath.filename().string().c_str(),
                           std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
             message = text;
             browser.refresh();
@@ -854,7 +854,7 @@ int main(int argc, char** argv){
         if(!shotModel.empty()){
             const bool wasEmpty = stage.size() == 0;
             const Loom::ModelImportReport report = Loom::importModelAtView(stage, shotModel, frame, camera, extent);
-            std::printf("model: %s%zu cvorova, %zu mreza, %zu materijala\n", report.problem.c_str(), report.nodes, report.meshes, report.materials);
+            std::printf("model: %s%zu nodes, %zu meshes, %zu materials\n", report.problem.c_str(), report.nodes, report.meshes, report.materials);
             afterModelImport(report, wasEmpty);
         }
         if(shotSurfaceWanted){
@@ -865,7 +865,7 @@ int main(int argc, char** argv){
             surfaceTool.fit = Loom::fitSurface(surfaceTool.selected, camera.eye);
             selected = Loom::placeOnSurface(stage, surfaceTool, Warp::Shape::Cube);
             surfaceTool.active = false;         //snimka pokazuje kocku, ne odabir preko nje
-            std::printf("ploha: %zu tocaka, %zu u ravnini, normala %.3f %.3f %.3f\n", surfaceTool.fit.total, surfaceTool.fit.used,
+            std::printf("surface: %zu points, %zu on the plane, normal %.3f %.3f %.3f\n", surfaceTool.fit.total, surfaceTool.fit.used,
                         surfaceTool.fit.normal.x, surfaceTool.fit.normal.y, surfaceTool.fit.normal.z);
         }
         focus = Focus::Entity;
@@ -891,7 +891,7 @@ int main(int argc, char** argv){
             if(projectPath.empty() && stage.size() == 0 && Loom::newerAutosave({}, newer)) offeredAutosave = newer;
         }
         if(autosave.tick(stage, projectPath, dirty)) message = "Autosaved";
-        const std::string title = std::string("Loom - ") + (projectPath.empty() ? "nova scena" : projectPath.filename().string()) +
+        const std::string title = std::string("Loom - ") + (projectPath.empty() ? "untitled" : projectPath.filename().string()) +
                                   (dirty ? " *" : "");
         if(title != windowTitle){ glfwSetWindowTitle(window, title.c_str()); windowTitle = title; }
 
@@ -1235,7 +1235,7 @@ int main(int argc, char** argv){
                     else{
                         afterModelImport(report, wasEmpty);
                         char text[192];
-                        std::snprintf(text, sizeof(text), "model %s: %zu cvorova, %zu mreza, %zu materijala",
+                        std::snprintf(text, sizeof(text), "Model %s: %zu nodes, %zu meshes, %zu materials",
                                       model.filename().string().c_str(), report.nodes, report.meshes, report.materials);
                         message = text;
                     }
@@ -2065,8 +2065,8 @@ int main(int argc, char** argv){
             removeSelected(selected);
         }
         if(keys.pressed(window, GLFW_KEY_ESCAPE)){
-            if(ui.menuOpen("View") || ui.menuOpen("Media") || ui.menuOpen("Entity") || ui.menuOpen("projekt") ||
-               ui.menuOpen("novi") || ui.menuOpen("Exit")) ui.closeMenu();
+            if(ui.menuOpen("View") || ui.menuOpen("Media") || ui.menuOpen("Entity") || ui.menuOpen("Project") ||
+               ui.menuOpen("New") || ui.menuOpen("Autosave") || ui.menuOpen("Exit")) ui.closeMenu();
             else if(autoRig.open) autoRig.open = false;
             else if(motionPanel.open) motionPanel.open = false;
             else if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
@@ -2159,8 +2159,8 @@ int main(int argc, char** argv){
                 }
                 splatFrameWhenLoaded = Warp::None;
                 const std::string problem = viewportSplat.error();
-                message = problem.empty() ? "Splat in viewport: " + std::to_string(viewportSplat.count()) + " gaussiana"
-                                          : "splat se ne da procitati: " + problem;
+                message = problem.empty() ? "Splat in viewport: " + std::to_string(viewportSplat.count()) + " gaussians"
+                                          : "Could not read splat: " + problem;
             }
             splatWasLoading = loadingNow;
         }
@@ -2243,7 +2243,7 @@ int main(int argc, char** argv){
             //(0 u panelima) - snimka bi ih pokazala bijelima. Sprema se kako se prozor VIDI
             for(size_t i = 3; i < image.pixels.size(); i += 4) image.pixels[i] = 255;
             Spool::saveImage(shotPath, image);
-            std::printf("Snimljeno %s (%ux%u)\n", shotPath.c_str(), image.width, image.height);
+            std::printf("Screenshot saved: %s (%ux%u)\n", shotPath.c_str(), image.width, image.height);
             break;
         }
     }

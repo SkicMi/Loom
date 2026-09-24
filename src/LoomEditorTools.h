@@ -235,7 +235,7 @@ inline void paintSurfaceTool(const SurfaceTool& tool, const ViewCamera& camera, 
 //velika 70 % krace strane komada
 inline Warp::Id placeOnSurface(Warp::Stage& stage, const SurfaceTool& tool, Warp::Shape shape){
     if(!tool.fit.valid) return Warp::None;
-    const Warp::Id id = stage.create(shape == Warp::Shape::Cube ? "Kocka" : "Ravnina");
+    const Warp::Id id = stage.create(shape == Warp::Shape::Cube ? "Cube" : "Plane");
     Warp::Entity& entity = *stage.get(id);
     entity.mesh = Warp::Mesh{shape};
     if(shape == Warp::Shape::Cube){

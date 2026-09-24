@@ -51,15 +51,15 @@ public:
     Json parse(){
         Json value = parseValue();
         skip();
-        if(at != text.size()) fail("visak iza JSON-a");
+        if(at != text.size()) fail("extra data after the JSON");
         return value;
     }
 
 private:
-    [[noreturn]] void fail(const std::string& what){ throw std::runtime_error("JSON, znak " + std::to_string(at) + ": " + what); }
+    [[noreturn]] void fail(const std::string& what){ throw std::runtime_error("JSON, character " + std::to_string(at) + ": " + what); }
     void skip(){ while(at < text.size() && (text[at] == ' ' || text[at] == '\n' || text[at] == '\r' || text[at] == '\t')) ++at; }
     char peek(){ skip(); return at < text.size() ? text[at] : '\0'; }
-    void expect(char c){ if(peek() != c) fail(std::string("ocekivano '") + c + "'"); ++at; }
+    void expect(char c){ if(peek() != c) fail(std::string("expected '") + c + "'"); ++at; }
 
     Json parseValue(){
         const char c = peek();
@@ -94,7 +94,7 @@ private:
         if(text.compare(at, 4, "null") == 0){ at += 4; return out; }
         char* end = nullptr;
         out.number = std::strtod(text.c_str() + at, &end);
-        if(end == text.c_str() + at) fail("neocekivan znak");
+        if(end == text.c_str() + at) fail("unexpected character");
         at = size_t(end - text.c_str());
         out.kind = Json::Kind::Number;
         return out;
@@ -116,7 +116,7 @@ private:
                 case 'f': out += '\f'; break;
                 case 'u':{
                     //Imena u glTF-u su UTF-8; \uXXXX se pretvori u UTF-8 (bez zamjenskih parova)
-                    if(at + 4 > text.size()) fail("kratak \\u");
+                    if(at + 4 > text.size()) fail("short \\u");
                     const unsigned code = unsigned(std::stoul(text.substr(at, 4), nullptr, 16));
                     at += 4;
                     if(code < 0x80) out += char(code);
@@ -127,7 +127,7 @@ private:
                 default: out += e;
             }
         }
-        if(at >= text.size()) fail("string nije zatvoren");
+        if(at >= text.size()) fail("unterminated string");
         ++at;
         return out;
     }
@@ -184,12 +184,12 @@ bool readFile(const std::filesystem::path& path, std::vector<uint8_t>& out){
 bool resolveUri(const std::string& uri, const std::filesystem::path& base, std::vector<uint8_t>& out, std::string& error){
     if(uri.rfind("data:", 0) == 0){
         const size_t comma = uri.find(',');
-        if(comma == std::string::npos || uri.find(";base64", 0) > comma){ error = "data URI bez base64"; return false; }
+        if(comma == std::string::npos || uri.find(";base64", 0) > comma){ error = "data URI without base64"; return false; }
         out = base64(uri.substr(comma + 1));
         return true;
     }
     const std::filesystem::path path = base / uriDecode(uri);
-    if(!readFile(path, out)){ error = "ne mogu procitati " + path.string(); return false; }
+    if(!readFile(path, out)){ error = "cannot read " + path.string(); return false; }
     return true;
 }
 
@@ -237,24 +237,24 @@ float componentAt(const uint8_t* p, int type, bool normalized){
 //Akcesor u niz floatova, `components` po elementu. Vraca broj elemenata; -1 kad ne valja
 long readAccessor(const Model& model, int index, std::vector<float>& out, int& components, std::string& error){
     const Json* accessors = model.root->get("accessors");
-    if(!accessors || index < 0 || size_t(index) >= accessors->size()){ error = "akcesor " + std::to_string(index) + " ne postoji"; return -1; }
+    if(!accessors || index < 0 || size_t(index) >= accessors->size()){ error = "accessor " + std::to_string(index) + " does not exist"; return -1; }
     const Json& accessor = accessors->items[size_t(index)];
     const int type = accessor.integer("componentType", 0);
     components = componentsOf(accessor.str("type"));
     const long count = long(accessor.num("count", 0));
     const bool normalized = accessor.flag("normalized", false);
     const size_t size = bytesOf(type);
-    if(components == 0 || size == 0){ error = "akcesor " + std::to_string(index) + ": nepoznat tip"; return -1; }
+    if(components == 0 || size == 0){ error = "accessor " + std::to_string(index) + ": unknown type"; return -1; }
 
     out.assign(size_t(count) * size_t(components), 0.0f);
     const int viewIndex = accessor.integer("bufferView", -1);
     if(viewIndex < 0) return count;                     //bez pogleda: nule, po specifikaciji
 
     const Json* views = model.root->get("bufferViews");
-    if(!views || size_t(viewIndex) >= views->size()){ error = "bufferView ne postoji"; return -1; }
+    if(!views || size_t(viewIndex) >= views->size()){ error = "bufferView does not exist"; return -1; }
     const Json& view = views->items[size_t(viewIndex)];
     const int buffer = view.integer("buffer", 0);
-    if(buffer < 0 || size_t(buffer) >= model.buffers.size()){ error = "buffer ne postoji"; return -1; }
+    if(buffer < 0 || size_t(buffer) >= model.buffers.size()){ error = "buffer does not exist"; return -1; }
     const std::vector<uint8_t>& data = model.buffers[size_t(buffer)];
     const size_t viewOffset = size_t(view.num("byteOffset", 0));
     const size_t viewLength = size_t(view.num("byteLength", double(data.size())));
@@ -265,7 +265,7 @@ long readAccessor(const Model& model, int index, std::vector<float>& out, int& c
     //Granica je POGLED, ne cijeli buffer: akcesor koji izadje iz svog pogleda cita susjedne
     //podatke - druge vrhove, sliku - i daje uvjerljive brojeve
     if(count > 0 && (within + stride * size_t(count - 1) + element > viewLength || viewOffset + viewLength > data.size())){
-        error = "akcesor " + std::to_string(index) + " izlazi iz buffera";
+        error = "accessor " + std::to_string(index) + " runs past its buffer";
         return -1;
     }
     for(long i = 0; i < count; ++i){
@@ -290,7 +290,7 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
     out = GltfScene{};
     out.path = path;
     std::vector<uint8_t> file;
-    if(!readFile(path, file)){ error = "ne mogu procitati " + path; return false; }
+    if(!readFile(path, file)){ error = "cannot read " + path; return false; }
     const std::filesystem::path base = std::filesystem::path(path).parent_path();
 
     //GLB: zaglavlje, pa JSON komad, pa (po zelji) binarni komad
@@ -305,12 +305,12 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
             std::memcpy(&length, file.data() + at, 4);
             std::memcpy(&type, file.data() + at + 4, 4);
             at += 8;
-            if(at + length > file.size()){ error = "GLB je odrezan"; return false; }
+            if(at + length > file.size()){ error = "GLB is truncated"; return false; }
             if(type == 0x4E4F534A) jsonText.assign(reinterpret_cast<const char*>(file.data() + at), length);
             else if(type == 0x004E4942) glbBinary.assign(file.begin() + long(at), file.begin() + long(at + length));
             at += length;
         }
-        if(jsonText.empty()){ error = "GLB bez JSON komada"; return false; }
+        if(jsonText.empty()){ error = "GLB has no JSON chunk"; return false; }
     }else{
         jsonText.assign(file.begin(), file.end());
     }
@@ -322,10 +322,10 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
         error = path + ": " + failure.what();
         return false;
     }
-    if(root.kind != Json::Kind::Object){ error = "glTF nije JSON objekt"; return false; }
+    if(root.kind != Json::Kind::Object){ error = "glTF is not a JSON object"; return false; }
     if(const Json* asset = root.get("asset")){
         const std::string version = asset->str("version");
-        if(!version.empty() && version[0] != '2'){ error = "glTF verzija " + version + " - cita se samo 2.x"; return false; }
+        if(!version.empty() && version[0] != '2'){ error = "glTF version " + version + " - only 2.x is read"; return false; }
     }
 
     Model model;
@@ -336,7 +336,7 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
             std::vector<uint8_t> data;
             const std::string uri = buffer.str("uri");
             if(uri.empty()){
-                if(!glb || i != 0){ error = "buffer " + std::to_string(i) + " bez uri-ja"; return false; }
+                if(!glb || i != 0){ error = "buffer " + std::to_string(i) + " has no uri"; return false; }
                 data = glbBinary;
             }else if(!resolveUri(uri, base, data, error)){
                 return false;
@@ -395,12 +395,12 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
                             have = true;
                         }
                     }
-                    if(!have) problem = "slika " + std::to_string(i) + " bez podataka";
+                    if(!have) problem = "image " + std::to_string(i) + " has no data";
                 }
                 if(have){
                     try{ image.pixels = decodeImage(bytes.data(), bytes.size()); }
                     catch(const std::exception& failure){ problem = failure.what(); }
-                    if(!image.pixels.isValid() && problem.empty()) problem = "ne da se dekodirati";
+                    if(!image.pixels.isValid() && problem.empty()) problem = "cannot be decoded";
                 }
                 if(!problem.empty()) out.skipped.push_back("slika " + std::to_string(i) + " (" + image.name + image.uri + "): " + problem);
             }
@@ -470,7 +470,7 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
                 primitive.material = prim.integer("material", -1);
                 int components = 0;
                 const long vertices = readAccessor(model, attributes->integer("POSITION", -1), primitive.positions, components, error);
-                if(vertices < 0 || components != 3){ if(error.empty()) error = "POSITION nije VEC3"; return false; }
+                if(vertices < 0 || components != 3){ if(error.empty()) error = "POSITION is not VEC3"; return false; }
 
                 auto optional = [&](const char* name, std::vector<float>& target, int wanted){
                     const Json* a = attributes->get(name);
@@ -490,7 +490,7 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
                         }
                         return true;
                     }
-                    error = std::string(name) + ": neocekivan broj komponenti";
+                    error = std::string(name) + ": unexpected number of components";
                     return false;
                 };
                 if(!optional("NORMAL", primitive.normals, 3) || !optional("TEXCOORD_0", primitive.uv0, 2) ||
@@ -504,7 +504,7 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
                     order.reserve(values.size());
                     for(float v : values){
                         const uint32_t index = uint32_t(v);
-                        if(index >= uint32_t(vertices)){ error = "indeks izvan vrhova u mrezi " + mesh.name; return false; }
+                        if(index >= uint32_t(vertices)){ error = "index outside the vertices in mesh " + mesh.name; return false; }
                         order.push_back(index);
                     }
                 }else{

@@ -321,7 +321,7 @@ bool saveProject(const Stage& stage, const std::string& path, std::string& error
     const std::string temporary = path + ".tmp";
     {
         std::ofstream file(temporary);
-        if(!file){ error = "ne mogu pisati " + temporary; return false; }
+        if(!file){ error = "cannot write " + temporary; return false; }
         Writer writer(file);
         std::string defaultPrim;
         if(!stage.roots().empty()) defaultPrim = stage.get(stage.roots().front())->name;
@@ -335,7 +335,7 @@ bool saveProject(const Stage& stage, const std::string& path, std::string& error
         file << "    timeCodesPerSecond = "; writer.time(stage.framesPerSecond); file << '\n';
         file << "    framesPerSecond = "; writer.time(stage.framesPerSecond); file << '\n';
         file << ")\n";
-        file << "\n# Loomov projekt. Scena je USD: kamera iz solvea, tocke i sve sto je postavljeno.\n";
+        file << "\n# Loom project. The scene is USD: the solved camera, the points and everything placed in it.\n";
         file << "# MJERILO JE SLOBODNO - solve iz same snimke ne zna metre.\n";
 
         for(Id root : stage.roots()){
@@ -363,10 +363,10 @@ bool saveProject(const Stage& stage, const std::string& path, std::string& error
             }
             file << "}\n";
         }
-        if(!file){ error = "pisanje u " + temporary + " nije uspjelo"; return false; }
+        if(!file){ error = "writing to " + temporary + " failed"; return false; }
     }
     if(std::rename(temporary.c_str(), path.c_str()) != 0){
-        error = "ne mogu preimenovati " + temporary + " u " + path;
+        error = "cannot rename " + temporary + " to " + path;
         return false;
     }
     return true;
@@ -374,7 +374,7 @@ bool saveProject(const Stage& stage, const std::string& path, std::string& error
 
 bool loadProject(const std::string& path, Stage& stage, std::string& error){
     std::ifstream file(path);
-    if(!file){ error = "ne mogu otvoriti " + path; return false; }
+    if(!file){ error = "cannot open " + path; return false; }
     std::stringstream buffer;
     buffer << file.rdbuf();
 

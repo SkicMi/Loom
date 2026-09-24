@@ -81,7 +81,7 @@ inline ImportReport addSnapshot(Warp::Stage& stage, const Snapshot& snapshot, co
                                 Warp::Id parent = Warp::None){
     ImportReport report;
     report.group = stage.create(name.empty() ? "Solve" : name, parent);
-    report.camera = stage.create("Kamera", report.group);
+    report.camera = stage.create("Camera", report.group);
     Warp::Entity& camera = *stage.get(report.camera);
     camera.camera = Warp::Camera{};
     for(size_t i = 0; i < snapshot.cameras.size(); ++i){
@@ -90,7 +90,7 @@ inline ImportReport addSnapshot(Warp::Stage& stage, const Snapshot& snapshot, co
     }
     report.cameraKeys = camera.translationKeys.size();
 
-    report.points = stage.create("Tocke", report.group);
+    report.points = stage.create("Points", report.group);
     stage.get(report.points)->points = Warp::Points{snapshot.points, snapshot.colours};
 
     const float tilt = orientGroup(stage, report.group, snapshot);
@@ -106,7 +106,7 @@ inline ImportReport importResult(Warp::Stage& stage, const std::filesystem::path
     Snapshot snapshot;
     if(loadResult(directory, snapshot) == ResultSource::None){
         ImportReport report;
-        report.problem = "u mapi nema rezultata: " + directory.string();
+        report.problem = "No solve result in folder: " + directory.string();
         return report;
     }
 

@@ -167,8 +167,8 @@ int main(){
                 ++k;
             }
         }
-        report.check("spremljeno: samo kocka, s harmonicima, u <ime>_rezano.ply", same && written == expectedInside &&
-                     cutPath.find("loom_resetka_rezano.ply") != std::string::npos && Loom::cutOutputPath(cutPath) == cutPath,
+        report.check("spremljeno: samo kocka, s harmonicima, u <ime>_cut.ply", same && written == expectedInside &&
+                     cutPath.find("loom_resetka_cut.ply") != std::string::npos && Loom::cutOutputPath(cutPath) == cutPath,
             fmt("%s, zapisano %zu", problem.empty() ? "ok" : problem.c_str(), written));
         std::filesystem::remove(gridPath);
         std::filesystem::remove(cutPath);

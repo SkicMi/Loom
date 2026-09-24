@@ -39,7 +39,7 @@ private:
     [[noreturn]] void fail(const std::string& what){
         size_t line = 1;
         for(size_t i = 0; i < at && i < text.size(); ++i) if(text[i] == '\n') ++line;
-        throw std::string("redak " + std::to_string(line) + ": " + what);
+        throw std::string("line " + std::to_string(line) + ": " + what);
     }
 
     //Razmaci i komentari. "#usda 1.0" na pocetku je za ovaj citac obican komentar
@@ -55,7 +55,7 @@ private:
     char peek(){ skip(); return at < text.size() ? text[at] : '\0'; }
 
     void expect(char c){
-        if(peek() != c) fail(std::string("ocekivano '") + c + "'");
+        if(peek() != c) fail(std::string("expected '") + c + "'");
         ++at;
     }
 
@@ -68,7 +68,7 @@ private:
         skip();
         const size_t start = at;
         while(at < text.size() && nameChar(text[at])) ++at;
-        if(start == at) fail("ocekivano ime");
+        if(start == at) fail("expected a name");
         std::string result = text.substr(start, at - start);
         if(at + 1 < text.size() && text[at] == '[' && text[at + 1] == ']'){ result += "[]"; at += 2; }
         return result;
@@ -88,7 +88,7 @@ private:
         skip();
         char* end = nullptr;
         const double value = std::strtod(text.c_str() + at, &end);
-        if(end == text.c_str() + at) fail("ocekivan broj");
+        if(end == text.c_str() + at) fail("expected a number");
         at = size_t(end - text.c_str());
         return value;
     }
@@ -105,7 +105,7 @@ private:
             }
             result += text[at++];
         }
-        if(at >= text.size()) fail("string nije zatvoren");
+        if(at >= text.size()) fail("unterminated string");
         ++at;
         return result;
     }
@@ -114,7 +114,7 @@ private:
         ++at;
         const size_t start = at;
         while(at < text.size() && text[at] != close) ++at;
-        if(at >= text.size()) fail(std::string("nije zatvoreno s '") + close + "'");
+        if(at >= text.size()) fail(std::string("not closed with '") + close + "'");
         return text.substr(start, at++ - start);
     }
 
@@ -128,7 +128,7 @@ private:
             out.items.push_back(std::move(item));
             if(peek() == ','){ ++at; continue; }
             if(peek() == close){ ++at; return; }
-            fail(std::string("ocekivano ',' ili '") + close + "'");
+            fail(std::string("expected ',' or '") + close + "'");
         }
     }
 
@@ -147,7 +147,7 @@ private:
                 out.samples.push_back({time, std::move(sample)});
                 if(peek() == ','){ ++at; continue; }
                 if(peek() == '}'){ ++at; return; }
-                fail("ocekivano ',' ili '}' u timeSamples");
+                fail("expected ',' or '}' in timeSamples");
             }
         }
         out.kind = Value::Kind::Dictionary;
@@ -183,7 +183,7 @@ private:
     void metadata(std::vector<std::pair<std::string, Value>>& out){
         expect('(');
         while(peek() != ')'){
-            if(at >= text.size()) fail("metapodaci nisu zatvoreni");
+            if(at >= text.size()) fail("unterminated metadata");
             if(peek() == '"'){ quoted(); continue; }
             std::string key = identifier();
             //"prepend apiSchemas = [...]" i slicno: rijec ispred imena
@@ -199,7 +199,7 @@ private:
 
     void primitive(Prim& out){
         out.specifier = identifier();
-        if(out.specifier != "def" && out.specifier != "over" && out.specifier != "class") fail("ocekivano 'def'");
+        if(out.specifier != "def" && out.specifier != "over" && out.specifier != "class") fail("expected 'def'");
         if(peek() != '"') out.type = identifier();
         out.name = quoted();
         if(peek() == '('){
@@ -210,7 +210,7 @@ private:
         while(true){
             const char c = peek();
             if(c == '}'){ ++at; return; }
-            if(at >= text.size()) fail("prim '" + out.name + "' nije zatvoren");
+            if(at >= text.size()) fail("prim '" + out.name + "' is not closed");
             //Djete ili atribut: dijete pocinje s def/over/class i ima ime pod navodnicima
             const size_t mark = at;
             const std::string word = identifier();

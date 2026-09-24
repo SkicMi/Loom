@@ -119,14 +119,14 @@ inline Warp::Material materialFromGltf(const Spool::GltfScene& scene, const Spoo
 inline ModelImportReport importGltf(Warp::Stage& stage, const Spool::GltfScene& scene, Warp::Id parent = Warp::None,
                                     glm::vec3 position = glm::vec3(0.0f), float scale = 1.0f){
     ModelImportReport report;
-    if(scene.roots.empty()){ report.problem = "model nema cvorova za prikaz"; return report; }
+    if(scene.roots.empty()){ report.problem = "model has no nodes to show"; return report; }
     const std::filesystem::path path(scene.path);
     const std::string stem = path.stem().string();
 
     //Materijali u biblioteku, s imenom datoteke ispred
     std::vector<int> materialIndex(scene.materials.size(), -1);
     for(size_t i = 0; i < scene.materials.size(); ++i){
-        const std::string name = stem + "/" + (scene.materials[i].name.empty() ? "materijal" + std::to_string(i) : scene.materials[i].name);
+        const std::string name = stem + "/" + (scene.materials[i].name.empty() ? "material" + std::to_string(i) : scene.materials[i].name);
         materialIndex[i] = stage.addMaterial(materialFromGltf(scene, scene.materials[i], name));
     }
     report.materials = scene.materials.size();
@@ -150,7 +150,7 @@ inline ModelImportReport importGltf(Warp::Stage& stage, const Spool::GltfScene& 
         if(index < 0 || size_t(index) >= scene.nodes.size() || visited[size_t(index)]) continue;
         visited[size_t(index)] = 1;
         const Spool::GltfNode& node = scene.nodes[size_t(index)];
-        const Warp::Id id = stage.create(node.name.empty() ? "Cvor" + std::to_string(index) : node.name, under);
+        const Warp::Id id = stage.create(node.name.empty() ? "Node" + std::to_string(index) : node.name, under);
         Warp::Entity& entity = *stage.get(id);
         entity.local.translation = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
         entity.local.rotation = glm::normalize(glm::quat(node.rotation[3], node.rotation[0], node.rotation[1], node.rotation[2]));

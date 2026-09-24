@@ -8,11 +8,11 @@
 //   REZNA KOCKA je obicna kocka iz scene - mice se, okrece i skalira gizmom i svojstvima, i ne
 //   mora biti jednakih stranica. Dobije proziran zlatni materijal (vidi se sto je u njoj) i zicani
 //   obrub dok je odabrana. Brise se ono unutar ili izvan nje, nad maskom u LoomSplat.h, s
-//   korakom natrag; datoteka se ne dira dok se ne spremi (u <ime>_rezano.ply, nikad preko izvora)
+//   korakom natrag; datoteka se ne dira dok se ne spremi (u <ime>_cut.ply, nikad preko izvora)
 //
 //   CISCENJE FLOATERA je tools/splat/clean_splats.py (izmjereno u floaters.py) kao posao u
 //   pozadini. Treba kadrove iz kojih je splat treniran, pa radi samo za splat uz rezultat solvea
-//   (images.txt, cameras.txt, points3D.txt u istoj mapi). Pise <ime>_ciste.ply
+//   (images.txt, cameras.txt, points3D.txt u istoj mapi). Pise <ime>_clean.ply
 //=============================================================================================
 #include "LoomViewport.h"
 
@@ -35,17 +35,17 @@ inline bool isCube(const Warp::Entity* e){
 //Kocka za rezanje: prozirna zlatna, na mjestu u koje se gleda, velicina iz scene
 inline Warp::Id addCutBox(Warp::Stage& stage, const glm::vec3& centre, float size){
     int material = -1;
-    for(size_t i = 0; i < stage.materials.size(); ++i) if(stage.materials[i].name == "Rezna kocka") material = int(i);
+    for(size_t i = 0; i < stage.materials.size(); ++i) if(stage.materials[i].name == "Cut Box") material = int(i);
     if(material < 0){
         Warp::Material glass;
-        glass.name = "Rezna kocka";
+        glass.name = "Cut Box";
         glass.baseColor = glm::vec4(1.0f, 0.78f, 0.25f, 0.22f);
         glass.roughness = 0.8f;
         glass.alphaMode = Warp::Material::Alpha::Blend;
         glass.doubleSided = true;
         material = stage.addMaterial(glass);
     }
-    const Warp::Id id = stage.create("Rezna kocka");
+    const Warp::Id id = stage.create("Cut Box");
     Warp::Entity& box = *stage.get(id);
     box.mesh = Warp::Mesh{Warp::Shape::Cube, glm::vec3(1.0f), material};
     box.local.translation = centre;
@@ -62,13 +62,13 @@ inline void paintBoxWire(Treadle::DrawList& list, const ViewCamera& camera, cons
     }
 }
 
-//Kamo ide izrezani splat: <ime>_rezano.ply uz izvor. Kad je izvor vec izrezan, pise se u njega
+//Kamo ide izrezani splat: <ime>_cut.ply uz izvor. Kad je izvor vec izrezan, pise se u njega
 //- to je nas izlaz, a ne izvorna datoteka treninga
 inline std::string cutOutputPath(const std::string& source){
     const std::filesystem::path p(source);
     const std::string stem = p.stem().string();
-    if(stem.size() > 7 && stem.substr(stem.size() - 7) == "_rezano") return source;
-    return (p.parent_path() / (stem + "_rezano.ply")).string();
+    if(stem.size() > 4 && stem.substr(stem.size() - 4) == "_cut") return source;
+    return (p.parent_path() / (stem + "_cut.ply")).string();
 }
 
 //Ima li splat uz sebe kadrove iz kojih je treniran (bez njih se floateri ne daju izmjeriti)
@@ -83,8 +83,8 @@ inline bool canCleanFloaters(const std::string& splat){
 inline std::string cleanFloatersCommand(const std::string& root, const std::string& splat, std::string& output){
     const std::filesystem::path p(splat);
     std::string stem = p.stem().string();
-    if(stem.size() > 6 && stem.substr(stem.size() - 6) == "_ciste") output = splat;
-    else output = (p.parent_path() / (stem + "_ciste.ply")).string();
+    if(stem.size() > 6 && stem.substr(stem.size() - 6) == "_clean") output = splat;
+    else output = (p.parent_path() / (stem + "_clean.ply")).string();
     return "cd \"" + root + "\" && PATH=\"" + root + "/.venv/bin:$PATH\" ./.venv/bin/python tools/splat/clean_splats.py \"" +
            p.parent_path().string() + "\" \"" + splat + "\" \"" + output + "\"";
 }

@@ -546,6 +546,10 @@ if(LOOM_BUILD_TESTS)
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endforeach()
 
+    # test_budget measures frame time, so it only means something when nothing else is running:
+    # under ctest -j it failed on load, never on the renderer
+    set_tests_properties(test_budget PROPERTIES RUN_SERIAL TRUE)
+
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         add_test(NAME test_weavermotion_cli

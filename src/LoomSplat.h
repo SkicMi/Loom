@@ -185,10 +185,10 @@ public:
         }
         size_t kept = 0;
         for(uint8_t k : keep) kept += k;
-        if(kept == 0) return "nista nije ostalo - prazan .ply se ne pise";
+        if(kept == 0) return "nothing is left - an empty .ply is not written";
         try{
             const Spool::GaussianCloud cloud = Spool::loadGaussianPly(wantedPath);
-            if(cloud.count() != keep.size()) return "datoteka se promijenila na disku otkad je ucitana";
+            if(cloud.count() != keep.size()) return "the file changed on disk since it was loaded";
             Spool::saveGaussianPly(out, cloud, keep);
         }catch(const std::exception& e){
             return e.what();
