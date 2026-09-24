@@ -56,13 +56,18 @@
 
 namespace{
 
+//Po pojasevima redaka: svaki piksel je sam za sebe, pa je izlaz isti, a 4K kadar vise ne stoji
+//na jednoj dretvi (pune slicice: 23.5 s od 87 na 532 medjukadra)
 std::vector<uint8_t> toGray(const Spool::Image& image){
     std::vector<uint8_t> gray(size_t(image.width) * image.height);
-    for(size_t i = 0; i < gray.size(); ++i){
-        gray[i] = uint8_t(0.299f * float(image.pixels[i * 4 + 0]) +
-                          0.587f * float(image.pixels[i * 4 + 1]) +
-                          0.114f * float(image.pixels[i * 4 + 2]));
-    }
+    Engine::inBands(0, int(image.height), [&](uint32_t, int firstRow, int lastRow){
+        const size_t end = size_t(lastRow) * image.width;
+        for(size_t i = size_t(firstRow) * image.width; i < end; ++i){
+            gray[i] = uint8_t(0.299f * float(image.pixels[i * 4 + 0]) +
+                              0.587f * float(image.pixels[i * 4 + 1]) +
+                              0.114f * float(image.pixels[i * 4 + 2]));
+        }
+    });
     return gray;
 }
 
@@ -87,6 +92,10 @@ struct DenseTrack{
     uint32_t localised = 0;
     uint32_t failed = 0;
     uint32_t medianKept = 0;   //koliko je tocaka prezivjelo prijenos, medijan
+    //Kamo ide vrijeme: dekodiranje i siva slika na jednoj dretvi, cekanje na slobodno mjesto za
+    //odsjecak, pa u radnicima (zbroj po dretvama) piramida, pracenje i poza
+    double decodeSeconds = 0.0, graySeconds = 0.0, waitSeconds = 0.0;
+    double pyramidSeconds = 0.0, trackSeconds = 0.0, poseSeconds = 0.0;
 };
 
 DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
@@ -144,7 +153,10 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     struct SegmentResult{
         uint32_t localised = 0, failed = 0;
         std::vector<uint32_t> inliers;
+        double pyramidSeconds = 0.0, trackSeconds = 0.0, poseSeconds = 0.0;
     };
+    using Clock = std::chrono::steady_clock;
+    auto since = [](Clock::time_point from){ return std::chrono::duration<double>(Clock::now() - from).count(); };
     uint32_t width = 0, height = 0;
     out.poses.resize(size_t(lastSolvedSource) + 1);
     out.posed.resize(size_t(lastSolvedSource) + 1, uint8_t(0));
@@ -156,7 +168,9 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         std::vector<Engine::PointObservation> active = perKeyframe[size_t(segment.keyframe)];
         for(size_t i = 0; i < segment.sources.size(); ++i){
             const Engine::GrayImage image{segment.grays[i].data(), width, height, width};
+            const auto pyramidStarted = Clock::now();
             Engine::Pyramid pyramid(image, trackConfig.levels);
+            result.pyramidSeconds += since(pyramidStarted);
             const uint32_t source = segment.sources[i];
             if(i == 0){
                 out.poses[source] = lastPose;
@@ -164,6 +178,7 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
             }else if(!active.empty()){
                 std::vector<Engine::PointObservation> moved(active.size());
                 std::vector<uint8_t> kept(active.size(), 0);
+                const auto trackStarted = Clock::now();
                 Engine::inBands(0, int(active.size()), [&](uint32_t, int first, int last){
                     for(int k = first; k < last; ++k){
                         glm::vec2 landed;
@@ -173,13 +188,16 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
                         }
                     }
                 });
+                result.trackSeconds += since(trackStarted);
                 std::vector<Engine::PointObservation> survived;
                 survived.reserve(moved.size());
                 for(size_t k = 0; k < moved.size(); ++k) if(kept[k]) survived.push_back(moved[k]);
 
                 if(survived.size() >= 12){
+                    const auto poseStarted = Clock::now();
                     const Engine::PoseSolveResult solvedPose =
                         Engine::solvePose(solved.points, survived, intrinsics, lastPose, poseConfig);
+                    result.poseSeconds += since(poseStarted);
                     if(solvedPose.solved){
                         out.poses[source] = solvedPose.pose;
                         out.posed[source] = 1;
@@ -209,10 +227,12 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     std::vector<SegmentResult> finished;
     auto launch = [&](Segment&& segment){
         if(segment.keyframe < 0 || segment.sources.empty()) return;
+        const auto waitStarted = Clock::now();
         while(running.size() >= inFlight){
             finished.push_back(running.front().get());
             running.erase(running.begin());
         }
+        out.waitSeconds += since(waitStarted);
         running.push_back(std::async(std::launch::async, runSegment, std::move(segment)));
     };
 
@@ -220,7 +240,9 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     uint32_t sourceIndex = 0, usedIndex = 0;
     Segment current;
     while(!reader.atEnd()){
+        const auto decodeStarted = Clock::now();
         const Spool::Image frame = reader.readNext();
+        out.decodeSeconds += since(decodeStarted);
         if(frame.pixels.empty()) break;
         width = frame.width;
         height = frame.height;
@@ -237,7 +259,9 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         //Kadrovi prije prvog kljucnog nemaju odakle krenuti - kao i prije, ostaju bez poze
         if(current.keyframe >= 0){
             current.sources.push_back(sourceIndex);
+            const auto grayStarted = Clock::now();
             current.grays.push_back(toGray(frame));
+            out.graySeconds += since(grayStarted);
         }
 
         if(isUsed) ++usedIndex;
@@ -252,6 +276,9 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         out.localised += one.localised;
         out.failed += one.failed;
         inlierCounts.insert(inlierCounts.end(), one.inliers.begin(), one.inliers.end());
+        out.pyramidSeconds += one.pyramidSeconds;
+        out.trackSeconds += one.trackSeconds;
+        out.poseSeconds += one.poseSeconds;
     }
 
     if(!inlierCounts.empty()){
@@ -1570,6 +1597,10 @@ int main(int realArgc, char** realArgv){
                                 dense.localised, between,
                                 100.0 * double(dense.localised) / double(between),
                                 dense.medianKept, denseSeconds);
+                    std::printf("    kamo: dekodiranje %.1f, siva %.1f, cekanje radnika %.1f s; u radnicima piramida %.1f, "
+                                "pracenje %.1f, poza %.1f s (zbroj po dretvama)\n",
+                                dense.decodeSeconds, dense.graySeconds, dense.waitSeconds,
+                                dense.pyramidSeconds, dense.trackSeconds, dense.poseSeconds);
 
                     forExport.poses = dense.poses;
                     forExport.posed = dense.posed;

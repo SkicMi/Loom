@@ -12,6 +12,7 @@ extern "C"{
     #include <libavformat/avformat.h>
     #include <libavutil/display.h>
     #include <libavutil/imgutils.h>
+    #include <libavutil/opt.h>
     #include <libavutil/pixdesc.h>
     #include <libswscale/swscale.h>
 }
@@ -169,19 +170,40 @@ Image VideoReader::State::convert(){
     out.sourceChannels = 4;
     out.pixels.resize(size_t(decodedWidth) * decodedHeight * 4);
 
+    //PRETVORBA U BOJE NA VISE DRETVI. Dekoder je vec na svim jezgrama, a pretvorba 4K kadra iz YUV-a
+    //u RGBA na jednoj dretvi bila je polovica vremena citanja (VideoSolve, pune slicice). swscale od
+    //FFmpega 5 dijeli izlaz po dretvama sam - ali samo kroz sws_scale_frame i opciju "threads";
+    //stari sws_scale ostaje na jednoj. Svaka dretva racuna svoje retke iz cijelog ulaza, pa je
+    //izlaz isti kao prije
     if(!scaler){
-        scaler = sws_getContext(int(decodedWidth), int(decodedHeight), AVPixelFormat(frame->format),
-                                int(decodedWidth), int(decodedHeight), AV_PIX_FMT_RGBA,
-                                SWS_BILINEAR, nullptr, nullptr, nullptr);
+        scaler = sws_alloc_context();
+        if(scaler){
+            av_opt_set_int(scaler, "srcw", int(decodedWidth), 0);
+            av_opt_set_int(scaler, "srch", int(decodedHeight), 0);
+            av_opt_set_int(scaler, "src_format", frame->format, 0);
+            av_opt_set_int(scaler, "dstw", int(decodedWidth), 0);
+            av_opt_set_int(scaler, "dsth", int(decodedHeight), 0);
+            av_opt_set_int(scaler, "dst_format", AV_PIX_FMT_RGBA, 0);
+            av_opt_set_int(scaler, "sws_flags", SWS_BILINEAR, 0);
+            av_opt_set_int(scaler, "threads", 0, 0);            //0: koliko jezgri ima
+            if(sws_init_context(scaler, nullptr, nullptr) < 0){ sws_freeContext(scaler); scaler = nullptr; }
+        }
         if(!scaler){
             throw std::runtime_error("Spool::VideoReader: this pixel format cannot be converted to RGBA");
         }
     }
 
-    uint8_t* destination[4] = {out.pixels.data(), nullptr, nullptr, nullptr};
-    int stride[4] = {int(decodedWidth) * 4, 0, 0, 0};
-
-    sws_scale(scaler, frame->data, frame->linesize, 0, int(decodedHeight), destination, stride);
+    //Odrediste je nas vektor; sws_scale_frame bi inace alocirao svoj i trebalo bi ga kopirati
+    AVFrame* target = av_frame_alloc();
+    target->format = AV_PIX_FMT_RGBA;
+    target->width = int(decodedWidth);
+    target->height = int(decodedHeight);
+    target->buf[0] = av_buffer_create(out.pixels.data(), out.pixels.size(), [](void*, uint8_t*){}, nullptr, 0);
+    target->data[0] = out.pixels.data();
+    target->linesize[0] = int(decodedWidth) * 4;
+    const int scaled = sws_scale_frame(scaler, target, frame);
+    av_frame_free(&target);
+    if(scaled < 0) throw std::runtime_error("Spool::VideoReader: colour conversion failed");
 
     if(info.rotation != 0){
         out.pixels = rotatePixels(out.pixels, decodedWidth, decodedHeight, info.rotation);
