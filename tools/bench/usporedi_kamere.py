@@ -2,6 +2,11 @@
 """Dvije kamere iz kamera.usda (VideoSolve), kadar po kadar: koliko se razlikuju.
 
     tools/bench/usporedi_kamere.py a/kamera.usda b/kamera.usda
+    tools/bench/usporedi_kamere.py ref/kamera.usda b/kamera.usda --sidra 10
+
+S --sidra N rjesenja NISU u istom sustavu (dva solvea): b se poravna na a slicnoscu (Umeyama) na
+kadrovima (t - 1) % N == 0, a razlika se mjeri samo na OSTALIM zajednickim kadrovima. Tako solve
+svakog 5. kadra (bundle) postaje istina za medjukadrove solvea svakog 10. (pune slicice).
 
 Kut izmedju orijentacija u stupnjevima i razmak polozaja kao dio duljine putanje - mjerilo solvea
 je slobodno, pa apsolutni razmak ne znaci nista. Ispis: medijan, 95. percentil i najveca razlika.
@@ -23,11 +28,40 @@ def kamere(path):
     return out
 
 
+def umeyama(source, target):
+    """s, R, t za target ~ s R source + t (najmanji kvadrati)."""
+    ms, mt = source.mean(0), target.mean(0)
+    xs, xt = source - ms, target - mt
+    covariance = xt.T @ xs / len(source)
+    u, d, vt = np.linalg.svd(covariance)
+    sign = np.eye(3)
+    if np.linalg.det(u @ vt) < 0: sign[2, 2] = -1
+    R = u @ sign @ vt
+    s = np.trace(np.diag(d) @ sign) / xs.var(0).sum()
+    return s, R, mt - s * R @ ms
+
+
 def main():
     a, b = kamere(sys.argv[1]), kamere(sys.argv[2])
     times = sorted(set(a) & set(b))
     if not times:
         sys.exit("nema zajednickih kadrova")
+    if "--sidra" in sys.argv:
+        every = int(sys.argv[sys.argv.index("--sidra") + 1])
+        anchors = [t for t in times if int(round(t - 1)) % every == 0]
+        times = [t for t in times if int(round(t - 1)) % every != 0]
+        if len(anchors) < 3 or not times:
+            sys.exit(f"premalo sidara ({len(anchors)}) ili nema kadrova za mjerenje")
+        #Matrice iz USD-a su kamera -> svijet u retcima (redak 3 je polozaj)
+        s_, R, t_ = umeyama(np.array([b[t][3, :3] for t in anchors]), np.array([a[t][3, :3] for t in anchors]))
+        moved = {}
+        for t, m in b.items():
+            out = m.copy()
+            out[:3, :3] = m[:3, :3] @ R.T
+            out[3, :3] = s_ * R @ m[3, :3] + t_
+            moved[t] = out
+        b = moved
+        print(f"poravnato na {len(anchors)} sidara (mjerilo {s_:.4f}); mjeri se na {len(times)} ostalih kadrova")
     positions = np.array([a[t][3, :3] for t in times])
     length = np.sum(np.linalg.norm(np.diff(positions, axis=0), axis=1))
     angles, shifts = [], []

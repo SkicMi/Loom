@@ -79,6 +79,39 @@ inline bool canCleanFloaters(const std::string& splat){
            std::filesystem::is_regular_file(dir / "points3D.txt", e) && std::filesystem::is_directory(dir / "images", e);
 }
 
+//=============================================================================================
+// PROXY MESH (tools/splat/proxy_mesh.py): geometrija iz splata za zaklanjanje CG-a. Cijela scena
+// ili samo ono u kutiji; box je jedinicna kocka -> sustav splata (inverz cubeFromSplat). Izlaz je
+// <splat>_proxy[_N].glb uz splat, a .obj pored njega ide u Blender
+//=============================================================================================
+inline std::string proxyOutputPath(const std::string& splat, bool fromBox, bool blockers = false){
+    const std::filesystem::path p(splat);
+    const std::string base = p.stem().string() + (blockers ? (fromBox ? "_blocker_box" : "_blockers")
+                                                           : (fromBox ? "_proxy_box" : "_proxy"));
+    std::filesystem::path out = p.parent_path() / (base + ".glb");
+    std::error_code error;
+    for(int n = 2; std::filesystem::exists(out, error); ++n) out = p.parent_path() / (base + "_" + std::to_string(n) + ".glb");
+    return out.string();
+}
+
+//blockers: umjesto detaljne plohe ciste ravnine (cijela scena) ili jedna uspravna kutija (box)
+inline std::string proxyMeshCommand(const std::string& root, const std::string& splat, const std::string& output,
+                                    const glm::mat4* box, bool blockers = false){
+    const std::filesystem::path p(splat);
+    std::string command = "cd \"" + root + "\" && PATH=\"" + root + "/.venv/bin:$PATH\" ./.venv/bin/python tools/splat/proxy_mesh.py \"" +
+                          p.parent_path().string() + "\" \"" + splat + "\" \"" + output + "\"";
+    if(blockers) command += " --blockers";
+    if(box){
+        command += " --voxels 192 --keep-largest --box-matrix";
+        char number[32];
+        for(int c = 0; c < 4; ++c) for(int r = 0; r < 4; ++r){
+            std::snprintf(number, sizeof(number), " %.9g", double((*box)[c][r]));
+            command += number;
+        }
+    }
+    return command;
+}
+
 //Naredba za ciscenje i kamo pise. Venv se aktivira (gsplat trazi ninju u PATH-u, vidi startTrain)
 inline std::string cleanFloatersCommand(const std::string& root, const std::string& splat, std::string& output){
     const std::filesystem::path p(splat);

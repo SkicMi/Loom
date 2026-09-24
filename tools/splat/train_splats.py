@@ -253,8 +253,9 @@ def main():
     #scena bez njega (ut) 23.43, classic 24.46
     #ZADANO classic: rolling je izmjeren +1.06, +0.25 i -1.97 dB na tri para treninga - dakle unutar
     #suma izmedju treninga, dok se ne izmjeri s vise sjemena i parno po kadru (evaluate_splat.py)
-    ap.add_argument("--camera-model", choices=["auto", "classic", "ut", "rolling"], default="classic",
-                    help="auto: rolling kad postoje rs_top/rs_bottom, inace classic")
+    ap.add_argument("--camera-model", choices=["auto", "classic", "ut", "rolling", "rsmid"], default="classic",
+                    help="auto: rolling kad postoje rs_top/rs_bottom, inace classic; rsmid: poze iz bundlea s "
+                         "rolling shutterom (sredina kadra), a crta se obicno - bez mutnoce 3DGUT-a")
     ap.add_argument("--seed", type=int, default=0,
                     help="sjeme za torch (MCMC premjestanje i sum); isti seed smanjuje razliku izmedju treninga")
     #ZAMUCENJE POKRETOM: kadar skuplja svjetlo cijelu ekspoziciju dok se kamera mice (C0257: 1/100 s
@@ -287,7 +288,7 @@ def main():
                                          (model / "rs_bottom" / "images.txt").exists() else "classic"
     #Uz rolling shutter i pocetne tocke iz bundlea s njim (rs_top ih nosi), da poze i tocke budu iz
     #istog rjesenja
-    points, colours = read_points(model / ("rs_top" if args.camera_model == "rolling" else ".") / "points3D.txt")
+    points, colours = read_points(model / ("rs_top" if args.camera_model in ("rolling", "rsmid") else ".") / "points3D.txt")
     print(f"Model kamere: {args.camera_model}")
     print(f"Model: {len(frames)} kamera, {len(points)} tocaka, {camera['width']}x{camera['height']}")
 
@@ -332,7 +333,7 @@ def main():
 
     #Rolling shutter: poze gornjeg i donjeg retka, po imenu slike
     rowViews = {}
-    if args.camera_model == "rolling":
+    if args.camera_model in ("rolling", "rsmid"):
         for which in ("rs_top", "rs_bottom"):
             listed = model / which / "images.txt"
             if not listed.exists():
@@ -481,7 +482,7 @@ def main():
     # -------------------------------------------------------------------------------
     #Jedno mjesto koje crta, za trening, ocjenu i pregled - pa sva tri crtaju istim modelom kamere
     from gsplat.cuda._wrapper import RollingShutterType
-    usesUt = args.camera_model != "classic"
+    usesUt = args.camera_model not in ("classic", "rsmid")
 
     #ZAMUCENJE POKRETOM: pomak u vremenu delta (u kadrovima) je pomak duz gibanja izmedju gornjeg i
     #donjeg retka, alfa = delta / citanje. Poze se interpoliraju u prostoru kamere (sredista
@@ -529,6 +530,14 @@ def main():
         out[..., :3, :3] = R.transpose(-1, -2)
         out[..., :3, 3] = -(R.transpose(-1, -2) @ C[..., None])[..., 0]
         return out
+
+    #RSMID: rolling shutter samo za POZE. Bundle s njim daje tocnije poze (+0.39 dB na C0257), ali
+    #crtanje redak po redak ide kroz 3DGUT, a on sam splat zamuti (ostrina -10 % na 4K). Poza
+    #sredine kadra (pola izmedju gornjeg i donjeg retka) s obicnim crtanjem zadrzava prvo bez drugoga
+    if args.camera_model == "rsmid":
+        views = along(views, viewsEnd, 0.5); viewsEnd = views
+        if heldOut:
+            heldViews = along(heldViews, heldViewsEnd, 0.5); heldViewsEnd = heldViews
 
     def draw(view, viewEnd, degree, mode):
         if blurSteps:

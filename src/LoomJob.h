@@ -64,7 +64,7 @@ inline const Phase phases[] = {
 
 //Sto se trenutno vrti. Oba posla su vanjski procesi koji ispisuju napredak, pa ih jedna te ista
 //masinerija prati - razlikuju se samo po tome sto se u ispisu trazi
-enum class Task{ Solve, Train, WeaverMotion, AutoRig, Clean };
+enum class Task{ Solve, Train, WeaverMotion, AutoRig, Clean, Proxy };
 
 struct Job{
     std::mutex lock;

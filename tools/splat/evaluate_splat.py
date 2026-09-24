@@ -46,8 +46,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model", nargs="?")
     ap.add_argument("splat", nargs="?")
-    ap.add_argument("--camera-model", choices=["classic", "ut", "rolling"], default="classic",
-                    help="kako se crta - isto kao u treningu; ut je 3DGUT bez rolling shuttera")
+    ap.add_argument("--camera-model", choices=["classic", "ut", "rolling", "rsmid"], default="classic",
+                    help="kako se crta - isto kao u treningu; ut je 3DGUT bez rolling shuttera, rsmid poze "
+                         "sredine kadra iz bundlea s rolling shutterom uz obicno crtanje")
     ap.add_argument("--downscale", type=int, default=2)
     ap.add_argument("--holdout", type=int, default=6)
     ap.add_argument("--holdout-block", type=int, default=3)
@@ -86,9 +87,10 @@ def main():
     top = bottom = None
     if args.camera_model == "ut":
         extra = dict(packed=False, with_ut=True, with_eval3d=True)
+    if args.camera_model in ("rolling", "rsmid"):
+        top = dict(read_images(model / "rs_top" / "images.txt")); bottom = dict(read_images(model / "rs_bottom" / "images.txt"))
     if args.camera_model == "rolling":
         from gsplat.cuda._wrapper import RollingShutterType
-        top = dict(read_images(model / "rs_top" / "images.txt")); bottom = dict(read_images(model / "rs_bottom" / "images.txt"))
         extra = dict(packed=False, with_ut=True, with_eval3d=True, rolling_shutter=RollingShutterType.ROLLING_TOP_TO_BOTTOM)
 
     #Zamucenje pokretom kao u treneru (train_splats.py): poze duz gibanja gornji->donji redak
@@ -112,7 +114,10 @@ def main():
     with torch.no_grad():
         for i in held:
             name, view = frames[i]
-            if top is not None:
+            if args.camera_model == "rsmid":
+                vm = along(torch.from_numpy(top[name]).float().to(device)[None],
+                           torch.from_numpy(bottom[name]).float().to(device)[None], 0.5)
+            elif top is not None:
                 vm = torch.from_numpy(top[name]).float().to(device)[None]
                 extra["viewmats_rs"] = torch.from_numpy(bottom[name]).float().to(device)[None]
             else:

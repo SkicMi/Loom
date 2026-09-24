@@ -107,7 +107,7 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
                               const std::vector<Engine::Observation>& observations,
                               const std::vector<uint32_t>& keyframeFrames,
                               const Engine::Intrinsics& intrinsics,
-                              uint32_t maxPoints = 0){
+                              uint32_t maxPoints = 0, bool bothWays = true){
     DenseTrack out;
     if(step <= 1 || keyframeFrames.empty()) return out;
 
@@ -169,88 +169,102 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     out.poses.resize(size_t(lastSolvedSource) + 1);
     out.posed.resize(size_t(lastSolvedSource) + 1, uint8_t(0));
 
+    struct ChainStep{ Engine::Pose pose; bool ok = false; uint32_t kept = 0; };
+
+    //NAJVISE maxPoints, RAVNOMJERNO PO KADRU (--dense-points). Poza jednog kadra ne treba osam
+    //tisuca tocaka, a pracenje svake je gotovo sav trosak punih slicica. Mreza 16x9, u svakoj celiji
+    //najvise jednak dio, redom kojim su tocke vec poredane - pa je izbor odredjen i ne ovisi o dretvama
+    auto capped = [&](std::vector<Engine::PointObservation> points){
+        if(maxPoints == 0 || points.size() <= maxPoints || width == 0 || height == 0) return points;
+        constexpr uint32_t cellsX = 16, cellsY = 9;
+        const uint32_t perCell = std::max(1u, maxPoints / (cellsX * cellsY));
+        std::vector<uint32_t> taken(cellsX * cellsY, 0);
+        std::vector<Engine::PointObservation> spread;
+        spread.reserve(maxPoints);
+        for(const Engine::PointObservation& one : points){
+            const uint32_t cx = std::min(cellsX - 1, uint32_t(std::max(0.0f, one.pixel.x) * float(cellsX) / float(width)));
+            const uint32_t cy = std::min(cellsY - 1, uint32_t(std::max(0.0f, one.pixel.y) * float(cellsY) / float(height)));
+            if(taken[cy * cellsX + cx] >= perCell) continue;
+            ++taken[cy * cellsX + cx];
+            spread.push_back(one);
+        }
+        return spread;
+    };
+
+    //Jedan korak lanca: tocke iz prethodnog kadra u ovaj, pa poza od prethodne. Pracenje ide dalje
+    //od ONOGA STO JE NADJENO, da se sljedeci kadar ne trazi iz starog mjesta
+    auto advance = [&](Engine::Pyramid& previous, Engine::Pyramid&& pyramid, std::vector<Engine::PointObservation>& active,
+                       Engine::Pose& lastPose, SegmentResult& result){
+        ChainStep step;
+        if(!active.empty()){
+            std::vector<Engine::PointObservation> moved(active.size());
+            std::vector<uint8_t> kept(active.size(), 0);
+            const auto trackStarted = Clock::now();
+            Engine::inBands(0, int(active.size()), [&](uint32_t, int first, int last){
+                for(int k = first; k < last; ++k){
+                    glm::vec2 landed;
+                    if(Engine::trackPoint(previous, pyramid, active[size_t(k)].pixel, landed, trackConfig)){
+                        moved[size_t(k)] = Engine::PointObservation{active[size_t(k)].point, landed};
+                        kept[size_t(k)] = 1;
+                    }
+                }
+            });
+            result.trackSeconds += since(trackStarted);
+            std::vector<Engine::PointObservation> survived;
+            survived.reserve(moved.size());
+            for(size_t k = 0; k < moved.size(); ++k) if(kept[k]) survived.push_back(moved[k]);
+            if(survived.size() >= 12){
+                const auto poseStarted = Clock::now();
+                const Engine::PoseSolveResult solvedPose = Engine::solvePose(solved.points, survived, intrinsics, lastPose, poseConfig);
+                result.poseSeconds += since(poseStarted);
+                if(solvedPose.solved){
+                    step.pose = solvedPose.pose;
+                    step.ok = true;
+                    step.kept = uint32_t(survived.size());
+                    lastPose = solvedPose.pose;
+                }
+            }
+            active = std::move(survived);
+        }
+        previous = std::move(pyramid);
+        return step;
+    };
+    auto pyramidOf = [&](const std::vector<uint8_t>& gray, SegmentResult& result){
+        const auto pyramidStarted = Clock::now();
+        Engine::Pyramid pyramid(Engine::GrayImage{gray.data(), width, height, width}, trackConfig.levels);
+        result.pyramidSeconds += since(pyramidStarted);
+        return pyramid;
+    };
+
+    //=====================================================================================
+    // ODSJECAK S OBJE STRANE (zadano; --dense-one-way iskljuci). Lanac od kljucnog kadra naprijed
+    // nakuplja drift s brojem kadrova, a na kraju odsjecka stoji SLJEDECI kljucni kadar s pozom iz
+    // bundlea. Isti lanac se pusti i od njega natrag, pa se dvije poze svakog medjukadra spoje:
+    // tezina je obrnuta udaljenosti od sidra, jer drift raste s njom - kadar blizu pocetka vjeruje
+    // lancu naprijed, blizu kraja lancu natrag. Na kraju odsjecka vise nema skoka na kljucni kadar
+    //=====================================================================================
     auto runSegment = [&](Segment segment){
         SegmentResult result;
-        Engine::Pyramid previous;
-        Engine::Pose lastPose = solved.poses[size_t(segment.keyframe)];
-        std::vector<Engine::PointObservation> active = perKeyframe[size_t(segment.keyframe)];
-        //NAJVISE maxPoints, RAVNOMJERNO PO KADRU (--dense-points). Poza jednog kadra ne treba
-        //osam tisuca tocaka, a pracenje svake je gotovo sav trosak punih slicica. Mreza 16x9, u
-        //svakoj celiji najvise jednak dio, redom kojim su tocke vec poredane - pa je izbor
-        //odredjen i ne ovisi o dretvama
-        if(maxPoints > 0 && active.size() > maxPoints && width > 0 && height > 0){
-            constexpr uint32_t cellsX = 16, cellsY = 9;
-            const uint32_t perCell = std::max(1u, maxPoints / (cellsX * cellsY));
-            std::vector<uint32_t> taken(cellsX * cellsY, 0);
-            std::vector<Engine::PointObservation> spread;
-            spread.reserve(maxPoints);
-            for(const Engine::PointObservation& one : active){
-                const uint32_t cx = std::min(cellsX - 1, uint32_t(std::max(0.0f, one.pixel.x) * float(cellsX) / float(width)));
-                const uint32_t cy = std::min(cellsY - 1, uint32_t(std::max(0.0f, one.pixel.y) * float(cellsY) / float(height)));
-                if(taken[cy * cellsX + cx] >= perCell) continue;
-                ++taken[cy * cellsX + cx];
-                spread.push_back(one);
-            }
-            active = std::move(spread);
-        }
-        for(size_t i = 0; i < segment.sources.size(); ++i){
-            const Engine::GrayImage image{segment.grays[i].data(), width, height, width};
-            const auto pyramidStarted = Clock::now();
-            Engine::Pyramid pyramid(image, trackConfig.levels);
-            result.pyramidSeconds += since(pyramidStarted);
-            const uint32_t source = segment.sources[i];
-            if(i == 0){
-                out.poses[source] = lastPose;
-                out.posed[source] = 1;
-            }else if(!active.empty()){
-                std::vector<Engine::PointObservation> moved(active.size());
-                std::vector<uint8_t> kept(active.size(), 0);
-                const auto trackStarted = Clock::now();
-                Engine::inBands(0, int(active.size()), [&](uint32_t, int first, int last){
-                    for(int k = first; k < last; ++k){
-                        glm::vec2 landed;
-                        if(Engine::trackPoint(previous, pyramid, active[size_t(k)].pixel, landed, trackConfig)){
-                            moved[size_t(k)] = Engine::PointObservation{active[size_t(k)].point, landed};
-                            kept[size_t(k)] = 1;
-                        }
-                    }
-                });
-                result.trackSeconds += since(trackStarted);
-                std::vector<Engine::PointObservation> survived;
-                survived.reserve(moved.size());
-                for(size_t k = 0; k < moved.size(); ++k) if(kept[k]) survived.push_back(moved[k]);
+        const size_t count = segment.sources.size();
+        std::vector<ChainStep> forward(count), backward(count);
 
-                if(survived.size() >= 12){
-                    const auto poseStarted = Clock::now();
-                    const Engine::PoseSolveResult solvedPose =
-                        Engine::solvePose(solved.points, survived, intrinsics, lastPose, poseConfig);
-                    result.poseSeconds += since(poseStarted);
-                    if(solvedPose.solved){
-                        out.poses[source] = solvedPose.pose;
-                        out.posed[source] = 1;
-                        lastPose = solvedPose.pose;
-                        ++result.localised;
-                        result.inliers.push_back(uint32_t(survived.size()));
-                    }else{
-                        ++result.failed;
-                    }
-                }else{
-                    ++result.failed;
-                }
-                //Pracenje ide dalje od ONOGA STO JE NADJENO, da se sljedeci kadar ne trazi iz starog mjesta
-                active = survived;
-            }
-            previous = std::move(pyramid);
-            segment.grays[i].clear();
-            segment.grays[i].shrink_to_fit();
+        Engine::Pyramid previous = pyramidOf(segment.grays[0], result);
+        Engine::Pose lastPose = solved.poses[size_t(segment.keyframe)];
+        std::vector<Engine::PointObservation> active = capped(perKeyframe[size_t(segment.keyframe)]);
+        forward[0] = ChainStep{lastPose, true, uint32_t(active.size())};
+        for(size_t i = 1; i < count; ++i){
+            forward[i] = advance(previous, pyramidOf(segment.grays[i], result), active, lastPose, result);
         }
-        if(segment.checkKeyframe >= 0 && active.size() >= 12 && !segment.checkGray.empty()){
-            const Engine::GrayImage image{segment.checkGray.data(), width, height, width};
-            Engine::Pyramid pyramid(image, trackConfig.levels);
+
+        const bool haveNext = segment.checkKeyframe >= 0 && !segment.checkGray.empty();
+        Engine::Pyramid nextPyramid;
+        if(haveNext) nextPyramid = pyramidOf(segment.checkGray, result);
+        //Provjera drifta: lanac naprijed jos jedan kadar, do sljedeceg kljucnog, i koliko ga promasi
+        if(haveNext && active.size() >= 12){
             std::vector<Engine::PointObservation> moved;
             for(const Engine::PointObservation& one : active){
                 glm::vec2 landed;
-                if(Engine::trackPoint(previous, pyramid, one.pixel, landed, trackConfig)) moved.push_back({one.point, landed});
+                if(Engine::trackPoint(previous, nextPyramid, one.pixel, landed, trackConfig)) moved.push_back({one.point, landed});
             }
             if(moved.size() >= 12){
                 const Engine::PoseSolveResult check = Engine::solvePose(solved.points, moved, intrinsics, lastPose, poseConfig);
@@ -262,6 +276,41 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
                     if(step > 1e-9) result.checkShifts.push_back(glm::length(check.pose.position - truth.position) / step);
                 }
             }
+        }
+
+        if(bothWays && haveNext && count > 1){
+            Engine::Pyramid later = std::move(nextPyramid);
+            Engine::Pose laterPose = solved.poses[size_t(segment.checkKeyframe)];
+            std::vector<Engine::PointObservation> laterActive = capped(perKeyframe[size_t(segment.checkKeyframe)]);
+            for(size_t i = count - 1; i >= 1; --i){
+                backward[i] = advance(later, pyramidOf(segment.grays[i], result), laterActive, laterPose, result);
+            }
+        }
+
+        for(size_t i = 0; i < count; ++i){
+            const uint32_t source = segment.sources[i];
+            if(i == 0){
+                out.poses[source] = forward[0].pose;
+                out.posed[source] = 1;
+                continue;
+            }
+            const ChainStep& a = forward[i];
+            const ChainStep& b = backward[i];
+            if(a.ok && b.ok){
+                const float t = float(i) / float(count);      //sljedeci kljucni je na mjestu count
+                glm::quat qb = b.pose.orientation;
+                if(glm::dot(a.pose.orientation, qb) < 0.0f) qb = -qb;
+                out.poses[source].position = glm::mix(a.pose.position, b.pose.position, t);
+                out.poses[source].orientation = glm::normalize(glm::slerp(a.pose.orientation, qb, t));
+            }else if(a.ok || b.ok){
+                out.poses[source] = a.ok ? a.pose : b.pose;
+            }else{
+                ++result.failed;
+                continue;
+            }
+            out.posed[source] = 1;
+            ++result.localised;
+            if(a.ok) result.inliers.push_back(a.kept);
         }
         return result;
     };
@@ -478,6 +527,10 @@ int main(int realArgc, char** realArgv){
     bool focalFromMetadata = false;
     //--dense-points N: pune slicice prate najvise N tocaka po odsjecku, ravnomjerno po kadru (0 = sve)
     uint32_t densePoints = 0;
+    //--dense-two-way: pune slicice i od sljedeceg kljucnog natrag, pa spojene (localiseEveryFrame).
+    //ISKLJUCENO dok se ne izmjeri prema pouzdanoj istini: referenca iz solvea svakog 5. kadra
+    //zavrsila je u drugom rjesenju (sidra 11 st razlike), pa usporedba nije nista rekla
+    bool denseOneWay = true;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
@@ -490,6 +543,8 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--cpu-features") gpuFeatures = false;
         else if(std::string(realArgv[i]) == "--measure-held-out") measureHeldOut = true;
         else if(std::string(realArgv[i]) == "--focal-from-metadata") focalFromMetadata = true;
+        else if(std::string(realArgv[i]) == "--dense-one-way") denseOneWay = true;
+        else if(std::string(realArgv[i]) == "--dense-two-way") denseOneWay = false;
         else if(std::string(realArgv[i]) == "--dense-points" && i + 1 < realArgc) densePoints = uint32_t(std::max(0, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
@@ -1646,7 +1701,7 @@ int main(int realArgc, char** realArgv){
             if(step > 1 && !keyframesOnly){
                 const auto denseStarted = std::chrono::steady_clock::now();
                 const DenseTrack dense = localiseEveryFrame(path, step, best, solveObservations,
-                                                            keyframeFrames, bestIntrinsics, densePoints);
+                                                            keyframeFrames, bestIntrinsics, densePoints, !denseOneWay);
                 const double denseSeconds = std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - denseStarted).count();
 
