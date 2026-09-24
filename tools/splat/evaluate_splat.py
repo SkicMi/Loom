@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PSNR gotovog splata na IZDVOJENIM kadrovima, po kadru - za usporedbu dviju inacica PO PAROVIMA.
 
-    tools/splat/evaluate_splat.py model_mapa splat.ply [--camera-model classic|rolling] [--out psnr.npy]
+    tools/splat/evaluate_splat.py model_mapa splat.ply [--camera-model classic|ut|rolling] [--out psnr.npy]
     tools/splat/evaluate_splat.py --compare a.npy b.npy
 
 ZASTO. Medijan PSNR-a jednog treninga na 39 kadrova ima vise suma nego razlike koje se traze: isti
@@ -46,7 +46,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model", nargs="?")
     ap.add_argument("splat", nargs="?")
-    ap.add_argument("--camera-model", choices=["classic", "rolling"], default="classic")
+    ap.add_argument("--camera-model", choices=["classic", "ut", "rolling"], default="classic",
+                    help="kako se crta - isto kao u treningu; ut je 3DGUT bez rolling shuttera")
     ap.add_argument("--downscale", type=int, default=2)
     ap.add_argument("--holdout", type=int, default=6)
     ap.add_argument("--holdout-block", type=int, default=3)
@@ -83,6 +84,8 @@ def main():
                       [0, camera["fy"] / args.downscale, camera["cy"] / args.downscale], [0, 0, 1]], device=device)
     extra = dict(packed=True)
     top = bottom = None
+    if args.camera_model == "ut":
+        extra = dict(packed=False, with_ut=True, with_eval3d=True)
     if args.camera_model == "rolling":
         from gsplat.cuda._wrapper import RollingShutterType
         top = dict(read_images(model / "rs_top" / "images.txt")); bottom = dict(read_images(model / "rs_bottom" / "images.txt"))
