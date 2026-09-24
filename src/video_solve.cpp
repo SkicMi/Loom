@@ -342,6 +342,9 @@ struct PhaseClock{
 PhaseClock phaseClock;
 
 int main(int realArgc, char** realArgv){
+    //Red po red i kad ispis ide u datoteku: solve traje dvadeset minuta, a log je jedini nacin da
+    //se vidi dokle je stigao - s punim spremnikom je stajao na grafu dok su se vec pisale slike
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     warnIfUnoptimised();
 
     //=====================================================================================
@@ -385,6 +388,10 @@ int main(int realArgc, char** realArgv){
     //pocetnim parom i izdvojenim opazanjima - samo da provjera bez istine mjeri ISPORUCENO rjesenje.
     //Bez nje ta provjera ostaje s brzog kandidata i tako se i ispise
     bool measureHeldOut = false;
+    //--focal-from-metadata: vidno polje iz zarisne koju kamera zapise u snimku (Sonyjev rtmd,
+    //ekvivalent za 35 mm) umjesto samokalibracije. Solve ne razlikuje f 4259 od 4650 na C0257,
+    //a splat da (+0.4 dB) - pa zarisnu koja se da procitati ne treba pogadjati
+    bool focalFromMetadata = false;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
@@ -396,6 +403,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--cpu-match") gpuMatch = false;
         else if(std::string(realArgv[i]) == "--cpu-features") gpuFeatures = false;
         else if(std::string(realArgv[i]) == "--measure-held-out") measureHeldOut = true;
+        else if(std::string(realArgv[i]) == "--focal-from-metadata") focalFromMetadata = true;
         else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
         else positional.push_back(realArgv[i]);
@@ -417,7 +425,18 @@ int main(int realArgc, char** realArgv){
     //citanju je ostalo samo za brzo probavanje na dugackim snimkama
     const uint32_t step = argc > 2 ? uint32_t(std::atoi(argv[2])) : 1;
     const uint32_t wanted = argc > 3 ? uint32_t(std::atoi(argv[3])) : 100000;
-    const double fieldOfView = argc > 4 ? std::atof(argv[4]) : 0.0;
+    double fieldOfView = argc > 4 ? std::atof(argv[4]) : 0.0;
+    if(focalFromMetadata && fieldOfView <= 0.0){
+        //Ekvivalent za 35 mm je po sirini kadra od 36 mm: horizontalno vidno polje 2 atan(18 / f)
+        const Spool::CameraMetadata camera = Spool::readCameraMetadata(path);
+        if(camera.equivalentFocalMillimetres > 0.0){
+            fieldOfView = 2.0 * std::atan(18.0 / camera.equivalentFocalMillimetres) * 180.0 / 3.14159265358979;
+            std::printf("  zarisna iz metapodataka: %.1f mm (ekvivalent %.1f mm) -> vidno polje %.2f st\n",
+                        camera.focalMillimetres, camera.equivalentFocalMillimetres, fieldOfView);
+        }else{
+            std::printf("  --focal-from-metadata: snimka ne nosi zarisnu, ide samokalibracija\n");
+        }
+    }
     const std::string outputDirectory = argc > 5 ? std::string(argv[5]) : std::string();
     const std::string calibrationFile = argc > 6 ? std::string(argv[6]) : std::string();
 
