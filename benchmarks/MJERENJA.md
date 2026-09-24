@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (71 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (74 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -19,6 +19,9 @@ Iz `benchmarks/mjerenja.jsonl` (71 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 20:10 | C0257 | 60 kadrova, zadana kalibracija: jedan kandidat vidnog polja umjesto 7 | 60 | 547 | 59/59 | 79913 | 1.225 | 4.549 | 3.460 | 4650 |  | 44.90 | 219.10 | 73.70 | 89.90 | zadrzano: isti izlaz bit za bit, rekonstrukcija 167->74 s (ukupno zasumljeno: isao uz solve G i trening) | zapisano_px=1.483, izlaz=k_H |
 | 2026-09-24 20:11 | C0257 | 60 kadrova, zadana kalibracija, --gpu-match | 60 | 696 | 59/59 | 79913 | 1.225 | 4.549 | 3.460 | 4650 |  | 27.90 | 173.10 | 251.60 | 87.40 | zadrzano: isti izlaz bit za bit, poklapanje prostora mjerila 63->9.5 s; ukupno zasumljeno (isao uz k_H i trening) | zapisano_px=1.483, izlaz=k_G |
 | 2026-09-24 20:25 | C0257 | 60 kadrova, zadana kalibracija: znacajke po kadrovima usporedo (12 dretvi) | 60 | 403 | 59/59 | 79913 | 1.225 | 4.549 | 3.460 | 4650 |  | 29.20 | 139.20 | 61.00 | 86.80 | zadrzano: isti izlaz bit za bit, znacajke 80->45 s, graf 219->139 s | zapisano_px=1.483, izlaz=k_I |
+| 2026-09-24 20:42 | C0257 | 60 kadrova, zadana kalibracija: potpisi prostora mjerila i poklapanje na kartici | 60 | 246 | 59/59 | 25386 | 1.344 | 4.610 | 3.500 | 4650 |  | 27.10 | 41.70 | 54.20 | 35.70 | graf 139->42 s, ukupno 6m43->4m06; puna obrada skrenula (baza 7.6->1.6 st, 80k->25k tocaka) iako je graf gotovo isti - provjera na drugim kadrovima | zapisano_px=2.220, izlaz=k_J |
+| 2026-09-24 20:52 | C0257 | kontrola: svaki 7. kadar, 60, zadana kalibracija, sve na procesoru | 60 | 308 | 57/57 | 22716 | 1.400 | 4.577 | 3.400 | 4650 |  | 22.70 | 116.60 | 60.90 | 28.50 | i procesor zavrsi u uskoj bazi (1.63 st) - nestabilnost pune obrade, ne kartice | zapisano_px=2.666, izlaz=k7_cpu |
+| 2026-09-24 20:52 | C0257 | kontrola: svaki 7. kadar, 60, zadana kalibracija, potpisi i poklapanje na kartici | 60 | 235 | 57/57 | 22840 | 1.386 | 4.560 | 3.320 | 4650 |  | 23.40 | 41.70 | 61.30 | 28.60 | zadrzano: isto kao procesor (izdvojeni 4.56 prema 4.58 px), 5m08 -> 3m55 | zapisano_px=2.630, izlaz=k7_gpu |
 
 ## trening
 

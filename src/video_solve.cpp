@@ -36,6 +36,7 @@
 #include "Core/LoomConfig.h"
 #include "Core/LoomInitializer.h"
 #include "Vulkan/DescriptorMatcher.h"
+#include "Vulkan/SiftDescriber.h"
 
 #include <optional>
 
@@ -47,6 +48,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <filesystem>
 #include <future>
 #include <string>
@@ -352,6 +354,9 @@ int main(int realArgc, char** realArgv){
     //test_gpu_match; na 60 kadrova C0257 izlaz isti do bita, poklapanje 78 -> 25 s). ZADANO UKLJUCENO;
     //--cpu-match vraca procesor, a bez kartice se na nj prelazi samo
     bool gpuMatch = true;
+    //Potpisi prostora mjerila na kartici (Loomov SiftDescriber - test_gpu_sift: 0.27 % vrijednosti
+    //potpisa razlicito za jedan-dva, poklapanja ista). ZADANO UKLJUCENO; --cpu-features vraca procesor
+    bool gpuFeatures = true;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
@@ -361,6 +366,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--keyframes-only") keyframesOnly = true;
         else if(std::string(realArgv[i]) == "--gpu-match") gpuMatch = true;
         else if(std::string(realArgv[i]) == "--cpu-match") gpuMatch = false;
+        else if(std::string(realArgv[i]) == "--cpu-features") gpuFeatures = false;
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
         else positional.push_back(realArgv[i]);
     }
@@ -643,7 +649,9 @@ int main(int realArgc, char** realArgv){
                 //Poklapanje na kartici: Loom bez prozora, samo za compute
                 std::optional<LoomInitializer> gpu;
                 std::optional<DescriptorMatcher> matcher;
-                if(gpuMatch){
+                std::optional<SiftDescriber> describer;
+                std::mutex describerLock;
+                if(gpuMatch || gpuFeatures){
                     LoomConfig gpuConfig;
                     gpuConfig.width = 64; gpuConfig.height = 64;
                     gpuConfig.appName = "VideoSolve"; gpuConfig.engineName = "Loom";
@@ -651,12 +659,39 @@ int main(int realArgc, char** realArgv){
                     gpuConfig.maxDescriptorSets = 64;
                     try{
                         gpu.emplace(gpuConfig);
-                        matcher.emplace(*gpu);
+                        if(gpuMatch) matcher.emplace(*gpu);
+                        if(gpuFeatures) describer.emplace(*gpu);
                     }catch(const std::exception& error){
-                        std::printf("  kartica nedostupna (%s) - poklapanje na procesoru\n", error.what());
+                        std::printf("  kartica nedostupna (%s) - potpisi i poklapanje na procesoru\n", error.what());
+                        describer.reset();
                         matcher.reset();
                         gpu.reset();
                     }
+                }
+                if(describer){
+                    //Graf zove iz vise dretvi (po kadru); kartica je jedna, pa jedan po jedan -
+                    //detekcija ostalih kadrova za to vrijeme tece dalje
+                    graphConfig.siftScaledDescriber = [&](const Engine::GrayImage& image, const std::vector<glm::vec2>& points,
+                                                          const std::vector<float>& scales, const Engine::SiftConfig& sift){
+                        SiftDescriber::Settings settings;
+                        settings.scaleBands = sift.scaleBands; settings.patchPerScale = sift.patchPerScale;
+                        settings.clamp = sift.clamp; settings.orient = sift.orient;
+                        SiftDescriber::Output found;
+                        {
+                            std::lock_guard<std::mutex> hold(describerLock);
+                            found = describer->describe(image.pixels, image.width, image.height, image.stride,
+                                                        reinterpret_cast<const float*>(points.data()), scales.data(),
+                                                        uint32_t(points.size()), settings);
+                        }
+                        std::vector<Engine::SiftDescriptor> out(points.size());
+                        for(size_t i = 0; i < points.size(); ++i){
+                            out[i].valid = found.valid[i] != 0;
+                            if(!out[i].valid) continue;
+                            out[i].angle = found.angles[i];
+                            std::memcpy(out[i].values.data(), found.values.data() + i * Engine::siftLength, Engine::siftLength);
+                        }
+                        return out;
+                    };
                 }
                 if(matcher){
                     graphConfig.siftPairMatcher = [&](const std::vector<std::vector<Engine::SiftDescriptor>>& signatures,
@@ -1146,6 +1181,12 @@ int main(int realArgc, char** realArgv){
                         best.posedCameras, cameraCount, best.solvedPoints,
                         best.medianReprojection, best.medianTriangulationAngle);
             printReconstructTiming(best);
+            for(const Engine::Reconstruction::Trial& trial : best.trials){
+                std::printf("    pocetni par %u-%u: %u kamera, %u tocaka, baza %.2f st, reprojekcija %.3f px%s\n",
+                            trial.initialA, trial.initialB, trial.posedCameras, trial.solvedPoints,
+                            trial.medianTriangulationAngle, trial.medianReprojection,
+                            trial.initialA == best.initialA && trial.initialB == best.initialB ? "  <- izabran" : "");
+            }
             if(best.seamsFound){
                 std::printf("  savova nadjeno %u, prvi kod kadra %u, rastavljanje %s\n",
                             best.seamsFound, best.seamAt, best.seamRepaired ? "pomoglo" : "nije pomoglo");

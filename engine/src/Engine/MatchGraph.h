@@ -42,9 +42,19 @@ using SiftPairMatcher = std::function<std::vector<std::vector<SiftMatch>>(
     const std::vector<std::pair<uint32_t, uint32_t>>& pairs,
     float radius, const SiftConfig& config)>;
 
+//Potpisi prostora mjerila za jedan kadar, izvana (VideoSolve ga priljepi na karticu - vidi Loomov
+//SiftDescriber). Mora racunati isto sto describeSiftScaled: iste pojaseve, zakrpe i pravila iz
+//SiftConfig. Zove se iz vise dretvi odjednom (po kadru), pa se sam brine za medjusobno iskljucenje
+using SiftScaledDescriber = std::function<std::vector<SiftDescriptor>(
+    const GrayImage& image, const std::vector<glm::vec2>& points,
+    const std::vector<float>& scales, const SiftConfig& config)>;
+
 struct MatchGraphConfig{
     //Prazno: poklapanje na procesoru (matchSiftNear), par po par
     SiftPairMatcher siftPairMatcher;
+
+    //Prazno: potpisi prostora mjerila na procesoru (describeSiftScaled)
+    SiftScaledDescriber siftScaledDescriber;
 
     TrackConfig detect;        //za detectCorners; maxCorners je ovdje bitno veci nego pri pracenju
     DescribeConfig describe;

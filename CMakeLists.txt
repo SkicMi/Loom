@@ -269,6 +269,7 @@ add_library(Loom STATIC
     src/Vulkan/RadixSort.cpp
     src/Vulkan/PrefixSum.cpp
     src/Vulkan/DescriptorMatcher.cpp
+    src/Vulkan/SiftDescriber.cpp
     src/Vulkan/SplatRenderer.cpp
     src/Vulkan/VulkanAllocator.cpp
     src/Vulkan/VmaImplementation.cpp

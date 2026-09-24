@@ -305,8 +305,12 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
 
         Reconstruction best;
         std::vector<std::pair<uint32_t, uint32_t>> seen;
+        std::vector<Reconstruction::Trial> trials;
 
         auto keepIfBetter = [&](Reconstruction attempt){
+            trials.push_back(Reconstruction::Trial{attempt.initialA, attempt.initialB, attempt.posedCameras,
+                                                   attempt.solvedPoints, attempt.medianTriangulationAngle,
+                                                   attempt.medianReprojection});
             //BROJ KAMERA PRVO, PA BAZA. Rjesenje s manje kamera nije bolje ma kako siroku bazu
             //imalo - ono naprosto nije rijesilo snimku
             const bool better = !best.ok
@@ -374,7 +378,10 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
             }
         }
 
-        if(best.ok) return best;
+        if(best.ok){
+            best.trials = std::move(trials);
+            return best;
+        }
     }
 
     Reconstruction state;

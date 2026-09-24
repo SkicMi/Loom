@@ -563,6 +563,15 @@ struct Reconstruction{
     double initialAngle = 0.0;       //medijan kuta pod kojim se zrake tog para sijeku
     uint32_t initialPoints = 0;      //koliko se iz njega dalo triangulirati
 
+    //Svi pokusaji pocetnog para kad ih je bilo vise (ReconstructConfig::initialPairTrials), redom
+    //kojim su probani - da se vidi zasto je pobijedio bas ovaj. Samo za ispis
+    struct Trial{
+        uint32_t initialA = 0, initialB = 0;
+        uint32_t posedCameras = 0, solvedPoints = 0;
+        double medianTriangulationAngle = 0.0, medianReprojection = 0.0;
+    };
+    std::vector<Trial> trials;
+
     ReconstructTiming timing;
 
     bool ok = false;

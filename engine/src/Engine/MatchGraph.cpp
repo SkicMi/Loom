@@ -214,7 +214,8 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
             scales.reserve(keys.size());
             for(const Keypoint& one : keys){ points[frame].push_back(one.pixel); scales.push_back(one.scale); }
             const auto descriptorStarted = Clock::now();
-            siftSignatures[frame] = describeSiftScaled(working[frame], points[frame], scales, sift, &timingOf[frame]);
+            if(config.siftScaledDescriber) siftSignatures[frame] = config.siftScaledDescriber(working[frame], points[frame], scales, sift);
+            else siftSignatures[frame] = describeSiftScaled(working[frame], points[frame], scales, sift, &timingOf[frame]);
             descriptorOf[frame] = secondsSince(descriptorStarted);
         }else{
             points[frame] = detectCorners(working[frame], detect);
