@@ -357,6 +357,8 @@ int main(int realArgc, char** realArgv){
     //Potpisi prostora mjerila na kartici (Loomov SiftDescriber - test_gpu_sift: 0.27 % vrijednosti
     //potpisa razlicito za jedan-dva, poklapanja ista). ZADANO UKLJUCENO; --cpu-features vraca procesor
     bool gpuFeatures = true;
+    //--initial-pairs N: koliko pocetnih parova puna obrada gradi do kraja (ReconstructConfig::initialPairTrials)
+    uint32_t initialPairs = 0;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
@@ -367,6 +369,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--gpu-match") gpuMatch = true;
         else if(std::string(realArgv[i]) == "--cpu-match") gpuMatch = false;
         else if(std::string(realArgv[i]) == "--cpu-features") gpuFeatures = false;
+        else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
         else positional.push_back(realArgv[i]);
     }
@@ -881,6 +884,7 @@ int main(int realArgc, char** realArgv){
             };
         }
 
+        if(thorough && initialPairs > 0) config.initialPairTrials = initialPairs;
         if(!thorough){
             config.initialPairTrials = 1;
             config.seamFactor = 0.0;
@@ -1174,7 +1178,23 @@ int main(int realArgc, char** realArgv){
     //bi puta sest kandidata bilo neupotrebljivo
     if(best.ok){
         const auto polished = solveWith(bestFov, true);
-        if(polished.first.ok){
+        //PUNA OBRADA NIJE NUZNO BOLJA. Gradi iz drugih pocetnih parova, i na 60 kadrova C0257 je
+        //brzi kandidat (79807 tocaka, 1.19 px) zamijenila krivim rjesenjem od 30525 tocaka. Mjerilo
+        //je isto kao medju pokusajima u Engine::reconstruct: kamere, pa objasnjene tocke
+        const bool polishedBetter = polished.first.ok &&
+            (polished.first.posedCameras > best.posedCameras ||
+             (polished.first.posedCameras == best.posedCameras &&
+              double(polished.first.solvedPoints) >= 0.9 * double(best.solvedPoints)));
+        if(polished.first.ok && !polishedBetter){
+            std::printf("  puna obrada odbacena: %u kamera, %u tocaka, reprojekcija %.3f px - brzi kandidat ostaje\n",
+                        polished.first.posedCameras, polished.first.solvedPoints, polished.first.medianReprojection);
+            for(const Engine::Reconstruction::Trial& trial : polished.first.trials){
+                std::printf("    pocetni par %u-%u (%u tocaka pod %.2f st): %u kamera, %u tocaka, baza %.2f st, reprojekcija %.3f px\n",
+                            trial.initialA, trial.initialB, trial.initialPoints, trial.initialAngle,
+                            trial.posedCameras, trial.solvedPoints, trial.medianTriangulationAngle, trial.medianReprojection);
+            }
+        }
+        if(polishedBetter){
             best = polished.first;
             bestIntrinsics = polished.second;
             std::printf("  nakon pune obrade: %u od %u kamera, %u tocaka, reprojekcija %.3f px, baza %.2f st\n",
@@ -1182,8 +1202,9 @@ int main(int realArgc, char** realArgv){
                         best.medianReprojection, best.medianTriangulationAngle);
             printReconstructTiming(best);
             for(const Engine::Reconstruction::Trial& trial : best.trials){
-                std::printf("    pocetni par %u-%u: %u kamera, %u tocaka, baza %.2f st, reprojekcija %.3f px%s\n",
-                            trial.initialA, trial.initialB, trial.posedCameras, trial.solvedPoints,
+                std::printf("    pocetni par %u-%u (%u tocaka pod %.2f st): %u kamera, %u tocaka, baza %.2f st, reprojekcija %.3f px%s\n",
+                            trial.initialA, trial.initialB, trial.initialPoints, trial.initialAngle,
+                            trial.posedCameras, trial.solvedPoints,
                             trial.medianTriangulationAngle, trial.medianReprojection,
                             trial.initialA == best.initialA && trial.initialB == best.initialB ? "  <- izabran" : "");
             }

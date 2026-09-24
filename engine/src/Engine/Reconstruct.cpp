@@ -2,6 +2,7 @@
 #include "Engine/Triangulate.h"
 
 #include <algorithm>
+#include <map>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -310,13 +311,21 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         auto keepIfBetter = [&](Reconstruction attempt){
             trials.push_back(Reconstruction::Trial{attempt.initialA, attempt.initialB, attempt.posedCameras,
                                                    attempt.solvedPoints, attempt.medianTriangulationAngle,
-                                                   attempt.medianReprojection});
-            //BROJ KAMERA PRVO, PA BAZA. Rjesenje s manje kamera nije bolje ma kako siroku bazu
-            //imalo - ono naprosto nije rijesilo snimku
+                                                   attempt.medianReprojection, attempt.initialAngle, attempt.initialPoints});
+            //BROJ KAMERA PRVO, PA BROJ TOCAKA. Rjesenje s manje kamera nije bolje ma kako siroku
+            //bazu imalo - ono naprosto nije rijesilo snimku.
+            //
+            //Drugo mjerilo je bilo baza, i to je promasilo: na 60 kadrova C0257 krivo rjesenje ima
+            //bazu 2.23 st, a pravo 7.60 st samo kad se pogodi - ali krivo uvijek objasni trecinu
+            //tocaka grafa (25-31k od 80k, 1.30-1.37 px), a pravo gotovo sve (80k, 1.19-1.23 px).
+            //Isti pragovi prihvacanja za oba, pa je broj objasnjenih tocaka izravna mjera slaganja
+            //s grafom. Baza ostaje za jednake
             const bool better = !best.ok
                 || attempt.posedCameras > best.posedCameras
                 || (attempt.posedCameras == best.posedCameras
-                    && attempt.medianTriangulationAngle > best.medianTriangulationAngle);
+                    && (attempt.solvedPoints > best.solvedPoints
+                        || (attempt.solvedPoints == best.solvedPoints
+                            && attempt.medianTriangulationAngle > best.medianTriangulationAngle)));
             if(better) best = std::move(attempt);
         };
 
@@ -492,6 +501,18 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
     //Najprometniji parovi prvi, ali se ne vjeruje broju nego se provjerava racunom
     std::sort(candidates.begin(), candidates.end(),
               [](const Candidate& x, const Candidate& y){return x.common > y.common;});
+
+    //Po razmaku kadrova, redom - vidi ReconstructConfig::initialPairAcrossGaps
+    if(config.initialPairAcrossGaps){
+        std::map<uint32_t, std::vector<Candidate>> byGap;
+        for(const Candidate& one : candidates) byGap[one.a > one.b ? one.a - one.b : one.b - one.a].push_back(one);
+        std::vector<Candidate> dealt;
+        dealt.reserve(candidates.size());
+        for(size_t round = 0; dealt.size() < candidates.size(); ++round){
+            for(const auto& [gap, list] : byGap) if(round < list.size()) dealt.push_back(list[round]);
+        }
+        candidates = std::move(dealt);
+    }
 
     auto sharedPixels = [&](uint32_t a, uint32_t b,
                             std::vector<glm::vec2>& pixelsA, std::vector<glm::vec2>& pixelsB,

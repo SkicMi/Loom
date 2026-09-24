@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (74 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (78 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -22,6 +22,10 @@ Iz `benchmarks/mjerenja.jsonl` (74 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 20:42 | C0257 | 60 kadrova, zadana kalibracija: potpisi prostora mjerila i poklapanje na kartici | 60 | 246 | 59/59 | 25386 | 1.344 | 4.610 | 3.500 | 4650 |  | 27.10 | 41.70 | 54.20 | 35.70 | graf 139->42 s, ukupno 6m43->4m06; puna obrada skrenula (baza 7.6->1.6 st, 80k->25k tocaka) iako je graf gotovo isti - provjera na drugim kadrovima | zapisano_px=2.220, izlaz=k_J |
 | 2026-09-24 20:52 | C0257 | kontrola: svaki 7. kadar, 60, zadana kalibracija, sve na procesoru | 60 | 308 | 57/57 | 22716 | 1.400 | 4.577 | 3.400 | 4650 |  | 22.70 | 116.60 | 60.90 | 28.50 | i procesor zavrsi u uskoj bazi (1.63 st) - nestabilnost pune obrade, ne kartice | zapisano_px=2.666, izlaz=k7_cpu |
 | 2026-09-24 20:52 | C0257 | kontrola: svaki 7. kadar, 60, zadana kalibracija, potpisi i poklapanje na kartici | 60 | 235 | 57/57 | 22840 | 1.386 | 4.560 | 3.320 | 4650 |  | 23.40 | 41.70 | 61.30 | 28.60 | zadrzano: isto kao procesor (izdvojeni 4.56 prema 4.58 px), 5m08 -> 3m55 | zapisano_px=2.630, izlaz=k7_gpu |
+| 2026-09-24 21:40 | C0257 | graf s kartice iz cachea, 12 pocetnih parova (stari izbor) |  |  | 59/59 | 79798 | 1.224 | 4.610 | 3.500 | 4650 |  |  |  | 132.70 |  | 11 od 12 pokusaja u krivom rjesenju (baza 1.6 st, 25k tocaka); pocetni parovi 0.5-0.7 st | zapisano_px=1.485, izlaz=p_gpu_12, napomena=izdvojeni_px je s brzog kandidata, ne s isporucenog rjesenja |
+| 2026-09-24 21:40 | C0257 | graf s kartice: kandidati po razmaku kadrova + izbor po tockama |  |  | 59/59 | 79897 | 1.227 | 4.745 | 3.680 | 4650 |  |  |  | 54.30 |  | dobro rjesenje (80k tocaka, 1.227 px) | zapisano_px=1.483, izlaz=s_gpu, napomena=izdvojeni_px je s brzog kandidata, ne s isporucenog rjesenja |
+| 2026-09-24 21:40 | C0257 | graf s procesora: kandidati po razmaku kadrova + izbor po tockama |  |  | 59/59 | 79807 | 1.192 | 2.863 | 2.400 | 4650 |  |  |  | 21.90 |  | brzi kandidat zadrzan (79.8k, 1.192 px, izdvojeni omjer 2.40); losija puna obrada odbacena | zapisano_px=1.500, izlaz=s_cpu, napomena=izdvojeni_px je s brzog kandidata, ne s isporucenog rjesenja |
+| 2026-09-24 21:40 | C0257 | kontrola svaki 7. kadar: kandidati po razmaku + izbor po tockama | 60 | 277 | 57/57 | 75839 | 1.258 | 4.707 | 3.460 | 4650 |  | 22.20 | 43.90 | 59.40 | 72.00 | zadrzano: 22.7k -> 75.8k tocaka, baza 1.63 -> 8.39 st, 1.40 -> 1.258 px | zapisano_px=1.599, izlaz=s7, napomena=izdvojeni_px je s brzog kandidata, ne s isporucenog rjesenja |
 
 ## trening
 

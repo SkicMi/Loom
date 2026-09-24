@@ -65,6 +65,22 @@ struct ReconstructConfig{
     //pair - so only the busiest are checked. See the comment next to the choice in Reconstruct.cpp
     uint32_t initialPairCandidates = 30;
 
+    //=========================================================================================
+    // CANDIDATES ACROSS FRAME GAPS, not only the busiest.
+    //
+    // The busiest pairs are neighbouring keyframes, and neighbours barely move: on 60 keyframes of
+    // C0257 (f = 4650 px) all thirty checked pairs were a gap of one or two, with a median ray
+    // angle of 0.5 - 0.7 deg. None reached the demanded angle, so the widest of the narrow ones was
+    // taken - and from 0.6 deg the depth is a guess: of twelve such seeds eleven ended in the same
+    // wrong solution (baseline 1.6 deg, 25k points, 1.35 px) and one, by luck, in the right one
+    // (7.6 deg, 80k points, 1.22 px). Which one is lucky changed with the last bit of a descriptor.
+    //
+    // So the checked pairs are dealt round-robin over the frame gap: the busiest pair of every gap,
+    // then the second busiest of every gap, and so on. Wider pairs then get checked, pass the angle,
+    // and win on usable points among those that pass. False is the old order, for comparison
+    //=========================================================================================
+    bool initialPairAcrossGaps = true;
+
     //FORCED INITIAL PAIR, for measurement. When both are equal, the pair is chosen as usual. It
     //exists because the question "is the initial pair choice wrong or everything else" would
     //otherwise be unmeasurable
@@ -569,6 +585,8 @@ struct Reconstruction{
         uint32_t initialA = 0, initialB = 0;
         uint32_t posedCameras = 0, solvedPoints = 0;
         double medianTriangulationAngle = 0.0, medianReprojection = 0.0;
+        double initialAngle = 0.0;
+        uint32_t initialPoints = 0;
     };
     std::vector<Trial> trials;
 
