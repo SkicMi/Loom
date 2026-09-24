@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (80 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (95 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -52,6 +52,7 @@ Iz `benchmarks/mjerenja.jsonl` (80 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 19:41 | C0257 | 15000 koraka, granica 1.5M | 15000 | 1920x1080 | 1500000 | 843 |  |  |  | ostrije (+19 % na 1080p, +22 % na 4K), PSNR isti | kamera=classic |
 | 2026-09-24 19:57 | C0257 | trening na punoj 4K (--downscale 1), granica 1.5M | 7000 | 3840x2160 | 1500000 | 1065 | 24.48 | 17.29 | 0.778 |  | kamera=classic, izlaz=r4k.ply, izdvojenih=39 |
 | 2026-09-24 20:27 | C0257 | 30000 koraka, granica 1.5M | 30000 | 1920x1080 | 1500000 | 1626 | 24.29 | 17.31 | 0.757 | ostrije (+32 % 1080p, +49 % 4K), ali PSNR -0.25 i SSIM -0.004 - pocinje se prilagodjavati snimljenim kadrovima | kamera=classic, izlaz=k30000.ply, izdvojenih=39 |
+| 2026-09-24 22:18 | C0257 | cijela snimka, novi solve, 15000 koraka | 15000 | 1920x1080 | 1500000 | 957 | 25.34 | 20.91 | 0.790 | najbolje dosad: izdvojeni PSNR +1.0 dB (1080p) / +1.2 dB (4K), SSIM bolji na 39/39, najgori kadar 17.8 -> 20.9 dB | kamera=classic, izlaz=t_novi.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -66,6 +67,8 @@ Iz `benchmarks/mjerenja.jsonl` (80 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 20:05 | C0257 | 4K trening, 7000 koraka | 3840x2160 | 24.00 | 0.778 | 0.070 | 39 | 1500000 |  |  |
 | 2026-09-24 20:27 | C0257 | 30000 koraka | 1920x1080 | 24.23 | 0.771 | 0.393 | 39 |  |  | psnr_medijan=24.31, splat=k30000.ply |
 | 2026-09-24 20:27 | C0257 | 30000 koraka | 3840x2160 | 23.92 | 0.776 | 0.130 | 39 |  |  | psnr_medijan=24.07, splat=k30000.ply |
+| 2026-09-24 22:19 | C0257 | novi solve, 15000 koraka | 1920x1080 | 25.48 | 0.802 | 0.379 | 39 |  |  | psnr_medijan=25.34, splat=t_novi.ply |
+| 2026-09-24 22:19 | C0257 | novi solve, 15000 koraka | 3840x2160 | 25.40 | 0.826 | 0.129 | 39 |  |  | psnr_medijan=25.29, splat=t_novi.ply |
 
 ## usporedba
 
@@ -97,6 +100,18 @@ Iz `benchmarks/mjerenja.jsonl` (80 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 20:27 | C0257 | 30000 koraka prema 7000 koraka (d1) | PSNR dB | -0.273 | 0.228 | 17/39 |  | a=q1_d1, b=q_k30000_d1 |
 | 2026-09-24 20:27 | C0257 | 30000 koraka prema 7000 koraka (d1) | SSIM | -0.003 | 0.002 | 13/39 |  | a=q1_d1, b=q_k30000_d1 |
 | 2026-09-24 20:27 | C0257 | 30000 koraka prema 7000 koraka (d1) | ostrina | 0.043 | 0.004 | 38/39 |  | a=q1_d1, b=q_k30000_d1 |
+| 2026-09-24 22:19 | C0257 | novi solve 15000 prema polaznom 7000 (d2) | PSNR dB | 0.999 | 0.258 | 28/39 | stvarno (>3.5 pogreske) | a=q1_d2, b=q_novi_d2 |
+| 2026-09-24 22:19 | C0257 | novi solve 15000 prema polaznom 7000 (d2) | SSIM | 0.027 | 0.003 | 37/39 | stvarno (>3.5 pogreske) | a=q1_d2, b=q_novi_d2 |
+| 2026-09-24 22:19 | C0257 | novi solve 15000 prema polaznom 7000 (d2) | ostrina | 0.083 | 0.017 | 30/39 |  | a=q1_d2, b=q_novi_d2 |
+| 2026-09-24 22:19 | C0257 | novi solve 15000 prema polaznom 7000 (d1) | PSNR dB | 1.207 | 0.244 | 34/39 | stvarno (>3.5 pogreske) | a=q1_d1, b=q_novi_d1 |
+| 2026-09-24 22:19 | C0257 | novi solve 15000 prema polaznom 7000 (d1) | SSIM | 0.047 | 0.002 | 39/39 | stvarno (>3.5 pogreske) | a=q1_d1, b=q_novi_d1 |
+| 2026-09-24 22:19 | C0257 | novi solve 15000 prema polaznom 7000 (d1) | ostrina | 0.042 | 0.006 | 37/39 |  | a=q1_d1, b=q_novi_d1 |
+| 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d2) | PSNR dB | 0.946 | 0.240 | 28/39 | stvarno (>3.5 pogreske) | a=q_k15000_d2, b=q_novi_d2 |
+| 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d2) | SSIM | 0.029 | 0.003 | 39/39 | stvarno (>3.5 pogreske) | a=q_k15000_d2, b=q_novi_d2 |
+| 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d2) | ostrina | 0.026 | 0.012 | 23/39 |  | a=q_k15000_d2, b=q_novi_d2 |
+| 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d1) | PSNR dB | 1.173 | 0.218 | 30/39 | stvarno (>3.5 pogreske) | a=q_k15000_d1, b=q_novi_d1 |
+| 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d1) | SSIM | 0.048 | 0.002 | 39/39 | stvarno (>3.5 pogreske) | a=q_k15000_d1, b=q_novi_d1 |
+| 2026-09-24 22:19 | C0257 | novi solve prema starom, oba 15000 koraka (d1) | ostrina | 0.022 | 0.006 | 28/39 |  | a=q_k15000_d1, b=q_novi_d1 |
 
 ## dekodiranje
 
