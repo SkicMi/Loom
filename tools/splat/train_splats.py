@@ -26,6 +26,8 @@ from PIL import Image
 import gsplat
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))      #floaters.py uz ovu skriptu
+
 
 # ---------------------------------------------------------------------------------
 # Citanje COLMAP-ovog tekstualnog modela
@@ -230,6 +232,19 @@ def main():
                     help="koliko UZASTOPNIH kadrova se izdvaja odjednom; 1 znaci pojedinacno")
     ap.add_argument("--saturation", type=float, default=1.0,
                     help="od ove svjetline pa navise piksel se manje broji; 1.0 iskljucuje")
+    #KAZNE IZ RADA O MCMC SPLATOVIMA, i IZMJERENO: STETE, pa su zadano iskljucene. C0257, 7000
+    #koraka, 39 izdvojenih kadrova: bez njih PSNR 24.86 dB, s 0.01/0.01 17.99 dB. Adam normira
+    #gradijent po gaussiani, a u videu je svaka vidljiva u malo kadrova - u svim ostalim koracima
+    #dobije SAMO kaznu, i to punim korakom, pa se gasi i ono sto kadrovi trebaju. Floatere zato
+    #mice --clean na kraju, a ne kazna usput
+    ap.add_argument("--opacity-reg", type=float, default=0.0,
+                    help="L1 kazna na neprozirnost (MCMC rad: 0.01); tjera prozirne koprene da nestanu")
+    ap.add_argument("--scale-reg", type=float, default=0.0,
+                    help="L1 kazna na velicinu u mjerilu scene (MCMC rad: 0.01); krupne mrlje se smanje")
+    #Izmjereno na izdvojenim kadrovima (floaters.py): PSNR prosjek 24.37 -> 24.70 dB, a splat
+    #cetiri puta manji. --no-clean ga iskljucuje
+    ap.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
+                    help="na kraju makni floatere (floaters.py): nevidljive i mrlje uz kameru")
     args = ap.parse_args()
 
     device = "cuda"
@@ -478,6 +493,17 @@ def main():
             loss = loss + args.anisotropy_weight * needles
             lastNeedles = float(needles)
 
+        #KOPRENE I MRLJE. MCMC premjesta samo gaussiane ispod min_opacity (0.005), a svima dodaje
+        #sum to jaci sto su prozirnije - pa poluprozirne odlutaju po sobi i ondje ostanu, jer ih kadar
+        #iz kojeg se ne vide ne vraca. Izmjereno na C0257 bez ovoga: 76 posto gaussiana ni u jednom
+        #kadru ne doprinosi ni pola piksela, a krupne mrlje uz kameru popravljaju po dva kadra.
+        #L1 na neprozirnost i velicinu (rad o MCMC splatovima) daje im razlog da nestanu ili se
+        #skupe; velicina se dijeli mjerilom scene, jer solver nema metre
+        if args.opacity_reg > 0.0:
+            loss = loss + args.opacity_reg * torch.sigmoid(params["opacities"]).mean()
+        if args.scale_reg > 0.0:
+            loss = loss + args.scale_reg * (torch.exp(params["scales"]) / spread).mean()
+
         if len(depthMaps):
             #Nacrtana dubina se pretvara u dispariter, jer model daje dispariter - a i zato sto je
             #on ravnomjerniji: u metrima daleki zid nosi tisucu puta vise tezine nego bliski stol
@@ -522,6 +548,25 @@ def main():
             extra = f"  dubina {lastDepthTerm:.4f} (tezina {args.depth_weight})" if len(depthMaps) else ""
             if args.anisotropy_weight > 0.0: extra += f"  iglice {lastNeedles:.3f} (tezina {args.anisotropy_weight})"
             print(f"  {step:5d}  gubitak {loss.item():.4f}  gaussiana {params['means'].shape[0]}{extra}")
+
+    # -------------------------------------------------------------------------------
+    # Ciscenje (floaters.py)
+    # -------------------------------------------------------------------------------
+    #Na KADROVIMA TRENINGA i u razlucivosti treninga: izdvojeni kadrovi su za ocjenu, pa ne smiju
+    #odlucivati sto ostaje. Ocjena nize je tako posteno mjerenje i samog ciscenja
+    if args.clean:
+        import floaters
+        viewList = [views[i] for i in range(len(views))]
+        depths = floaters.view_depths(torch.from_numpy(points).to(device), viewList)
+        most, seen, nearest = floaters.measure(
+            params["means"], params["quats"], torch.exp(params["scales"]), torch.sigmoid(params["opacities"]),
+            viewList, K, width, height, depths)
+        keep, invisible, byCamera = floaters.keep_mask(most, seen, nearest)
+        before = params["means"].shape[0]
+        for key in list(params.keys()):
+            params[key] = torch.nn.Parameter(params[key].detach()[keep])
+        print(f"Ciscenje: nevidljivih {invisible}, mrlja uz kameru {byCamera}; "
+              f"ostaje {params['means'].shape[0]} od {before}")
 
     # -------------------------------------------------------------------------------
     # Izvoz
