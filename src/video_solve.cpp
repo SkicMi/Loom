@@ -202,6 +202,8 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         return result;
     };
 
+    //Pojasevi UNUTAR odsjecka ostaju: odsjecaka je malo, a svaki prati tisuce tocaka po kadru.
+    //Izmjereno: odsjecci serijski iznutra i 12 u letu - 166 s umjesto 94 s na 532 medjukadra
     const size_t inFlight = 6;
     std::vector<std::future<SegmentResult>> running;
     std::vector<SegmentResult> finished;
@@ -318,6 +320,26 @@ void warnIfUnoptimised(){
 #endif
 }
 }
+
+//Zidno vrijeme po fazama, za ispis na kraju: bez njega su se vidjele samo faze koje same javljaju
+//vrijeme, a dvadeset minuta solvea nije imalo kamo otici osim u "ostalo"
+struct PhaseClock{
+    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+    std::vector<std::pair<const char*, double>> phases;
+    void mark(const char* name){
+        const auto now = std::chrono::steady_clock::now();
+        phases.emplace_back(name, std::chrono::duration<double>(now - last).count());
+        last = now;
+    }
+    void print() const {
+        double total = 0.0;
+        for(const auto& phase : phases) total += phase.second;
+        std::printf("  vrijeme po fazama:");
+        for(size_t i = 0; i < phases.size(); ++i) std::printf("%s %s %.1f", i ? "," : "", phases[i].first, phases[i].second);
+        std::printf("; ukupno %.1f s\n", total);
+    }
+};
+PhaseClock phaseClock;
 
 int main(int realArgc, char** realArgv){
     warnIfUnoptimised();
@@ -833,6 +855,7 @@ int main(int realArgc, char** realArgv){
     //snimku istom kamerom, pa je nema smisla pogadjati iz vidnog polja u svakoj
     Engine::Intrinsics measured;
     std::string measuredModel;
+    phaseClock.mark("pracenje i graf");
     const bool calibrated = !calibrationFile.empty() &&
                             Engine::readColmapCamera(calibrationFile, measured, measuredModel);
     if(!calibrationFile.empty() && !calibrated){
@@ -1180,6 +1203,7 @@ int main(int realArgc, char** realArgv){
         }
     }
 
+    phaseClock.mark("brzi kandidat");
     //Pobjednik dobiva punu obradu: vise pocetnih parova i popravak sava. Tek se tu placa ono sto
     //bi puta sest kandidata bilo neupotrebljivo
     if(best.ok){
@@ -1237,6 +1261,7 @@ int main(int realArgc, char** realArgv){
         }
     }
 
+    phaseClock.mark("puna obrada");
     //=====================================================================================
     // USPRAVNO, prije svega sto ide van - vidi Engine/Upright.h.
     //
@@ -1421,6 +1446,7 @@ int main(int realArgc, char** realArgv){
             }
         };
 
+        phaseClock.mark("provjere");
         const auto exportStarted = std::chrono::steady_clock::now();
         Spool::VideoReader again(path);
         uint32_t fileIndex = 0, trackedIndex = 0, written = 0;
@@ -1502,6 +1528,7 @@ int main(int realArgc, char** realArgv){
         // pratece XML uz snimku
         //=================================================================================
         {
+            phaseClock.mark("slike kadrova");
             //=============================================================================
             // PUNE SLICICE - vidi localiseEveryFrame. Solve daje pozu svakog step-tog kadra;
             // match-move trazi svaki. Medjukadrovi se lokaliziraju, ne rekonstruiraju.
@@ -1574,6 +1601,7 @@ int main(int realArgc, char** realArgv){
             }
         }
 
+        phaseClock.mark("pune slicice i USD");
         if(Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours)){
             std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
 
@@ -1648,5 +1676,7 @@ int main(int realArgc, char** realArgv){
             }
         }
     }
+    phaseClock.mark("COLMAP i provjera");
+    phaseClock.print();
     return 0;
 }

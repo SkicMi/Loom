@@ -70,6 +70,8 @@ def iz_solvea(log, vrijeme=None):
                 break
         izvor = Path(v[-1]) / "izvor.txt"
         if izvor.exists(): z["snimka"] = Path(izvor.read_text().strip()).stem
+    if (v := re.search(r"vrijeme po fazama: (.*?); ukupno", text)):
+        z["faze_s"] = v[1]
     if vrijeme and Path(vrijeme).exists() and (v := re.search(r"real\s+(\d+)m([\d.]+)s", Path(vrijeme).read_text())):
         z["vrijeme_s"] = round(int(v[1]) * 60 + float(v[2]))
     return z
