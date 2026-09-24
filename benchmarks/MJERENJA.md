@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (180 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (189 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -70,6 +70,7 @@ Iz `benchmarks/mjerenja.jsonl` (180 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 00:29 | C0257 | E6 f 4259, 3DGUT bez rolling shuttera, 7000 koraka | 7000 | 1920x1080 | 1500000 | 578 | 24.86 | 20.94 | 0.803 |  | kamera=ut, izlaz=e_ut.ply, izdvojenih=39 |
 | 2026-09-25 01:23 | C0257 | CISTO mjerenje: zadani trening (15000 koraka, ciscenje) | 15000 | 1920x1080 | 1270402 | 1741 | 25.21 | 21.45 | 0.796 |  | kamera=classic, izlaz=cist.ply, izdvojenih=39 |
 | 2026-09-25 01:33 | C0257 | E7 f 4259, poze iz RS bundlea (sredina kadra), obicno crtanje, 7000 koraka | 7000 | 1920x1080 | 1500000 | 586 | 26.03 | 21.92 | 0.795 |  | kamera=rsmid, izlaz=e_rsmid.ply, izdvojenih=39 |
+| 2026-09-25 01:56 | C0257 | E8 f 4259, 7000 koraka 1080p + 3000 na 4K | 10000 | 3840x2160 | 1500000 | 1000 | 25.16 | 21.88 | 0.827 |  | kamera=classic, izlaz=e_fine.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -102,6 +103,8 @@ Iz `benchmarks/mjerenja.jsonl` (180 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 01:34 | C0257 | E7 rsmid | 3840x2160 | 25.62 | 0.824 | 0.076 | 39 |  |  | psnr_medijan=25.97, splat=e_rsmid.ply |
 | 2026-09-25 01:35 | C0257 | CISTO mjerenje, zadano (3.4M -> 1.27M nakon ciscenja) | 1920x1080 | 25.75 | 0.803 | 0.398 | 39 |  |  | psnr_medijan=25.21, splat=cist.ply |
 | 2026-09-25 01:35 | C0257 | CISTO mjerenje, zadano (3.4M -> 1.27M nakon ciscenja) | 3840x2160 | 25.66 | 0.827 | 0.137 | 39 |  |  | psnr_medijan=25.11, splat=cist.ply |
+| 2026-09-25 01:56 | C0257 | E8 grubo pa fino | 1920x1080 | 25.38 | 0.799 | 0.298 | 39 |  |  | psnr_medijan=25.20, splat=e_fine.ply |
+| 2026-09-25 01:57 | C0257 | E8 grubo pa fino | 3840x2160 | 25.31 | 0.826 | 0.091 | 39 |  |  | psnr_medijan=25.16, splat=e_fine.ply |
 
 ## usporedba
 
@@ -193,6 +196,12 @@ Iz `benchmarks/mjerenja.jsonl` (180 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d1) | PSNR dB | 0.262 | 0.124 | 26/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d1, b=q_cist_d1 |
 | 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d1) | SSIM | 0.001 | 0.001 | 21/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d1, b=q_cist_d1 |
 | 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d1) | ostrina | 0.008 | 0.002 | 34/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d1, b=q_cist_d1 |
+| 2026-09-25 01:56 | C0257 | 7000+3000 na 4K prema 7000, f 4259 (d2) | PSNR dB | 0.142 | 0.161 | 25/39 | odbaceno uz granicu 1.5M: PSNR u sumu, ostrina -8 %/-12 %, 2x dulje; probati bez granice | a=q_e_f4259_d2, b=q_e_fine_d2 |
+| 2026-09-25 01:56 | C0257 | 7000+3000 na 4K prema 7000, f 4259 (d2) | SSIM | -0.002 | 0.002 | 19/39 | odbaceno uz granicu 1.5M: PSNR u sumu, ostrina -8 %/-12 %, 2x dulje; probati bez granice | a=q_e_f4259_d2, b=q_e_fine_d2 |
+| 2026-09-25 01:56 | C0257 | 7000+3000 na 4K prema 7000, f 4259 (d2) | ostrina | -0.026 | 0.008 | 16/39 | odbaceno uz granicu 1.5M: PSNR u sumu, ostrina -8 %/-12 %, 2x dulje; probati bez granice | a=q_e_f4259_d2, b=q_e_fine_d2 |
+| 2026-09-25 01:57 | C0257 | 7000+3000 na 4K prema 7000, f 4259 (d1) | PSNR dB | 0.145 | 0.158 | 25/39 | odbaceno uz granicu 1.5M: PSNR u sumu, ostrina -8 %/-12 %, 2x dulje; probati bez granice | a=q_e_f4259_d1, b=q_e_fine_d1 |
+| 2026-09-25 01:57 | C0257 | 7000+3000 na 4K prema 7000, f 4259 (d1) | SSIM | -0.000 | 0.001 | 20/39 | odbaceno uz granicu 1.5M: PSNR u sumu, ostrina -8 %/-12 %, 2x dulje; probati bez granice | a=q_e_f4259_d1, b=q_e_fine_d1 |
+| 2026-09-25 01:57 | C0257 | 7000+3000 na 4K prema 7000, f 4259 (d1) | ostrina | -0.012 | 0.003 | 18/39 | odbaceno uz granicu 1.5M: PSNR u sumu, ostrina -8 %/-12 %, 2x dulje; probati bez granice | a=q_e_f4259_d1, b=q_e_fine_d1 |
 
 ## dekodiranje
 

@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--motion-blur", type=int, default=0, help="kao u treneru: K trenutaka ekspozicije (trazi rolling)")
     ap.add_argument("--out", default="")
     ap.add_argument("--compare", nargs=2, default=None)
+    ap.add_argument("--exposure", default="", help="<splat>_exposure.json iz treninga s --exposure")
     ap.add_argument("--renders", default="", help="mapa u koju se spreme iscrtani izdvojeni kadrovi (PNG), za gledanje okom")
     ap.add_argument("--opis", default="",
                     help="sto se mjeri; s njim ocjena i usporedba idu u dnevnik mjerenja (benchmarks/mjerenja.jsonl)")
@@ -109,6 +110,8 @@ def main():
     a = src.index("    def rotationLog(R):"); b = src.index("    def draw(view, viewEnd, degree, mode):")
     exec("\n".join(line[4:] for line in src[a:b].split("\n")), globals())
 
+    import json
+    exposureFor = json.load(open(args.exposure)) if args.exposure else {}
     from train_splats import ssim, gaussian_window
     window = gaussian_window(11, 1.5, device)
     psnrs = []
@@ -134,7 +137,11 @@ def main():
             picture = Image.open(model / "images" / name).convert("RGB")
             if picture.size != (width, height): picture = picture.resize((width, height), Image.LANCZOS)
             truth = torch.from_numpy(np.array(picture)).to(device).float() / 255
-            shown = drawn[0][..., :3].clamp(0, 1)
+            shown = drawn[0][..., :3]
+            if exposureFor and name in exposureFor:
+                correction = torch.tensor(exposureFor[name], device=device, dtype=shown.dtype)
+                shown = shown * (1.0 + correction[0]) + correction[1]
+            shown = shown.clamp(0, 1)
             if args.renders:
                 Path(args.renders).mkdir(parents=True, exist_ok=True)
                 Image.fromarray((shown.cpu().numpy() * 255).astype(np.uint8)).save(Path(args.renders) / name)

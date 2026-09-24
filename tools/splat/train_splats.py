@@ -11,7 +11,7 @@ KONVENCIJA. COLMAP rotaciju i pomak vodi iz SVIJETA U KAMERU (+Z naprijed, +Y do
 trazi bas tu matricu - pa se ovdje, za razliku od ColmapImporta, NE pretvara nista. To je jedino
 mjesto gdje se dvije konvencije ne moraju pomiriti, i zato je najlakse promasiti u drugu stranu.
 """
-import argparse, math, os, struct, sys, time
+import argparse, json, math, os, struct, sys, time
 from pathlib import Path
 
 #Fragmentacija je odnijela 3.16 GB od 11.49 pri prvom punom treningu - memorija je bila rezervirana
@@ -269,6 +269,9 @@ def main():
                     help="ekspozicija u kadrovima (1/100 s pri 50 fps = 0.5); 0 cita camera_metadata.txt")
     ap.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
                     help="na kraju makni floatere (floaters.py): nevidljive i mrlje uz kameru")
+    ap.add_argument("--exposure", action="store_true",
+                    help="naucena korekcija boje po kadru (pojacanje i pomak po kanalu) za auto-ISO; "
+                         "izdvojeni kadrovi dobiju interpoliranu od susjeda, zapise se u <izlaz>_exposure.json")
     ap.add_argument("--finish-full-res", type=int, default=0,
                     help="jos toliko koraka NA PUNOJ RAZLUCIVOSTI nakon --steps (postupno: grubo pa fino)")
     ap.add_argument("--opis", default="",
@@ -442,6 +445,15 @@ def main():
     optimizers = {k: torch.optim.Adam([{"params": params[k], "lr": rates[k], "name": k}],
                                       eps=1e-15, betas=(0.9, 0.999)) for k in params}
 
+    #EKSPOZICIJA PO KADRU (--exposure). Kamera snima na auto-ISO (C0257: 500-1250, 27 promjena),
+    #pa ista ploha u razlicitim kadrovima ima razlicitu svjetlinu - a bez ovoga je trener mora
+    #objasniti bojom i geometrijom gaussiana, tj. mrljama i floaterima. Svaki kadar dobije pojacanje i
+    #pomak po kanalu; splat uci prosjecnu, pravu boju scene
+    exposure, exposureOptimizer = None, None
+    if args.exposure:
+        exposure = torch.zeros(len(pictures), 2, 3, device=device, requires_grad=True)
+        exposureOptimizer = torch.optim.Adam([exposure], lr=1e-3)
+
     # -------------------------------------------------------------------------------
     # Koliko gaussiana kartica podnosi
     # -------------------------------------------------------------------------------
@@ -604,6 +616,9 @@ def main():
                                      "RGB+ED" if len(depthMaps) else "RGB")
 
         strategy.step_pre_backward(params, optimizers, state, step, info)
+        image = rendered[0][..., :3]
+        if exposure is not None:
+            image = image * (1.0 + exposure[index, 0]) + exposure[index, 1]
 
         #ZASICENI PIKSEL NE NOSI PODATAK. Gdje je senzor u zasicenju - zarulja, odsjaj - prava
         #vrijednost je "barem ovoliko", ne "tocno ovoliko", pa optimizacija pokusava pogoditi broj
@@ -617,12 +632,12 @@ def main():
         if args.saturation < 1.0:
             brightest = truth.max(dim=-1).values
             weight = (1.0 - (brightest - args.saturation).clamp(min=0.0) / (1.0 - args.saturation)).clamp(0.0, 1.0)
-            absolute = ((rendered[0][..., :3] - truth).abs().mean(dim=-1) * weight).sum() / weight.sum().clamp(min=1.0)
+            absolute = ((image - truth).abs().mean(dim=-1) * weight).sum() / weight.sum().clamp(min=1.0)
         else:
-            absolute = (rendered[0][..., :3] - truth).abs().mean()
+            absolute = (image - truth).abs().mean()
 
         if args.loss == "ssim":
-            structure = 1.0 - ssim(rendered[0][..., :3], truth, window, windowSize)
+            structure = 1.0 - ssim(image, truth, window, windowSize)
             loss = 0.8 * absolute + 0.2 * structure
         else:
             loss = absolute
@@ -678,6 +693,10 @@ def main():
                 depthTerm = (a * x + b - y).abs().mean()
                 loss = loss + args.depth_weight * depthTerm
                 lastDepthTerm = float(depthTerm)
+        if exposure is not None:
+            #Blago prema nuli: korekcija smije objasniti ekspoziciju, ne boju scene
+            loss = loss + 1e-3 * exposure[index].pow(2).sum()
+            exposureOptimizer.zero_grad(set_to_none=True)
         for optimizer in optimizers.values():
             optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -688,6 +707,8 @@ def main():
             strategy.step_post_backward(params, optimizers, state, step, info, packed=not usesUt)
         for optimizer in optimizers.values():
             optimizer.step()
+        if exposure is not None:
+            exposureOptimizer.step()
 
         #Kad se granica dosegne, zgusnjavanje staje a ucenje ide dalje - preostali koraci jos
         #popravljaju polozaj, boju i neprozirnost onoga sto vec postoji
@@ -750,6 +771,26 @@ def main():
     # Ocjena na izdvojenim kadrovima
     # -------------------------------------------------------------------------------
 
+    #Ekspozicija izdvojenih kadrova: interpolirana od najblizeg trening kadra prije i poslije
+    heldExposure = {}
+    if exposure is not None:
+        trained = {name: exposure[i].detach().cpu().numpy() for i, name in enumerate(pictureNames)}
+        order = sorted(list(trained) + (heldNames if heldOut else []))
+        for position, name in enumerate(order):
+            if name in trained: continue
+            before = next((order[j] for j in range(position - 1, -1, -1) if order[j] in trained), None)
+            after = next((order[j] for j in range(position + 1, len(order)) if order[j] in trained), None)
+            if before and after:
+                a, b = order.index(before), order.index(after)
+                t = (position - a) / max(1, b - a)
+                heldExposure[name] = (1 - t) * trained[before] + t * trained[after]
+            elif before or after:
+                heldExposure[name] = trained[before or after]
+        with open(str(Path(args.output).with_suffix("")) + "_exposure.json", "w") as f:
+            json.dump({name: value.tolist() for name, value in {**trained, **heldExposure}.items()}, f)
+        spread_gain = np.array([v[0] for v in trained.values()])
+        print(f"Ekspozicija po kadru: pojacanje {spread_gain.min():+.3f} do {spread_gain.max():+.3f}")
+
     if heldOut:
         with torch.no_grad():
             colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
@@ -761,6 +802,9 @@ def main():
                 truth = heldPictures[i].to(device).float() / 255.0
                 shown = shown[0]
                 shown = shown[..., :3]
+                if heldNames[i] in heldExposure:
+                    correction = torch.from_numpy(heldExposure[heldNames[i]]).float().to(device)
+                    shown = shown * (1.0 + correction[0]) + correction[1]
                 mse = float(((shown - truth) ** 2).mean())
                 psnrs.append(10.0 * math.log10(1.0 / max(mse, 1e-12)))
                 ssims.append(float(ssim(shown, truth, window, windowSize)))
