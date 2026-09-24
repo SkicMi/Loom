@@ -730,8 +730,8 @@ def main():
                 ssims.append(float(ssim(shown, truth, window, windowSize)))
 
             psnrs.sort(); ssims.sort()
-            heldScore = dict(psnr_medijan=psnrs[len(psnrs)//2], psnr_najgori=psnrs[0],
-                             ssim_medijan=ssims[len(ssims)//2], izdvojenih=len(psnrs))
+            heldScore = dict(psnr_medijan=round(psnrs[len(psnrs)//2], 3), psnr_najgori=round(psnrs[0], 3),
+                             ssim_medijan=round(ssims[len(ssims)//2], 4), izdvojenih=len(psnrs))
             print(f"OCJENA na {len(psnrs)} izdvojenih kadrova: "
                   f"PSNR medijan {psnrs[len(psnrs)//2]:.2f} dB (najgori {psnrs[0]:.2f}, najbolji {psnrs[-1]:.2f}), "
                   f"SSIM medijan {ssims[len(ssims)//2]:.3f}")
@@ -763,7 +763,7 @@ def main():
     upisi(dict(vrsta="trening", snimka=snimka_modela(model), opis=args.opis, koraka=args.steps,
                razlucivost=f"{width}x{height}", gaussiana=int(params["means"].shape[0]),
                vrijeme_s=round(time.time() - started), kamera=args.camera_model,
-               izlaz=str(args.output), **(heldScore if heldOut else {})))
+               izlaz=Path(args.output).name, **(heldScore if heldOut else {})))
 
 
 if __name__ == "__main__":

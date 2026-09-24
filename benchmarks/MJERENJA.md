@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (40 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (52 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -13,6 +13,8 @@ Iz `benchmarks/mjerenja.jsonl` (40 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 19:18 | C0257 | brzi uzorak 60 kadrova, samokalibracija | 60 | 464 | 59/59 | 72817 | 1.277 | 4.263 | 3.210 | 7542 |  | 28.40 | 158.50 | 66.70 | 82.00 | samokalibracija pala (f 7542) - mjeriti sa zadanom | zapisano_px=1.605, izlaz=q_base |
 | 2026-09-24 19:24 | C0257 | 60 kadrova, --track-scale 2, samokalibracija | 60 | 355 | 59/59 | 17334 | 1.379 | 3.899 | 2.830 | 8512 |  | 11.30 | 145.00 | 16.10 | 36.20 | samokalibracija pala - ponovljeno sa zadanom | zapisano_px=2.301, izlaz=q_D |
 | 2026-09-24 19:35 | C0257 | 60 kadrova, zadana kalibracija (uz trening na kartici) | 60 | 568 | 59/59 | 79913 | 1.225 | 4.549 | 3.460 | 4650 |  | 48.20 | 171.30 | 166.60 | 86.90 | polaziste brzog uzorka | zapisano_px=1.483, izlaz=k_base |
+| 2026-09-24 19:58 | C0257 | 60 kadrova, zadana kalibracija, --track-scale 2 | 60 | 531 | 59/59 | 25588 | 1.361 | 4.220 | 3.350 | 4650 |  | 11.80 | 163.90 | 228.80 | 39.90 | -37 s; pune slicice 2x brze, ali rekonstrukcija sporija i 3x manje tocaka - provjeriti | zapisano_px=2.249, izlaz=k_D |
+| 2026-09-24 19:58 | C0257 | 60 kadrova, zadana kalibracija, --track-scale 4 | 60 | 458 | 56/56 | 34164 | 1.329 | 2.935 | 2.390 | 4650 |  | 9.800 | 148.10 | 166.50 | 50.00 | -110 s, izdvojeni 2.94 px (osnova 4.55) - obecavajuce, potvrditi na punoj snimci | zapisano_px=2.150, izlaz=k_E |
 
 ## trening
 
@@ -34,6 +36,8 @@ Iz `benchmarks/mjerenja.jsonl` (40 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 18:53 | C0257 | ponovljen t_1 - mjerenje suma | 7000 | 1920x1080 | 3749720 |  | 25.36 | 17.45 | 0.778 | sum: -0.117+-0.130 | kamera=classic |
 | 2026-09-24 19:03 | C0257 | --max-gaussians 1000000 | 7000 | 1920x1080 | 1000000 | 543 | 25.19 | 17.73 | 0.770 | zadrzivo: isto kao 3.75M, 4x manji | kamera=classic |
 | 2026-09-24 19:10 | C0257 | --max-gaussians 1500000 | 7000 | 1920x1080 | 1500000 | 432 | 24.74 | 17.29 | 0.775 | -0.17+-0.12 dB (sum) | kamera=classic |
+| 2026-09-24 19:41 | C0257 | 15000 koraka, granica 1.5M | 15000 | 1920x1080 | 1500000 | 843 |  |  |  | ostrije (+19 % na 1080p, +22 % na 4K), PSNR isti | kamera=classic |
+| 2026-09-24 19:57 | C0257 | trening na punoj 4K (--downscale 1), granica 1.5M | 7000 | 3840x2160 | 1500000 | 1065 | 24.48 | 17.29 | 0.778 |  | kamera=classic, izlaz=r4k.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -43,6 +47,8 @@ Iz `benchmarks/mjerenja.jsonl` (40 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 03:37 | C0257 | poslije ciscenja floatera (clean_splats) | 1920x1080 | 24.70 |  |  | 39 | 848672 | zadrzano (--clean zadano) | datoteka_mb=200 |
 | 2026-09-24 19:25 | C0257 | t_1_stari (polaziste ostrine) | 1920x1080 | 24.48 | 0.774 | 0.297 | 39 |  |  |  |
 | 2026-09-24 19:25 | C0257 | t_1_stari (polaziste ostrine) | 3840x2160 | 24.19 | 0.779 | 0.087 | 39 |  |  |  |
+| 2026-09-24 19:40 | C0257 | 15000 koraka | 1920x1080 | 24.54 | 0.773 | 0.354 | 39 | 1500000 |  |  |
+| 2026-09-24 19:40 | C0257 | 15000 koraka | 3840x2160 | 24.23 | 0.778 | 0.107 | 39 | 1500000 |  |  |
 
 ## usporedba
 
@@ -57,6 +63,12 @@ Iz `benchmarks/mjerenja.jsonl` (40 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 18:53 | C0257 | isti trening ponovljen (sum) | PSNR dB | -0.117 | 0.130 |  |  |  |
 | 2026-09-24 19:03 | C0257 | granica 1M gaussiana prema bez granice | PSNR dB | 0.001 | 0.149 |  |  |  |
 | 2026-09-24 19:10 | C0257 | granica 1.5M gaussiana prema bez granice | PSNR dB | -0.167 | 0.115 |  |  |  |
+| 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (1080p) | PSNR dB | 0.053 | 0.178 | 24/39 | sum |  |
+| 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (1080p) | SSIM | -0.001 | 0.002 | 23/39 | sum |  |
+| 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (1080p) | ostrina | 0.057 | 0.010 | 32/39 | ostrina stvarna (>5 pogresaka) |  |
+| 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (4K) | PSNR dB | 0.034 | 0.167 | 24/39 | sum |  |
+| 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (4K) | SSIM | -0.001 | 0.001 | 21/39 | sum |  |
+| 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (4K) | ostrina | 0.019 | 0.003 | 34/39 | ostrina stvarna (>5 pogresaka) |  |
 
 ## dekodiranje
 
