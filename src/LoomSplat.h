@@ -17,6 +17,12 @@
 //     splat ide s grupom kad se scena orijentira ili skalira. Kovarijanca se projicira istom
 //     matricom, pa i jednoliko mjerilo ostaje tocno
 //
+// REZANJE KOCKOM (kao kocka za brisanje u SplatVieweru, ali kocka je obicna kocka iz scene: mice
+// se, okrece i skalira istim alatima, i ne mora biti jednakih stranica). Brise se nad maskom
+// zivih, pa je korak natrag besplatan; datoteka se ne dira dok se ne spremi. Spremanje cita .ply
+// ponovno s diska i pise ga kroz masku - puni sferni harmonici tako ostaju, a u memoriji ih ne
+// treba drzati (za 3.6 M gaussiana to bi bilo 650 MB samo za cuvanje)
+//
 // Slika se slaze preko ploce PREMULTIPLICIRANO (vidi BlendMode::Premultiplied): gdje splata nema,
 // snimka se vidi. Pretvorba iz sRGB-a u linearno (splat_present) se radi na vec pomnozenoj boji,
 // pa djelomicno prozirni rubovi nisu sasvim tocni - za pregled je to nevidljivo
@@ -31,7 +37,10 @@
 #include <Spool/GaussianPly.h>
 #include <Treadle/Draw.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstring>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -71,6 +80,8 @@ public:
             loaded = false;
             problem.clear();
             raw.clear();
+            alive.clear();
+            cuts.clear();
         }
         uploadedPath.clear();
         splatCount = 0;
@@ -79,14 +90,119 @@ public:
     }
 
     bool isLoading() const {return loading;}
+    const std::string& path() const {return wantedPath;}
+
+    //Ista datoteka iznova s diska - kad je upravo prepisana (spremljeno rezanje, ciscenje)
+    void reload(){
+        const std::string again = wantedPath;
+        wantedPath.clear();
+        want(again);
+    }
+
+    //-- rezanje kockom ------------------------------------------------------------------------
+    //cubeFromSplat vodi iz prostora splata u prostor JEDINICNE kocke (-0.5..0.5): inverz
+    //svjetske matrice kocke puta svjetska matrica splata
+    static bool inBox(const glm::mat4& cubeFromSplat, const glm::vec3& p){
+        const glm::vec3 c = glm::vec3(cubeFromSplat * glm::vec4(p, 1.0f));
+        return std::fabs(c.x) <= 0.5f && std::fabs(c.y) <= 0.5f && std::fabs(c.z) <= 0.5f;
+    }
+
+    //Koliko je zivih u kocki; prolaz kroz cijeli oblak (3.6 M: desetak ms), pa se zove samo
+    //kad se kocka ili splat pomaknu
+    size_t countInBox(const glm::mat4& cubeFromSplat) const{
+        std::lock_guard<std::mutex> guard(lock);
+        size_t n = 0;
+        for(size_t i = 0; i < raw.size(); ++i) n += alive[i] && inBox(cubeFromSplat, glm::vec3(raw[i].positionOpacity));
+        return n;
+    }
+
+    //Brise zive unutar (inside) ili izvan kocke; vraca koliko ih je obrisano
+    size_t cutBox(const glm::mat4& cubeFromSplat, bool inside){
+        std::lock_guard<std::mutex> guard(lock);
+        std::vector<uint32_t> removed;
+        for(size_t i = 0; i < raw.size(); ++i){
+            if(alive[i] && inBox(cubeFromSplat, glm::vec3(raw[i].positionOpacity)) == inside){
+                alive[i] = 0;
+                removed.push_back(uint32_t(i));
+            }
+        }
+        const size_t count = removed.size();
+        if(count > 0){
+            cuts.push_back(std::move(removed));
+            if(size.width > 0) build(size);
+        }
+        return count;
+    }
+
+    bool undoCut(){
+        std::lock_guard<std::mutex> guard(lock);
+        if(cuts.empty()) return false;
+        for(uint32_t i : cuts.back()) alive[i] = 1;
+        cuts.pop_back();
+        if(size.width > 0) build(size);
+        return true;
+    }
+
+    //Obrisano a nespremljeno
+    size_t cutAway() const{
+        std::lock_guard<std::mutex> guard(lock);
+        size_t n = 0;
+        for(const auto& cut : cuts) n += cut.size();
+        return n;
+    }
+    bool hasCuts() const{ std::lock_guard<std::mutex> guard(lock); return !cuts.empty(); }
+
+    //Srediste i polumjer VECINE zivih: medijan po osima i 90. percentil udaljenosti. Odbjegli
+    //gaussiani (a splat ih ima) bi inace odredili okvir, i pogled bi stao daleko od scene
+    bool bounds(glm::vec3& centre, float& radius) const{
+        std::lock_guard<std::mutex> guard(lock);
+        std::vector<glm::vec3> sample;
+        const size_t stride = std::max<size_t>(1, raw.size() / 200000);
+        for(size_t i = 0; i < raw.size(); i += stride) if(alive[i]) sample.push_back(glm::vec3(raw[i].positionOpacity));
+        if(sample.size() < 2) return false;
+        std::vector<float> axis(sample.size());
+        for(int k = 0; k < 3; ++k){
+            for(size_t i = 0; i < sample.size(); ++i) axis[i] = sample[i][k];
+            std::nth_element(axis.begin(), axis.begin() + long(axis.size() / 2), axis.end());
+            centre[k] = axis[axis.size() / 2];
+        }
+        for(size_t i = 0; i < sample.size(); ++i) axis[i] = glm::length(sample[i] - centre);
+        const size_t at = axis.size() * 9 / 10;
+        std::nth_element(axis.begin(), axis.begin() + long(at), axis.end());
+        radius = std::max(axis[at], 1e-4f);
+        return true;
+    }
+    size_t total() const{ std::lock_guard<std::mutex> guard(lock); return raw.size(); }
+
+    //Zapisuje zive u out: izvorna datoteka se procita iznova (puni harmonici) i pise kroz masku.
+    //Vraca prazno ili razlog. out smije biti i sama izvorna datoteka - procita se cijela prije
+    //pisanja
+    std::string saveCut(const std::string& out) const{
+        std::vector<uint8_t> keep;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            keep = alive;
+        }
+        size_t kept = 0;
+        for(uint8_t k : keep) kept += k;
+        if(kept == 0) return "nista nije ostalo - prazan .ply se ne pise";
+        try{
+            const Spool::GaussianCloud cloud = Spool::loadGaussianPly(wantedPath);
+            if(cloud.count() != keep.size()) return "datoteka se promijenila na disku otkad je ucitana";
+            Spool::saveGaussianPly(out, cloud, keep);
+        }catch(const std::exception& e){
+            return e.what();
+        }
+        return {};
+    }
 
     //Sredista gaussiana u koordinatama splata, za odabir plohe. Gotovo prozirni (lebdeci sum
     //treninga) se preskacu - oni nisu ploha
     template<class Visit>
     void forEachCentre(float minOpacity, Visit&& visit) const{
         std::lock_guard<std::mutex> guard(lock);
-        for(const SplatMath::RawSplat& s : raw){
-            if(s.positionOpacity.w >= minOpacity) visit(glm::vec3(s.positionOpacity));
+        for(size_t i = 0; i < raw.size(); ++i){
+            if(alive[i] && raw[i].positionOpacity.w >= minOpacity) visit(glm::vec3(raw[i].positionOpacity));
         }
     }
     size_t count() const {return splatCount;}
@@ -181,6 +297,8 @@ private:
         }
         std::lock_guard<std::mutex> guard(lock);
         raw = std::move(result);
+        alive.assign(raw.size(), 1);
+        cuts.clear();
         problem = failure;
         loaded = failure.empty() && !raw.empty();
         loading = false;
@@ -202,14 +320,22 @@ private:
         target.emplace(loom.device, extent, targetConfig);
         material.emplace(loom.device, loom.command, loom.getDescriptorPool(), *pipeline, target->getSampled());
 
+        //Rezani splat salje samo zive; bez rezanja cijeli, bez kopije
+        std::vector<SplatMath::RawSplat> living;
+        if(!cuts.empty()){
+            for(size_t i = 0; i < raw.size(); ++i) if(alive[i]) living.push_back(raw[i]);
+        }
+        const std::vector<SplatMath::RawSplat>& shown = cuts.empty() ? raw : living;
+        splatCount = shown.size();
+        size = extent;
+        if(shown.empty()) return;          //sve odrezano: nema sto crtati, prepare vraca false
+
         SplatRendererConfig config;
-        config.maxSplats = uint32_t(raw.size());
+        config.maxSplats = uint32_t(shown.size());
         config.maxPairs = 65535u * 256u;
         config.maxShCoefficients = 0;
         renderer.emplace(loom.device, loom.getDescriptorPool(), target->getColorImage(), extent, config);
-        renderer->uploadRaw(raw, {}, 0, 0);
-        splatCount = raw.size();
-        size = extent;
+        renderer->uploadRaw(shown, {}, 0, 0);
     }
 
     LoomInitializer& loom;
@@ -223,10 +349,26 @@ private:
     std::thread loader;
     mutable std::mutex lock;
     std::vector<SplatMath::RawSplat> raw;
+    std::vector<uint8_t> alive;                   //po gaussianu iz datoteke: 0 = odrezan
+    std::vector<std::vector<uint32_t>> cuts;      //svako rezanje, za korak natrag
     std::string problem;
     bool loaded = false;
     std::atomic<bool> loading{false};
     size_t splatCount = 0;
 };
+
+//Je li .ply gaussian splat (a ne mreza ili oblak tocaka): glava mora imati koeficijente boje
+//f_dc i mjerilo. Cita se samo glava, prvih par kilobajta
+inline bool isGaussianPly(const std::string& path){
+    std::ifstream file(path, std::ios::binary);
+    if(!file) return false;
+    char head[4096] = {0};
+    file.read(head, sizeof(head) - 1);
+    const std::string text(head, size_t(file.gcount()));
+    const size_t end = text.find("end_header");
+    if(text.rfind("ply", 0) != 0 || end == std::string::npos) return false;
+    const std::string header = text.substr(0, end);
+    return header.find("f_dc_0") != std::string::npos && header.find("scale_0") != std::string::npos;
+}
 
 }

@@ -14,6 +14,7 @@
 #include "Core/LoomInitializer.h"
 
 #include "../src/LoomSplat.h"
+#include "../src/LoomSplatCut.h"
 #include "../src/LoomViewport.h"
 
 #include <Spool/GaussianPly.h>
@@ -94,6 +95,84 @@ int main(){
         glm::length(brightest - expected) < 1.5f && expected.y < camera.centre.y,
         fmt("nacrtan na (%.1f, %.1f), pogled kaze (%.1f, %.1f); naopako bi bio na y %.1f",
             brightest.x, brightest.y, expected.x, expected.y, 2.0f * camera.centre.y - expected.y));
+
+    //-- rezanje kockom (LoomSplatCut.h): okrenuta kocka nejednakih stranica, korak natrag, spremanje
+    //Resetka 10x10x10 s harmonicima prvog stupnja - spremanje mora sacuvati i njih, a ne samo boju
+    //koju pogled crta
+    {
+        Spool::GaussianCloud grid;
+        grid.shDegree = 1;
+        grid.restStride = 9;
+        for(int i = 0; i < 1000; ++i){
+            Spool::Gaussian one = g;
+            one.position[0] = -0.9f + 0.2f * float(i % 10);
+            one.position[1] = -0.9f + 0.2f * float((i / 10) % 10);
+            one.position[2] = -0.9f + 0.2f * float(i / 100);
+            grid.gaussians.push_back(one);
+            for(int k = 0; k < 9; ++k) grid.shRest.push_back(float(i) + 0.01f * float(k));
+        }
+        const std::string gridPath = (std::filesystem::temp_directory_path() / "loom_resetka.ply").string();
+        Spool::saveGaussianPly(gridPath, grid);
+        const Warp::Id gridSplat = stage.create("Resetka", group);
+        stage.get(gridSplat)->splat = Warp::Splat{gridPath};
+        const Warp::Id cube = stage.create("Kocka");
+        stage.get(cube)->mesh = Warp::Mesh{Warp::Shape::Cube};
+        const glm::mat4 gridWorld = stage.worldMatrix(gridSplat, 1.0);
+        stage.get(cube)->local.translation = glm::vec3(gridWorld * glm::vec4(0.1f, 0.0f, -0.2f, 1.0f));
+        stage.get(cube)->local.rotation = stage.get(group)->local.rotation * glm::angleAxis(0.4f, glm::vec3(0.0f, 0.0f, 1.0f));
+        stage.get(cube)->local.scale = glm::vec3(1.2f, 0.7f, 2.0f) * 1.7f;
+
+        Loom::ViewportSplat cutter(loom);
+        cutter.want(gridPath);
+        for(int i = 0; i < 500 && cutter.isLoading(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        cutter.prepare(camera.view * gridWorld, eyeLocal, camera.focal, camera.centre, camera.rect, 1.0f);
+
+        //Ocekivano, izravno: tocka u svijetu u prostor kocke preko njezine matrice
+        const glm::mat4 cubeWorld = stage.worldMatrix(cube, 1.0);
+        std::vector<uint8_t> inside(1000);
+        size_t expectedInside = 0;
+        for(int i = 0; i < 1000; ++i){
+            const glm::vec3 w = glm::vec3(gridWorld * glm::vec4(grid.gaussians[size_t(i)].position[0], grid.gaussians[size_t(i)].position[1],
+                                                                grid.gaussians[size_t(i)].position[2], 1.0f));
+            const glm::vec3 c = glm::vec3(glm::inverse(cubeWorld) * glm::vec4(w, 1.0f));
+            inside[size_t(i)] = std::fabs(c.x) <= 0.5f && std::fabs(c.y) <= 0.5f && std::fabs(c.z) <= 0.5f;
+            expectedInside += inside[size_t(i)];
+        }
+        const glm::mat4 box = Loom::cubeFromSplat(stage, cube, gridSplat, 1.0);
+        const size_t counted = cutter.countInBox(box);
+        const size_t removedInside = cutter.cutBox(box, true);
+        const bool afterInside = cutter.count() == 1000 - expectedInside && cutter.countInBox(box) == 0;
+        report.check("kocka (okrenuta, nejednakih stranica, kroz grupu) brise tocno ono u sebi",
+            expectedInside > 50 && expectedInside < 500 && counted == expectedInside && removedInside == expectedInside && afterInside,
+            fmt("u kocki %zu (ocekivano %zu), obrisano %zu, crta se %zu", counted, expectedInside, removedInside, cutter.count()));
+
+        const bool undone = cutter.undoCut() && cutter.count() == 1000 && !cutter.hasCuts();
+        const size_t removedOutside = cutter.cutBox(box, false);
+        report.check("korak natrag vrati sve; 'izvan' ostavi samo kocku", undone && removedOutside == 1000 - expectedInside &&
+                     cutter.count() == expectedInside,
+            fmt("nakon koraka natrag %s, izvan obrisano %zu, ostalo %zu", undone ? "1000" : "krivo", removedOutside, cutter.count()));
+
+        const std::string cutPath = Loom::cutOutputPath(gridPath);
+        const std::string problem = cutter.saveCut(cutPath);
+        bool same = problem.empty();
+        size_t written = 0;
+        if(same){
+            const Spool::GaussianCloud back = Spool::loadGaussianPly(cutPath);
+            written = back.count();
+            size_t k = 0;
+            for(int i = 0; i < 1000 && same; ++i){
+                if(!inside[size_t(i)]) continue;
+                same = k < back.count() && back.gaussians[k].position[0] == grid.gaussians[size_t(i)].position[0] &&
+                       back.restFor(k)[4] == grid.restFor(size_t(i))[4];
+                ++k;
+            }
+        }
+        report.check("spremljeno: samo kocka, s harmonicima, u <ime>_rezano.ply", same && written == expectedInside &&
+                     cutPath.find("loom_resetka_rezano.ply") != std::string::npos && Loom::cutOutputPath(cutPath) == cutPath,
+            fmt("%s, zapisano %zu", problem.empty() ? "ok" : problem.c_str(), written));
+        std::filesystem::remove(gridPath);
+        std::filesystem::remove(cutPath);
+    }
 
     std::filesystem::remove(path);
     report.checkNoValidationMessages();
