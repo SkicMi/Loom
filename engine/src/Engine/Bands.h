@@ -16,7 +16,22 @@ namespace Engine{
 // Stajalo je u Track.cpp i koristilo se samo ondje. Poklapanju potpisa treba isto, i pod istim
 // uvjetom, pa je izdvojeno umjesto prepisano
 //=============================================================================================
+//=============================================================================================
+// POSAO VEC RASPODIJELJEN IZVANA. Kad vanjska petlja vec drzi sve jezgre - na primjer po jedan
+// kadar po dretvi - pojasevi unutar njega samo bi stvarali dretve koje cekaju jedna drugu. Dok
+// postoji SerialBands, inBands na toj dretvi radi u jednom komadu. Rezultat je isti: pojasevi se
+// ionako spajaju redom, pa je jedan pojas isto sto i svi zaredom
+//=============================================================================================
+inline thread_local bool bandsSerial = false;
+
+struct SerialBands{
+    bool before;
+    SerialBands() : before(bandsSerial){ bandsSerial = true; }
+    ~SerialBands(){ bandsSerial = before; }
+};
+
 inline uint32_t bandCount(int items, int minimumPerBand = 16){
+    if(bandsSerial) return 1;
     const uint32_t cores = std::max(1u, std::thread::hardware_concurrency());
     //Ispod ovoga pokretanje dretve stoji vise nego posao koji bi dobila
     return std::max(1u, std::min(cores, uint32_t(std::max(1, items / minimumPerBand))));

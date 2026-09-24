@@ -3,6 +3,7 @@
 #include "Engine/Track.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <numeric>
 #include <unordered_map>
@@ -191,32 +192,67 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     SiftConfig sift = config.sift;
     if(config.patchFromWidth) sift.patch = describe.patch;
 
+    //=====================================================================================
+    // KADROVI USPOREDO. Unutar kadra su zamucivanja i potpisi vec po pojasevima, ali izmedju njih
+    // ostaje mnogo serijskog (pretvorba, razlike zagladjenja, prepolovljenje oktave), pa je 28
+    // dretvi na 4K kadru radilo kao desetak. Ovdje svaka dretva uzme cijeli kadar i racuna ga u
+    // jednom komadu (SerialBands). Kadrovi su medjusobno neovisni i svaki pise samo u svoje mjesto,
+    // pa je izlaz isti do bita.
+    //
+    // NAJVISE DVANAEST ODJEDNOM. Jedan 4K kadar u prostoru mjerila drzi oko 0.4 GB ploha
+    //=====================================================================================
     const auto featuresStarted = Clock::now();
-    for(uint32_t frame = 0; frame < frames; ++frame){
+    std::vector<double> detectionOf(frames, 0.0), descriptorOf(frames, 0.0);
+    std::vector<SiftTiming> timingOf(frames);
+    auto featuresOf = [&](uint32_t frame){
         const auto detectionStarted = Clock::now();
         if(config.useScaleSpace){
             const std::vector<Keypoint> keys = detectScaleSpace(working[frame], config.scaleSpace);
-            result.detectionSeconds += secondsSince(detectionStarted);
+            detectionOf[frame] = secondsSince(detectionStarted);
             points[frame].reserve(keys.size());
             std::vector<float> scales;
             scales.reserve(keys.size());
             for(const Keypoint& one : keys){ points[frame].push_back(one.pixel); scales.push_back(one.scale); }
             const auto descriptorStarted = Clock::now();
-            SiftTiming timing;
-            siftSignatures[frame] = describeSiftScaled(working[frame], points[frame], scales, sift, &timing);
-            result.descriptorSeconds += secondsSince(descriptorStarted);
-            result.descriptorSmoothingSeconds += timing.smoothingSeconds;
-            result.descriptorGradientSeconds += timing.gradientSeconds;
-            result.descriptorBuildSeconds += timing.descriptorSeconds;
+            siftSignatures[frame] = describeSiftScaled(working[frame], points[frame], scales, sift, &timingOf[frame]);
+            descriptorOf[frame] = secondsSince(descriptorStarted);
         }else{
             points[frame] = detectCorners(working[frame], detect);
-            result.detectionSeconds += secondsSince(detectionStarted);
+            detectionOf[frame] = secondsSince(detectionStarted);
             const auto descriptorStarted = Clock::now();
             if(config.useSift) siftSignatures[frame] = describeSiftAll(working[frame], points[frame], sift);
             else               signatures[frame] = describeAll(working[frame], points[frame], describe);
-            result.descriptorSeconds += secondsSince(descriptorStarted);
+            descriptorOf[frame] = secondsSince(descriptorStarted);
         }
-        offset[frame + 1] = offset[frame] + uint32_t(points[frame].size());
+    };
+    const uint32_t workerCount = std::min({frames, std::max(1u, std::thread::hardware_concurrency()), 12u});
+    if(workerCount <= 1){
+        for(uint32_t frame = 0; frame < frames; ++frame) featuresOf(frame);
+    }else{
+        std::atomic<uint32_t> nextFrame{0};
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount);
+        for(uint32_t worker = 0; worker < workerCount; ++worker){
+            workers.emplace_back([&]{
+                SerialBands serial;
+                for(uint32_t frame = nextFrame++; frame < frames; frame = nextFrame++) featuresOf(frame);
+            });
+        }
+        for(std::thread& worker : workers) worker.join();
+    }
+    for(uint32_t frame = 0; frame < frames; ++frame) offset[frame + 1] = offset[frame] + uint32_t(points[frame].size());
+
+    //Faze su izmjerene po dretvi; ovdje se svedu na zidno vrijeme u istom omjeru, da se ispis
+    //zbraja kao i prije (detekcija + potpisi = znacajke)
+    double threadSeconds = 0.0;
+    for(uint32_t frame = 0; frame < frames; ++frame) threadSeconds += detectionOf[frame] + descriptorOf[frame];
+    const double toWall = threadSeconds > 0.0 ? secondsSince(featuresStarted) / threadSeconds : 0.0;
+    for(uint32_t frame = 0; frame < frames; ++frame){
+        result.detectionSeconds += detectionOf[frame] * toWall;
+        result.descriptorSeconds += descriptorOf[frame] * toWall;
+        result.descriptorSmoothingSeconds += timingOf[frame].smoothingSeconds * toWall;
+        result.descriptorGradientSeconds += timingOf[frame].gradientSeconds * toWall;
+        result.descriptorBuildSeconds += timingOf[frame].descriptorSeconds * toWall;
     }
     result.localizationPixels = config.useScaleSpace ? 1.0f : float(shrink);
     result.featuresTotal = offset[frames];
