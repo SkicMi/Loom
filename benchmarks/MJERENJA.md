@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (131 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (141 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -34,6 +34,7 @@ Iz `benchmarks/mjerenja.jsonl` (131 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 23:05 | C0257 | cijela snimka, zadana f 4259 k1 -0.025 (nova samokalibracija) | 231 | 1210 | 229/229 | 266441 | 1.209 | 2.981 | 2.530 | 4259 |  | 167.20 | 220.90 | 1525 | 279.80 |  | zapisano_px=1.482, izlaz=e_f4259, faze_s=pracenje i graf 437.3, brzi kandidat 125.2, puna obrada 286.8, provjere 0.0, slike kadrova 78.0, pune slicice i USD 280.0, COLMAP i provjera 1.9 |
 | 2026-09-24 23:23 | C0257 | cijela snimka, f 4259, subpikselni uglovi | 231 | 1050 | 229/229 | 247002 | 1.152 | 2.705 | 2.410 | 4259 |  | 138.50 | 176.10 | 1301 | 266.90 | solve bolji (izdvojeni 2.705 prema 2.981 px), splat nije - ostaje iskljuceno | zapisano_px=1.371, izlaz=e_subpix, faze_s=pracenje i graf 365.0, brzi kandidat 84.4, puna obrada 251.9, provjere 0.0, slike kadrova 77.5, pune slicice i USD 267.2, COLMAP i provjera 3.4 |
 | 2026-09-24 23:43 | C0257 | cijela snimka, f 4259, rolling shutter | 231 | 1216 | 229/229 | 266441 | 1.209 | 2.981 | 2.530 | 4259 |  | 148.10 | 183.20 | 1516 | 275.20 |  | zapisano_px=1.482, izlaz=e_rs, faze_s=pracenje i graf 365.6, brzi kandidat 102.4, puna obrada 298.1, provjere 0.0, slike kadrova 76.6, pune slicice i USD 275.4, COLMAP i provjera 97.6 |
+| 2026-09-25 00:10 | C0257 | cijela snimka, f 3925 iz metapodataka objektiva (18 mm, ekv. 36.8 mm) | 231 | 996 | 229/229 | 266124 | 1.256 | 3.254 | 2.660 | 3925 |  | 107.80 | 191.20 | 1236 | 273.40 | solve slican (izdvojeni 3.254 px), splat -1.1 dB - --focal-from-metadata ostaje iskljucen | zapisano_px=1.571, izlaz=e_f3925, faze_s=pracenje i graf 332.7, brzi kandidat 99.5, puna obrada 240.0, provjere 0.0, slike kadrova 48.1, pune slicice i USD 273.6, COLMAP i provjera 1.6 |
 
 ## trening
 
@@ -63,6 +64,7 @@ Iz `benchmarks/mjerenja.jsonl` (131 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 23:15 | C0257 | E2 f 4259, 7000 koraka | 7000 | 1920x1080 | 1500000 | 547 | 25.20 | 21.07 | 0.809 |  | kamera=classic, izlaz=e_f4259.ply, izdvojenih=39 |
 | 2026-09-24 23:32 | C0257 | E3 f 4259 + subpiksel, 7000 koraka | 7000 | 1920x1080 | 1500000 | 540 | 24.83 | 21.16 | 0.798 |  | kamera=classic, izlaz=e_subpix.ply, izdvojenih=39 |
 | 2026-09-24 23:53 | C0257 | E4 f 4259 + rolling shutter, 7000 koraka | 7000 | 1920x1080 | 1500000 | 570 | 25.72 | 21.08 | 0.802 |  | kamera=rolling, izlaz=e_rs.ply, izdvojenih=39 |
+| 2026-09-25 00:18 | C0257 | E5 f 3925 metapodaci, 7000 koraka | 7000 | 1920x1080 | 1500000 | 508 | 23.54 | 18.95 | 0.779 |  | kamera=classic, izlaz=e_f3925.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -87,6 +89,8 @@ Iz `benchmarks/mjerenja.jsonl` (131 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 23:33 | C0257 | E3 f 4259 + subpiksel | 3840x2160 | 25.09 | 0.824 | 0.098 | 39 |  |  | psnr_medijan=24.78, splat=e_subpix.ply |
 | 2026-09-24 23:53 | C0257 | E4 f 4259 + rolling shutter | 1920x1080 | 25.63 | 0.802 | 0.295 | 39 |  |  | psnr_medijan=25.72, splat=e_rs.ply |
 | 2026-09-24 23:53 | C0257 | E4 f 4259 + rolling shutter | 3840x2160 | 25.55 | 0.827 | 0.082 | 39 |  |  | psnr_medijan=25.66, splat=e_rs.ply |
+| 2026-09-25 00:19 | C0257 | E5 f 3925 | 1920x1080 | 24.15 | 0.775 | 0.276 | 39 |  |  | psnr_medijan=23.54, splat=e_f3925.ply |
+| 2026-09-25 00:19 | C0257 | E5 f 3925 | 3840x2160 | 24.04 | 0.782 | 0.080 | 39 |  |  | psnr_medijan=23.46, splat=e_f3925.ply |
 
 ## usporedba
 
@@ -148,6 +152,12 @@ Iz `benchmarks/mjerenja.jsonl` (131 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 23:53 | C0257 | rolling shutter prema bez, f 4259, 7000 koraka (d1) | PSNR dB | 0.386 | 0.147 | 25/39 | PSNR +0.39 (stvarno), ali ostrina -9 %/-20 % - nije zadano; provjeriti 3DGUT bez RS | a=q_e_f4259_d1, b=q_e_rs_d1 |
 | 2026-09-24 23:53 | C0257 | rolling shutter prema bez, f 4259, 7000 koraka (d1) | SSIM | 0.001 | 0.001 | 24/39 | PSNR +0.39 (stvarno), ali ostrina -9 %/-20 % - nije zadano; provjeriti 3DGUT bez RS | a=q_e_f4259_d1, b=q_e_rs_d1 |
 | 2026-09-24 23:53 | C0257 | rolling shutter prema bez, f 4259, 7000 koraka (d1) | ostrina | -0.021 | 0.002 | 0/39 | PSNR +0.39 (stvarno), ali ostrina -9 %/-20 % - nije zadano; provjeriti 3DGUT bez RS | a=q_e_f4259_d1, b=q_e_rs_d1 |
+| 2026-09-25 00:19 | C0257 | f 3925 (metapodaci) prema f 4259 (d2) | PSNR dB | -1.092 | 0.189 | 6/39 | odbaceno: ekvivalent iz metapodataka nije pravi kadar (-1.1 dB, SSIM 0/39) | a=q_e_f4259_d2, b=q_e_f3925_d2 |
+| 2026-09-25 00:19 | C0257 | f 3925 (metapodaci) prema f 4259 (d2) | SSIM | -0.025 | 0.001 | 0/39 | odbaceno: ekvivalent iz metapodataka nije pravi kadar (-1.1 dB, SSIM 0/39) | a=q_e_f4259_d2, b=q_e_f3925_d2 |
+| 2026-09-25 00:19 | C0257 | f 3925 (metapodaci) prema f 4259 (d2) | ostrina | -0.048 | 0.010 | 6/39 | odbaceno: ekvivalent iz metapodataka nije pravi kadar (-1.1 dB, SSIM 0/39) | a=q_e_f4259_d2, b=q_e_f3925_d2 |
+| 2026-09-25 00:19 | C0257 | f 3925 (metapodaci) prema f 4259 (d1) | PSNR dB | -1.126 | 0.185 | 6/39 | odbaceno: ekvivalent iz metapodataka nije pravi kadar (-1.1 dB, SSIM 0/39) | a=q_e_f4259_d1, b=q_e_f3925_d1 |
+| 2026-09-25 00:19 | C0257 | f 3925 (metapodaci) prema f 4259 (d1) | SSIM | -0.044 | 0.001 | 0/39 | odbaceno: ekvivalent iz metapodataka nije pravi kadar (-1.1 dB, SSIM 0/39) | a=q_e_f4259_d1, b=q_e_f3925_d1 |
+| 2026-09-25 00:19 | C0257 | f 3925 (metapodaci) prema f 4259 (d1) | ostrina | -0.023 | 0.004 | 6/39 | odbaceno: ekvivalent iz metapodataka nije pravi kadar (-1.1 dB, SSIM 0/39) | a=q_e_f4259_d1, b=q_e_f3925_d1 |
 
 ## dekodiranje
 

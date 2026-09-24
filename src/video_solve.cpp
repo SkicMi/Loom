@@ -416,8 +416,9 @@ int main(int realArgc, char** realArgv){
     //Bez nje ta provjera ostaje s brzog kandidata i tako se i ispise
     bool measureHeldOut = false;
     //--focal-from-metadata: vidno polje iz zarisne koju kamera zapise u snimku (Sonyjev rtmd,
-    //ekvivalent za 35 mm) umjesto samokalibracije. Solve ne razlikuje f 4259 od 4650 na C0257,
-    //a splat da (+0.4 dB) - pa zarisnu koja se da procitati ne treba pogadjati
+    //ekvivalent za 35 mm) umjesto samokalibracije. ISKLJUCENO, i to je izmjereno: na C0257
+    //ekvivalent 36.8 mm daje f 3925 px, a splat je s tim 1.1 dB losiji nego sa samokalibracijom
+    //(f 4259; SSIM losiji na svih 39 kadrova). Ekvivalent ne opisuje stvarni kadar videa
     bool focalFromMetadata = false;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
