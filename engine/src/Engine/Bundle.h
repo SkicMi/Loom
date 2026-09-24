@@ -52,7 +52,38 @@ struct BundleConfig{
     // slobodnih kamera, a tocnost ostaje jer se lokalna geometrija i dalje ispravlja svaki korak
     //=========================================================================================
     std::vector<uint8_t> fixedCameras;
+
+    //=========================================================================================
+    // ROLLING SHUTTER. Nula znaci globalni zatvarac - tada se ne racuna nista od ovoga i bundle
+    // je bit po bit isti kao prije.
+    //
+    // ZASTO. CMOS senzor cita sliku redak po redak: gornji red je snimljen prije donjeg. Dok se
+    // kamera mice, svaki redak ima svoju pozu, a jedna poza po kadru to ne moze objasniti. Na
+    // C0257 je promjenjivi dio polja ostataka 7 puta veci nego na sintetici (0.535 naspram 0.077
+    // px), a staticni samo 2.8 puta - dakle ono sto kvari je nesto sto se mijenja s gibanjem.
+    //
+    // MODEL. Opazanje u retku v snimljeno je u trenutku s = (v - cy) * rowTime (u razmacima
+    // izmedju kadrova, sredina slike je trenutak kadra). Poza tada je poza kadra pomaknuta
+    // brzinom kamere: polozaj + s * linearVelocity, orijentacija * exp(s * angularVelocity).
+    // Brzine daje pozivatelj (iz susjednih kadrova); ovdje su stalne tijekom optimizacije.
+    //
+    // rowTime je jedan broj za cijelu snimku - vrijeme citanja senzora podijeljeno visinom
+    // slike i razmakom kadrova - jer je to svojstvo kamere, a ne kadra
+    //=========================================================================================
+    double rowTime = 0.0;
+    std::vector<glm::vec3> linearVelocity;     //po kameri, jedinica svijeta po razmaku kadrova
+    std::vector<glm::vec3> angularVelocity;    //po kameri, radijani po razmaku kadrova, u osima kamere
 };
+
+//Poza kamere u trenutku kad je snimljen redak 'row' (vidi BundleConfig::rowTime). Bez rolling
+//shuttera ili bez brzine za tu kameru vraca pozu kadra nepromijenjenu
+Pose rollingShutterPose(const Pose& pose, const BundleConfig& config, size_t camera, float row, float centreRow);
+
+//Brzine kamera iz susjednih kadrova (sredisnja razlika; na krajevima jednostrana). times su
+//redni brojevi kadrova snimke, pa su brzine po JEDNOM razmaku kadrova, kao sto rowTime trazi.
+//Kutna brzina je u osima kamere
+void rollingShutterVelocities(const std::vector<Pose>& poses, const std::vector<double>& times,
+                              std::vector<glm::vec3>& linear, std::vector<glm::vec3>& angular);
 
 struct BundleTiming{
     double totalSeconds = 0.0;

@@ -452,6 +452,11 @@ target_link_libraries(OverlayBox PRIVATE Engine Spool)
 add_executable(VideoSolve src/video_solve.cpp)
 target_link_libraries(VideoSolve PRIVATE Spool Engine)
 
+# RollingShutterProbe - koliko rolling shutter kvari gotovo rjesenje i koliko traje citanje senzora
+# (Bundle.h, BundleConfig::rowTime). Ne solva iznova: zavrsni bundle nad rezultatom, po vremenu citanja
+add_executable(RollingShutterProbe src/rolling_shutter_probe.cpp)
+target_link_libraries(RollingShutterProbe PRIVATE Engine)
+
 # Loom - desktop alat. `Loom` otvori prozor i odande se bira sto alat radi. Solver se pokrece kao
 # zaseban proces, pa se nijedna linija VideoSolvea ne mijenja da bi suicelje postojalo
 # Meta se zove LoomDesk jer su "Loom" (staticka biblioteka) i "LoomApp" (src/main.cpp) vec

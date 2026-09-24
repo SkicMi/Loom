@@ -48,7 +48,9 @@ bool reprojectionResidual(const Pose& pose,
 double costOf(const std::vector<Pose>& poses, const std::vector<glm::vec3>& points,
               const Intrinsics& intrinsics, const std::vector<Observation>& observations,
               double delta,
-              double& median){
+              double& median,
+              const BundleConfig& config){
+    const bool rolling = config.rowTime != 0.0;
     double cost = 0.0;
     std::vector<double> lengths;
     lengths.reserve(observations.size());
@@ -56,7 +58,10 @@ double costOf(const std::vector<Pose>& poses, const std::vector<glm::vec3>& poin
     for(const Observation& observation : observations){
         if(observation.camera >= poses.size() || observation.point >= points.size()) continue;
         double residual[2];
-        if(!reprojectionResidual(poses[observation.camera], intrinsics,
+        const Pose pose = rolling ? rollingShutterPose(poses[observation.camera], config, observation.camera,
+                                                       observation.pixel.y, intrinsics.cy)
+                                  : poses[observation.camera];
+        if(!reprojectionResidual(pose, intrinsics,
                                  points[observation.point], observation.pixel, residual)){
             cost += double(intrinsics.width) * double(intrinsics.width);
             lengths.push_back(double(intrinsics.width));
@@ -126,6 +131,46 @@ bool bundleJacobians(const Pose& pose,
     return true;
 }
 
+}
+
+Pose rollingShutterPose(const Pose& pose, const BundleConfig& config, size_t camera, float row, float centreRow){
+    if(config.rowTime == 0.0) return pose;
+    const float s = float(double(row - centreRow) * config.rowTime);
+    Pose out = pose;
+    if(camera < config.linearVelocity.size()) out.position += s * config.linearVelocity[camera];
+    if(camera < config.angularVelocity.size()){
+        const glm::vec3 turn = s * config.angularVelocity[camera];
+        const float angle = glm::length(turn);
+        if(angle > 1e-12f) out.orientation = glm::normalize(pose.orientation * glm::angleAxis(angle, turn / angle));
+    }
+    return out;
+}
+
+void rollingShutterVelocities(const std::vector<Pose>& poses, const std::vector<double>& times,
+                              std::vector<glm::vec3>& linear, std::vector<glm::vec3>& angular){
+    const size_t n = poses.size();
+    linear.assign(n, glm::vec3(0.0f));
+    angular.assign(n, glm::vec3(0.0f));
+    if(n < 2 || times.size() != n) return;
+    //Kut rotacije od a do b u osima a: log(a^-1 b)
+    auto turn = [](const glm::quat& a, const glm::quat& b){
+        glm::quat d = glm::normalize(glm::conjugate(a) * b);
+        if(d.w < 0.0f) d = -d;
+        const float sine = glm::length(glm::vec3(d.x, d.y, d.z));
+        if(sine < 1e-9f) return glm::vec3(0.0f);
+        return glm::vec3(d.x, d.y, d.z) * (2.0f * std::atan2(sine, d.w) / sine);
+    };
+    for(size_t i = 0; i < n; ++i){
+        const size_t a = i == 0 ? 0 : i - 1;
+        const size_t b = i + 1 == n ? n - 1 : i + 1;
+        const double span = times[b] - times[a];
+        if(span <= 0.0) continue;
+        linear[i] = (poses[b].position - poses[a].position) / float(span);
+        //Kutna brzina u osima kamere i: zbroj dvaju polukoraka, svaki u osima svoje pocetne poze,
+        //prebacen u osi kamere i (za male kutove razlika je drugog reda)
+        const glm::vec3 total = turn(poses[i].orientation, poses[b].orientation) - turn(poses[i].orientation, poses[a].orientation);
+        angular[i] = total / float(span);
+    }
 }
 
 bool pointJacobian(const Pose& pose,
@@ -217,7 +262,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
 
     double median = 0.0;
     const auto initialCostStarted = Clock::now();
-    double cost = costOf(result.poses, result.points, intrinsics, observations, config.huberPixels, median);
+    double cost = costOf(result.poses, result.points, intrinsics, observations, config.huberPixels, median, config);
     result.timing.costSeconds += elapsed(initialCostStarted);
     result.startMedian = median;
     result.endMedian = median;
@@ -270,7 +315,10 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
                 slot.valid = 0;
                 if(observation.camera >= cameraCount || observation.point >= pointCount) continue;
 
-                const Pose& pose = result.poses[observation.camera];
+                //Pod rolling shutterom jakobijan se racuna u pozi RETKA. Korak se i dalje primjenjuje
+                //na pozu kadra; razlika u osima je reda s*|omega|*|korak|, dakle drugog reda
+                const Pose pose = rollingShutterPose(result.poses[observation.camera], config, observation.camera,
+                                                     observation.pixel.y, intrinsics.cy);
                 const glm::vec3& point = result.points[observation.point];
                 if(!bundleJacobians(pose, intrinsics, point, observation.pixel,
                                     slot.residual, slot.pointPart, slot.cameraPart)) continue;
@@ -528,7 +576,7 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
 
         double candidateMedian = 0.0;
         const auto candidateCostStarted = Clock::now();
-        const double candidateCost = costOf(candidate.poses, candidate.points, intrinsics, observations, config.huberPixels, candidateMedian);
+        const double candidateCost = costOf(candidate.poses, candidate.points, intrinsics, observations, config.huberPixels, candidateMedian, config);
         result.timing.costSeconds += elapsed(candidateCostStarted);
 
         if(candidateCost < cost){
