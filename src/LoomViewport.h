@@ -424,7 +424,7 @@ inline Warp::Id pickEntity(const Warp::Stage& stage, double frame, const ViewCam
     Warp::Id best = Warp::None;
     float bestDistance = 16.0f;
     stage.walk([&](const Warp::Entity& entity, int){
-        if(!entity.visible || (!entity.camera && !entity.mesh && !entity.joint)) return;
+        if(!entity.visible || (!entity.camera && !entity.mesh && !entity.joint && !entity.model)) return;
         glm::vec2 pixel;
         if(!project(camera, glm::vec3(stage.worldMatrix(entity.id, frame)[3]), pixel)) return;
         const float distance = glm::length(pixel - mouse);

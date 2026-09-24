@@ -63,7 +63,6 @@ int main(){
     config.appName = "pbr"; config.engineName = "Loom tests";
     config.headless = true;
     config.maxDescriptorSets = 256;
-    config.rendererConfig.clearColor = {0.0f, 0.0f, 0.0f, 0.0f};
     LoomInitializer loom(config);
 
     //Pogled koji nije u kutu prozora, i kamera kroz koju gleda s glavnom tockom izvan sredine
@@ -185,6 +184,16 @@ int main(){
         //Dvije plohe po 0.5 jedna preko druge (prednja i straznja): 1 - 0.5 * 0.5
         report.check("prozirni materijal: dvije plohe po pola", std::fabs(middle.a - 0.75f) < 0.02f,
             fmt("alfa %.3f (ocekivano 0.75)", middle.a));
+    }
+
+    //-- 5. tijelo bez materijala: zadani materijal u boji tijela ------------------------------------
+    {
+        stage.get(cube)->mesh->material = -1;
+        stage.get(cube)->mesh->colour = glm::vec3(0.95f, 0.55f, 0.15f);
+        const Pixels image = draw();
+        const glm::vec4 middle = image.width ? image.at(uint32_t(c.x), uint32_t(c.y)) : glm::vec4(0.0f);
+        report.check("tijelo bez materijala se crta u svojoj boji", middle.a > 0.99f && middle.r > middle.b * 2.0f,
+            fmt("sredina (%.2f %.2f %.2f %.2f), nacrtano %zu", middle.r, middle.g, middle.b, middle.a, meshes.drawnPrimitives));
     }
 
     std::filesystem::remove(green);

@@ -31,6 +31,8 @@
 #include "LoomPlate.h"
 #include "LoomScene.h"
 #include "LoomSplat.h"
+#include "LoomEditorTools.h"
+#include "LoomPbr.h"
 #include "LoomViewport.h"
 #include "LoomWeaverMotion.h"
 
@@ -67,7 +69,7 @@ namespace fs = std::filesystem;
 //jer solve u pozadini stvara nove mape rezultata
 struct Browser{
     fs::path at;
-    std::vector<fs::path> folders, videos, results, projects, motions;
+    std::vector<fs::path> folders, videos, results, projects, motions, models, images;
 
     void refresh(){
         folders.clear();
@@ -75,6 +77,8 @@ struct Browser{
         results = Loom::resultsIn(at);
         videos = Loom::videosIn(at);
         motions = Loom::weaverMotionFilesIn(at);
+        models = Loom::modelFilesIn(at);
+        images = Loom::imageFilesIn(at);
         std::error_code error;
         for(const auto& entry : fs::directory_iterator(at, error)){
             if(error) break;
@@ -143,6 +147,7 @@ std::string kindOf(const Warp::Entity& entity){
     if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "kocka" : "ravnina";
     if(entity.splat) return "gaussian splat";
     if(entity.joint) return "zglob";
+    if(entity.model) return "model (glTF)";
     return entity.children.empty() ? "nul" : "grupa";
 }
 
@@ -166,7 +171,8 @@ int main(int argc, char** argv){
     config.engineName = "Loom";
     config.enableDepth = false;
     //Splat rasterizator trazi 21 set i 71 storage buffer; zadanih 64 po tipu strog driver odbije
-    config.maxDescriptorSets = 256;
+    //PBR materijali (LoomPbr.h) trebaju po materijalu set s pet mapa, u svakom kadru u letu
+    config.maxDescriptorSets = 1024;
     LoomInitializer loom(config);
 
     GLFWwindow* window = loom.window->getWindow();
@@ -177,11 +183,18 @@ int main(int argc, char** argv){
     //Scena ima svoj slikar: oblak od sto tisuca tocaka ne stane u kapacitet suicelja
     UiPainter scenePainter(loom.device, loom.command, loom.getDescriptorPool(),
                            loom.getColorFormat(), vk::Format::eUndefined, 1u << 20);
+    //Sloj IZNAD meseva: strelice, krugovi i alat plohe. Tocke i mreza su ispod njih - crte nemaju
+    //dubinu, pa bi gusti zid tocaka iza kocke inace prekrio cijelu kocku
+    UiPainter overlayPainter(loom.device, loom.command, loom.getDescriptorPool(),
+                             loom.getColorFormat(), vk::Format::eUndefined, 1u << 16);
 
     //Argumenti: prva mapa, pa zastavice za snimku (vidi zaglavlje)
     fs::path startAt = fs::current_path();
     std::string startProject;             //loom projekt.usda otvara projekt
     std::string shotPath, shotResult, shotSave, shotMotion;
+    std::string shotModel;                //--model: glTF na mjestu pogleda
+    float shotSurface[4] = {0, 0, 0, 0};  //--ploha x y sirina visina: pravokutnik u pogledu, pa kocka na plohu
+    bool shotSurfaceWanted = false;
     double shotFrame = -1.0;
     bool shotThrough = false, shotCube = false, shotNoSplat = false, shotRotate = false;
     double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
@@ -194,6 +207,11 @@ int main(int argc, char** argv){
         else if(argument == "--bez-splata") shotNoSplat = true;
         else if(argument == "--rotacija") shotRotate = true;
         else if(argument == "--pokret" && i + 1 < argc) shotMotion = argv[++i];
+        else if(argument == "--model" && i + 1 < argc) shotModel = argv[++i];
+        else if(argument == "--ploha" && i + 4 < argc){
+            for(int k = 0; k < 4; ++k) shotSurface[k] = float(std::atof(argv[++i]));
+            shotSurfaceWanted = true;
+        }
         else if(argument == "--spremi" && i + 1 < argc) shotSave = argv[++i];
         else if(argument == "--kocka") shotCube = true;
         else if(argument == "--kocka-u" && i + 1 < argc){ shotCube = true; shotCubeFrame = std::atof(argv[++i]); }
@@ -619,9 +637,41 @@ int main(int argc, char** argv){
 
     //-- splat u pogledu -----------------------------------------------------------------------------
     Loom::ViewportSplat viewportSplat(loom);
+
+    //-- PBR meshevi, materijali, ploha iz odabira (LoomPbr.h, LoomEditorTools.h) -------------------
+    Loom::ViewportMeshes viewportMeshes(loom);
+    Loom::MaterialPanelState materialState;
+    Loom::SurfaceTool surfaceTool;
+    view.gpuMeshes = true;
+
+    //Poslije uvoza modela: odabran cvor s mrezom (pa se vide njegovi materijali), a u sceni koja je
+    //bila prazna pogled se uokviri na model - "Uokviri" gleda oblak tocaka, a modela bez oblaka nema
+    auto afterModelImport = [&](const Loom::ModelImportReport& report, bool wasEmpty){
+        Warp::Id meshNode = report.group;
+        std::vector<Warp::Id> pending{report.group};
+        while(!pending.empty()){
+            const Warp::Id id = pending.back();
+            pending.pop_back();
+            const Warp::Entity* e = stage.get(id);
+            if(!e) continue;
+            if(e->model){ meshNode = id; break; }
+            pending.insert(pending.end(), e->children.rbegin(), e->children.rend());
+        }
+        selected = meshNode;
+        focus = Focus::Entity;
+        extentDirty = true;
+        if(wasEmpty && stage.get(report.group)){
+            const Warp::Entity& group = *stage.get(report.group);
+            const float height = std::max(1e-3f, (report.high.y - report.low.y) * group.local.scale.y);
+            view.lookThrough = Warp::None;
+            view.orbit.target = group.local.translation + glm::vec3(0.0f, 0.5f * height + report.low.y * group.local.scale.y, 0.0f);
+            view.orbit.distance = height * 2.2f;
+        }
+    };
     bool showSplat = !shotNoSplat;
     bool splatWasLoading = false;
     int splatSettledFrames = 0;
+    int meshSettledFrames = 0;
 
     uint32_t framesDrawn = 0;
     if(!startProject.empty()){
@@ -644,6 +694,30 @@ int main(int argc, char** argv){
         }
     }
     if(!shotMotion.empty()){ importMotion(shotMotion); std::printf("%s\n", message.c_str()); }
+    if(!shotModel.empty() || shotSurfaceWanted){
+        int w = 0, h = 0;
+        glfwGetWindowSize(window, &w, &h);
+        const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h)).viewport, view);
+        extent = Loom::sceneExtent(stage, frame);
+        if(!shotModel.empty()){
+            const bool wasEmpty = stage.size() == 0;
+            const Loom::ModelImportReport report = Loom::importModelAtView(stage, shotModel, frame, camera, extent);
+            std::printf("model: %s%zu cvorova, %zu mreza, %zu materijala\n", report.problem.c_str(), report.nodes, report.meshes, report.materials);
+            afterModelImport(report, wasEmpty);
+        }
+        if(shotSurfaceWanted){
+            //Pravokutnik je zadan u pikselima POGLEDA (od njegovog gornjeg lijevog kuta)
+            const Treadle::Rect r{camera.rect.x + shotSurface[0], camera.rect.y + shotSurface[1], shotSurface[2], shotSurface[3]};
+            surfaceTool.active = true;
+            surfaceTool.selected = Loom::selectFrontPoints(stage, frame, camera, r);
+            surfaceTool.fit = Loom::fitSurface(surfaceTool.selected, camera.eye);
+            selected = Loom::placeOnSurface(stage, surfaceTool, Warp::Shape::Cube);
+            surfaceTool.active = false;         //snimka pokazuje kocku, ne odabir preko nje
+            std::printf("ploha: %zu tocaka, %zu u ravnini, normala %.3f %.3f %.3f\n", surfaceTool.fit.total, surfaceTool.fit.used,
+                        surfaceTool.fit.normal.x, surfaceTool.fit.normal.y, surfaceTool.fit.normal.z);
+        }
+        focus = Focus::Entity;
+    }
     if(!shotSave.empty()){
         projectPath = shotSave;
         saveProjectNow();
@@ -805,8 +879,11 @@ int main(int argc, char** argv){
             if(nul){ selected = stage.create("Nul"); focus = Focus::Entity; }
             auto [moveTool, afterMove] = toolButton("W", afterNul + 12.0f, y, h, tool == Tool::Move);
             if(moveTool) tool = Tool::Move;
-            auto [rotateTool, afterRotate] = toolButton("E", afterMove, y, h, tool == Tool::Rotate);
+            auto [rotateTool, afterRotateTool] = toolButton("E", afterMove, y, h, tool == Tool::Rotate);
             if(rotateTool) tool = Tool::Rotate;
+            //Ploha iz odabira: vucenjem u pogledu se oznaci komad plohe (LoomEditorTools.h)
+            auto [surfaceButton, afterRotate] = toolButton("S", afterRotateTool, y, h, surfaceTool.active);
+            if(surfaceButton) surfaceTool.active = !surfaceTool.active;
             auto [fit, afterFit] = toolButton("Uokviri (F)", afterRotate + 12.0f, y, h);
             if(fit){ view.lookThrough = Warp::None; Loom::frameAll(stage.size() ? stage : live, frame, view.orbit); }
             auto [through, afterThrough] = toolButton("Kroz kameru (0)", afterFit, y, h, view.lookThrough != Warp::None);
@@ -924,6 +1001,29 @@ int main(int argc, char** argv){
             for(const fs::path& motion : browser.motions){
                 if(ui.selectable("[pokret] " + motion.filename().string(), false)){
                     importMotion(motion);
+                }
+            }
+            for(const fs::path& model : browser.models){
+                if(ui.selectable("[model] " + model.filename().string(), false)){
+                    const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
+                    const bool wasEmpty = stage.size() == 0;
+                    const Loom::ModelImportReport report = Loom::importModelAtView(stage, model, frame, camera, extent);
+                    if(!report.problem.empty()) message = "model: " + report.problem;
+                    else{
+                        afterModelImport(report, wasEmpty);
+                        char text[192];
+                        std::snprintf(text, sizeof(text), "model %s: %zu cvorova, %zu mreza, %zu materijala",
+                                      model.filename().string().c_str(), report.nodes, report.meshes, report.materials);
+                        message = text;
+                    }
+                }
+            }
+            //Slike samo dok mapa materijala ceka sliku - inace bi popis bio pun tekstura
+            if(materialState.armed()){
+                for(const fs::path& image : browser.images){
+                    if(ui.selectable("[slika] " + image.filename().string(), false)){
+                        if(Loom::assignArmedImage(stage, materialState, image.string())) message = "mapa: " + image.filename().string();
+                    }
                 }
             }
             for(const fs::path& result : browser.results){
@@ -1106,6 +1206,8 @@ int main(int argc, char** argv){
                     }
                 }
                 ui.separator();
+                Loom::materialPanel(ui, stage, *entity, materialState);
+                ui.separator();
                 if(ui.button("Obrisi (Del)")) removeSelected(entity->id);
             }else{
                 ui.label("Nista nije odabrano.");
@@ -1224,6 +1326,30 @@ int main(int argc, char** argv){
             }
         }
 
+        //== PLOHA IZ ODABIRA: sto je odabrano i sto se s tim moze ================================
+        if(surfaceTool.active){
+            const Treadle::Rect& v = layout.viewport;
+            ui.panel("Ploha (S)", v.x + 10.0f, v.y + 10.0f, 300.0f);
+            if(!surfaceTool.fit.valid){
+                ui.label("Vuci pravokutnik preko tocaka");
+                ui.label("ili gaussiana jedne plohe.");
+            }else{
+                char text[96];
+                std::snprintf(text, sizeof(text), "%zu od %zu u ravnini", surfaceTool.fit.used, surfaceTool.fit.total);
+                ui.value("tocke", text);
+                if(ui.button("Kocka na plohu")){
+                    selected = Loom::placeOnSurface(stage, surfaceTool, Warp::Shape::Cube);
+                    focus = Focus::Entity;
+                }
+                if(ui.button("Ravnina na plohu")){
+                    selected = Loom::placeOnSurface(stage, surfaceTool, Warp::Shape::Plane);
+                    focus = Focus::Entity;
+                }
+                if(ui.button("Ocisti odabir")) surfaceTool = Loom::SurfaceTool{true};
+            }
+            if(ui.button("Zatvori")) surfaceTool.active = false;
+        }
+
         //== IZBORNICI ============================================================================
         //Pogled nema widget koji bi javio desni klik, pa ga pita ovdje: nad pogledom, a ne nad
         //nekim stupcem ili izbornikom
@@ -1327,8 +1453,19 @@ int main(int argc, char** argv){
                      : !overViewport ? -1
                      : tool == Tool::Move ? Loom::gizmoAxisAt(pickCamera, gizmo, mouse) : Loom::ringAxisAt(pickCamera, gizmo, mouse);
 
+        //Alat plohe uzima lijevi mis u pogledu: pravokutnik umjesto odabira i okretanja
+        Loom::surfaceToolMouse(surfaceTool, leftDown, leftWasDown, mouse, overViewport, stage, frame, pickCamera,
+            [&](const std::function<void(const glm::vec3&)>& visit){
+                //Sredista gaussiana prvog vidljivog splata, u svijet kroz njegovu grupu
+                Warp::Id splatId = Warp::None;
+                stage.walk([&](const Warp::Entity& e, int){ if(splatId == Warp::None && e.visible && e.splat) splatId = e.id; });
+                if(splatId == Warp::None || !showSplat) return;
+                const glm::mat4 world = stage.worldMatrix(splatId, frame);
+                viewportSplat.forEachCentre(0.3f, [&](const glm::vec3& p){ visit(glm::vec3(world * glm::vec4(p, 1.0f))); });
+            });
+
         //Lijevi: strelica pomice, klik bira, vucenje okrece
-        if(leftDown && !leftWasDown){
+        if(leftDown && !leftWasDown && !surfaceTool.active){
             leftInViewport = overViewport;
             dragging = false;
             pressX = cursorX; pressY = cursorY;
@@ -1431,7 +1568,10 @@ int main(int argc, char** argv){
         if(keys.pressed(window, GLFW_KEY_E)) tool = Tool::Rotate;
         const bool control = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                              glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-        if(keys.pressed(window, GLFW_KEY_S) && control) saveProjectNow();
+        //S sam pali alat plohe, Ctrl+S sprema - ista tipka, pa se pita jednom
+        const bool sKey = keys.pressed(window, GLFW_KEY_S);
+        if(sKey && control) saveProjectNow();
+        else if(sKey) surfaceTool.active = !surfaceTool.active;
         if(keys.pressed(window, GLFW_KEY_RIGHT)) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
         if(keys.pressed(window, GLFW_KEY_LEFT)) frame = std::max(stage.startFrame, std::floor(frame) - 1.0);
         if(keys.pressed(window, GLFW_KEY_HOME)) frame = stage.startFrame;
@@ -1467,15 +1607,16 @@ int main(int argc, char** argv){
         }
 
         //== CRTANJE =================================================================================
-        Treadle::DrawList scene;
+        Treadle::DrawList scene, overlay;
         {
             const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewportRect, view);
             Loom::paintStage(stage, frame, camera, view, extent, selected, scene);
+            if(surfaceTool.active) Loom::paintSurfaceTool(surfaceTool, camera, overlay);
             const Warp::Entity* chosenNow = stage.get(selected);
             if(chosenNow && chosenNow->visible && selected != view.lookThrough && focus == Focus::Entity){
                 const Loom::Gizmo shown = Loom::gizmoFor(camera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
-                if(tool == Tool::Move) Loom::paintGizmo(scene, camera, shown, gizmoAxisHot);
-                else Loom::paintRings(scene, camera, shown, gizmoAxisHot);
+                if(tool == Tool::Move) Loom::paintGizmo(overlay, camera, shown, gizmoAxisHot);
+                else Loom::paintRings(overlay, camera, shown, gizmoAxisHot);
             }
             if(live.size() > 0){
                 Loom::ViewportState liveView = view;
@@ -1542,8 +1683,20 @@ int main(int argc, char** argv){
             splatWasLoading = loadingNow;
         }
 
+        //PBR MESHEVI: modeli i tijela s materijalima, u svoju metu (LoomPbr.h)
+        bool meshesActive = false;
+        Treadle::Rect meshArea;
+        {
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewportRect, view);
+            meshArea = camera.rect;
+            const float nearPlane = std::max(1e-5f, extent.radius * 1e-3f);
+            meshesActive = viewportMeshes.prepare(stage, frame, camera, pixelScaleX, nearPlane, std::max(100.0f, extent.radius * 500.0f));
+            for(const std::string& problem : viewportMeshes.takeErrors()) message = "model se ne da procitati: " + problem;
+        }
+
         if(!loom.renderer.beginFrame()) continue;
         if(splatActive) viewportSplat.compute();
+        if(meshesActive) viewportMeshes.render();
         //Tek NAKON beginFrame: prsten teksture se oslanja na to da je renderer vec pricekao
         if(plateArrived && plateTexture){
             plateTexture->update(platePixels.data(), platePixels.size());
@@ -1573,8 +1726,18 @@ int main(int argc, char** argv){
                                              {uint32_t(splatArea.width * sx), uint32_t(splatArea.height * sy)}},
                                   vk::Extent2D{uint32_t(framebufferWidth), uint32_t(framebufferHeight)});
         }
+        //Tocke, mreza i kamere, pa meshevi PREKO njih (prekrivaju ono sto je iza), pa strelice
         if(!scene.vertices.empty()){
             scenePainter.draw(loom.renderer, scene, uint32_t(windowWidth), uint32_t(windowHeight));
+        }
+        if(meshesActive){
+            const float sx = pixelScaleX, sy = float(framebufferHeight) / float(std::max(1, windowHeight));
+            viewportMeshes.present(vk::Rect2D{{int32_t(meshArea.x * sx), int32_t(meshArea.y * sy)},
+                                              {uint32_t(meshArea.width * sx), uint32_t(meshArea.height * sy)}},
+                                   vk::Extent2D{uint32_t(framebufferWidth), uint32_t(framebufferHeight)});
+        }
+        if(!overlay.vertices.empty()){
+            overlayPainter.draw(loom.renderer, overlay, uint32_t(windowWidth), uint32_t(windowHeight));
         }
         painter.draw(loom.renderer, ui.drawn(), uint32_t(windowWidth), uint32_t(windowHeight));
         loom.renderer.endPass();
@@ -1587,11 +1750,16 @@ int main(int argc, char** argv){
         //I splat mora stici iz niti: datoteka od stotina MB se cita sekundama
         splatSettledFrames = viewportSplat.isLoading() ? 0 : splatSettledFrames + 1;
         const bool splatSettled = splatSettledFrames >= 3;
-        if(!shotPath.empty() && ++framesDrawn >= 6 && ((plateSettled && splatSettled) || framesDrawn > 3000)){
+        meshSettledFrames = viewportMeshes.loading() ? 0 : meshSettledFrames + 1;
+        const bool meshSettled = meshSettledFrames >= 3;
+        if(!shotPath.empty() && ++framesDrawn >= 6 && ((plateSettled && splatSettled && meshSettled) || framesDrawn > 3000)){
             loom.waitIdle();
             const ImageData shot = loom.renderer.readLastFrame();
-            const Spool::Image image = Spool::imageFromPixels(shot.pixels.data(), shot.extent.width, shot.extent.height,
+            Spool::Image image = Spool::imageFromPixels(shot.pixels.data(), shot.extent.width, shot.extent.height,
                 isBgraFormat(shot.format) ? Spool::ChannelOrder::BGRA : Spool::ChannelOrder::RGBA);
+            //Prozor je neproziran, a alfa u swapchainu je ono sto su plohe suicelja slucajno upisale
+            //(0 u panelima) - snimka bi ih pokazala bijelima. Sprema se kako se prozor VIDI
+            for(size_t i = 3; i < image.pixels.size(); i += 4) image.pixels[i] = 255;
             Spool::saveImage(shotPath, image);
             std::printf("Snimljeno %s (%ux%u)\n", shotPath.c_str(), image.width, image.height);
             break;

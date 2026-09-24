@@ -35,6 +35,7 @@
 #include <Warp/Stage.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <atomic>
 #include <map>
@@ -264,6 +265,18 @@ public:
     void render(){
         loom.renderer.setCamera(*camera);
         loom.renderer.beginPass(*target);
+        //PROZIRNA POZADINA samo ovdje. Renderer cisti svaki prolaz istom bojom iz konfiguracije -
+        //neprozirnom crnom - a meta se slaze preko snimke. Globalna prozirna boja bi prozoru dala
+        //alfu 0 (prva verzija: snimka prozora bijela, a na nekim compositorima i sam prozor proziran)
+        {
+            const vk::raii::CommandBuffer& commands = loom.renderer.borrowCommands();
+            vk::ClearAttachment clear;
+            clear.aspectMask = vk::ImageAspectFlagBits::eColor;
+            clear.colorAttachment = 0;
+            clear.clearValue.color = vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f});
+            const vk::ClearRect rect{vk::Rect2D{{0, 0}, size}, 0, 1};
+            commands.clearAttachments(clear, rect);
+        }
         std::vector<const Item*> blended;
         for(const Item& item : items){
             if(item.gpu->kind == 2){ blended.push_back(&item); continue; }
