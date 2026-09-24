@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (154 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (180 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -35,6 +35,8 @@ Iz `benchmarks/mjerenja.jsonl` (154 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 23:23 | C0257 | cijela snimka, f 4259, subpikselni uglovi | 231 | 1050 | 229/229 | 247002 | 1.152 | 2.705 | 2.410 | 4259 |  | 138.50 | 176.10 | 1301 | 266.90 | solve bolji (izdvojeni 2.705 prema 2.981 px), splat nije - ostaje iskljuceno | zapisano_px=1.371, izlaz=e_subpix, faze_s=pracenje i graf 365.0, brzi kandidat 84.4, puna obrada 251.9, provjere 0.0, slike kadrova 77.5, pune slicice i USD 267.2, COLMAP i provjera 3.4 |
 | 2026-09-24 23:43 | C0257 | cijela snimka, f 4259, rolling shutter | 231 | 1216 | 229/229 | 266441 | 1.209 | 2.981 | 2.530 | 4259 |  | 148.10 | 183.20 | 1516 | 275.20 |  | zapisano_px=1.482, izlaz=e_rs, faze_s=pracenje i graf 365.6, brzi kandidat 102.4, puna obrada 298.1, provjere 0.0, slike kadrova 76.6, pune slicice i USD 275.4, COLMAP i provjera 97.6 |
 | 2026-09-25 00:10 | C0257 | cijela snimka, f 3925 iz metapodataka objektiva (18 mm, ekv. 36.8 mm) | 231 | 996 | 229/229 | 266124 | 1.256 | 3.254 | 2.660 | 3925 |  | 107.80 | 191.20 | 1236 | 273.40 | solve slican (izdvojeni 3.254 px), splat -1.1 dB - --focal-from-metadata ostaje iskljucen | zapisano_px=1.571, izlaz=e_f3925, faze_s=pracenje i graf 332.7, brzi kandidat 99.5, puna obrada 240.0, provjere 0.0, slike kadrova 48.1, pune slicice i USD 273.6, COLMAP i provjera 1.6 |
+| 2026-09-25 00:54 | C0257 | CISTO mjerenje: cijeli lanac, zadane postavke, sam na stroju | 231 | 1062 | 229/229 | 266449 | 1.209 | 4.452 | 3.550 | 4259 |  | 84.00 | 163.30 | 1275 | 327.30 |  | izdvojeni_od=brzog kandidata, zapisano_px=1.482, izlaz=cist, faze_s=pracenje i graf 264.9, brzi kandidat 223.4, puna obrada 180.9, provjere 0.0, slike kadrova 63.2, pune slicice i USD 327.5, COLMAP i provjera 1.8 |
+| 2026-09-25 01:36 | C0257 | CISTO: solve sa zadanim postavkama, sam na stroju | 231 | 1062 | 229/229 | 266449 | 1.209 | 4.452 | 3.550 | 4259 |  | 84.00 | 163.30 | 1275 | 327.30 | 17m42; trening zadano 29m05 (3.4M gaussiana); ukupno 46.8 min | izdvojeni_od=brzog kandidata, zapisano_px=1.482, izlaz=cist, faze_s=pracenje i graf 264.9, brzi kandidat 223.4, puna obrada 180.9, provjere 0.0, slike kadrova 63.2, pune slicice i USD 327.5, COLMAP i provjera 1.8 |
 
 ## trening
 
@@ -66,6 +68,8 @@ Iz `benchmarks/mjerenja.jsonl` (154 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-24 23:53 | C0257 | E4 f 4259 + rolling shutter, 7000 koraka | 7000 | 1920x1080 | 1500000 | 570 | 25.72 | 21.08 | 0.802 |  | kamera=rolling, izlaz=e_rs.ply, izdvojenih=39 |
 | 2026-09-25 00:18 | C0257 | E5 f 3925 metapodaci, 7000 koraka | 7000 | 1920x1080 | 1500000 | 508 | 23.54 | 18.95 | 0.779 |  | kamera=classic, izlaz=e_f3925.ply, izdvojenih=39 |
 | 2026-09-25 00:29 | C0257 | E6 f 4259, 3DGUT bez rolling shuttera, 7000 koraka | 7000 | 1920x1080 | 1500000 | 578 | 24.86 | 20.94 | 0.803 |  | kamera=ut, izlaz=e_ut.ply, izdvojenih=39 |
+| 2026-09-25 01:23 | C0257 | CISTO mjerenje: zadani trening (15000 koraka, ciscenje) | 15000 | 1920x1080 | 1270402 | 1741 | 25.21 | 21.45 | 0.796 |  | kamera=classic, izlaz=cist.ply, izdvojenih=39 |
+| 2026-09-25 01:33 | C0257 | E7 f 4259, poze iz RS bundlea (sredina kadra), obicno crtanje, 7000 koraka | 7000 | 1920x1080 | 1500000 | 586 | 26.03 | 21.92 | 0.795 |  | kamera=rsmid, izlaz=e_rsmid.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -94,6 +98,10 @@ Iz `benchmarks/mjerenja.jsonl` (154 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 00:19 | C0257 | E5 f 3925 | 3840x2160 | 24.04 | 0.782 | 0.080 | 39 |  |  | psnr_medijan=23.46, splat=e_f3925.ply |
 | 2026-09-25 00:29 | C0257 | E6 3DGUT bez RS | 1920x1080 | 25.16 | 0.800 | 0.310 | 39 |  |  | psnr_medijan=24.86, splat=e_ut.ply |
 | 2026-09-25 00:30 | C0257 | E6 3DGUT bez RS | 3840x2160 | 25.09 | 0.825 | 0.092 | 39 |  |  | psnr_medijan=24.81, splat=e_ut.ply |
+| 2026-09-25 01:34 | C0257 | E7 rsmid | 1920x1080 | 25.70 | 0.796 | 0.265 | 39 |  |  | psnr_medijan=26.03, splat=e_rsmid.ply |
+| 2026-09-25 01:34 | C0257 | E7 rsmid | 3840x2160 | 25.62 | 0.824 | 0.076 | 39 |  |  | psnr_medijan=25.97, splat=e_rsmid.ply |
+| 2026-09-25 01:35 | C0257 | CISTO mjerenje, zadano (3.4M -> 1.27M nakon ciscenja) | 1920x1080 | 25.75 | 0.803 | 0.398 | 39 |  |  | psnr_medijan=25.21, splat=cist.ply |
+| 2026-09-25 01:35 | C0257 | CISTO mjerenje, zadano (3.4M -> 1.27M nakon ciscenja) | 3840x2160 | 25.66 | 0.827 | 0.137 | 39 |  |  | psnr_medijan=25.11, splat=cist.ply |
 
 ## usporedba
 
@@ -167,6 +175,24 @@ Iz `benchmarks/mjerenja.jsonl` (154 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 00:30 | C0257 | 3DGUT bez RS prema classic, f 4259 (d1) | PSNR dB | -0.077 | 0.078 | 15/39 | 3DGUT sam: PSNR u sumu, ostrina -4 %/-10 % - dobitak E4 je od rolling shuttera, a polovica zamucenja od 3DGUT | a=q_e_f4259_d1, b=q_e_ut_d1 |
 | 2026-09-25 00:30 | C0257 | 3DGUT bez RS prema classic, f 4259 (d1) | SSIM | -0.001 | 0.000 | 15/39 | 3DGUT sam: PSNR u sumu, ostrina -4 %/-10 % - dobitak E4 je od rolling shuttera, a polovica zamucenja od 3DGUT | a=q_e_f4259_d1, b=q_e_ut_d1 |
 | 2026-09-25 00:30 | C0257 | 3DGUT bez RS prema classic, f 4259 (d1) | ostrina | -0.011 | 0.002 | 2/39 | 3DGUT sam: PSNR u sumu, ostrina -4 %/-10 % - dobitak E4 je od rolling shuttera, a polovica zamucenja od 3DGUT | a=q_e_f4259_d1, b=q_e_ut_d1 |
+| 2026-09-25 01:34 | C0257 | rsmid prema classic, f 4259 (d2) | PSNR dB | 0.460 | 0.150 | 27/39 | PSNR +0.46, ali ostrina -18 %/-26 % (0/39) - mutnoca je od RS poza, ne od 3DGUT; nije zadano | a=q_e_f4259_d2, b=q_e_rsmid_d2 |
+| 2026-09-25 01:34 | C0257 | rsmid prema classic, f 4259 (d2) | SSIM | -0.004 | 0.001 | 11/39 | PSNR +0.46, ali ostrina -18 %/-26 % (0/39) - mutnoca je od RS poza, ne od 3DGUT; nije zadano | a=q_e_f4259_d2, b=q_e_rsmid_d2 |
+| 2026-09-25 01:34 | C0257 | rsmid prema classic, f 4259 (d2) | ostrina | -0.059 | 0.006 | 0/39 | PSNR +0.46, ali ostrina -18 %/-26 % (0/39) - mutnoca je od RS poza, ne od 3DGUT; nije zadano | a=q_e_f4259_d2, b=q_e_rsmid_d2 |
+| 2026-09-25 01:34 | C0257 | rsmid prema classic, f 4259 (d1) | PSNR dB | 0.455 | 0.146 | 27/39 | PSNR +0.46, ali ostrina -18 %/-26 % (0/39) - mutnoca je od RS poza, ne od 3DGUT; nije zadano | a=q_e_f4259_d1, b=q_e_rsmid_d1 |
+| 2026-09-25 01:34 | C0257 | rsmid prema classic, f 4259 (d1) | SSIM | -0.002 | 0.001 | 18/39 | PSNR +0.46, ali ostrina -18 %/-26 % (0/39) - mutnoca je od RS poza, ne od 3DGUT; nije zadano | a=q_e_f4259_d1, b=q_e_rsmid_d1 |
+| 2026-09-25 01:34 | C0257 | rsmid prema classic, f 4259 (d1) | ostrina | -0.027 | 0.002 | 0/39 | PSNR +0.46, ali ostrina -18 %/-26 % (0/39) - mutnoca je od RS poza, ne od 3DGUT; nije zadano | a=q_e_f4259_d1, b=q_e_rsmid_d1 |
+| 2026-09-25 01:35 | C0257 | cijeli novi lanac (zadano) prema jutarnjem (d2) | PSNR dB | 1.267 | 0.255 | 32/39 | najbolje dosad | a=q1_d2, b=q_cist_d2 |
+| 2026-09-25 01:35 | C0257 | cijeli novi lanac (zadano) prema jutarnjem (d2) | SSIM | 0.029 | 0.004 | 38/39 | najbolje dosad | a=q1_d2, b=q_cist_d2 |
+| 2026-09-25 01:35 | C0257 | cijeli novi lanac (zadano) prema jutarnjem (d2) | ostrina | 0.101 | 0.017 | 33/39 | najbolje dosad | a=q1_d2, b=q_cist_d2 |
+| 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d2) | PSNR dB | 0.268 | 0.127 | 26/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d2, b=q_cist_d2 |
+| 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d2) | SSIM | 0.001 | 0.001 | 24/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d2, b=q_cist_d2 |
+| 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d2) | ostrina | 0.019 | 0.003 | 32/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d2, b=q_cist_d2 |
+| 2026-09-25 01:35 | C0257 | cijeli novi lanac (zadano) prema jutarnjem (d1) | PSNR dB | 1.468 | 0.242 | 35/39 | najbolje dosad | a=q1_d1, b=q_cist_d1 |
+| 2026-09-25 01:35 | C0257 | cijeli novi lanac (zadano) prema jutarnjem (d1) | SSIM | 0.048 | 0.002 | 39/39 | najbolje dosad | a=q1_d1, b=q_cist_d1 |
+| 2026-09-25 01:35 | C0257 | cijeli novi lanac (zadano) prema jutarnjem (d1) | ostrina | 0.050 | 0.007 | 39/39 | najbolje dosad | a=q1_d1, b=q_cist_d1 |
+| 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d1) | PSNR dB | 0.262 | 0.124 | 26/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d1, b=q_cist_d1 |
+| 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d1) | SSIM | 0.001 | 0.001 | 21/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d1, b=q_cist_d1 |
+| 2026-09-25 01:35 | C0257 | zadano (bez granice, ciscenje) prema granici 1.5M bez ciscenja (d1) | ostrina | 0.008 | 0.002 | 34/39 | bez granice +0.27 dB i ostrina +5 %, ali trening 29 prema 16 min - zadano ostaje bez granice | a=q_novi_d1, b=q_cist_d1 |
 
 ## dekodiranje
 

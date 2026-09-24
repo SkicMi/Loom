@@ -531,14 +531,6 @@ def main():
         out[..., :3, 3] = -(R.transpose(-1, -2) @ C[..., None])[..., 0]
         return out
 
-    #RSMID: rolling shutter samo za POZE. Bundle s njim daje tocnije poze (+0.39 dB na C0257), ali
-    #crtanje redak po redak ide kroz 3DGUT, a on sam splat zamuti (ostrina -10 % na 4K). Poza
-    #sredine kadra (pola izmedju gornjeg i donjeg retka) s obicnim crtanjem zadrzava prvo bez drugoga
-    if args.camera_model == "rsmid":
-        views = along(views, viewsEnd, 0.5); viewsEnd = views
-        if heldOut:
-            heldViews = along(heldViews, heldViewsEnd, 0.5); heldViewsEnd = heldViews
-
     def draw(view, viewEnd, degree, mode):
         if blurSteps:
             total, alpha, info = None, None, None
@@ -560,6 +552,14 @@ def main():
             scales=torch.exp(params["scales"]), opacities=torch.sigmoid(params["opacities"]),
             colors=colours_sh, viewmats=view, Ks=K[None], width=width, height=height,
             sh_degree=degree, rasterize_mode=args.rasterize, render_mode=mode, **extra)
+
+    #RSMID: rolling shutter samo za POZE. Bundle s njim daje tocnije poze (+0.39 dB na C0257), ali
+    #crtanje redak po redak ide kroz 3DGUT, a on sam splat zamuti (ostrina -10 % na 4K). Poza
+    #sredine kadra (pola izmedju gornjeg i donjeg retka) s obicnim crtanjem zadrzava prvo bez drugoga
+    if args.camera_model == "rsmid":
+        views = along(views, viewsEnd, 0.5); viewsEnd = views
+        if heldOut:
+            heldViews = along(heldViews, heldViewsEnd, 0.5); heldViewsEnd = heldViews
 
     windowSize = 11
     window = gaussian_window(windowSize, 1.5, device)
