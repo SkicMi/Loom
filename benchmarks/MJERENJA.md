@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (52 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (58 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -49,6 +49,7 @@ Iz `benchmarks/mjerenja.jsonl` (52 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 19:25 | C0257 | t_1_stari (polaziste ostrine) | 3840x2160 | 24.19 | 0.779 | 0.087 | 39 |  |  |  |
 | 2026-09-24 19:40 | C0257 | 15000 koraka | 1920x1080 | 24.54 | 0.773 | 0.354 | 39 | 1500000 |  |  |
 | 2026-09-24 19:40 | C0257 | 15000 koraka | 3840x2160 | 24.23 | 0.778 | 0.107 | 39 | 1500000 |  |  |
+| 2026-09-24 20:05 | C0257 | 4K trening, 7000 koraka | 3840x2160 | 24.00 | 0.778 | 0.070 | 39 | 1500000 |  |  |
 
 ## usporedba
 
@@ -69,6 +70,11 @@ Iz `benchmarks/mjerenja.jsonl` (52 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (4K) | PSNR dB | 0.034 | 0.167 | 24/39 | sum |  |
 | 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (4K) | SSIM | -0.001 | 0.001 | 21/39 | sum |  |
 | 2026-09-24 19:40 | C0257 | 15000 prema 7000 koraka (4K) | ostrina | 0.019 | 0.003 | 34/39 | ostrina stvarna (>5 pogresaka) |  |
+| 2026-09-24 20:05 | C0257 | 4K trening 7000 koraka prema 1080p (1080p) | SSIM | -0.004 | 0.001 | 6/39 | odbaceno: mutnije - 7000 koraka premalo za 4K |  |
+| 2026-09-24 20:05 | C0257 | 4K trening 7000 koraka prema 1080p (1080p) | ostrina | -0.037 | 0.006 | 5/39 | odbaceno: mutnije - 7000 koraka premalo za 4K |  |
+| 2026-09-24 20:05 | C0257 | 4K trening 7000 koraka prema 1080p (4K) | PSNR dB | -0.197 | 0.097 | 8/39 | odbaceno: mutnije - 7000 koraka premalo za 4K |  |
+| 2026-09-24 20:05 | C0257 | 4K trening 7000 koraka prema 1080p (4K) | SSIM | -0.001 | 0.001 | 12/39 | odbaceno: mutnije - 7000 koraka premalo za 4K |  |
+| 2026-09-24 20:05 | C0257 | 4K trening 7000 koraka prema 1080p (4K) | ostrina | -0.017 | 0.003 | 3/39 | odbaceno: mutnije - 7000 koraka premalo za 4K |  |
 
 ## dekodiranje
 
