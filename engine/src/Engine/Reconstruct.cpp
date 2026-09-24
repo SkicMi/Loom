@@ -1,5 +1,7 @@
+#include "Engine/Bands.h"
 #include "Engine/Reconstruct.h"
 #include "Engine/Triangulate.h"
+#include "Engine/Bands.h"
 
 #include <algorithm>
 #include <map>
@@ -7,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <future>
+#include <thread>
 #include <limits>
 #include <unordered_map>
 
@@ -350,13 +353,19 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
 
             std::vector<std::future<Reconstruction>> attempts;
             attempts.reserve(selected.size());
+            //Izmjereno na 60 kadrova C0257 (4 pokusaja, 28 jezgri): puna obrada 75.8 -> 56.8 s i
+            //57.9 -> 47.6 s, izlaz isti do bita
+            const uint32_t share = std::max(1u, std::max(1u, std::thread::hardware_concurrency()) /
+                                                uint32_t(std::max<size_t>(1, selected.size())));
             for(const auto& pair : selected){
                 ReconstructConfig forced = once;
                 forced.forceInitialA = pair.first;
                 forced.forceInitialB = pair.second;
                 forced.skipInitialPairs.clear();
                 attempts.push_back(std::async(std::launch::async,
-                    [&, forced]{
+                    [&, forced, share]{
+                        //Svaki pokusaj svoj dio jezgri - vidi Engine::BandLimit
+                        BandLimit limit(share);
                         return reconstruct(observations, cameraCount, pointCount,
                                            intrinsics, forced);
                     }));

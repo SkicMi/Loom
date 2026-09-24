@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (96 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (98 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -29,6 +29,8 @@ Iz `benchmarks/mjerenja.jsonl` (96 zapisa). Slozi se iznova s `tools/bench/mjere
 | 2026-09-24 22:03 | C0257 | cijela snimka (231), sva ubrzanja i novi izbor pocetnog para | 231 | 1320 | 229/229 | 266449 | 1.209 | 4.452 | 3.550 | 4259 | -0.025 | 100.30 | 161.30 | 206.10 | 272.90 | 42m13 -> 21m59, isto rjesenje po kamerama/tockama/reprojekciji; samokalibracija f 4259 (prije 4650) | zapisano_px=1.482, izlaz=solve_novi, izdvojeni_od=brzog kandidata (90/229 kamera) - ne vrijedi |
 | 2026-09-24 22:06 | C0257 | 60 kadrova iz cachea grafa: paralelni zapis slika + --measure-held-out |  |  | 59/59 | 79897 | 1.227 | 2.864 | 2.400 | 4650 |  |  |  | 104.20 |  | zadrzano: slike iste do bajta, zapis 59 slika 13.1 s; izdvojeni na isporucenom 2.864 px (omjer 2.40) umjesto brzog 4.745 | zapisano_px=1.483, izlaz=w_gpu |
 | 2026-09-24 22:35 | C0257 | pune slicice: odsjecci serijski iznutra, 12 u letu (60 kadrova iz cachea) |  |  |  |  |  |  |  |  |  |  |  |  | 166.50 | odbaceno: isti izlaz, ali 166 s prema 94 s (mjereno uz pokuse) |  |
+| 2026-09-24 22:45 | C0257 | cijela snimka, zadana f 4650 (stara samokalibracija) | 231 | 1175 | 229/229 | 265968 | 1.205 | 2.974 | 2.530 | 4650 |  | 125.70 | 230.70 | 262.90 | 290.80 |  | zapisano_px=1.474, izlaz=e_f4650 |
+| 2026-09-24 22:54 | C0257 | pokusaji pocetnog para: svaki svoj dio jezgri (60 kadrova iz cachea) |  |  |  |  |  |  |  |  |  |  |  | 56.80 |  | zadrzano: puna obrada 75.8->56.8 i 57.9->47.6 s, izlaz isti do bita (mjereno uz pokuse) |  |
 
 ## trening
 

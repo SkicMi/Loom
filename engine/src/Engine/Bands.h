@@ -30,9 +30,23 @@ struct SerialBands{
     ~SerialBands(){ bandsSerial = before; }
 };
 
+//=============================================================================================
+// DIO JEZGRI. Kad nekoliko poslova ide usporedo (pokusaji pocetnog para u Reconstruct), svaki
+// dobije svoj dio jezgri umjesto da svaki trazi sve - inace ih je cetiri puta vise nego jezgri i
+// guraju se. Kao i SerialBands, ne mijenja rezultat, samo koliko dretvi ga racuna
+//=============================================================================================
+inline thread_local uint32_t bandsLimit = 0;
+
+struct BandLimit{
+    uint32_t before;
+    explicit BandLimit(uint32_t limit) : before(bandsLimit){ bandsLimit = limit; }
+    ~BandLimit(){ bandsLimit = before; }
+};
+
 inline uint32_t bandCount(int items, int minimumPerBand = 16){
     if(bandsSerial) return 1;
-    const uint32_t cores = std::max(1u, std::thread::hardware_concurrency());
+    uint32_t cores = std::max(1u, std::thread::hardware_concurrency());
+    if(bandsLimit > 0) cores = std::min(cores, bandsLimit);
     //Ispod ovoga pokretanje dretve stoji vise nego posao koji bi dobila
     return std::max(1u, std::min(cores, uint32_t(std::max(1, items / minimumPerBand))));
 }
