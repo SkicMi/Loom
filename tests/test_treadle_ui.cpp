@@ -609,5 +609,126 @@ int main(){
             fmt("x %.3f, y %.3f (ocekivano 3.700), z %.3f", position[0], position[1], position[2]));
     }
 
+    //-- POLJE ZA TEKST: tipkanje, kursor, odabir, medjuspremnik, Enter ---------------------------
+    //
+    //Sve sto ovdje pukne, pukne tiho: kursor koji ode na krivi bajt razbije UTF-8 znak u pola,
+    //Backspace koji brise bajt a ne znak ostavi smece, a "W" utipkan u opis pokreta ne smije
+    //prebaciti alat - zato wantsKeyboard
+    {
+        Treadle::Ui ui;
+        std::string text;
+        Treadle::Ui::TextFieldResult last;
+        Treadle::Ui::TextFieldConfig config;
+        config.lines = 3;
+        config.placeholder = "opis pokreta";
+        config.maxLength = 64;
+        const Treadle::Rect panel{0.0f, 0.0f, 400.0f, 300.0f};
+        auto frame = [&](Treadle::Input input){
+            ui.begin(input, 1000.0f, 800.0f);
+            ui.dock("Pokret", panel);
+            last = ui.textField("prompt", &text, config);
+            ui.end();
+        };
+        auto key = [](Treadle::Key k, bool shift = false, bool ctrl = false){
+            Treadle::Input input;
+            input.mouseX = 900.0f; input.mouseY = 700.0f;
+            input.keys.push_back({k, shift, ctrl});
+            return input;
+        };
+        auto type = [](const std::string& t){
+            Treadle::Input input;
+            input.mouseX = 900.0f; input.mouseY = 700.0f;
+            input.text = t;
+            return input;
+        };
+
+        //Bez fokusa tipke ne idu u polje
+        frame(type("xx"));
+        const bool ignored = text.empty() && !ui.wantsKeyboard();
+
+        ui.focusTextField("prompt");
+        frame(Treadle::Input{});
+        frame(type("walk forward"));
+        const bool typed = text == "walk forward" && ui.wantsKeyboard() && last.changed;
+
+        //Ctrl+Backspace brise rijec, Ctrl+Lijevo skace preko rijeci, umetanje na kursoru
+        frame(key(Treadle::Key::Backspace, false, true));
+        const bool wordErased = text == "walk ";
+        frame(type("slowly"));
+        frame(key(Treadle::Key::Left, false, true));
+        frame(key(Treadle::Key::Left, false, true));
+        frame(type("a person "));
+        const bool inserted = text == "a person walk slowly";
+
+        //Shift+End odabere do kraja, Ctrl+C kopira, tipkanje zamijeni odabir, Ctrl+V zalijepi
+        frame(key(Treadle::Key::End, true));
+        frame(key(Treadle::Key::C, false, true));
+        frame(type("runs"));
+        const bool replaced = text == "a person runs";
+        frame(key(Treadle::Key::V, false, true));
+        const bool pasted = text == "a person runswalk slowly";
+
+        //UTF-8: Backspace brise cijeli znak, ne bajt
+        frame(key(Treadle::Key::A, false, true));
+        frame(type("sko\xc4\x8d"));             //"skoc" s kvacicom
+        frame(key(Treadle::Key::Backspace));
+        const bool utf8 = text == "sko";
+
+        //Enter salje, Shift+Enter je novi red
+        frame(key(Treadle::Key::Enter, true));
+        const bool newline = text == "sko\n" && !last.submitted;
+        frame(key(Treadle::Key::Enter));
+        const bool submitted = last.submitted && text == "sko\n";
+
+        //Duljina je ogranicena
+        frame(type(std::string(200, 'a')));
+        const bool limited = text.size() == 64;
+
+        //Klik izvan polja skida fokus
+        Treadle::Input outside;
+        outside.mouseX = 900.0f; outside.mouseY = 700.0f;
+        outside.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        frame(outside);
+        const bool unfocused = !ui.wantsKeyboard();
+
+        report.check("polje za tekst: tipkanje, rijeci, odabir, medjuspremnik",
+            ignored && typed && wordErased && inserted && replaced && pasted,
+            fmt("zanemareno %d, utipkano %d, rijec %d, umetnuto %d, zamjena %d, lijepljenje %d",
+                ignored, typed, wordErased, inserted, replaced, pasted));
+        report.check("polje za tekst: UTF-8, Enter i Shift+Enter, duljina, fokus",
+            utf8 && newline && submitted && limited && unfocused,
+            fmt("utf8 %d, novi red %d, poslano %d, ograniceno %d (%zu), fokus skinut %d",
+                utf8, newline, submitted, limited, text.size(), unfocused));
+    }
+
+    //-- polje: klik postavlja kursor, prelamanje po rijecima -----------------------------------
+    {
+        Treadle::Ui ui;
+        std::string text = "one two three four five six seven eight nine ten eleven twelve";
+        Treadle::Ui::TextFieldConfig config;
+        config.lines = 4;
+        auto frame = [&](Treadle::Input input){
+            ui.begin(input, 1000.0f, 800.0f);
+            ui.dock("Pokret", Treadle::Rect{0.0f, 0.0f, 220.0f, 300.0f});
+            ui.textField("prompt", &text, config);
+            ui.end();
+        };
+        const Treadle::Theme& theme = ui.style();
+        const float firstRow = theme.padding + Treadle::textHeight(theme.textScale) + theme.spacing + 1.0f + theme.spacing;
+        //Klik u pocetak prvog retka, pa tipka: slovo ide na pocetak
+        Treadle::Input click;
+        click.mouseX = theme.padding + 8.0f;
+        click.mouseY = firstRow + theme.padding * 0.5f + 4.0f;
+        click.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        frame(click);
+        click.down[uint32_t(Treadle::MouseButton::Left)] = false;
+        frame(click);
+        click.text = "X";
+        frame(click);
+        //Nacrtani redci: svaki tekstni poziv je jedan redak; vise od jednog znaci da je prelomljeno
+        report.check("klik postavi kursor, dug tekst se prelomi po rijecima", text.rfind("Xone", 0) == 0,
+            text.substr(0, 12));
+    }
+
     return report.result();
 }

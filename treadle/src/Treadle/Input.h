@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <string>
+#include <vector>
 
 //Treadle je UI sloj. Kao i Spool, ne zna nista o Loomu, nista o Vulkanu i nista o GLFW-u.
 //
@@ -29,7 +31,24 @@ enum class MouseButton : uint32_t{
 //GUMB JE STANJE, NE DOGADJAJ: ovdje stoji je li pritisnut sada. Treadle sam pamti kako je
 //bilo prosli kadar i iz razlike izvodi pritisak i otpustanje. Da aplikacija salje dogadjaje,
 //morala bi ih ona skupljati i redati - a onda bi red dogadjaja bio dio ugovora
+//Tipke koje polje za tekst razumije. Aplikacija ih salje kao DOGADJAJE, s ponavljanjem kad se
+//tipka drzi - bas zato Backspace koji se drzi brise dalje, a ne samo jedno slovo
+enum class Key : uint8_t{
+    Left, Right, Up, Down, Home, End, Backspace, Delete, Enter, Escape, Tab,
+    A, C, X, V
+};
+
+struct KeyEvent{
+    Key key = Key::Enter;
+    bool shift = false;
+    bool ctrl = false;
+};
+
 struct Input{
+    //Tekst utipkan od proslog kadra, UTF-8, i tipke (s ponavljanjima) istim redom
+    std::string text;
+    std::vector<KeyEvent> keys;
+
     float mouseX = 0.0f;
     float mouseY = 0.0f;
 

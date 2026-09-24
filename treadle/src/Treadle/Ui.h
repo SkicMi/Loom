@@ -2,6 +2,7 @@
 #include "Treadle/Draw.h"
 #include "Treadle/Input.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -110,6 +111,35 @@ class Ui{
     enum class TreeClick{ None, Select, Toggle };
     TreeClick treeRow(const std::string& text, int depth, bool hasChildren, bool expanded, bool selected);
 
+    //POLJE ZA TEKST, vise redaka s prelamanjem po rijecima. Klik postavi kursor, vucenje odabire;
+    //strelice, Home/End, Ctrl+strelice po rijecima, Shift za odabir, Backspace/Delete (s Ctrl po
+    //rijecima), Ctrl+A/C/X/V. Enter javlja submitted, Shift+Enter je novi red (kad je enterSubmits).
+    //Esc ili klik izvan polja skida fokus. Tekst je UTF-8; font crta ASCII, ostalo kao '?'
+    struct TextFieldConfig{
+        int lines = 1;                  //koliko redaka se vidi; dulji tekst se pomice
+        std::string placeholder;        //sivo, dok je polje prazno
+        size_t maxLength = 4096;        //u bajtovima
+        bool enterSubmits = true;
+    };
+    struct TextFieldResult{
+        bool changed = false;
+        bool submitted = false;
+        bool focused = false;
+    };
+    TextFieldResult textField(const std::string& id, std::string* text, const TextFieldConfig& config);
+    TextFieldResult textField(const std::string& id, std::string* text);
+
+    //Fokus na polje iz koda (npr. kad se panel otvori)
+    void focusTextField(const std::string& id);
+
+    //Pripada li tipkovnica polju za tekst. Aplikacija tada ne smije tipke tumaciti kao precace -
+    //inace "W" u opisu pokreta prebaci alat na pomicanje
+    bool wantsKeyboard() const {return focusedField != 0;}
+
+    //Medjuspremnik sustava; aplikacija ga spoji na GLFW. Bez njih Ctrl+C/V radi unutar Treadlea
+    std::function<std::string()> getClipboard;
+    std::function<void(const std::string&)> setClipboard;
+
     //Je li ZADNJI widget upravo dobio desni klik - za izbornik na desni klik
     bool rightClicked() const {return lastRowRightPressed;}
 
@@ -205,6 +235,17 @@ class Ui{
     float scrollOffset = 0.0f;
 
     bool lastRowRightPressed = false;
+
+    //Polje za tekst u fokusu: kursor i sidro odabira su bajtovi u UTF-8 tekstu
+    uint64_t focusedField = 0;
+    std::string pendingFocus;          //ime polja koje dobiva fokus kad se nacrta
+    size_t caret = 0, anchor = 0;
+    int scrollLine = 0;
+    bool fieldClaimedPress = false;
+    bool fieldSeen = false;
+    bool selectingWithMouse = false;
+    float preferredX = -1.0f;           //gore/dolje zadrzavaju stupac
+    std::string localClipboard;
     float dragLastX = 0.0f;       //gdje je mis bio prosli kadar, dok se broj vuce
     bool dragField(uint64_t id, const Rect& box, float* target, float speed);
 

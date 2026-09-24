@@ -35,6 +35,7 @@
 #include "LoomPbr.h"
 #include "LoomViewport.h"
 #include "LoomWeaverMotion.h"
+#include "LoomMotionPanel.h"
 
 #include "Vulkan/ImageData.h"
 #include "Vulkan/Material.h"
@@ -54,7 +55,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
-#include <ctime>
+#include <cstdlib>
 #include <filesystem>
 #include <set>
 #include <string>
@@ -193,6 +194,7 @@ int main(int argc, char** argv){
     std::string startProject;             //loom projekt.usda otvara projekt
     std::string shotPath, shotResult, shotSave, shotMotion;
     std::string shotModel;                //--model: glTF na mjestu pogleda
+    std::vector<std::string> shotMotionText;  //--tekst: panel pokreta otvoren, jedna radnja po zastavici
     float shotSurface[4] = {0, 0, 0, 0};  //--ploha x y sirina visina: pravokutnik u pogledu, pa kocka na plohu
     bool shotSurfaceWanted = false;
     double shotFrame = -1.0;
@@ -208,6 +210,7 @@ int main(int argc, char** argv){
         else if(argument == "--rotacija") shotRotate = true;
         else if(argument == "--pokret" && i + 1 < argc) shotMotion = argv[++i];
         else if(argument == "--model" && i + 1 < argc) shotModel = argv[++i];
+        else if(argument == "--tekst" && i + 1 < argc) shotMotionText.push_back(argv[++i]);
         else if(argument == "--ploha" && i + 4 < argc){
             for(int k = 0; k < 4; ++k) shotSurface[k] = float(std::atof(argv[++i]));
             shotSurfaceWanted = true;
@@ -243,10 +246,9 @@ int main(int argc, char** argv){
 
     float mediaScroll = 0.0f, hierarchyScroll = 0.0f, propertiesScroll = 0.0f;
     std::string message;                  //zadnja poruka korisniku, u alatnoj traci
-    bool motionWorkflowOpen = false;
-    bool motionPromptFocused = false;
-    std::string motionPrompt = "a biped walks forward";
-    float motionDuration = 5.0f;
+    //Pokret iz teksta (LoomMotionPanel.h): panel u pogledu s radnjama, postavkama i povijescu
+    Loom::MotionPanelState motionPanel;
+    float motionPanelScroll = 0.0f;
     fs::path generatedMotionPath;
 
     //-- poslovi ----------------------------------------------------------------------------------
@@ -268,6 +270,35 @@ int main(int argc, char** argv){
 
     static float scrollAccumulated = 0.0f;
     glfwSetScrollCallback(window, [](GLFWwindow*, double, double y){ scrollAccumulated += float(y); });
+    //Tipke za polje za tekst, s PONAVLJANJEM (GLFW_REPEAT) - drzani Backspace brise dalje
+    static std::vector<Treadle::KeyEvent> typedKeys;
+    glfwSetKeyCallback(window, [](GLFWwindow*, int key, int, int action, int mods){
+        if(action != GLFW_PRESS && action != GLFW_REPEAT) return;
+        Treadle::KeyEvent event;
+        event.shift = (mods & GLFW_MOD_SHIFT) != 0;
+        event.ctrl = (mods & GLFW_MOD_CONTROL) != 0;
+        switch(key){
+            case GLFW_KEY_LEFT: event.key = Treadle::Key::Left; break;
+            case GLFW_KEY_RIGHT: event.key = Treadle::Key::Right; break;
+            case GLFW_KEY_UP: event.key = Treadle::Key::Up; break;
+            case GLFW_KEY_DOWN: event.key = Treadle::Key::Down; break;
+            case GLFW_KEY_HOME: event.key = Treadle::Key::Home; break;
+            case GLFW_KEY_END: event.key = Treadle::Key::End; break;
+            case GLFW_KEY_BACKSPACE: event.key = Treadle::Key::Backspace; break;
+            case GLFW_KEY_DELETE: event.key = Treadle::Key::Delete; break;
+            case GLFW_KEY_ENTER: case GLFW_KEY_KP_ENTER: event.key = Treadle::Key::Enter; break;
+            case GLFW_KEY_ESCAPE: event.key = Treadle::Key::Escape; break;
+            case GLFW_KEY_TAB: event.key = Treadle::Key::Tab; break;
+            case GLFW_KEY_A: event.key = Treadle::Key::A; break;
+            case GLFW_KEY_C: event.key = Treadle::Key::C; break;
+            case GLFW_KEY_X: event.key = Treadle::Key::X; break;
+            case GLFW_KEY_V: event.key = Treadle::Key::V; break;
+            default: return;
+        }
+        typedKeys.push_back(event);
+    });
+    ui.getClipboard = [window](){ const char* text = glfwGetClipboardString(window); return std::string(text ? text : ""); };
+    ui.setClipboard = [window](const std::string& text){ glfwSetClipboardString(window, text.c_str()); };
     static std::string typedCharacters;
     glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint){
         if(codepoint < 32 || codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return;
@@ -494,51 +525,49 @@ int main(int argc, char** argv){
         if(!message.empty()) message = "WeaverMotion: " + message;
     };
 
+    //Mapa u koju Kimodo pise: "WeaverMotion" uz mapu koju media prozor pregledava (ili ta mapa sama)
+    auto motionDirectory = [&](){
+        return browser.at.filename() == "WeaverMotion" ? browser.at : browser.at / "WeaverMotion";
+    };
+
     auto startMotionGeneration = [&](){
         if(job.running){
             message = "Drugi Loom posao još radi.";
             return;
         }
-        const auto firstText = std::find_if_not(motionPrompt.begin(), motionPrompt.end(),
-            [](unsigned char c){ return std::isspace(c) != 0; });
-        if(firstText == motionPrompt.end()){
+        const Loom::MotionRequest request = motionPanel.request();
+        if(Loom::filledActions(request.actions).empty()){
             message = "Upiši opis pokreta prije generiranja.";
-            motionPromptFocused = true;
+            ui.focusTextField("radnja0");
             return;
         }
-
-        const fs::path runner = fs::path(LOOM_ROOT_DIR) /
-                                "tools/weavermotion/.venv-clean/bin/kimodo_gen";
+        const fs::path runner = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen";
         if(!fs::is_regular_file(runner)){
             message = "Kimodo runner nije instaliran; vidi tools/weavermotion/README.md.";
             return;
         }
-
-        const fs::path outputDirectory = browser.at / "WeaverMotion";
+        const fs::path outputDirectory = motionDirectory();
         std::error_code error;
         fs::create_directories(outputDirectory, error);
         if(error){
             message = "Ne mogu napraviti izlaznu mapu WeaverMotion: " + error.message();
             return;
         }
-
         const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         const fs::path outputStem = outputDirectory / ("motion_" + std::to_string(stamp));
         generatedMotionPath = outputStem;
         generatedMotionPath += ".bvh";
-
-        const std::string command = Loom::buildWeaverMotionCommand(
-            runner, motionPrompt, motionDuration, outputStem);
+        //Opis uz BVH, za povijest u panelu
+        Loom::writeMotionSidecar(outputStem, request);
         afterJob = After::Nothing;
-        startJob(command, outputDirectory.string(), Loom::Task::WeaverMotion, 0);
+        startJob(Loom::buildMotionCommand(runner, request, outputStem), outputDirectory.string(), Loom::Task::WeaverMotion, 0);
         message = "Kimodo generira na GPU-u; LLM2Vec encoder radi na CPU-u.";
-        showLog = true;
     };
 
     auto openMotionWorkflow = [&](){
-        motionWorkflowOpen = true;
-        motionPromptFocused = true;
+        motionPanel.open = true;
+        ui.focusTextField("radnja" + std::to_string(motionPanel.activeAction));
     };
 
     //-- projekt ----------------------------------------------------------------------------------
@@ -694,6 +723,11 @@ int main(int argc, char** argv){
         }
     }
     if(!shotMotion.empty()){ importMotion(shotMotion); std::printf("%s\n", message.c_str()); }
+    if(!shotMotionText.empty()){
+        motionPanel.actions.clear();
+        for(const std::string& text : shotMotionText) motionPanel.actions.push_back(Loom::MotionAction{text, 3.0f});
+        openMotionWorkflow();
+    }
     if(!shotModel.empty() || shotSurfaceWanted){
         int w = 0, h = 0;
         glfwGetWindowSize(window, &w, &h);
@@ -727,20 +761,6 @@ int main(int argc, char** argv){
     std::string windowTitle;
     while(!quitting){
         glfwPollEvents();
-        if(motionWorkflowOpen && motionPromptFocused){
-            if(motionPrompt.size() + typedCharacters.size() <= 4096) motionPrompt += typedCharacters;
-            typedCharacters.clear();
-            static bool backspaceWasDown = false;
-            const bool backspaceDown = glfwGetKey(window, GLFW_KEY_BACKSPACE) == GLFW_PRESS;
-            if(backspaceDown && !backspaceWasDown && !motionPrompt.empty()){
-                size_t first = motionPrompt.size() - 1;
-                while(first > 0 && (static_cast<unsigned char>(motionPrompt[first]) & 0xc0) == 0x80) --first;
-                motionPrompt.erase(first);
-            }
-            backspaceWasDown = backspaceDown;
-        }else{
-            typedCharacters.clear();
-        }
 
         //Otisak svaki kadar: prolaz kroz stablo i kljuceve, desetinka milisekunde i na 2301 kljucu
         const bool dirty = stage.fingerprint() != savedFingerprint;
@@ -775,6 +795,11 @@ int main(int argc, char** argv){
         input.down[uint32_t(Treadle::MouseButton::Middle)] = middleDown;
         input.wheel = scrollAccumulated;
         input.shift = shift;
+        //Utipkano i pritisnute tipke od proslog kadra; Treadle ih da polju u fokusu
+        input.text.swap(typedCharacters);
+        typedCharacters.clear();
+        input.keys.swap(typedKeys);
+        typedKeys.clear();
 
         const Loom::EditorLayout layout = Loom::layoutEditor(float(windowWidth), float(windowHeight));
 
@@ -832,8 +857,7 @@ int main(int argc, char** argv){
                     browser.refresh();
                     importMotion(generatedMotionPath);
                     if(!message.empty()) message = "Kimodo gotovo; " + message;
-                    motionWorkflowOpen = true;
-                    motionPromptFocused = false;
+                    motionPanel.open = true;
                 }else{
                     message = "Kimodo nije izradio očekivani BVH; pregledaj Ispis.";
                     showLog = true;
@@ -1071,35 +1095,7 @@ int main(int argc, char** argv){
         ui.dock("Svojstva", layout.properties, &propertiesScroll);
         {
             Warp::Entity* entity = focus == Focus::Entity ? stage.get(selected) : nullptr;
-            if(motionWorkflowOpen){
-                ui.label("WEAVERMOTION");
-                ui.value("engine", "NVIDIA Kimodo / SOMA RP v1.1");
-                ui.label("TEXT TO MOTION PROMPT");
-                const std::string promptLabel = motionPrompt.empty() ? "(klikni i upiši prompt)" : motionPrompt;
-                if(ui.selectable(Treadle::fitText(promptLabel + (motionPromptFocused ? "|" : ""),
-                                                  layout.properties.width - 28.0f, theme.textScale),
-                                 motionPromptFocused)){
-                    motionPromptFocused = true;
-                }
-                ui.label("Klikni polje pa tipkaj; Backspace briše; Enter generira.");
-                ui.slider("trajanje", &motionDuration, 1.0f, 10.0f, "s");
-                ui.value("tekst encoder", "LLM2Vec na CPU-u");
-                const fs::path runner = fs::path(LOOM_ROOT_DIR) /
-                                        "tools/weavermotion/.venv-clean/bin/kimodo_gen";
-                ui.value("Kimodo runner", fs::is_regular_file(runner) ? "spreman" : "nije instaliran");
-                const fs::path motion = newestMotionInBrowser();
-                ui.value("zadnji BVH", motion.empty() ? "nema u ovoj mapi" : motion.filename().string());
-                const fs::path biped = fs::path("/home/danijel/Downloads/Meshy_AI_Clockwork_Sentinel_biped/Meshy_AI_Clockwork_Sentinel_biped_Animation_Running_withSkin.fbx");
-                ui.value("WeaverMascott", fs::exists(biped) ? "rigged FBX pronađen" : "FBX nije pronađen");
-                if(ui.button("Generiraj animaciju")) startMotionGeneration();
-                if(ui.button("Uvezi BVH iz mape")) importNewestMotion();
-                if(ui.button("Ocisti prompt")) motionPrompt.clear();
-                if(ui.button("Zatvori WeaverMotion")){
-                    motionWorkflowOpen = false;
-                    motionPromptFocused = false;
-                }
-                ui.label("Viewport zasad prikazuje animirani Kimodo kostur; Loom još ne deformira skinned FBX mesh.");
-            }else if(focus == Focus::Media && selectedMedia >= 0 && selectedMedia < int(stage.media.size())){
+            if(focus == Focus::Media && selectedMedia >= 0 && selectedMedia < int(stage.media.size())){
                 const Warp::Media media = stage.media[size_t(selectedMedia)];
                 ui.value("snimka", Treadle::fitText(fs::path(media.path).filename().string(), 150.0f, theme.textScale));
                 char text[64];
@@ -1326,6 +1322,33 @@ int main(int argc, char** argv){
             }
         }
 
+        //== POKRET IZ TEKSTA: panel preko desnog dijela pogleda ====================================
+        if(motionPanel.open){
+            const Treadle::Rect& v = layout.viewport;
+            const float width = std::min(560.0f, v.width - 20.0f);
+            Loom::MotionPanelStatus motionStatus;
+            motionStatus.runnerReady = fs::is_regular_file(fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen");
+            motionStatus.running = job.running && job.task == Loom::Task::WeaverMotion;
+            motionStatus.otherJob = job.running && job.task != Loom::Task::WeaverMotion;
+            motionStatus.elapsed = std::chrono::duration<double>(now - job.started).count();
+            {
+                std::lock_guard<std::mutex> guard(job.lock);
+                if(!job.lines.empty()) motionStatus.lastLine = job.lines.back();
+            }
+            motionStatus.historyDirectory = motionDirectory();
+            //WeaverMascott: rigged FBX iz Downloadsa (GPT), zasad se samo javlja je li pronadjen
+            const char* homeDirectory = std::getenv("HOME");
+            const fs::path biped = homeDirectory
+                ? fs::path(homeDirectory) / "Downloads/Meshy_AI_Clockwork_Sentinel_biped/Meshy_AI_Clockwork_Sentinel_biped_Animation_Running_withSkin.fbx"
+                : fs::path();
+            motionStatus.characterNote = fs::exists(biped) ? "WeaverMascott FBX pronadjen" : "WeaverMascott FBX nije pronadjen";
+            const Loom::MotionPanelAction motionAction = Loom::drawMotionPanel(ui, motionPanel,
+                Treadle::Rect{v.x + v.width - width - 10.0f, v.y + 10.0f, width, v.height - 20.0f}, motionStatus, motionPanelScroll);
+            if(motionAction.generate) startMotionGeneration();
+            if(!motionAction.importPath.empty()) importMotion(motionAction.importPath);
+            if(motionAction.close) motionPanel.open = false;
+        }
+
         //== PLOHA IZ ODABIRA: sto je odabrano i sto se s tim moze ================================
         if(surfaceTool.active){
             const Treadle::Rect& v = layout.viewport;
@@ -1439,7 +1462,6 @@ int main(int argc, char** argv){
         //== POGLED: mis i tipke, tek kad suicelje nije uzelo mis ==================================
         const Treadle::Rect& viewportRect = layout.viewport;
         const bool overViewport = viewportRect.contains(float(cursorX), float(cursorY)) && !ui.wantsMouse();
-        if(leftDown && !leftWasDown && overViewport) openMotionWorkflow();
         const Loom::ViewCamera pickCamera = Loom::viewCameraFor(stage, frame, viewportRect, view);
 
         //Strelice odabranog: vide se i hvataju prije okretanja pogleda
@@ -1535,30 +1557,12 @@ int main(int argc, char** argv){
         rightWasDown = rightDown;
         lastX = cursorX; lastY = cursorY;
 
-        if(motionWorkflowOpen){
-            keys.pressed(window, GLFW_KEY_SPACE);
-            keys.pressed(window, GLFW_KEY_K);
-            keys.pressed(window, GLFW_KEY_V);
-            keys.pressed(window, GLFW_KEY_B);
-            keys.pressed(window, GLFW_KEY_W);
-            keys.pressed(window, GLFW_KEY_E);
-            keys.pressed(window, GLFW_KEY_S);
-            keys.pressed(window, GLFW_KEY_RIGHT);
-            keys.pressed(window, GLFW_KEY_LEFT);
-            keys.pressed(window, GLFW_KEY_HOME);
-            keys.pressed(window, GLFW_KEY_END);
-            keys.pressed(window, GLFW_KEY_F);
-            keys.pressed(window, GLFW_KEY_0);
-            keys.pressed(window, GLFW_KEY_KP_0);
-            keys.pressed(window, GLFW_KEY_DELETE);
-            const bool enter = keys.pressed(window, GLFW_KEY_ENTER);
-            const bool keypadEnter = keys.pressed(window, GLFW_KEY_KP_ENTER);
-            const bool escape = keys.pressed(window, GLFW_KEY_ESCAPE);
-            if(motionPromptFocused && (enter || keypadEnter)) startMotionGeneration();
-            if(escape){
-                motionWorkflowOpen = false;
-                motionPromptFocused = false;
-            }
+        if(ui.wantsKeyboard()){
+            //Tipke pripadaju polju za tekst: precaci se ne okidaju (W u opisu ne mijenja alat), ali se
+            //stanje tipki ipak procita da se ne okinu kasnije, kad polje izgubi fokus
+            for(int key : {GLFW_KEY_SPACE, GLFW_KEY_K, GLFW_KEY_V, GLFW_KEY_B, GLFW_KEY_W, GLFW_KEY_E, GLFW_KEY_S,
+                           GLFW_KEY_RIGHT, GLFW_KEY_LEFT, GLFW_KEY_HOME, GLFW_KEY_END, GLFW_KEY_F, GLFW_KEY_0,
+                           GLFW_KEY_KP_0, GLFW_KEY_DELETE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_ESCAPE}) keys.pressed(window, key);
         }else{
         if(keys.pressed(window, GLFW_KEY_SPACE)) playing = !playing;
         if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
@@ -1601,6 +1605,7 @@ int main(int argc, char** argv){
         if(keys.pressed(window, GLFW_KEY_ESCAPE)){
             if(ui.menuOpen("pogled") || ui.menuOpen("media") || ui.menuOpen("entitet") || ui.menuOpen("projekt") ||
                ui.menuOpen("novi") || ui.menuOpen("izlaz")) ui.closeMenu();
+            else if(motionPanel.open) motionPanel.open = false;
             else if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
         }
 

@@ -1,6 +1,7 @@
 #include "Treadle/Ui.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -31,6 +32,9 @@ std::string formatNumber(float value){
 
 void Ui::begin(const Input& newInput, float width, float height){
     ++frameNumber;
+    fieldClaimedPress = false;
+    fieldSeen = false;
+
     bool anyPress = false;
     for(uint32_t button = 0; button < uint32_t(MouseButton::Count); ++button){
         pressed[button] = newInput.down[button] && !wasDown[button];
@@ -75,6 +79,13 @@ void Ui::begin(const Input& newInput, float width, float height){
 
 void Ui::end(){
     closePanel();
+
+    //Klik izvan svakog polja skida fokus; polje koje ovaj kadar nije nacrtano (panel zatvoren)
+    //ne smije i dalje gutati tipke
+    if(focusedField && ((pressed[uint32_t(MouseButton::Left)] && !fieldClaimedPress) || !fieldSeen)){
+        focusedField = 0;
+        selectingWithMouse = false;
+    }
 
     //Izbornik ide na kraj: crtac crta redom, pa je zadnje nacrtano na vrhu
     const uint32_t base = uint32_t(list.vertices.size());
@@ -575,6 +586,335 @@ bool Ui::dragVector(const std::string& name, float* xyz, float speed){
         list.rect(field.x, field.y + field.height - 2.0f, field.width, 2.0f, axes[axis]);
     }
     return changed;
+}
+
+//=============================================================================================
+// POLJE ZA TEKST
+//=============================================================================================
+namespace{
+
+bool continuation(char c){ return (static_cast<unsigned char>(c) & 0xC0) == 0x80; }
+
+size_t previousCodepoint(const std::string& s, size_t i){
+    if(i == 0) return 0;
+    --i;
+    while(i > 0 && continuation(s[i])) --i;
+    return i;
+}
+
+size_t nextCodepoint(const std::string& s, size_t i){
+    if(i >= s.size()) return s.size();
+    ++i;
+    while(i < s.size() && continuation(s[i])) ++i;
+    return i;
+}
+
+bool wordChar(char c){
+    const unsigned char u = static_cast<unsigned char>(c);
+    return std::isalnum(u) || c == '_' || u >= 0x80;
+}
+
+size_t previousWord(const std::string& s, size_t i){
+    while(i > 0 && !wordChar(s[i - 1])) --i;
+    while(i > 0 && wordChar(s[i - 1])) --i;
+    return i;
+}
+
+size_t nextWord(const std::string& s, size_t i){
+    while(i < s.size() && wordChar(s[i])) ++i;
+    while(i < s.size() && !wordChar(s[i])) ++i;
+    return i;
+}
+
+//Ono sto font zna nacrtati: ASCII ostaje, visebajtni znak postaje jedan '?'
+std::string displayed(const std::string& s, size_t from, size_t to){
+    std::string out;
+    for(size_t i = from; i < to; i = nextCodepoint(s, i)){
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        out += c < 0x80 ? s[i] : '?';
+    }
+    return out;
+}
+
+struct Wrapped{ size_t start, end; };         //end bez '\n'
+
+//Prelamanje po rijecima u zadanu sirinu; predugacka rijec se prelomi gdje stane
+std::vector<Wrapped> wrapLines(const std::string& s, float width, float scale){
+    std::vector<Wrapped> lines;
+    size_t start = 0;
+    while(true){
+        size_t lastSpace = std::string::npos;
+        size_t i = start;
+        size_t end = s.size();
+        bool broke = false;
+        while(i < s.size()){
+            if(s[i] == '\n'){ end = i; broke = true; break; }
+            const size_t next = nextCodepoint(s, i);
+            if(textWidth(displayed(s, start, next), scale) > width && i > start){
+                if(lastSpace != std::string::npos && lastSpace > start){ end = lastSpace; broke = true; }
+                else{ end = i; broke = true; }
+                break;
+            }
+            if(s[i] == ' ') lastSpace = i;
+            i = next;
+        }
+        if(!broke){ lines.push_back({start, s.size()}); break; }
+        lines.push_back({start, end});
+        //Iza prijeloma: preskoci '\n' ili razmak na kojem je prelomljeno
+        start = (end < s.size() && (s[end] == '\n' || s[end] == ' ')) ? end + 1 : end;
+        if(start > s.size()) start = s.size();
+        if(start == s.size() && end < s.size() && s[end] == '\n'){ lines.push_back({start, start}); break; }
+        if(start == s.size() && !(end < s.size() && s[end] == '\n')) break;
+    }
+    if(lines.empty()) lines.push_back({0, 0});
+    return lines;
+}
+
+size_t lineOf(const std::vector<Wrapped>& lines, size_t caret){
+    for(size_t l = 0; l < lines.size(); ++l){
+        const size_t nextStart = l + 1 < lines.size() ? lines[l + 1].start : std::string::npos;
+        if(caret < nextStart || l + 1 == lines.size()) return l;
+        if(caret == lines[l].end && caret < nextStart) return l;
+    }
+    return lines.size() - 1;
+}
+
+//Bajt u retku najblizi zadanom x-u
+size_t offsetAt(const std::string& s, const Wrapped& line, float x, float scale){
+    size_t best = line.start;
+    float bestDistance = std::fabs(x);
+    for(size_t i = line.start; i < line.end;){
+        i = nextCodepoint(s, i);
+        const float distance = std::fabs(textWidth(displayed(s, line.start, i), scale) - x);
+        if(distance < bestDistance){ bestDistance = distance; best = i; }
+    }
+    return best;
+}
+
+}
+
+Ui::TextFieldResult Ui::textField(const std::string& id, std::string* text){
+    return textField(id, text, TextFieldConfig());
+}
+
+void Ui::focusTextField(const std::string& id){
+    pendingFocus = id;
+}
+
+Ui::TextFieldResult Ui::textField(const std::string& id, std::string* text, const TextFieldConfig& config){
+    TextFieldResult result;
+    if(!text) return result;
+    const float scale = theme.textScale;
+    const float lineHeight = textHeight(scale) + 4.0f;
+    const int visibleLines = std::max(1, config.lines);
+    const float height = float(visibleLines) * lineHeight + theme.padding;
+    const Row row = nextRow(height);
+    const uint64_t fieldId = idFor("text:" + id);
+    //Fokus trazen iz koda: kursor na kraj teksta
+    if(!pendingFocus.empty() && pendingFocus == id){
+        focusedField = fieldId;
+        caret = anchor = text->size();
+        scrollLine = 0;
+        pendingFocus.clear();
+        fieldClaimedPress = true;       //i ako je fokus trazen klikom na gumb, taj klik ga ne skida
+    }
+    if(!row.visible){
+        if(focusedField == fieldId) fieldSeen = true;
+        return result;
+    }
+
+    const Rect box = row.box;
+    const float innerX = box.x + theme.padding * 0.7f;
+    const float innerY = box.y + theme.padding * 0.5f;
+    const float innerWidth = std::max(10.0f, box.width - theme.padding * 1.4f);
+    std::string& s = *text;
+    std::vector<Wrapped> lines = wrapLines(s, innerWidth, scale);
+    auto hit = [&](float mx, float my){
+        int l = scrollLine + int(std::floor((my - innerY) / lineHeight));
+        l = std::clamp(l, 0, int(lines.size()) - 1);
+        return offsetAt(s, lines[size_t(l)], mx - innerX, scale);
+    };
+
+    //-- mis: fokus, kursor, odabir vucenjem ----------------------------------------------------
+    if(row.hot && pressed[uint32_t(MouseButton::Left)]){
+        if(focusedField != fieldId){ scrollLine = 0; }
+        focusedField = fieldId;
+        fieldClaimedPress = true;
+        caret = hit(input.mouseX, input.mouseY);
+        if(!input.shift) anchor = caret;
+        selectingWithMouse = true;
+        preferredX = -1.0f;
+    }
+    const bool focused = focusedField == fieldId;
+    if(focused){
+        fieldSeen = true;
+        if(caret == std::string::npos || caret > s.size()) caret = anchor = s.size();
+        if(anchor > s.size()) anchor = caret;
+        if(selectingWithMouse){
+            if(input.down[uint32_t(MouseButton::Left)]) caret = hit(input.mouseX, input.mouseY);
+            else selectingWithMouse = false;
+        }
+    }
+
+    //-- tipkovnica ------------------------------------------------------------------------------
+    if(focused){
+        const std::string before = s;
+        auto hasSelection = [&]{ return caret != anchor; };
+        auto eraseSelection = [&]{
+            const size_t a = std::min(caret, anchor), b = std::max(caret, anchor);
+            s.erase(a, b - a);
+            caret = anchor = a;
+        };
+        auto insert = [&](const std::string& raw){
+            std::string clean;
+            for(char c : raw){
+                if(c == '\r') continue;
+                if(c == '\t') c = ' ';
+                if(c == '\n' && visibleLines == 1) c = ' ';
+                if(static_cast<unsigned char>(c) < 0x20 && c != '\n') continue;
+                clean += c;
+            }
+            if(hasSelection()) eraseSelection();
+            size_t room = config.maxLength > s.size() ? config.maxLength - s.size() : 0;
+            if(clean.size() > room){
+                clean.resize(room);
+                while(!clean.empty() && continuation(clean.back())) clean.pop_back();   //ne pola znaka
+                if(!clean.empty() && static_cast<unsigned char>(clean.back()) >= 0xC0) clean.pop_back();
+            }
+            s.insert(caret, clean);
+            caret += clean.size();
+            anchor = caret;
+        };
+
+        if(!input.text.empty()) insert(input.text);
+        for(const KeyEvent& event : input.keys){
+            lines = wrapLines(s, innerWidth, scale);
+            const size_t line = lineOf(lines, caret);
+            const bool keepColumn = event.key == Key::Up || event.key == Key::Down;
+            if(!keepColumn) preferredX = -1.0f;
+            switch(event.key){
+                case Key::Left:
+                    if(hasSelection() && !event.shift) caret = std::min(caret, anchor);
+                    else caret = event.ctrl ? previousWord(s, caret) : previousCodepoint(s, caret);
+                    if(!event.shift) anchor = caret;
+                    break;
+                case Key::Right:
+                    if(hasSelection() && !event.shift) caret = std::max(caret, anchor);
+                    else caret = event.ctrl ? nextWord(s, caret) : nextCodepoint(s, caret);
+                    if(!event.shift) anchor = caret;
+                    break;
+                case Key::Up: case Key::Down:{
+                    if(preferredX < 0.0f) preferredX = textWidth(displayed(s, lines[line].start, caret), scale);
+                    const int target = int(line) + (event.key == Key::Up ? -1 : 1);
+                    if(target < 0) caret = 0;
+                    else if(target >= int(lines.size())) caret = s.size();
+                    else caret = offsetAt(s, lines[size_t(target)], preferredX, scale);
+                    if(!event.shift) anchor = caret;
+                    break;
+                }
+                case Key::Home:
+                    caret = event.ctrl ? 0 : lines[line].start;
+                    if(!event.shift) anchor = caret;
+                    break;
+                case Key::End:
+                    caret = event.ctrl ? s.size() : lines[line].end;
+                    if(!event.shift) anchor = caret;
+                    break;
+                case Key::Backspace:
+                    if(hasSelection()) eraseSelection();
+                    else if(caret > 0){
+                        const size_t from = event.ctrl ? previousWord(s, caret) : previousCodepoint(s, caret);
+                        s.erase(from, caret - from);
+                        caret = anchor = from;
+                    }
+                    break;
+                case Key::Delete:
+                    if(hasSelection()) eraseSelection();
+                    else if(caret < s.size()){
+                        const size_t to = event.ctrl ? nextWord(s, caret) : nextCodepoint(s, caret);
+                        s.erase(caret, to - caret);
+                        anchor = caret;
+                    }
+                    break;
+                case Key::Enter:
+                    if(config.enterSubmits && !event.shift) result.submitted = true;
+                    else if(visibleLines > 1) insert("\n");
+                    else result.submitted = true;
+                    break;
+                case Key::Escape:
+                    focusedField = 0;
+                    break;
+                case Key::Tab:
+                    break;
+                case Key::A:
+                    if(event.ctrl){ anchor = 0; caret = s.size(); }
+                    break;
+                case Key::C: case Key::X:
+                    if(event.ctrl && hasSelection()){
+                        const size_t a = std::min(caret, anchor), b = std::max(caret, anchor);
+                        const std::string copied = s.substr(a, b - a);
+                        if(setClipboard) setClipboard(copied);
+                        localClipboard = copied;
+                        if(event.key == Key::X) eraseSelection();
+                    }
+                    break;
+                case Key::V:
+                    if(event.ctrl) insert(getClipboard ? getClipboard() : localClipboard);
+                    break;
+            }
+        }
+        result.changed = s != before;
+        lines = wrapLines(s, innerWidth, scale);
+        //Kursor ostaje vidljiv: redak s kursorom se pomakne u prozor polja
+        const int caretLine = int(lineOf(lines, caret));
+        if(caretLine < scrollLine) scrollLine = caretLine;
+        if(caretLine >= scrollLine + visibleLines) scrollLine = caretLine - visibleLines + 1;
+        scrollLine = std::clamp(scrollLine, 0, std::max(0, int(lines.size()) - visibleLines));
+    }
+    result.focused = focusedField == fieldId;
+
+    //-- crtanje ----------------------------------------------------------------------------------
+    list.rect(box, row.hot && !result.focused ? theme.hot : theme.control);
+    list.outline(box, result.focused ? 2.0f : 1.0f, result.focused ? theme.accent : theme.panelEdge);
+    const int first = result.focused ? scrollLine : 0;
+    if(s.empty() && !config.placeholder.empty()){
+        const std::vector<Wrapped> hint = wrapLines(config.placeholder, innerWidth, scale);
+        for(int l = 0; l < visibleLines && size_t(l) < hint.size(); ++l){
+            list.text(innerX, innerY + float(l) * lineHeight, displayed(config.placeholder, hint[size_t(l)].start, hint[size_t(l)].end),
+                      theme.dim, scale);
+        }
+    }
+    const size_t selectionFrom = std::min(caret, anchor), selectionTo = std::max(caret, anchor);
+    for(int l = first; l < first + visibleLines && size_t(l) < lines.size(); ++l){
+        const Wrapped& line = lines[size_t(l)];
+        const float y = innerY + float(l - first) * lineHeight;
+        if(result.focused && selectionFrom != selectionTo){
+            const size_t a = std::max(selectionFrom, line.start), b = std::min(selectionTo, line.end);
+            const bool newlineSelected = selectionTo > line.end && selectionFrom <= line.end;
+            if(a < b || newlineSelected){
+                const float x0 = textWidth(displayed(s, line.start, std::min(a, line.end)), scale);
+                const float x1 = textWidth(displayed(s, line.start, std::max(a, b)), scale) + (newlineSelected ? 6.0f : 0.0f);
+                list.rectFlat(innerX + x0, y - 1.0f, std::max(2.0f, x1 - x0), lineHeight, Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.45f});
+            }
+        }
+        list.text(innerX, y, displayed(s, line.start, line.end), theme.text, scale);
+    }
+    //Kursor treperi pola sekunde (u kadrovima: 60 fps pretpostavljeno)
+    if(result.focused && (frameNumber / 30) % 2 == 0){
+        const int l = int(lineOf(lines, caret));
+        if(l >= first && l < first + visibleLines){
+            const float x = textWidth(displayed(s, lines[size_t(l)].start, std::min(caret, lines[size_t(l)].end)), scale);
+            list.rectFlat(innerX + x, innerY + float(l - first) * lineHeight - 1.0f, 2.0f, lineHeight, theme.title);
+        }
+    }
+    //Traka kad ima vise redaka nego stane
+    if(lines.size() > size_t(visibleLines)){
+        const float share = float(visibleLines) / float(lines.size());
+        const float offset = float(first) / float(lines.size());
+        list.rectFlat(box.x + box.width - 5.0f, box.y + 3.0f + offset * (box.height - 6.0f), 3.0f,
+                      std::max(8.0f, share * (box.height - 6.0f)), theme.dim);
+    }
+    return result;
 }
 
 }
