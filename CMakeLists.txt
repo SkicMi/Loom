@@ -533,6 +533,9 @@ if(LOOM_BUILD_TESTS)
         get_filename_component(TEST_NAME ${TEST_SOURCE} NAME_WE)
 
         add_executable(${TEST_NAME} ${TEST_SOURCE})
+        if(TEST_NAME STREQUAL "test_motion_panel")
+            target_compile_definitions(${TEST_NAME} PRIVATE LOOM_WEAVERMOTION_FIXTURE="${CMAKE_CURRENT_BINARY_DIR}/weavermotion_constraints_fixture.json")
+        endif()
         # Testovi linkaju obje biblioteke. To je dozvoljeno i tu prestaje: same
         # biblioteke jedna o drugoj ne znaju nista.
         target_link_libraries(${TEST_NAME} PRIVATE Loom Spool Engine Treadle Warp LoomPreset TreadlePaint)
@@ -542,6 +545,21 @@ if(LOOM_BUILD_TESTS)
 
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endforeach()
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME test_weavermotion_cli
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_weavermotion_cli.py)
+    endif()
+
+    set(LOOM_KIMODO_PYTHON "${CMAKE_CURRENT_SOURCE_DIR}/tools/weavermotion/.venv-clean/bin/python")
+    if(EXISTS "${LOOM_KIMODO_PYTHON}")
+        add_test(NAME test_weavermotion_constraint_schema
+            COMMAND "${LOOM_KIMODO_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_weavermotion_constraints.py"
+                    "${CMAKE_CURRENT_BINARY_DIR}/weavermotion_constraints_fixture.json")
+        set_tests_properties(test_weavermotion_constraint_schema PROPERTIES DEPENDS test_motion_panel)
+    endif()
+
 
     # Polje ostataka mora proci i kroz STVARNI put do korisnika, ne samo kroz cisti racun u
     # test_residual_field: Loom nacrta kadrove, oba grafa ih ponovno pronadju, rekonstrukcija

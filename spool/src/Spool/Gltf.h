@@ -84,6 +84,7 @@ struct GltfMesh{
 };
 
 struct GltfNode{
+    bool joint = false;                //skin joint marker; runtime skin deformation is separate
     std::string name;
     int mesh = -1;
     std::vector<int> children;

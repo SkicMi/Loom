@@ -65,7 +65,7 @@ inline Warp::TextureSlot& materialSlot(Warp::Material& m, int slot){
 }
 
 inline const char* slotName(int slot){
-    static const char* names[5] = {"boja", "metal/hrapavost", "normal", "occlusion", "emisija"};
+    static const char* names[5] = {"Color", "Metal/Rough", "Normal", "Occlusion", "Emission"};
     return names[std::clamp(slot, 0, 4)];
 }
 
@@ -82,23 +82,23 @@ inline bool assignArmedImage(Warp::Stage& stage, MaterialPanelState& state, cons
 namespace tools{
 
 inline std::string slotLabel(const Warp::TextureSlot& t){
-    if(t.empty()) return "(nema)";
+    if(t.empty()) return "(None)";
     const std::string file = std::filesystem::path(t.source).filename().string();
     return t.image >= 0 ? file + " #" + std::to_string(t.image) : file;
 }
 
 //Izbor materijala za jednu vezu: [<] ime [>] [novi]. -1 je zadani materijal
 inline void bindingRow(Treadle::Ui& ui, Warp::Stage& stage, const std::string& label, int& binding){
-    const std::string name = binding >= 0 && size_t(binding) < stage.materials.size() ? stage.materials[size_t(binding)].name : "(zadani)";
+    const std::string name = binding >= 0 && size_t(binding) < stage.materials.size() ? stage.materials[size_t(binding)].name : "(Default)";
     ui.value(label, Treadle::fitText(name, 170.0f, ui.style().textScale));
-    const int clicked = ui.buttonRow({"<", ">", "novi"});
+    const int clicked = ui.buttonRow({"<", ">", "New"});
     const int count = int(stage.materials.size());
     if(clicked == 0) binding = binding <= -1 ? count - 1 : binding - 1;
     if(clicked == 1) binding = binding >= count - 1 ? -1 : binding + 1;
     if(clicked == 2){
         Warp::Material fresh;
         if(binding >= 0 && size_t(binding) < stage.materials.size()) fresh = stage.materials[size_t(binding)];
-        fresh.name = binding >= 0 ? fresh.name + " kopija" : "Materijal";
+        fresh.name = binding >= 0 ? fresh.name + " Copy" : "Material";
         binding = stage.addMaterial(fresh);
     }
 }
@@ -108,34 +108,34 @@ inline void editMaterial(Treadle::Ui& ui, Warp::Stage& stage, int index, Materia
     Warp::Material& m = stage.materials[size_t(index)];
 
     float colour[3] = {m.baseColor.r, m.baseColor.g, m.baseColor.b};
-    if(ui.dragVector("boja", colour, 0.004f)){
+    if(ui.dragVector("Color", colour, 0.004f)){
         for(float& c : colour) c = std::clamp(c, 0.0f, 1.0f);
         m.baseColor = glm::vec4(colour[0], colour[1], colour[2], m.baseColor.a);
     }
-    ui.slider("metalnost", &m.metallic, 0.0f, 1.0f);
-    ui.slider("hrapavost", &m.roughness, 0.0f, 1.0f);
+    ui.slider("Metallic", &m.metallic, 0.0f, 1.0f);
+    ui.slider("Roughness", &m.roughness, 0.0f, 1.0f);
     float emissive[3] = {m.emissive.r, m.emissive.g, m.emissive.b};
-    if(ui.dragVector("emisija", emissive, 0.004f)){
+    if(ui.dragVector("Emission", emissive, 0.004f)){
         for(float& c : emissive) c = std::clamp(c, 0.0f, 1.0f);
         m.emissive = glm::vec3(emissive[0], emissive[1], emissive[2]);
     }
-    ui.slider("jacina emisije", &m.emissiveStrength, 0.0f, 20.0f);
+    ui.slider("Emission Strength", &m.emissiveStrength, 0.0f, 20.0f);
 
     int alpha = int(m.alphaMode);
-    if(ui.choice("alfa", {"neprozirno", "maska", "prozirno"}, &alpha)) m.alphaMode = Warp::Material::Alpha(alpha);
-    if(m.alphaMode != Warp::Material::Alpha::Opaque) ui.slider("neprozirnost", &m.baseColor.a, 0.0f, 1.0f);
-    if(m.alphaMode == Warp::Material::Alpha::Mask) ui.slider("prag maske", &m.alphaCutoff, 0.0f, 1.0f);
-    ui.checkbox("dvostrano", &m.doubleSided);
+    if(ui.choice("Alpha Mode", {"Opaque", "Mask", "Blend"}, &alpha)) m.alphaMode = Warp::Material::Alpha(alpha);
+    if(m.alphaMode != Warp::Material::Alpha::Opaque) ui.slider("Opacity", &m.baseColor.a, 0.0f, 1.0f);
+    if(m.alphaMode == Warp::Material::Alpha::Mask) ui.slider("Mask Cutoff", &m.alphaCutoff, 0.0f, 1.0f);
+    ui.checkbox("Double-Sided", &m.doubleSided);
 
     //Mape: ime, pa [iz datoteke] [ukloni]. Naoruzana ceka klik na sliku u media prozoru
     for(int slot = 0; slot < 5; ++slot){
         Warp::TextureSlot& t = materialSlot(m, slot);
         const bool waiting = state.armedMaterial == index && state.armedSlot == slot;
-        ui.value(std::string("mapa ") + slotName(slot),
-                 waiting ? "klikni sliku lijevo" : Treadle::fitText(slotLabel(t), 150.0f, ui.style().textScale));
-        if(slot == 2 && !t.empty()) ui.slider("jacina normala", &t.amount, 0.0f, 2.0f);
-        if(slot == 3 && !t.empty()) ui.slider("jacina occlusiona", &t.amount, 0.0f, 1.0f);
-        const int clicked = ui.buttonRow({waiting ? "odustani" : "iz datoteke", "ukloni"});
+        ui.value(std::string("Texture: ") + slotName(slot),
+                 waiting ? "Select an image on the left" : Treadle::fitText(slotLabel(t), 150.0f, ui.style().textScale));
+        if(slot == 2 && !t.empty()) ui.slider("Normal Strength", &t.amount, 0.0f, 2.0f);
+        if(slot == 3 && !t.empty()) ui.slider("Occlusion Strength", &t.amount, 0.0f, 1.0f);
+        const int clicked = ui.buttonRow({waiting ? "Cancel" : "Choose Image", "Remove"});
         if(clicked == 0){
             if(waiting) state.armedMaterial = state.armedSlot = -1;
             else{ state.armedMaterial = index; state.armedSlot = slot; }
@@ -151,21 +151,21 @@ inline void editMaterial(Treadle::Ui& ui, Warp::Stage& stage, int index, Materia
 inline void materialPanel(Treadle::Ui& ui, Warp::Stage& stage, Warp::Entity& entity, MaterialPanelState& state){
     if(!entity.mesh && !entity.model) return;
     ui.separator();
-    ui.label("MATERIJAL");
+    ui.label("MATERIAL");
     int editing = -1;
     if(entity.mesh){
-        tools::bindingRow(ui, stage, "materijal", entity.mesh->material);
+        tools::bindingRow(ui, stage, "Material", entity.mesh->material);
         editing = entity.mesh->material;
     }
     if(entity.model){
         for(size_t p = 0; p < entity.model->materials.size(); ++p){
-            tools::bindingRow(ui, stage, entity.model->materials.size() > 1 ? "primitiv " + std::to_string(p) : "materijal",
+            tools::bindingRow(ui, stage, entity.model->materials.size() > 1 ? "Primitive " + std::to_string(p) : "Material",
                               entity.model->materials[p]);
             if(editing < 0) editing = entity.model->materials[p];
         }
     }
     if(editing >= 0) tools::editMaterial(ui, stage, editing, state);
-    else ui.label("(zadani materijal - 'novi' za uredjivanje)");
+    else ui.label("(Default material - choose 'New' to edit)");
 }
 
 //=============================================================================================

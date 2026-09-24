@@ -1,10 +1,11 @@
 # WeaverMotion — NVIDIA Kimodo
 
-Loom runs the official Kimodo CLI as a separate background job. Text-to-motion
-uses Kimodo-SOMA-RP-v1.1, exports BVH in standard T-pose, then imports that
-BVH into Loom's animated skeletal preview. The text encoder runs on CPU to
-leave VRAM for Kimodo's motion model; diffusion uses CUDA when PyTorch detects
-a compatible GPU.
+Loom runs a small tracked adapter around NVIDIA's official Kimodo CLI as a
+separate background job. It exposes all seven installed model variants,
+multi-prompt timing, sample count, diffusion steps, CFG, saved JSON constraints,
+example export, foot cleanup, initial heading, and the API's root correction
+margin. The text encoder runs on CPU to leave VRAM for Kimodo's motion model;
+diffusion uses CUDA when PyTorch detects a compatible GPU.
 
 ## Local setup
 
@@ -20,15 +21,19 @@ project, command-line arguments, or source control. Confirm login with
 tools/weavermotion/.venv-clean/bin/hf auth whoami (it should print your
 account name, not your token).
 
-The first real generation downloads the Kimodo checkpoint and LLM2Vec encoder.
-The gated Llama repository is large (the complete Hub snapshot is about 32 GB);
-allow network time and disk space. Downloads are cached by Hugging Face outside
-the repository in ~/.cache/huggingface.
+The first real generation downloads about 16.1 GB of Llama safetensors, the
+1.1 GB Kimodo checkpoint, and roughly 0.34 GB of LLM2Vec adapters. The complete
+Llama Hub repository lists about 32 GB because it also contains a separate
+legacy checkpoint that this runtime does not need. Downloads are cached by
+Hugging Face outside the repository in ~/.cache/huggingface.
 
 ## Current MVP boundary
 
 Generated BVH is automatically imported and the motion is visible as animated
-joint/bone geometry in Loom's viewport and timeline. The current renderer does
-not skin/deform the WeaverMascott FBX mesh or retarget SOMA's 77-joint rig onto
-the mascot's 34-bone rig. The UI reports this explicitly; it does not claim
-that the FBX character is already being animated.
+joint/bone geometry in Loom's viewport and timeline. The UI lists rigged scene
+characters and anchors that skeleton preview to the selected character, but
+the current renderer does not skin/deform its mesh or retarget SOMA's 77-joint
+rig onto the mascot's 34-bone rig. Constraints can be loaded from Kimodo JSON;
+Loom does not yet author/edit pose, end-effector, or root-path constraints on
+its own timeline. SOMA BVH is the only Kimodo format Loom currently previews;
+G1 CSV and SMPL-X NPZ outputs are retained in the output folder.

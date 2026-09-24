@@ -155,6 +155,7 @@ inline ModelImportReport importGltf(Warp::Stage& stage, const Spool::GltfScene& 
         entity.local.translation = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
         entity.local.rotation = glm::normalize(glm::quat(node.rotation[3], node.rotation[0], node.rotation[1], node.rotation[2]));
         entity.local.scale = glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
+        if(node.joint) entity.joint = Warp::Joint{};
         if(node.mesh >= 0){
             Warp::Model model;
             model.path = scene.path;

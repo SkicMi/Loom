@@ -847,26 +847,26 @@ int main(int argc, char** argv){
         }
 
         ui.begin(input, float(windowSize.width), float(windowSize.height));
-        ui.panel("Loom", 16.0f, 16.0f, 320.0f);
+        ui.panel("SPLAT VIEWER", 16.0f, 16.0f, 320.0f);
 
-        ui.value("splatova", std::to_string(splatCount));
-        ui.value("kadrova/s", fmtNumber(framesPerSecond, 1));
+        ui.value("Gaussians", std::to_string(splatCount));
+        ui.value("FPS", fmtNumber(framesPerSecond, 1));
         if(!cameraPath.empty()){
-            ui.value("kamera", std::to_string(whichPose + 1) + " / " + std::to_string(cameraPath.size()));
+            ui.value("Camera", std::to_string(whichPose + 1) + " / " + std::to_string(cameraPath.size()));
         }
 
         ui.separator();
-        ui.checkbox("kocka za brisanje", &cubeOn);
+        ui.checkbox("Enable Delete Box", &cubeOn);
 
         if(cubeOn){
-            ui.checkbox("sve stranice jednake", &cubeUniform);
+            ui.checkbox("Uniform Size", &cubeUniform);
 
             //Klizac koji je pomaknut vodi ostale kad su stranice vezane. Prvo se ne zna koji
             //ce to biti, pa se pita svaki - a mice se najvise jedan po kadru
             float sizeX = cubeShare.x, sizeY = cubeShare.y, sizeZ = cubeShare.z;
-            const bool movedX = ui.slider("sirina X", &sizeX, 0.005f, 1.5f);
-            const bool movedY = ui.slider("visina Y", &sizeY, 0.005f, 1.5f);
-            const bool movedZ = ui.slider("dubina Z", &sizeZ, 0.005f, 1.5f);
+            const bool movedX = ui.slider("Width X", &sizeX, 0.005f, 1.5f);
+            const bool movedY = ui.slider("Height Y", &sizeY, 0.005f, 1.5f);
+            const bool movedZ = ui.slider("Depth Z", &sizeZ, 0.005f, 1.5f);
 
             if(movedX || movedY || movedZ){
                 const float driver = movedX ? sizeX : (movedY ? sizeY : sizeZ);
@@ -879,20 +879,20 @@ int main(int argc, char** argv){
                 cubeMoved = true;
             }
 
-            if(ui.button("Kocka ovamo")){
+            if(ui.button("Move Box to View")){
                 //Na tocku oko koje se kruzi, a ne na kameru: to je mjesto u koje se gleda, i
                 //jedino koje korisnik postavlja namjerno
                 cubeCenter = orbit.pivot;
                 cubeMoved = true;
             }
 
-            ui.label("G i mis: pomakni kocku");
+            ui.label("G + mouse: move the box");
 
-            ui.choice("brise se", {"unutra", "izvan"}, &deleteMode);
-            ui.value("u kocki", std::to_string(insideCount) + " od " + std::to_string(aliveCount));
-            ui.value("brojanje", fmtNumber(countMilliseconds, 1) + " ms");
+            ui.choice("Delete", {"Inside", "Outside"}, &deleteMode);
+            ui.value("Inside Box", std::to_string(insideCount) + " of " + std::to_string(aliveCount));
+            ui.value("Count Time", fmtNumber(countMilliseconds, 1) + " ms");
 
-            if(ui.button("Obrisi")){
+            if(ui.button("Delete")){
                 const glm::vec3 half = cubeShare * bounds.radius;
                 const bool removeInside = deleteMode == 0;
 
@@ -914,12 +914,12 @@ int main(int argc, char** argv){
                 cubeMoved = true;
 
                 aliveCount -= removed;   //tocno i nakon drugog brisanja; countInside ga svejedno prebroji
-                lastMessage = "obrisano " + std::to_string(removed);
+                lastMessage = "Deleted " + std::to_string(removed);
                 printf("Obrisano %zu gaussiana (%s kocke), ostalo %zu\n",
-                       removed, removeInside ? "unutar" : "izvan", aliveCount);
+                       removed, removeInside ? "inside" : "outside", aliveCount);
             }
 
-            if(!lastRemoved.empty() && ui.button("Vrati zadnje brisanje")){
+            if(!lastRemoved.empty() && ui.button("Undo Last Delete")){
                 for(uint32_t index : lastRemoved) alive[index] = 1;
                 aliveCount += lastRemoved.size();
 
@@ -928,17 +928,17 @@ int main(int argc, char** argv){
                 uploadSplats(false);
                 cubeMoved = true;
 
-                lastMessage = "vraceno " + std::to_string(lastRemoved.size());
+                lastMessage = "Restored " + std::to_string(lastRemoved.size());
                 printf("Vraceno %zu gaussiana\n", lastRemoved.size());
                 lastRemoved.clear();
             }
 
-            if(ui.button("Spremi .ply")){
+            if(ui.button("Save .ply")){
                 if(aliveCount == 0){
                     //Prazan .ply se ne da procitati natrag, pa bi zapisivanje dalo datoteku
                     //koja izgleda kao rezultat a nije. Do praznog se dodje jednim klikom:
                     //"izvan" male kocke u praznom zraku odnese cijelu scenu
-                    lastMessage = "nema sto spremiti";
+                    lastMessage = "Nothing to save";
                     printf("Nista nije ostalo - prazan .ply se ne pise\n");
                 }else{
                     //NOVI FILE, nikad preko ulaznog. Brisanje nema korak natrag, pa je jedina
@@ -948,10 +948,10 @@ int main(int argc, char** argv){
                                           + "_rezano.ply";
                     try{
                         Spool::saveGaussianPly(out, cloud, alive);
-                        lastMessage = "spremljeno";
+                        lastMessage = "Saved";
                         printf("Spremljeno %s (%zu gaussiana)\n", out.c_str(), aliveCount);
                     }catch(const std::exception& error){
-                        lastMessage = "greska pri spremanju";
+                        lastMessage = "Save failed";
                         printf("%s\n", error.what());
                     }
                 }

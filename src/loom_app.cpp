@@ -31,11 +31,15 @@
 #include "LoomPlate.h"
 #include "LoomScene.h"
 #include "LoomSplat.h"
+#include "LoomSplatCut.h"
+#include "LoomUndo.h"
+#include "LoomAutosave.h"
 #include "LoomEditorTools.h"
 #include "LoomPbr.h"
 #include "LoomViewport.h"
 #include "LoomWeaverMotion.h"
 #include "LoomMotionPanel.h"
+#include "LoomAutoRig.h"
 
 #include "Vulkan/ImageData.h"
 #include "Vulkan/Material.h"
@@ -70,11 +74,12 @@ namespace fs = std::filesystem;
 //jer solve u pozadini stvara nove mape rezultata
 struct Browser{
     fs::path at;
-    std::vector<fs::path> folders, videos, results, projects, motions, models, images;
+    std::vector<fs::path> folders, videos, results, projects, motions, models, images, splats;
 
     void refresh(){
         folders.clear();
         projects.clear();
+        splats.clear();
         results = Loom::resultsIn(at);
         videos = Loom::videosIn(at);
         motions = Loom::weaverMotionFilesIn(at);
@@ -89,12 +94,17 @@ struct Browser{
                 projects.push_back(entry.path());
                 continue;
             }
+            if(entry.is_regular_file(error) && entry.path().extension() == ".ply" && Loom::isGaussianPly(entry.path().string())){
+                splats.push_back(entry.path());
+                continue;
+            }
             if(!entry.is_directory(error) || name.empty() || name[0] == '.') continue;
             if(Loom::isResultDirectory(entry.path())) continue;
             folders.push_back(entry.path());
         }
         std::sort(folders.begin(), folders.end());
         std::sort(projects.begin(), projects.end());
+        std::sort(splats.begin(), splats.end());
     }
 };
 
@@ -143,13 +153,33 @@ std::string vectorText(const glm::vec3& v){
 
 //Sto entitet jest, za svojstva
 std::string kindOf(const Warp::Entity& entity){
-    if(entity.camera) return "kamera";
-    if(entity.points) return "oblak tocaka";
-    if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "kocka" : "ravnina";
-    if(entity.splat) return "gaussian splat";
-    if(entity.joint) return "zglob";
-    if(entity.model) return "model (glTF)";
-    return entity.children.empty() ? "nul" : "grupa";
+    if(entity.camera) return "Camera";
+    if(entity.points) return "Point Cloud";
+    if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "Cube" : "Plane";
+    if(entity.splat) return "Gaussian Splat";
+    if(entity.joint) return "Joint";
+    if(entity.model) return "Model (glTF)";
+    return entity.children.empty() ? "Null" : "Group";
+}
+
+struct AssetStyle{ std::string badge; Treadle::Color colour; };
+
+AssetStyle assetStyle(const fs::path& path, const std::string& kind){
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c){ return char(std::toupper(c)); });
+    if(!extension.empty() && extension.front() == '.') extension.erase(extension.begin());
+    if(kind == "video"){
+        if(extension == "MOV") return {extension, {0.28f, 0.55f, 1.0f, 1.0f}};
+        if(extension == "MKV") return {extension, {0.72f, 0.43f, 1.0f, 1.0f}};
+        if(extension == "AVI") return {extension, {1.0f, 0.32f, 0.47f, 1.0f}};
+        return {extension.empty() ? "VID" : extension, {0.16f, 0.87f, 1.0f, 1.0f}};
+    }
+    if(kind == "image") return {extension == "JPEG" ? "JPG" : (extension.empty() ? "IMG" : extension), {1.0f, 0.30f, 0.73f, 1.0f}};
+    if(kind == "project") return {"USD", {0.42f, 1.0f, 0.42f, 1.0f}};
+    if(kind == "motion") return {"BVH", {1.0f, 0.52f, 0.19f, 1.0f}};
+    if(kind == "model") return {extension == "GLTF" ? "GLTF" : (extension.empty() ? "3D" : extension), {0.34f, 0.58f, 1.0f, 1.0f}};
+    return {"SOLV", {1.0f, 0.78f, 0.20f, 1.0f}};
 }
 
 //Rotacija iz matrice koja moze nositi i mjerilo: stupci se normiraju prije pretvorbe
@@ -251,6 +281,11 @@ int main(int argc, char** argv){
     Loom::MotionPanelState motionPanel;
     float motionPanelScroll = 0.0f;
     fs::path generatedMotionPath;
+    Warp::Id generatedMotionTarget = Warp::None;
+    std::vector<Loom::MotionCharacter> sceneMotionCharacters;
+    std::chrono::steady_clock::time_point sceneMotionCharactersRead{};
+    Loom::AutoRigState autoRig;
+    float autoRigScroll = 0.0f;
 
     //-- poslovi ----------------------------------------------------------------------------------
     Loom::Job job;
@@ -358,7 +393,7 @@ int main(int argc, char** argv){
         afterJob = thenSplat ? After::ImportAndTrain : After::Import;
         live = Warp::Stage{};
         startJob(command, out.string(), Loom::Task::Solve, 0);
-        message = "solve krenuo: " + video.filename().string();
+        message = "Solve started: " + video.filename().string();
     };
 
     auto startTrain = [&](const std::string& directory){
@@ -375,7 +410,7 @@ int main(int argc, char** argv){
                       int(trainSteps));
         afterJob = After::AddSplat;
         startJob(command, directory, Loom::Task::Train, int(trainSteps));
-        message = "trening krenuo";
+        message = "Training started";
     };
 
     auto importFolder = [&](const fs::path& directory, const std::string& givenPlate){
@@ -391,8 +426,8 @@ int main(int argc, char** argv){
         view.lookThrough = Warp::None;
         Loom::frameAll(stage, frame, view.orbit);
         char text[160];
-        std::snprintf(text, sizeof(text), "uvezeno %s: %zu kljuceva kamere%s", directory.filename().string().c_str(),
-                      report.cameraKeys, report.upright ? ", uspravno" : "");
+        std::snprintf(text, sizeof(text), "Imported %s: %zu camera keys%s", directory.filename().string().c_str(),
+                      report.cameraKeys, report.upright ? ", upright" : "");
         message = text;
     };
 
@@ -404,7 +439,7 @@ int main(int argc, char** argv){
     //pikselom nema tocaka, zraka se spusti na pod (y = 0), a kad ni to ne ide, sredina scene.
     //Velicina je iz udaljenosti (solve nema metre): desetina puta do mjesta
     auto addMeshAt = [&](Warp::Shape shape, Warp::Id parent, glm::vec2 pixel, bool usePixel){
-        const char* name = shape == Warp::Shape::Cube ? "Kocka" : "Ravnina";
+        const char* name = shape == Warp::Shape::Cube ? "Cube" : "Plane";
         const Warp::Id id = stage.create(name, parent);
         Warp::Entity& entity = *stage.get(id);
         entity.mesh = Warp::Mesh{shape};
@@ -460,7 +495,7 @@ int main(int argc, char** argv){
         return newest;
     };
 
-    auto importMotion = [&](const fs::path& path){
+    auto importMotion = [&](const fs::path& path, Warp::Id targetCharacter){
         Loom::MotionPlacement placement;
         if(stage.size() > 0){
             int w = 0, h = 0;
@@ -485,22 +520,27 @@ int main(int argc, char** argv){
             placement.sceneFps = stage.framesPerSecond;
             Engine::WeaverMotion::Clip clip;
             std::string error;
-            if(!Engine::WeaverMotion::readKimodoBvh(path.string(), clip, error)){ message = "pokret se ne da procitati: " + error; return; }
+            if(!Engine::WeaverMotion::readKimodoBvh(path.string(), clip, error)){ message = "Could not read motion: " + error; return; }
             const float eyeHeight = ray.origin.y;
             placement.scale = eyeHeight > 1e-4f ? eyeHeight / 1.5f
                                                 : 0.35f * std::max(1e-4f, glm::length(place - ray.origin)) /
                                                   std::max(1e-4f, Loom::motionRestHeight(clip));
+            if(stage.contains(targetCharacter) && Loom::motionSubtreeHasRig(stage, targetCharacter)){
+                placement.parent = targetCharacter;
+                placement.position = glm::vec3(0.0f);
+                placement.scale = 1.0f;
+            }
             const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionClip(stage, clip, path.stem().string(), placement);
-            if(!report.problem.empty()){ message = "pokret: " + report.problem; return; }
+            if(!report.problem.empty()){ message = "Motion: " + report.problem; return; }
             selected = report.group;
             collapsed.insert(report.root);
             char text[256];
-            std::snprintf(text, sizeof(text), "pokret (NVIDIA Kimodo): %zu zglobova, kadrovi %.0f-%.0f, mjerilo %.3f",
+            std::snprintf(text, sizeof(text), "Motion (NVIDIA Kimodo): %zu joints, frames %.0f-%.0f, scale %.3f",
                           report.joints, report.firstFrame, report.lastFrame, placement.scale);
             message = text;
         }else{
             const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionBvh(stage, path, placement);
-            if(!report.problem.empty()){ message = "pokret se ne da procitati: " + report.problem; return; }
+            if(!report.problem.empty()){ message = "Could not read motion: " + report.problem; return; }
             selected = report.group;
             collapsed.insert(report.root);
             frame = stage.startFrame;
@@ -509,7 +549,7 @@ int main(int argc, char** argv){
             view.orbit.target = glm::vec3(0.0f, report.height * 0.5f, 0.0f);
             view.orbit.distance = std::max(1.0f, report.height * 2.5f);
             char text[256];
-            std::snprintf(text, sizeof(text), "pokret (NVIDIA Kimodo): %zu zglobova, %zu kadrova @ %.0f fps",
+            std::snprintf(text, sizeof(text), "Motion (NVIDIA Kimodo): %zu joints, %zu frames @ %.0f fps",
                           report.joints, report.frames, stage.framesPerSecond);
             message = text;
         }
@@ -519,10 +559,10 @@ int main(int argc, char** argv){
     auto importNewestMotion = [&](){
         const fs::path motion = newestMotionInBrowser();
         if(motion.empty()){
-            message = "U otvorenoj mapi nema BVH-a za uvoz.";
+            message = "No BVH files to import in the current folder.";
             return;
         }
-        importMotion(motion);
+        importMotion(motion, motionPanel.targetCharacter);
         if(!message.empty()) message = "WeaverMotion: " + message;
     };
 
@@ -533,42 +573,71 @@ int main(int argc, char** argv){
 
     auto startMotionGeneration = [&](){
         if(job.running){
-            message = "Drugi Loom posao još radi.";
+            message = "Another Loom job is still running.";
             return;
         }
-        const Loom::MotionRequest request = motionPanel.request();
+        Loom::MotionRequest request = motionPanel.request();
+        if(!request.rootWaypoints.empty() && !request.constraints.empty()){
+            message = "Choose either the authored root path or an external constraints JSON, not both.";
+            return;
+        }
         if(Loom::filledActions(request.actions).empty()){
-            message = "Upiši opis pokreta prije generiranja.";
-            ui.focusTextField("radnja0");
+            message = "Enter a motion prompt before generating.";
+            ui.focusTextField("action0");
             return;
         }
-        const fs::path runner = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen";
-        if(!fs::is_regular_file(runner)){
-            message = "Kimodo runner nije instaliran; vidi tools/weavermotion/README.md.";
+        if(!request.constraints.empty() && !fs::is_regular_file(request.constraints)){
+            message = "Kimodo constraints file does not exist: " + request.constraints.string();
+            return;
+        }
+        const fs::path runner = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/python";
+        const fs::path adapter = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_cli.py";
+        const fs::path installedKimodo = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen";
+        if(!fs::is_regular_file(runner) || !fs::is_regular_file(adapter) || !fs::is_regular_file(installedKimodo)){
+            message = "Kimodo runner is not installed; see tools/weavermotion/README.md.";
             return;
         }
         const fs::path outputDirectory = motionDirectory();
         std::error_code error;
         fs::create_directories(outputDirectory, error);
         if(error){
-            message = "Ne mogu napraviti izlaznu mapu WeaverMotion: " + error.message();
+            message = "Could not create WeaverMotion output folder: " + error.message();
             return;
         }
         const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         const fs::path outputStem = outputDirectory / ("motion_" + std::to_string(stamp));
+        if(!request.rootWaypoints.empty()){
+            std::string problem;
+            request.constraints = outputStem.string() + ".constraints.json";
+            if(!Loom::writeMotionRootConstraints(request.constraints, request.rootWaypoints,
+                                                 request.constrainRootHeading,
+                                                 Loom::kimodoMotionLastFrame(request.actions), problem)){
+                message = problem;
+                return;
+            }
+        }
         generatedMotionPath = outputStem;
-        generatedMotionPath += ".bvh";
+        generatedMotionTarget = request.targetCharacter;
         //Opis uz BVH, za povijest u panelu
         Loom::writeMotionSidecar(outputStem, request);
         afterJob = After::Nothing;
-        startJob(Loom::buildMotionCommand(runner, request, outputStem), outputDirectory.string(), Loom::Task::WeaverMotion, 0);
-        message = "Kimodo generira na GPU-u; LLM2Vec encoder radi na CPU-u.";
+        startJob(Loom::buildMotionCommand(runner, request, outputStem, adapter), outputDirectory.string(), Loom::Task::WeaverMotion, 0);
+        message = "Kimodo runs on the GPU; the LLM2Vec encoder runs on the CPU.";
+    };
+
+    auto openAutoRig = [&](const fs::path& source = fs::path()){
+        autoRig.open = true;
+        motionPanel.open = false;
+        if(!source.empty()) autoRig.source = source.string();
+        else if(const Warp::Entity* e = stage.get(selected); e && e->model) autoRig.source = e->model->path;
+        ui.focusTextField("autorig-source");
     };
 
     auto openMotionWorkflow = [&](){
+        autoRig.open = false;
         motionPanel.open = true;
-        ui.focusTextField("radnja" + std::to_string(motionPanel.activeAction));
+        ui.focusTextField("action" + std::to_string(motionPanel.activeAction));
     };
 
     //-- projekt ----------------------------------------------------------------------------------
@@ -581,6 +650,12 @@ int main(int argc, char** argv){
     //Stage::fingerprint). Prazna scena na pocetku nije nespremljena
     uint64_t savedFingerprint = stage.fingerprint();
     bool quitting = false;
+    //Undo/redo of the whole scene (LoomUndo.h) and autosave beside the project (LoomAutosave.h)
+    Loom::UndoHistory history;
+    bool historyStarted = false;
+    Loom::Autosave autosave;
+    fs::path offeredAutosave;             //newer autosave waiting for the user's answer
+    bool autosaveAsked = false;           //its question is on screen
 
     auto saveProjectNow = [&]() -> bool{
         if(projectPath.empty()){
@@ -589,7 +664,10 @@ int main(int argc, char** argv){
         }
         const auto started = std::chrono::steady_clock::now();
         std::string error;
+        const bool wasUntitled = autosave.lastPath() == Loom::autosavePathFor({});
         if(Warp::saveProject(stage, projectPath.string(), error)){
+            autosave.discard(projectPath);
+            if(wasUntitled) autosave.discard({});
             char text[256];
             std::snprintf(text, sizeof(text), "spremljeno: %s (%.1f s)", projectPath.filename().string().c_str(),
                           std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
@@ -598,14 +676,14 @@ int main(int argc, char** argv){
             savedFingerprint = stage.fingerprint();
             return true;
         }
-        message = "spremanje nije uspjelo: " + error;
+        message = "Save failed: " + error;
         return false;
     };
 
     auto openProject = [&](const fs::path& path){
         std::string error;
         Warp::Stage opened;
-        if(!Warp::loadProject(path.string(), opened, error)){ message = "ne mogu otvoriti: " + error; return; }
+        if(!Warp::loadProject(path.string(), opened, error)){ message = "Could not open: " + error; return; }
         stage = std::move(opened);
         projectPath = path;
         selected = Warp::None;
@@ -616,8 +694,11 @@ int main(int argc, char** argv){
         extent = Loom::sceneExtent(stage, frame);
         extentDirty = false;
         Loom::frameAll(stage, frame, view.orbit);
-        message = "otvoren projekt " + path.filename().string();
+        message = "Opened project " + path.filename().string();
         savedFingerprint = stage.fingerprint();
+        history.reset(stage);
+        fs::path newer;
+        if(Loom::newerAutosave(path, newer)) offeredAutosave = newer;
     };
 
     auto newScene = [&](){
@@ -628,8 +709,9 @@ int main(int argc, char** argv){
         view = Loom::ViewportState{};
         frame = 1.0;
         extentDirty = true;
-        message = "nova scena";
+        message = "New scene";
         savedFingerprint = stage.fingerprint();
+        history.reset(stage);
     };
 
     auto firstCamera = [&](){
@@ -667,6 +749,15 @@ int main(int argc, char** argv){
 
     //-- splat u pogledu -----------------------------------------------------------------------------
     Loom::ViewportSplat viewportSplat(loom);
+    //Rezanje i ciscenje splata (LoomSplatCut.h). Koliko je u kocki se broji samo kad se kocka,
+    //rezanje ili splat promijene - prolaz kroz cijeli oblak
+    Warp::Id splatShownId = Warp::None;          //splat koji pogled crta (iz proslog kadra)
+    Warp::Id splatCleanTarget = Warp::None;      //ciji splat posao ciscenja zamijeni
+    Warp::Id splatFrameWhenLoaded = Warp::None;  //splat otvoren iz preglednika: pogled na njega kad stigne
+    std::string splatCleanOutput;
+    glm::mat4 cutBoxSeen(0.0f);
+    size_t cutCountSeen = 0, cutInside = 0;
+    std::string cutPathSeen;
 
     //-- PBR meshevi, materijali, ploha iz odabira (LoomPbr.h, LoomEditorTools.h) -------------------
     Loom::ViewportMeshes viewportMeshes(loom);
@@ -698,6 +789,32 @@ int main(int argc, char** argv){
             view.orbit.distance = height * 2.2f;
         }
     };
+    auto importAutoRigModel = [&](const fs::path& path){
+        int width = 0, height = 0;
+        glfwGetWindowSize(window, &width, &height);
+        const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(width), float(height)).viewport, view);
+        const bool wasEmpty = stage.size() == 0;
+        const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
+        if(!report.problem.empty()){ message = "Auto Rig import: " + report.problem; return; }
+        afterModelImport(report, wasEmpty);
+        message = "Auto Rig: imported " + path.filename().string();
+    };
+    auto startAutoRig = [&](){
+        if(job.running) return;
+        const fs::path source(autoRig.source);
+        std::error_code error;
+        if(!fs::is_regular_file(source, error) || source.extension() != ".glb"){
+            message = "Auto Rig: select an unrigged .glb file first."; return;
+        }
+        const fs::path root(LOOM_ROOT_DIR);
+        const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
+        autoRig.output = root / "tools/autorig/outputs" / ("rig_" + std::to_string(stamp));
+        afterJob = After::Nothing;
+        showLog = true;
+        startJob(Loom::autoRigCommand(root, fs::absolute(source), autoRig.output),
+                 autoRig.output.string(), Loom::Task::AutoRig, 0);
+        message = "Auto Rig: generating a new skeleton and skin weights.";
+    };
     bool showSplat = !shotNoSplat;
     bool splatWasLoading = false;
     int splatSettledFrames = 0;
@@ -723,7 +840,7 @@ int main(int argc, char** argv){
             frame = shown;
         }
     }
-    if(!shotMotion.empty()){ importMotion(shotMotion); std::printf("%s\n", message.c_str()); }
+    if(!shotMotion.empty()){ importMotion(shotMotion, Warp::None); std::printf("%s\n", message.c_str()); }
     if(!shotMotionText.empty()){
         motionPanel.actions.clear();
         for(const std::string& text : shotMotionText) motionPanel.actions.push_back(Loom::MotionAction{text, 3.0f});
@@ -765,17 +882,26 @@ int main(int argc, char** argv){
 
         //Otisak svaki kadar: prolaz kroz stablo i kljuceve, desetinka milisekunde i na 2301 kljucu
         const bool dirty = stage.fingerprint() != savedFingerprint;
+        if(!historyStarted){
+            //Whatever the command line opened is the starting point, not an undo step. A newer
+            //autosave of an untitled scene is offered once at start
+            history.reset(stage);
+            historyStarted = true;
+            fs::path newer;
+            if(projectPath.empty() && stage.size() == 0 && Loom::newerAutosave({}, newer)) offeredAutosave = newer;
+        }
+        if(autosave.tick(stage, projectPath, dirty)) message = "Autosaved";
         const std::string title = std::string("Loom - ") + (projectPath.empty() ? "nova scena" : projectPath.filename().string()) +
                                   (dirty ? " *" : "");
         if(title != windowTitle){ glfwSetWindowTitle(window, title.c_str()); windowTitle = title; }
 
         //ZATVARANJE PROZORA S NESPREMLJENIM se zaustavi i pita. Bez nespremljenog - izlaz
         if(glfwWindowShouldClose(window)){
-            if(!dirty) break;
+            if(!dirty && !viewportSplat.hasCuts()) break;
             glfwSetWindowShouldClose(window, GLFW_FALSE);
             int w = 0, h = 0;
             glfwGetWindowSize(window, &w, &h);
-            ui.openMenuAt("izlaz", float(w) * 0.5f - 200.0f, float(h) * 0.4f);
+            ui.openMenuAt("Exit", float(w) * 0.5f - 200.0f, float(h) * 0.4f);
         }
 
         int windowWidth = 0, windowHeight = 0;
@@ -835,7 +961,7 @@ int main(int argc, char** argv){
             if(job.failed){
                 std::lock_guard<std::mutex> guard(job.lock);
                 const std::string why = Loom::explainFailure(job.lines);
-                message = why.empty() ? "posao je pao - vidi ispis" : "pao: " + why;
+                message = why.empty() ? "Job failed - see Output" : "Failed: " + why;
                 showLog = true;
             }else if(job.task == Loom::Task::Solve){
                 importFolder(job.outputDirectory, jobVideo);
@@ -850,18 +976,78 @@ int main(int argc, char** argv){
                 const Warp::Id group = stage.find("/" + name);
                 const Warp::Id id = stage.create("Splat", group);
                 stage.get(id)->splat = Warp::Splat{job.outputDirectory + "/scena.ply"};
-                message = "splat gotov: " + job.outputDirectory + "/scena.ply";
+                message = "Splat ready: " + job.outputDirectory + "/scena.ply";
+            }else if(job.task == Loom::Task::Clean){
+                //Ocisceni splat zamijeni izvor u sceni; izvor ostaje na disku
+                Warp::Entity* target = stage.get(splatCleanTarget);
+                std::error_code error;
+                if(target && target->splat && fs::is_regular_file(splatCleanOutput, error)){
+                    const bool same = target->splat->path == splatCleanOutput;
+                    target->splat->path = splatCleanOutput;
+                    if(same) viewportSplat.reload();
+                    browser.refresh();
+                    message = "Floaters cleaned: " + fs::path(splatCleanOutput).filename().string();
+                }else{
+                    message = "Cleaning failed; see Output.";
+                    showLog = true;
+                }
+            }else if(job.task == Loom::Task::AutoRig){
+                const fs::path output(job.outputDirectory);
+                std::error_code error;
+                if(fs::is_regular_file(output / "complete.json", error) &&
+                   fs::is_regular_file(output / "rigged.glb", error)){
+                    autoRig.output = output;
+                    browser.at = output;
+                    importAutoRigModel(output / "rigged.glb");
+                    message = "Auto Rig complete: skeleton + weights passed deformation checks. Inspect the imported rig.";
+                    autoRig.open = true;
+                    motionPanel.open = false;
+                    showLog = false;
+                }else{
+                    message = "Auto Rig failed; full log: " + (output / "autorig.log").string();
+                    showLog = true;
+                }
             }else if(job.task == Loom::Task::WeaverMotion){
                 std::error_code error;
-                if(fs::is_regular_file(generatedMotionPath, error)){
+                fs::path outputBvh = generatedMotionPath;
+                outputBvh += ".bvh";
+                if(fs::is_regular_file(outputBvh, error)){
+                    browser.at = outputBvh.parent_path();
+                    browser.refresh();
+                    importMotion(outputBvh, generatedMotionTarget);
+                    if(!message.empty()) message = "Kimodo complete; " + message;
+                    motionPanel.open = true;
+                }else if(fs::is_directory(generatedMotionPath, error)){
+                    const std::vector<fs::path> samples = Loom::weaverMotionFilesIn(generatedMotionPath);
                     browser.at = generatedMotionPath.parent_path();
                     browser.refresh();
-                    importMotion(generatedMotionPath);
-                    if(!message.empty()) message = "Kimodo gotovo; " + message;
-                    motionPanel.open = true;
+                    motionPanel.historyRead = {};
+                    if(!samples.empty()){
+                        if(samples.size() == 1){
+                            importMotion(samples.front(), generatedMotionTarget);
+                            message = "Kimodo generated one BVH sample; it is available in Recent Motions.";
+                        }else{
+                            message = "Kimodo generated " + std::to_string(samples.size()) + " BVH variations; choose one in Recent Motions.";
+                        }
+                        motionPanel.open = true;
+                    }else{
+                        message = "Kimodo saved native NPZ/CSV outputs; Loom's timeline preview currently imports SOMA BVH only.";
+                        motionPanel.open = true;
+                    }
                 }else{
-                    message = "Kimodo nije izradio očekivani BVH; pregledaj Ispis.";
-                    showLog = true;
+                    fs::path outputNpz = generatedMotionPath;
+                    outputNpz += ".npz";
+                    fs::path outputCsv = generatedMotionPath;
+                    outputCsv += ".csv";
+                    if(fs::is_regular_file(outputNpz, error) || fs::is_regular_file(outputCsv, error)){
+                        browser.at = generatedMotionPath.parent_path();
+                        browser.refresh();
+                        message = "Kimodo saved native NPZ/CSV outputs; Loom's timeline preview currently imports SOMA BVH only.";
+                        motionPanel.open = true;
+                    }else{
+                        message = "Kimodo did not produce a recognized motion output; check Output.";
+                        showLog = true;
+                    }
                 }
             }
             browser.refresh();
@@ -885,23 +1071,24 @@ int main(int argc, char** argv){
             const float width = Treadle::textWidth(label, theme.textScale) + 2.0f * theme.padding;
             const Treadle::Ui::Region region = ui.region("gumb:" + label, Treadle::Rect{x, y, width, height});
             ui.canvas().rect(region.box, on ? theme.accent : (region.hot ? theme.hot : theme.control));
+            if(on) ui.canvas().outline(region.box, 1.0f, theme.title);
             ui.canvas().text(x + theme.padding, y + (height - Treadle::textHeight(theme.textScale)) * 0.5f,
-                             label, theme.text, theme.textScale);
+                             label, on ? theme.textOnAccent : theme.text, theme.textScale);
             return std::make_pair(region.pressed, x + width + 6.0f);
         };
 
         //== ALATNA TRAKA =========================================================================
         {
             const Treadle::Rect& bar = layout.toolbar;
-            ui.canvas().rect(bar, Treadle::Color{0.07f, 0.08f, 0.09f, 1.0f});
+            ui.canvas().rect(bar, Treadle::Color{0.045f, 0.065f, 0.050f, 1.0f});
             ui.canvas().text(bar.x + 12.0f, bar.y + 13.0f, "LOOM", theme.title, theme.textScale);
             const float y = bar.y + 7.0f, h = bar.height - 14.0f;
-            auto [cube, afterCube] = toolButton("+ Kocka", bar.x + 90.0f, y, h);
+            auto [cube, afterCube] = toolButton("+ Cube", bar.x + 90.0f, y, h);
             if(cube) addMesh(Warp::Shape::Cube, Warp::None);
-            auto [plane, afterPlane] = toolButton("+ Ravnina", afterCube, y, h);
+            auto [plane, afterPlane] = toolButton("+ Plane", afterCube, y, h);
             if(plane) addMesh(Warp::Shape::Plane, Warp::None);
-            auto [nul, afterNul] = toolButton("+ Nul", afterPlane, y, h);
-            if(nul){ selected = stage.create("Nul"); focus = Focus::Entity; }
+            auto [nul, afterNul] = toolButton("+ Null", afterPlane, y, h);
+            if(nul){ selected = stage.create("Null"); focus = Focus::Entity; }
             auto [moveTool, afterMove] = toolButton("W", afterNul + 12.0f, y, h, tool == Tool::Move);
             if(moveTool) tool = Tool::Move;
             auto [rotateTool, afterRotateTool] = toolButton("E", afterMove, y, h, tool == Tool::Rotate);
@@ -909,9 +1096,9 @@ int main(int argc, char** argv){
             //Ploha iz odabira: vucenjem u pogledu se oznaci komad plohe (LoomEditorTools.h)
             auto [surfaceButton, afterRotate] = toolButton("S", afterRotateTool, y, h, surfaceTool.active);
             if(surfaceButton) surfaceTool.active = !surfaceTool.active;
-            auto [fit, afterFit] = toolButton("Uokviri (F)", afterRotate + 12.0f, y, h);
+            auto [fit, afterFit] = toolButton("Frame (F)", afterRotate + 12.0f, y, h);
             if(fit){ view.lookThrough = Warp::None; Loom::frameAll(stage.size() ? stage : live, frame, view.orbit); }
-            auto [through, afterThrough] = toolButton("Kroz kameru (0)", afterFit, y, h, view.lookThrough != Warp::None);
+            auto [through, afterThrough] = toolButton("Camera (0)", afterFit, y, h, view.lookThrough != Warp::None);
             if(through){
                 if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
                 else{
@@ -919,17 +1106,15 @@ int main(int argc, char** argv){
                     view.lookThrough = chosen && chosen->camera ? selected : firstCamera();
                 }
             }
-            auto [plateButton, afterPlate] = toolButton("Snimka (V)", afterThrough, y, h, showPlate);
+            auto [plateButton, afterPlate] = toolButton("Plate (V)", afterThrough, y, h, showPlate);
             if(plateButton) showPlate = !showPlate;
-            auto [splatButton, afterSplat] = toolButton("Splat (B)", afterPlate, y, h, showSplat);
-            if(splatButton) showSplat = !showSplat;
-            auto [motionButton, afterMotion] = toolButton("Text->Motion", afterSplat + 12.0f, y, h);
-            if(motionButton) openMotionWorkflow();
-            auto [saveButton, afterSave] = toolButton(dirty ? "Spremi *" : "Spremi", afterMotion + 12.0f, y, h, dirty);
+            auto [rigButton, afterRig] = toolButton("Auto Rig", afterPlate + 12.0f, y, h);
+            if(rigButton) openAutoRig();
+            auto [saveButton, afterSave] = toolButton(dirty ? "Save *" : "Save", afterRig + 12.0f, y, h, dirty);
             if(saveButton) saveProjectNow();
-            auto [newButton, afterNew] = toolButton("Novi", afterSave, y, h);
-            if(newButton) ui.openMenu("novi");
-            auto [logButton, afterLog] = toolButton("Ispis", afterNew, y, h, showLog);
+            auto [newButton, afterNew] = toolButton("New", afterSave, y, h);
+            if(newButton) ui.openMenu("New");
+            auto [logButton, afterLog] = toolButton("Output", afterNew, y, h, showLog);
             if(logButton) showLog = !showLog;
 
             //Stanje posla ili zadnja poruka, desno
@@ -941,20 +1126,24 @@ int main(int argc, char** argv){
                 const int phaseCount = int(sizeof(Loom::phases) / sizeof(Loom::phases[0]));
                 if(job.task == Loom::Task::Train){
                     char text[96];
-                    std::snprintf(text, sizeof(text), "trening %.0f %% - %s",
+                    std::snprintf(text, sizeof(text), "Training %.0f%% - %s",
                                   job.fraction >= 0.0f ? 100.0 * double(job.fraction) : 0.0,
                                   Loom::humanTime(elapsed).c_str());
                     status = text;
                 }else if(job.task == Loom::Task::WeaverMotion){
-                    status = "Kimodo generira motion - " + Loom::humanTime(elapsed);
+                    status = "Kimodo generating motion - " + Loom::humanTime(elapsed);
+                }else if(job.task == Loom::Task::AutoRig){
+                    status = "Auto Rig - " + Loom::humanTime(elapsed);
+                }else if(job.task == Loom::Task::Clean){
+                    status = "Cleaning floaters - " + Loom::humanTime(elapsed);
                 }else{
-                    status = "solve: ";
-                    status += (phase >= 0 && phase < phaseCount) ? Loom::phases[phase].label : "pocinje";
+                    status = "Solve: ";
+                    status += (phase >= 0 && phase < phaseCount) ? Loom::phases[phase].label : "starting";
                     status += " - " + Loom::humanTime(elapsed);
                     //PROCJENA JE OZNACENA KAO PROCJENA: udjeli su izmjereni na jednoj snimci
                     if(phase >= 0 && phase < phaseCount && Loom::phases[phase].share > 0.02 &&
                        Loom::phases[phase].share < 1.0){
-                        status += ", jos oko " + Loom::humanTime(std::max(0.0, elapsed / Loom::phases[phase].share - elapsed));
+                        status += ", about " + Loom::humanTime(std::max(0.0, elapsed / Loom::phases[phase].share - elapsed));
                     }
                 }
                 colour = theme.accent;
@@ -970,14 +1159,15 @@ int main(int argc, char** argv){
         //== MEDIA ================================================================================
         ui.dock("Media", layout.media, &mediaScroll);
         {
-            ui.label("PROJEKT");
-            if(stage.media.empty()) ui.label("(dodaj snimku ispod)");
+            ui.label("PROJECT MEDIA");
+            if(stage.media.empty()) ui.label("(Add a video below)");
             for(size_t i = 0; i < stage.media.size(); ++i){
                 const Warp::Media& media = stage.media[i];
                 std::string label = fs::path(media.path).filename().string();
                 if(job.running && media.path == jobVideo) label = "* " + label;
-                else if(!media.result.empty()) label += " [rijeseno]";
-                if(ui.selectable(label, focus == Focus::Media && selectedMedia == int(i))){
+                else if(!media.result.empty()) label += "  [SOLVED]";
+                const AssetStyle style = assetStyle(fs::path(media.path), "video");
+                if(ui.assetRow(label, style.badge, focus == Focus::Media && selectedMedia == int(i), style.colour)){
                     selectedMedia = int(i);
                     focus = Focus::Media;
                 }
@@ -985,14 +1175,14 @@ int main(int argc, char** argv){
                     selectedMedia = int(i);
                     focus = Focus::Media;
                     menuMedia = int(i);
-                    ui.openMenu("media");
+                    ui.openMenu("Media");
                 }
             }
             ui.separator();
-            ui.label("DATOTEKE");
-            if(ui.button("Start motion from text")) openMotionWorkflow();
+            ui.label("FILE BROWSER");
+            if(ui.button("Auto Rig from Model")) openAutoRig();
             ui.label(tail(browser.at.string(), size_t(std::max(8.0f, (layout.media.width - 30.0f) / 12.0f))));
-            if(ui.selectable("^ mapa iznad", false)){
+            if(ui.selectable("..  Parent folder", false)){
                 browser.at = browser.at.parent_path();
                 browser.refresh();
                 mediaScroll = 0.0f;
@@ -1009,7 +1199,8 @@ int main(int argc, char** argv){
                 mediaScroll = 0.0f;
             }
             for(const fs::path& video : browser.videos){
-                if(ui.selectable("+ " + video.filename().string(), false)){
+                const AssetStyle style = assetStyle(video, "video");
+                if(ui.assetRow(video.filename().string(), style.badge, false, style.colour)){
                     bool known = false;
                     for(size_t i = 0; i < stage.media.size(); ++i){
                         if(stage.media[i].path == video.string()){ known = true; selectedMedia = int(i); }
@@ -1022,22 +1213,25 @@ int main(int argc, char** argv){
                 }
             }
             for(const fs::path& project : browser.projects){
-                if(ui.selectable("[projekt] " + project.filename().string(), project == projectPath)){
+                const AssetStyle style = assetStyle(project, "project");
+                if(ui.assetRow(project.filename().string(), style.badge, project == projectPath, style.colour)){
                     pendingProject = project;
-                    ui.openMenu("projekt");
+                    ui.openMenu("Project");
                 }
             }
             for(const fs::path& motion : browser.motions){
-                if(ui.selectable("[pokret] " + motion.filename().string(), false)){
-                    importMotion(motion);
+                const AssetStyle style = assetStyle(motion, "motion");
+                if(ui.assetRow(motion.filename().string(), style.badge, false, style.colour)){
+                    importMotion(motion, motionPanel.targetCharacter);
                 }
             }
             for(const fs::path& model : browser.models){
-                if(ui.selectable("[model] " + model.filename().string(), false)){
+                const AssetStyle style = assetStyle(model, "model");
+                if(ui.assetRow(model.filename().string(), style.badge, false, style.colour)){
                     const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
                     const bool wasEmpty = stage.size() == 0;
                     const Loom::ModelImportReport report = Loom::importModelAtView(stage, model, frame, camera, extent);
-                    if(!report.problem.empty()) message = "model: " + report.problem;
+                    if(!report.problem.empty()) message = "Model: " + report.problem;
                     else{
                         afterModelImport(report, wasEmpty);
                         char text[192];
@@ -1046,17 +1240,20 @@ int main(int argc, char** argv){
                         message = text;
                     }
                 }
+                if(ui.rightClicked()) openAutoRig(model);
             }
             //Slike samo dok mapa materijala ceka sliku - inace bi popis bio pun tekstura
             if(materialState.armed()){
                 for(const fs::path& image : browser.images){
-                    if(ui.selectable("[slika] " + image.filename().string(), false)){
-                        if(Loom::assignArmedImage(stage, materialState, image.string())) message = "mapa: " + image.filename().string();
+                    const AssetStyle style = assetStyle(image, "image");
+                    if(ui.assetRow(image.filename().string(), style.badge, false, style.colour)){
+                        if(Loom::assignArmedImage(stage, materialState, image.string())) message = "Texture: " + image.filename().string();
                     }
                 }
             }
             for(const fs::path& result : browser.results){
-                if(ui.selectable("[rezultat] " + result.filename().string(), false)){
+                const AssetStyle style = assetStyle(result, "result");
+                if(ui.assetRow(result.filename().string(), style.badge, false, style.colour)){
                     //Snimka uz rezultat, ako postoji, postaje ploca kamere
                     std::string plate;
                     std::string stem = result.filename().string();
@@ -1067,12 +1264,26 @@ int main(int argc, char** argv){
                     importFolder(result, plate);
                 }
             }
+            //Gaussian splat (.ply) sam za sebe: ide u scenu kao splat. Pogled crta prvi vidljivi, pa
+            //se ostali sakriju - inace bi klik "ne radio nista"
+            for(const fs::path& splatFile : browser.splats){
+                if(ui.assetRow(splatFile.filename().string(), "SPLAT", false, {0.95f, 0.55f, 0.95f, 1.0f})){
+                    stage.walk([&](const Warp::Entity& e, int){ if(e.splat) stage.get(e.id)->visible = false; });
+                    const Warp::Id id = stage.create(splatFile.stem().string());
+                    stage.get(id)->splat = Warp::Splat{splatFile.string()};
+                    selected = id;
+                    focus = Focus::Entity;
+                    showSplat = true;
+                    splatFrameWhenLoaded = id;
+                    message = "Splat: " + splatFile.filename().string();
+                }
+            }
         }
 
         //== HIJERARHIJA ==========================================================================
-        ui.dock("Scena", layout.hierarchy, &hierarchyScroll);
+        ui.dock("Scene", layout.hierarchy, &hierarchyScroll);
         {
-            if(stage.size() == 0) ui.label("(prazna - uvezi rezultat)");
+            if(stage.size() == 0) ui.label("(Empty - import a result)");
             int hiddenBelow = -1;               //dubina zatvorenog pretka; dublji se preskacu
             stage.walk([&](const Warp::Entity& entity, int depth){
                 if(hiddenBelow >= 0 && depth > hiddenBelow) return;
@@ -1091,52 +1302,52 @@ int main(int argc, char** argv){
                     selected = entity.id;
                     focus = Focus::Entity;
                     menuEntity = entity.id;
-                    ui.openMenu("entitet");
+                    ui.openMenu("Entity");
                 }
             });
         }
 
         //== SVOJSTVA =============================================================================
-        ui.dock("Svojstva", layout.properties, &propertiesScroll);
+        ui.dock("Properties", layout.properties, &propertiesScroll);
         {
             Warp::Entity* entity = focus == Focus::Entity ? stage.get(selected) : nullptr;
             if(focus == Focus::Media && selectedMedia >= 0 && selectedMedia < int(stage.media.size())){
                 const Warp::Media media = stage.media[size_t(selectedMedia)];
-                ui.value("snimka", Treadle::fitText(fs::path(media.path).filename().string(), 150.0f, theme.textScale));
+                ui.value("Video", Treadle::fitText(fs::path(media.path).filename().string(), 150.0f, theme.textScale));
                 char text[64];
                 std::snprintf(text, sizeof(text), "%u x %u", media.width, media.height);
-                ui.value("velicina", text);
+                ui.value("Resolution", text);
                 std::snprintf(text, sizeof(text), "%u @ %.2f fps", media.frames, media.framesPerSecond);
-                ui.value("kadrova", text);
-                ui.value("rezultat", media.result.empty() ? "nema" : "ima");
+                ui.value("Frames", text);
+                ui.value("Result", media.result.empty() ? "None" : "Available");
                 ui.separator();
                 std::vector<std::string> stepLabels;
                 for(int value : steps) stepLabels.push_back(std::to_string(value));
-                ui.choice("solve uzima svaki n-ti kadar", stepLabels, &stepIndex);
-                ui.slider("najvise kadrova", &frameCount, 30.0f, 600.0f);
-                ui.slider("koraka treninga", &trainSteps, 1000.0f, 30000.0f);
-                if(ui.button("Solve kamere")) startSolve(selectedMedia, false);
+                ui.choice("Solve every Nth frame", stepLabels, &stepIndex);
+                ui.slider("Max frames", &frameCount, 30.0f, 600.0f);
+                ui.slider("Training steps", &trainSteps, 1000.0f, 30000.0f);
+                if(ui.button("Solve Cameras")) startSolve(selectedMedia, false);
                 if(ui.button("Solve + Gaussian splat")) startSolve(selectedMedia, true);
-                if(!media.result.empty() && ui.button("Otvori rezultat")) importFolder(media.result, media.path);
+                if(!media.result.empty() && ui.button("Open Result")) importFolder(media.result, media.path);
                 if(!media.result.empty() && fs::is_directory(fs::path(media.result) / "images") && !job.running &&
-                   ui.button("Treniraj splat iz rezultata")) startTrain(media.result);
-                ui.label("(isto i desnim klikom)");
+                   ui.button("Train Splat from Result")) startTrain(media.result);
+                ui.label("(Also available from right-click)");
             }else if(entity){
-                ui.value("ime", Treadle::fitText(entity->name, 160.0f, theme.textScale));
-                ui.value("vrsta", kindOf(*entity));
+                ui.value("Name", Treadle::fitText(entity->name, 160.0f, theme.textScale));
+                ui.value("Type", kindOf(*entity));
                 //Grupa lika iz pokreta: vidi se odakle je pokret
                 if(!entity->children.empty() && stage.get(entity->children.front()) &&
                    stage.get(entity->children.front())->joint && !entity->joint){
-                    ui.value("pokret", Engine::WeaverMotion::poweredBy);
+                    ui.value("Motion", Engine::WeaverMotion::poweredBy);
                 }
-                ui.checkbox("vidljivo", &entity->visible);
+                ui.checkbox("Visible", &entity->visible);
                 ui.separator();
                 //TRANSFORMACIJA U OVOM KADRU. Brzina vucenja je iz velicine scene: solve nema
                 //metre, pa bi stalni korak u jednoj snimci bio nevidljiv, a u drugoj golem
                 Warp::Transform local = stage.localAt(entity->id, frame);
                 bool edited = false;
                 float translation[3] = {local.translation.x, local.translation.y, local.translation.z};
-                if(ui.dragVector("pomak", translation, extent.radius * 0.004f)){
+                if(ui.dragVector("Position", translation, extent.radius * 0.004f)){
                     local.translation = glm::vec3(translation[0], translation[1], translation[2]);
                     edited = true;
                 }
@@ -1146,72 +1357,147 @@ int main(int argc, char** argv){
                     eulerFrame = frame;
                 }
                 float rotation[3] = {eulerCache.x, eulerCache.y, eulerCache.z};
-                if(ui.dragVector("rotacija (st)", rotation, 0.5f)){
+                if(ui.dragVector("Rotation (deg)", rotation, 0.5f)){
                     eulerCache = glm::vec3(rotation[0], rotation[1], rotation[2]);
                     local.rotation = glm::normalize(glm::quat(glm::radians(eulerCache)));
                     edited = true;
                 }
                 float scale[3] = {local.scale.x, local.scale.y, local.scale.z};
                 const float scaleSpeed = std::max(1e-5f, (std::fabs(scale[0]) + std::fabs(scale[1]) + std::fabs(scale[2])) * 0.0015f);
-                if(ui.dragVector("mjerilo", scale, scaleSpeed)){
+                if(ui.dragVector("Scale", scale, scaleSpeed)){
                     local.scale = glm::vec3(scale[0], scale[1], scale[2]);
                     edited = true;
                 }
                 //Jednoliko mjerilo: za kocku, i za grupu solvea kad se scena svodi na metre
                 float uniform = 1.0f;
-                if(ui.dragFloat("sve osi x", &uniform, 0.004f) && uniform > 0.0f){
+                if(ui.dragFloat("Uniform scale", &uniform, 0.004f) && uniform > 0.0f){
                     local.scale *= uniform;
                     edited = true;
                 }
                 if(edited) stage.setLocalAt(entity->id, frame, local);
-                if(entity->animated()) ui.label("(os s kljucevima dobiva kljuc u ovom kadru)");
+                if(entity->animated()) ui.label("(Animated properties get a key at this frame)");
                 if(entity->animated()){
-                    ui.value("kljuceva", std::to_string(std::max(entity->translationKeys.size(), entity->rotationKeys.size())));
+                    ui.value("Keyframes", std::to_string(std::max(entity->translationKeys.size(), entity->rotationKeys.size())));
                 }
                 if(entity->camera){
                     ui.separator();
                     char text[64];
                     std::snprintf(text, sizeof(text), "%.0f px", double(entity->camera->focalPixels));
-                    ui.value("zarisna", text);
+                    ui.value("Focal length", text);
                     std::snprintf(text, sizeof(text), "%u x %u", entity->camera->width, entity->camera->height);
-                    ui.value("kadar", text);
+                    ui.value("Frame size", text);
                     if(!entity->camera->plate.empty()){
-                        ui.value("snimka", Treadle::fitText(fs::path(entity->camera->plate).filename().string(), 150.0f,
+                        ui.value("Video", Treadle::fitText(fs::path(entity->camera->plate).filename().string(), 150.0f,
                                                             theme.textScale));
                     }
-                    if(ui.button(view.lookThrough == entity->id ? "Izadji iz kamere" : "Gledaj kroz kameru")){
+                    if(ui.button(view.lookThrough == entity->id ? "Exit Camera View" : "Look Through Camera")){
                         view.lookThrough = view.lookThrough == entity->id ? Warp::None : entity->id;
                     }
                     if(!entity->camera->plate.empty()){
-                        ui.checkbox("snimka iza (V)", &showPlate);
-                        ui.slider("svjetlina snimke", &plateBrightness, 0.0f, 1.0f);
+                        ui.checkbox("Show Video Plate (V)", &showPlate);
+                        ui.slider("Plate Brightness", &plateBrightness, 0.0f, 1.0f);
                         char plateText[64];
                         std::snprintf(plateText, sizeof(plateText), "%lld", (long long)plateShown);
-                        if(view.lookThrough == entity->id && showPlate) ui.value("kadar snimke", plateText);
+                        if(view.lookThrough == entity->id && showPlate) ui.value("Plate Frame", plateText);
                     }
                 }
                 if(entity->points){
                     ui.separator();
-                    ui.value("tocaka", std::to_string(entity->points->positions.size()));
-                    ui.value("boje", entity->points->colours.empty() ? "ne" : "da");
+                    ui.value("Points", std::to_string(entity->points->positions.size()));
+                    ui.value("Colors", entity->points->colours.empty() ? "No" : "Yes");
                 }
                 if(entity->splat){
                     ui.separator();
+                    ui.label("SPLAT COMPONENT");
+                    int splatVisibility = showSplat ? 0 : 1;
+                    if(ui.choice("Render", {"Visible", "Not visible"}, &splatVisibility)){
+                        showSplat = splatVisibility == 0;
+                    }
                     ui.label(Treadle::fitText(entity->splat->path, layout.properties.width - 30.0f, theme.textScale));
-                    if(ui.button("Otvori u SplatVieweru")){
+                    if(ui.button("Open in Splat Viewer")){
                         char command[1400];
                         std::snprintf(command, sizeof(command), "./SplatViewer \"%s\" 1 16 0 0 pogled.png 3 0 \"%s\" &",
                                       entity->splat->path.c_str(),
                                       fs::path(entity->splat->path).parent_path().string().c_str());
                         if(std::system(command) != 0){ /* preglednik javlja sam */ }
                     }
+                    //REZANJE I CISCENJE (LoomSplatCut.h). Rezati se moze samo splat koji pogled
+                    //crta - maska zivih je njegova
+                    ui.separator();
+                    ui.label("CLEAN UP");
+                    const bool shownHere = showSplat && entity->visible && viewportSplat.path() == entity->splat->path &&
+                                           !viewportSplat.isLoading();
+                    const bool cutPending = shownHere && viewportSplat.hasCuts();
+                    const bool cleanable = Loom::canCleanFloaters(entity->splat->path);
+                    if(ui.button(cleanable ? "Clean Floaters" : "Clean Floaters (needs solve result)") && cleanable &&
+                       !job.running && !cutPending){
+                        std::string output;
+                        const std::string command = Loom::cleanFloatersCommand(LOOM_ROOT_DIR, entity->splat->path, output);
+                        splatCleanTarget = entity->id;
+                        splatCleanOutput = output;
+                        startJob(command, fs::path(entity->splat->path).parent_path().string(), Loom::Task::Clean, 0);
+                        message = "Cleaning floaters...";
+                    }
+                    if(cutPending) ui.label("Save or undo the cut before cleaning.");
+                    if(ui.button("Add Cut Box") && shownHere){
+                        //Velicina iz vecine splata (okvir scene splat ne broji), na mjestu u koje se gleda
+                        float size = std::max(1e-3f, extent.radius * 0.25f);
+                        glm::vec3 centre;
+                        float radius = 0.0f;
+                        if(viewportSplat.bounds(centre, radius)){
+                            size = 0.3f * radius * glm::length(glm::vec3(stage.worldMatrix(entity->id, frame)[0]));
+                        }
+                        selected = Loom::addCutBox(stage, view.orbit.target, size);
+                        focus = Focus::Entity;
+                        message = "Cut box: move/rotate/scale it, then Delete Inside/Outside";
+                    }
+                    if(shownHere){
+                        ui.value("Gaussians", std::to_string(viewportSplat.count()) + " of " + std::to_string(viewportSplat.total()));
+                    }
+                    if(cutPending){
+                        ui.value("Cut (unsaved)", std::to_string(viewportSplat.cutAway()));
+                        if(ui.button("Undo Cut")) viewportSplat.undoCut();
+                        if(ui.button("Save Cut Splat")){
+                            const std::string out = Loom::cutOutputPath(entity->splat->path);
+                            const std::string problem = viewportSplat.saveCut(out);
+                            if(problem.empty()){
+                                const bool same = out == entity->splat->path;
+                                entity->splat->path = out;
+                                if(same) viewportSplat.reload();
+                                browser.refresh();
+                                message = "Saved " + fs::path(out).filename().string();
+                            }else{
+                                message = "Save failed: " + problem;
+                            }
+                        }
+                    }
+                }
+                //Odabrana kocka reze splat koji se crta (LoomSplatCut.h)
+                if(Loom::isCube(entity) && showSplat && splatShownId != Warp::None && !viewportSplat.isLoading()){
+                    ui.separator();
+                    ui.label("CUT SPLAT");
+                    const glm::mat4 box = Loom::cubeFromSplat(stage, entity->id, splatShownId, frame);
+                    const size_t cuts = viewportSplat.cutAway();
+                    if(box != cutBoxSeen || cuts != cutCountSeen || viewportSplat.path() != cutPathSeen){
+                        cutInside = viewportSplat.countInBox(box);
+                        cutBoxSeen = box;
+                        cutCountSeen = cuts;
+                        cutPathSeen = viewportSplat.path();
+                    }
+                    ui.value("Inside", std::to_string(cutInside) + " of " + std::to_string(viewportSplat.count()));
+                    if(ui.button("Delete Inside")) message = "Deleted " + std::to_string(viewportSplat.cutBox(box, true));
+                    if(ui.button("Delete Outside")) message = "Deleted " + std::to_string(viewportSplat.cutBox(box, false));
+                    if(viewportSplat.hasCuts()){
+                        if(ui.button("Undo Cut")) viewportSplat.undoCut();
+                        ui.label("Save from the splat's properties.");
+                    }
                 }
                 ui.separator();
                 Loom::materialPanel(ui, stage, *entity, materialState);
                 ui.separator();
-                if(ui.button("Obrisi (Del)")) removeSelected(entity->id);
+                if(ui.button("Delete (Del)")) removeSelected(entity->id);
             }else{
-                ui.label("Nista nije odabrano.");
+                ui.label("Nothing selected.");
             }
         }
 
@@ -1219,7 +1505,7 @@ int main(int argc, char** argv){
         {
             const Treadle::Rect& area = layout.timeline;
             Treadle::DrawList& canvas = ui.canvas();
-            canvas.rect(area, Treadle::Color{0.08f, 0.09f, 0.10f, 1.0f});
+            canvas.rect(area, Treadle::Color{0.055f, 0.068f, 0.052f, 1.0f});
             canvas.rect(area.x, area.y, area.width, 1.0f, theme.panelEdge);
 
             const float rowY = area.y + 8.0f, rowH = 26.0f;
@@ -1227,7 +1513,7 @@ int main(int argc, char** argv){
             if(toStart) frame = stage.startFrame;
             auto [back, a2] = toolButton("<", a1, rowY, rowH);
             if(back) frame = std::max(stage.startFrame, std::floor(frame) - 1.0);
-            auto [play, a3] = toolButton(playing ? "pauza" : "play", a2, rowY, rowH, playing);
+            auto [play, a3] = toolButton(playing ? "Pause" : "Play", a2, rowY, rowH, playing);
             if(play) playing = !playing;
             auto [forward, a4] = toolButton(">", a3, rowY, rowH);
             if(forward) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
@@ -1238,8 +1524,8 @@ int main(int argc, char** argv){
             const bool haveEntity = stage.get(selected) != nullptr;
             auto [previousKey, b1] = toolButton("<K", a5 + 16.0f, rowY, rowH);
             auto [nextKey, b2] = toolButton("K>", b1, rowY, rowH);
-            auto [setKey, b3] = toolButton("Kljuc (K)", b2, rowY, rowH);
-            auto [dropKey, b4] = toolButton("Obrisi kljuc", b3, rowY, rowH);
+            auto [setKey, b3] = toolButton("Key (K)", b2, rowY, rowH);
+            auto [dropKey, b4] = toolButton("Delete Key", b3, rowY, rowH);
             double jump = 0.0;
             if(previousKey && haveEntity && stage.neighbourKey(selected, frame, -1, jump)) frame = jump;
             if(nextKey && haveEntity && stage.neighbourKey(selected, frame, +1, jump)) frame = jump;
@@ -1247,9 +1533,9 @@ int main(int argc, char** argv){
             if(dropKey && haveEntity) stage.eraseKeysAt(selected, std::round(frame));
 
             //Raspon: od i do glave, ili cijelo - od prvog do zadnjeg kljuca u sceni
-            auto [rangeFrom, c1] = toolButton("Od", b4 + 16.0f, rowY, rowH);
-            auto [rangeTo, c2] = toolButton("Do", c1, rowY, rowH);
-            auto [rangeAll, c3] = toolButton("Cijelo", c2, rowY, rowH);
+            auto [rangeFrom, c1] = toolButton("From", b4 + 16.0f, rowY, rowH);
+            auto [rangeTo, c2] = toolButton("To", c1, rowY, rowH);
+            auto [rangeAll, c3] = toolButton("All", c2, rowY, rowH);
             if(rangeFrom) stage.startFrame = std::min(std::round(frame), stage.endFrame - 1.0);
             if(rangeTo) stage.endFrame = std::max(std::round(frame), stage.startFrame + 1.0);
             if(rangeAll){
@@ -1266,15 +1552,29 @@ int main(int argc, char** argv){
             frame = std::clamp(frame, stage.startFrame, stage.endFrame);
 
             char text[96];
-            std::snprintf(text, sizeof(text), "kadar %d   (%.0f - %.0f, %.0f fps)", int(std::floor(frame)),
+            std::snprintf(text, sizeof(text), "Frame %d   (%.0f - %.0f, %.0f fps)", int(std::floor(frame)),
                           stage.startFrame, stage.endFrame, stage.framesPerSecond);
             canvas.text(c3 + 16.0f, rowY + 6.0f, text, theme.text, theme.textScale);
 
             //Traka: kadrovi, kljucevi odabranog, glava
             const float trackTop = rowY + rowH + 12.0f;
-            const Treadle::Rect track{area.x + 16.0f, trackTop, area.width - 32.0f,
-                                      std::max(24.0f, area.y + area.height - trackTop - 12.0f)};
-            canvas.rect(track, Treadle::Color{0.13f, 0.14f, 0.16f, 1.0f});
+            const float availableTrackHeight = area.y + area.height - trackTop - 12.0f;
+            const float rootTrackHeight = motionPanel.open ? 28.0f : 0.0f;
+            const float stageTrackHeight = std::max(motionPanel.open ? 18.0f : 24.0f,
+                                                    availableTrackHeight - (motionPanel.open ? rootTrackHeight + 4.0f : 0.0f));
+            const Treadle::Rect track{area.x + 16.0f, trackTop, area.width - 32.0f, stageTrackHeight};
+            const Treadle::Rect rootTrack{track.x, track.y + track.height + 4.0f, track.width, rootTrackHeight};
+            canvas.rect(track, Treadle::Color{0.105f, 0.125f, 0.095f, 1.0f});
+            //Subtle moving grain adds texture without competing with keyframes or the playhead.
+            const float grainSpacing = 32.0f;
+            const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count();
+            const float grainOffset = float(std::fmod(seconds * 12.0, double(grainSpacing)));
+            const Treadle::Color grain{0.78f, 0.65f, 0.32f, 0.075f};
+            for(float y = track.y + 7.0f; y + 5.0f < track.y + track.height; y += 20.0f){
+                for(float x = track.x + grainOffset; x + 7.0f < track.x + track.width; x += grainSpacing){
+                    canvas.line(x, y + 4.0f, x + 7.0f, y - 4.0f, 1.0f, grain);
+                }
+            }
             const double span = std::max(1.0, stage.endFrame - stage.startFrame);
             auto xOf = [&](double f){ return track.x + float((f - stage.startFrame) / span) * track.width; };
 
@@ -1304,6 +1604,81 @@ int main(int argc, char** argv){
             const float head = xOf(frame);
             canvas.rect(head - 1.0f, track.y - 4.0f, 2.0f, track.height + 8.0f, Treadle::Color{0.95f, 0.35f, 0.30f, 1.0f});
 
+            // WeaverMotion constraint lane renders before scene scrubbing claims input.
+            if(motionPanel.open){
+                const int lastFrame = Loom::kimodoMotionLastFrame(motionPanel.actions);
+                canvas.rect(rootTrack, Treadle::Color{0.075f, 0.092f, 0.070f, 1.0f});
+                canvas.text(rootTrack.x + 5.0f, rootTrack.y + 4.0f,
+                            "KIMODO ROOT PATH   0-" + std::to_string(lastFrame) + " @ 30 fps",
+                            theme.text, 1.0f);
+                const float markerY = rootTrack.y + rootTrack.height - 7.0f;
+                auto rootX = [&](int f){
+                    const double frameSpan = std::max(1, lastFrame);
+                    return rootTrack.x + float(double(std::clamp(f, 0, lastFrame)) / frameSpan) * rootTrack.width;
+                };
+                if(!motionPanel.rootPathEnabled){
+                    canvas.text(rootTrack.x + 5.0f, rootTrack.y + 15.0f,
+                                "Click to add a root-path key", theme.dim, 1.0f);
+                }else{
+                    for(size_t i = 1; i < motionPanel.rootWaypoints.size(); ++i){
+                        canvas.line(rootX(motionPanel.rootWaypoints[i - 1].frame), markerY,
+                                    rootX(motionPanel.rootWaypoints[i].frame), markerY,
+                                    2.0f, theme.accent);
+                    }
+                    for(size_t i = 0; i < motionPanel.rootWaypoints.size(); ++i){
+                        const Loom::MotionRootWaypoint& key = motionPanel.rootWaypoints[i];
+                        const float x = rootX(key.frame);
+                        const Treadle::Color colour = int(i) == motionPanel.selectedRootWaypoint
+                            ? theme.title : Treadle::Color{1.0f, 0.72f, 0.26f, 1.0f};
+                        canvas.rect(x - 4.0f, markerY - 4.0f, 8.0f, 8.0f, colour);
+                    }
+                }
+
+                const Treadle::Ui::Region rootEdit = ui.region("kimodo-root-constraints", rootTrack);
+                auto nearestRootWaypoint = [&](float mouseX){
+                    int nearest = -1;
+                    float distance = 13.0f;
+                    for(size_t i = 0; i < motionPanel.rootWaypoints.size(); ++i){
+                        const float d = std::fabs(rootX(motionPanel.rootWaypoints[i].frame) - mouseX);
+                        if(d < distance){ distance = d; nearest = int(i); }
+                    }
+                    return nearest;
+                };
+                if(rootEdit.pressed){
+                    motionPanel.rootPathEnabled = true;
+                    const int nearest = nearestRootWaypoint(rootEdit.mouseX);
+                    if(nearest >= 0){
+                        motionPanel.selectedRootWaypoint = nearest;
+                        motionPanel.rootTrackCursorFrame = float(motionPanel.rootWaypoints[size_t(nearest)].frame);
+                    }else{
+                        const int frameAt = int(std::lround(double(rootEdit.mouseX - rootTrack.x) /
+                                                             std::max(1.0f, rootTrack.width) * std::max(1, lastFrame)));
+                        Loom::MotionRootWaypoint key = Loom::motionRootWaypointAt(motionPanel.rootWaypoints, frameAt);
+                        Loom::upsertMotionRootWaypoint(motionPanel.rootWaypoints, key, lastFrame);
+                        const auto found = std::lower_bound(motionPanel.rootWaypoints.begin(), motionPanel.rootWaypoints.end(), key.frame,
+                            [](const Loom::MotionRootWaypoint& item, int f){ return item.frame < f; });
+                        motionPanel.selectedRootWaypoint = int(found - motionPanel.rootWaypoints.begin());
+                        motionPanel.rootTrackCursorFrame = float(key.frame);
+                    }
+                }
+                if(rootEdit.held && motionPanel.selectedRootWaypoint >= 0 &&
+                   size_t(motionPanel.selectedRootWaypoint) < motionPanel.rootWaypoints.size()){
+                    const int frameAt = int(std::lround(double(rootEdit.mouseX - rootTrack.x) /
+                                                         std::max(1.0f, rootTrack.width) * std::max(1, lastFrame)));
+                    Loom::moveMotionRootWaypoint(motionPanel.rootWaypoints,
+                        size_t(motionPanel.selectedRootWaypoint), frameAt, lastFrame);
+                    motionPanel.rootTrackCursorFrame =
+                        float(motionPanel.rootWaypoints[size_t(motionPanel.selectedRootWaypoint)].frame);
+                }
+                if(rootEdit.rightPressed){
+                    const int nearest = nearestRootWaypoint(rootEdit.mouseX);
+                    if(nearest > 0){
+                        motionPanel.rootWaypoints.erase(motionPanel.rootWaypoints.begin() + nearest);
+                        motionPanel.selectedRootWaypoint = std::clamp(nearest - 1, 0,
+                            int(motionPanel.rootWaypoints.size()) - 1);
+                    }
+                }
+            }
             const Treadle::Ui::Region scrub = ui.region("timeline", track);
             if(scrub.held){
                 const double f = stage.startFrame + double((scrub.mouseX - track.x) / track.width) * span;
@@ -1317,14 +1692,33 @@ int main(int argc, char** argv){
             const size_t show = showLog ? 14 : 4;
             const Treadle::Rect& v = layout.viewport;
             const float height = 50.0f + float(show) * 20.0f;
-            ui.panel(job.running ? "Ispis (tece)" : "Ispis", v.x + 10.0f, v.y + v.height - height - 10.0f, v.width - 20.0f);
+            ui.panel(job.running ? "Output (Running)" : "Output", v.x + 10.0f, v.y + v.height - height - 10.0f, v.width - 20.0f);
             const size_t fits = size_t(std::max(20.0f, (v.width - 40.0f) / 12.0f));
             std::lock_guard<std::mutex> guard(job.lock);
             const size_t from = job.lines.size() > show ? job.lines.size() - show : 0;
-            if(job.lines.empty()) ui.label("(jos nista)");
+            if(job.lines.empty()) ui.label("(No output yet)");
             for(size_t i = from; i < job.lines.size(); ++i){
                 ui.label(job.lines[i].size() > fits ? job.lines[i].substr(0, fits) : job.lines[i]);
             }
+        }
+
+        if(autoRig.open){
+            const Treadle::Rect& v = layout.viewport;
+            const float width = std::min(560.0f, v.width - 20.0f);
+            std::string lastLine;
+            {
+                std::lock_guard<std::mutex> guard(job.lock);
+                if(!job.lines.empty()) lastLine = job.lines.back();
+            }
+            const fs::path backend = fs::path(LOOM_ROOT_DIR) / "tools/autorig";
+            const bool ready = fs::is_regular_file(backend / ".venv/bin/python") &&
+                               fs::is_regular_file(backend / "vendor/UniRig/run.py");
+            const Loom::AutoRigAction action = Loom::drawAutoRigPanel(ui, autoRig,
+                Treadle::Rect{v.x + v.width - width - 10.0f, v.y + 10.0f, width, v.height - 20.0f},
+                ready, job.running && job.task == Loom::Task::AutoRig, job.running, lastLine, autoRigScroll);
+            if(action.useSelected) openAutoRig();
+            if(action.generate) startAutoRig();
+            if(action.preview) importAutoRigModel(autoRig.output / "bend_preview.glb");
         }
 
         //== POKRET IZ TEKSTA: panel preko desnog dijela pogleda ====================================
@@ -1332,7 +1726,9 @@ int main(int argc, char** argv){
             const Treadle::Rect& v = layout.viewport;
             const float width = std::min(560.0f, v.width - 20.0f);
             Loom::MotionPanelStatus motionStatus;
-            motionStatus.runnerReady = fs::is_regular_file(fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen");
+            motionStatus.runnerReady = fs::is_regular_file(fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/python") &&
+                                       fs::is_regular_file(fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen") &&
+                                       fs::is_regular_file(fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_cli.py");
             motionStatus.running = job.running && job.task == Loom::Task::WeaverMotion;
             motionStatus.otherJob = job.running && job.task != Loom::Task::WeaverMotion;
             motionStatus.elapsed = std::chrono::duration<double>(now - job.started).count();
@@ -1341,124 +1737,166 @@ int main(int argc, char** argv){
                 if(!job.lines.empty()) motionStatus.lastLine = job.lines.back();
             }
             motionStatus.historyDirectory = motionDirectory();
-            //WeaverMascott: rigged FBX iz Downloadsa (GPT), zasad se samo javlja je li pronadjen
-            const char* homeDirectory = std::getenv("HOME");
-            const fs::path biped = homeDirectory
-                ? fs::path(homeDirectory) / "Downloads/Meshy_AI_Clockwork_Sentinel_biped/Meshy_AI_Clockwork_Sentinel_biped_Animation_Running_withSkin.fbx"
-                : fs::path();
-            motionStatus.characterNote = fs::exists(biped) ? "WeaverMascott FBX pronadjen" : "WeaverMascott FBX nije pronadjen";
+            if(std::chrono::duration<double>(now - sceneMotionCharactersRead).count() > 1.0){
+                sceneMotionCharacters = Loom::motionCharactersIn(stage);
+                sceneMotionCharactersRead = now;
+            }
+            motionStatus.characters = sceneMotionCharacters;
+            motionStatus.characterNote = "Detected from imported GLTF/GLB mesh + joint hierarchies.";
             const Loom::MotionPanelAction motionAction = Loom::drawMotionPanel(ui, motionPanel,
                 Treadle::Rect{v.x + v.width - width - 10.0f, v.y + 10.0f, width, v.height - 20.0f}, motionStatus, motionPanelScroll);
             if(motionAction.generate) startMotionGeneration();
-            if(!motionAction.importPath.empty()) importMotion(motionAction.importPath);
+            if(!motionAction.importPath.empty()) importMotion(motionAction.importPath, motionPanel.targetCharacter);
             if(motionAction.close) motionPanel.open = false;
         }
 
         //== PLOHA IZ ODABIRA: sto je odabrano i sto se s tim moze ================================
         if(surfaceTool.active){
             const Treadle::Rect& v = layout.viewport;
-            ui.panel("Ploha (S)", v.x + 10.0f, v.y + 10.0f, 300.0f);
+            ui.panel("Surface (S)", v.x + 10.0f, v.y + 10.0f, 300.0f);
             if(!surfaceTool.fit.valid){
-                ui.label("Vuci pravokutnik preko tocaka");
-                ui.label("ili gaussiana jedne plohe.");
+                ui.label("Drag a rectangle over points");
+                ui.label("or the Gaussians on one surface.");
             }else{
                 char text[96];
-                std::snprintf(text, sizeof(text), "%zu od %zu u ravnini", surfaceTool.fit.used, surfaceTool.fit.total);
-                ui.value("tocke", text);
-                if(ui.button("Kocka na plohu")){
+                std::snprintf(text, sizeof(text), "%zu of %zu on plane", surfaceTool.fit.used, surfaceTool.fit.total);
+                ui.value("Points", text);
+                if(ui.button("Cube on Surface")){
                     selected = Loom::placeOnSurface(stage, surfaceTool, Warp::Shape::Cube);
                     focus = Focus::Entity;
                 }
-                if(ui.button("Ravnina na plohu")){
+                if(ui.button("Plane on Surface")){
                     selected = Loom::placeOnSurface(stage, surfaceTool, Warp::Shape::Plane);
                     focus = Focus::Entity;
                 }
-                if(ui.button("Ocisti odabir")) surfaceTool = Loom::SurfaceTool{true};
+                if(ui.button("Clear Selection")) surfaceTool = Loom::SurfaceTool{true};
             }
-            if(ui.button("Zatvori")) surfaceTool.active = false;
+            if(ui.button("Close")) surfaceTool.active = false;
         }
 
         //== IZBORNICI ============================================================================
         //Pogled nema widget koji bi javio desni klik, pa ga pita ovdje: nad pogledom, a ne nad
         //nekim stupcem ili izbornikom
         if(rightDown && !rightWasDown && layout.viewport.contains(float(cursorX), float(cursorY)) &&
-           !ui.wantsMouse() && !ui.menuOpen("media") && !ui.menuOpen("entitet")){
-            ui.openMenu("pogled");
+           !ui.wantsMouse() && !ui.menuOpen("Media") && !ui.menuOpen("Entity")){
+            ui.openMenu("View");
             menuPixel = glm::vec2(float(cursorX), float(cursorY));
         }
         //Otvaranje, nova scena i izlaz PITAJU kad ima nespremljenog - i nude spremanje prvo
-        if(ui.beginMenu("projekt")){
+        if(ui.beginMenu("Project")){
             const std::string name = pendingProject.filename().string();
             if(dirty){
-                if(ui.menuItem("Spremi pa otvori " + name) && saveProjectNow()) openProject(pendingProject);
-                if(ui.menuItem("Otvori " + name + " bez spremanja")) openProject(pendingProject);
-            }else if(ui.menuItem("Otvori " + name)){
+                if(ui.menuItem("Save and Open " + name) && saveProjectNow()) openProject(pendingProject);
+                if(ui.menuItem("Open " + name + " Without Saving")) openProject(pendingProject);
+            }else if(ui.menuItem("Open " + name)){
                 openProject(pendingProject);
             }
-            ui.menuItem("Odustani");
+            ui.menuItem("Cancel");
             ui.endMenu();
         }
-        if(ui.beginMenu("novi")){
+        if(ui.beginMenu("New")){
             if(dirty){
-                if(ui.menuItem("Spremi pa nova scena") && saveProjectNow()) newScene();
-                if(ui.menuItem("Nova scena bez spremanja")) newScene();
-            }else if(ui.menuItem("Nova prazna scena")){
+                if(ui.menuItem("Save and Create New Scene") && saveProjectNow()) newScene();
+                if(ui.menuItem("New Scene Without Saving")) newScene();
+            }else if(ui.menuItem("New Empty Scene")){
                 newScene();
             }
-            ui.menuItem("Odustani");
+            ui.menuItem("Cancel");
             ui.endMenu();
         }
-        if(ui.beginMenu("izlaz")){
-            ui.menuItem(projectPath.empty() ? "Scena nije spremljena." : projectPath.filename().string() + " ima nespremljene promjene.", false);
-            if(job.running) ui.menuItem("(solve jos tece - izlaz ceka da zavrsi)", false);
+        if(!offeredAutosave.empty() && !autosaveAsked){
+            autosaveAsked = true;
+            int w = 0, h = 0;
+            glfwGetWindowSize(window, &w, &h);
+            ui.openMenuAt("Autosave", float(w) * 0.5f - 200.0f, float(h) * 0.4f);
+        }
+        if(ui.beginMenu("Autosave")){
+            std::error_code error;
+            const auto age = fs::last_write_time(offeredAutosave, error);
+            const double minutes = error ? 0.0 : std::chrono::duration<double>(fs::file_time_type::clock::now() - age).count() / 60.0;
+            char text[160];
+            std::snprintf(text, sizeof(text), "An autosave newer than the saved scene exists (%.0f min old).", minutes);
+            ui.menuItem(text, false);
             ui.menuSeparator();
-            if(ui.menuItem("Spremi i izadji") && saveProjectNow()) quitting = true;
-            if(ui.menuItem("Izadji bez spremanja")) quitting = true;
-            ui.menuItem("Odustani");
+            if(ui.menuItem("Restore Autosave")){
+                std::string problem;
+                Warp::Stage restored;
+                if(Warp::loadProject(offeredAutosave.string(), restored, problem)){
+                    stage = std::move(restored);          //projectPath stays: Save writes the real project
+                    selected = Warp::None;
+                    extentDirty = true;
+                    history.reset(stage);
+                    message = "Autosave restored - save to keep it";
+                }else{
+                    message = "Could not restore autosave: " + problem;
+                }
+                offeredAutosave.clear();
+            }
+            if(ui.menuItem("Discard Autosave")){
+                autosave.discard(projectPath);
+                offeredAutosave.clear();
+            }
+            ui.endMenu();
+        }else if(autosaveAsked){
+            offeredAutosave.clear();              //answered, or closed by clicking elsewhere: keep the file, stop asking
+            autosaveAsked = false;
+        }
+        if(ui.beginMenu("Exit")){
+            ui.menuItem(projectPath.empty() ? "Scene is not saved." : projectPath.filename().string() + " has unsaved changes.", false);
+            if(job.running) ui.menuItem("(Solve is still running - exit will wait for it)", false);
+            if(viewportSplat.hasCuts()) ui.menuItem("Splat has an unsaved cut (Save Cut Splat in its properties).", false);
+            ui.menuSeparator();
+            if(ui.menuItem("Save and Exit") && saveProjectNow()) quitting = true;
+            if(ui.menuItem("Exit Without Saving")) quitting = true;
+            ui.menuItem("Cancel");
             ui.endMenu();
         }
-        if(ui.beginMenu("media")){
+        if(ui.beginMenu("Media")){
             const bool valid = menuMedia >= 0 && menuMedia < int(stage.media.size());
-            if(ui.menuItem("Solve kamere (matchmove)", valid && !job.running)) startSolve(menuMedia, false);
+            if(ui.menuItem("Solve Cameras (Matchmove)", valid && !job.running)) startSolve(menuMedia, false);
             if(ui.menuItem("Solve + Gaussian splat", valid && !job.running)) startSolve(menuMedia, true);
             const bool hasResult = valid && !stage.media[size_t(menuMedia)].result.empty();
-            if(ui.menuItem("Otvori rezultat", hasResult)){
+            if(ui.menuItem("Open Result", hasResult)){
                 importFolder(stage.media[size_t(menuMedia)].result, stage.media[size_t(menuMedia)].path);
             }
             //Trening trazi slike kadrova, a solve za matchmove ih ne pise
             const bool canTrain = hasResult && fs::is_directory(fs::path(stage.media[size_t(menuMedia)].result) / "images");
-            if(ui.menuItem(canTrain || !hasResult ? "Treniraj splat iz rezultata" : "Treniraj splat (solve bez slika)",
+            if(ui.menuItem(canTrain || !hasResult ? "Train Splat from Result" : "Train Splat (Solve Without Images)",
                            canTrain && !job.running)){
                 jobVideo = stage.media[size_t(menuMedia)].path;
                 startTrain(stage.media[size_t(menuMedia)].result);
             }
             ui.menuSeparator();
-            if(ui.menuItem("Ukloni iz projekta", valid)){
+            if(ui.menuItem("Remove from Project", valid)){
                 stage.media.erase(stage.media.begin() + menuMedia);
                 selectedMedia = -1;
             }
             ui.endMenu();
         }
-        if(ui.beginMenu("entitet")){
+        if(ui.beginMenu("Entity")){
             const Warp::Entity* entity = stage.get(menuEntity);
-            if(ui.menuItem("Gledaj kroz kameru", entity && entity->camera)) view.lookThrough = menuEntity;
-            if(ui.menuItem("Dodaj kocku ovdje", entity != nullptr)) addMesh(Warp::Shape::Cube, menuEntity);
-            if(ui.menuItem("Dodaj ravninu ovdje", entity != nullptr)) addMesh(Warp::Shape::Plane, menuEntity);
+            if(ui.menuItem("Look Through Camera", entity && entity->camera)) view.lookThrough = menuEntity;
+            if(ui.menuItem("Add Cube Here", entity != nullptr)) addMesh(Warp::Shape::Cube, menuEntity);
+            if(ui.menuItem("Add Plane Here", entity != nullptr)) addMesh(Warp::Shape::Plane, menuEntity);
             ui.menuSeparator();
-            if(ui.menuItem("Obrisi", entity != nullptr)) removeSelected(menuEntity);
+            if(ui.menuItem("Generate Motion from Text")) openMotionWorkflow();
+            ui.menuSeparator();
+            if(ui.menuItem("Delete", entity != nullptr)) removeSelected(menuEntity);
             ui.endMenu();
         }
-        if(ui.beginMenu("pogled")){
-            if(ui.menuItem("Dodaj kocku ovdje")) addMeshAt(Warp::Shape::Cube, Warp::None, menuPixel, true);
-            if(ui.menuItem("Dodaj ravninu ovdje")) addMeshAt(Warp::Shape::Plane, Warp::None, menuPixel, true);
+        if(ui.beginMenu("View")){
+            if(ui.menuItem("Add Cube Here")) addMeshAt(Warp::Shape::Cube, Warp::None, menuPixel, true);
+            if(ui.menuItem("Add Plane Here")) addMeshAt(Warp::Shape::Plane, Warp::None, menuPixel, true);
             ui.menuSeparator();
-            if(ui.menuItem("Uokviri sve")){
+            if(ui.menuItem("Generate Motion from Text")) openMotionWorkflow();
+            ui.menuSeparator();
+            if(ui.menuItem("Frame All")){
                 view.lookThrough = Warp::None;
                 Loom::frameAll(stage.size() ? stage : live, frame, view.orbit);
             }
-            if(ui.menuItem(view.showPoints ? "Sakrij tocke" : "Pokazi tocke")) view.showPoints = !view.showPoints;
-            if(ui.menuItem(view.showPaths ? "Sakrij putanje" : "Pokazi putanje")) view.showPaths = !view.showPaths;
-            if(ui.menuItem(view.showGrid ? "Sakrij mrezu" : "Pokazi mrezu")) view.showGrid = !view.showGrid;
+            if(ui.menuItem(view.showPoints ? "Hide Points" : "Show Points")) view.showPoints = !view.showPoints;
+            if(ui.menuItem(view.showPaths ? "Hide Paths" : "Show Paths")) view.showPaths = !view.showPaths;
+            if(ui.menuItem(view.showGrid ? "Hide Grid" : "Show Grid")) view.showGrid = !view.showGrid;
             ui.endMenu();
         }
 
@@ -1562,12 +2000,16 @@ int main(int argc, char** argv){
         rightWasDown = rightDown;
         lastX = cursorX; lastY = cursorY;
 
+        //A step is taken when no gesture is in progress: a whole drag is one undo
+        history.track(stage, leftDown || middleDown || rightDown || ui.wantsKeyboard());
+
         if(ui.wantsKeyboard()){
             //Tipke pripadaju polju za tekst: precaci se ne okidaju (W u opisu ne mijenja alat), ali se
             //stanje tipki ipak procita da se ne okinu kasnije, kad polje izgubi fokus
             for(int key : {GLFW_KEY_SPACE, GLFW_KEY_K, GLFW_KEY_V, GLFW_KEY_B, GLFW_KEY_W, GLFW_KEY_E, GLFW_KEY_S,
                            GLFW_KEY_RIGHT, GLFW_KEY_LEFT, GLFW_KEY_HOME, GLFW_KEY_END, GLFW_KEY_F, GLFW_KEY_0,
-                           GLFW_KEY_KP_0, GLFW_KEY_DELETE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_ESCAPE}) keys.pressed(window, key);
+                           GLFW_KEY_KP_0, GLFW_KEY_DELETE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_ESCAPE,
+                           GLFW_KEY_Z, GLFW_KEY_Y}) keys.pressed(window, key);
         }else{
         if(keys.pressed(window, GLFW_KEY_SPACE)) playing = !playing;
         if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
@@ -1580,6 +2022,21 @@ int main(int argc, char** argv){
         //S sam pali alat plohe, Ctrl+S sprema - ista tipka, pa se pita jednom
         const bool sKey = keys.pressed(window, GLFW_KEY_S);
         if(sKey && control) saveProjectNow();
+        //Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo (LoomUndo.h)
+        const bool zKey = keys.pressed(window, GLFW_KEY_Z);
+        const bool yKey = keys.pressed(window, GLFW_KEY_Y);
+        if(control && (zKey || yKey)){
+            const bool redo = yKey || shift;
+            if(redo ? history.redo(stage) : history.undo(stage)){
+                if(!stage.get(selected)) selected = Warp::None;
+                if(view.lookThrough != Warp::None && !stage.get(view.lookThrough)) view.lookThrough = Warp::None;
+                extentDirty = true;
+                message = std::string(redo ? "Redo" : "Undo") + " (" + std::to_string(history.undoSteps()) + " undo, " +
+                          std::to_string(history.redoSteps()) + " redo left)";
+            }else{
+                message = redo ? "Nothing to redo" : "Nothing to undo";
+            }
+        }
         else if(sKey) surfaceTool.active = !surfaceTool.active;
         if(keys.pressed(window, GLFW_KEY_RIGHT)) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
         if(keys.pressed(window, GLFW_KEY_LEFT)) frame = std::max(stage.startFrame, std::floor(frame) - 1.0);
@@ -1608,8 +2065,9 @@ int main(int argc, char** argv){
             removeSelected(selected);
         }
         if(keys.pressed(window, GLFW_KEY_ESCAPE)){
-            if(ui.menuOpen("pogled") || ui.menuOpen("media") || ui.menuOpen("entitet") || ui.menuOpen("projekt") ||
-               ui.menuOpen("novi") || ui.menuOpen("izlaz")) ui.closeMenu();
+            if(ui.menuOpen("View") || ui.menuOpen("Media") || ui.menuOpen("Entity") || ui.menuOpen("projekt") ||
+               ui.menuOpen("novi") || ui.menuOpen("Exit")) ui.closeMenu();
+            else if(autoRig.open) autoRig.open = false;
             else if(motionPanel.open) motionPanel.open = false;
             else if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
         }
@@ -1622,6 +2080,10 @@ int main(int argc, char** argv){
             const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewportRect, view);
             Loom::paintStage(stage, frame, camera, view, extent, selected, scene);
             if(surfaceTool.active) Loom::paintSurfaceTool(surfaceTool, camera, overlay);
+            //Kocka koja reze splat: zicani obrub, da se vidi i kad je prozirna
+            if(splatShownId != Warp::None && Loom::isCube(stage.get(selected))){
+                Loom::paintBoxWire(overlay, camera, stage.worldMatrix(selected, frame), {1.0f, 0.82f, 0.30f, 0.95f});
+            }
             const Warp::Entity* chosenNow = stage.get(selected);
             if(chosenNow && chosenNow->visible && selected != view.lookThrough && focus == Focus::Entity){
                 const Loom::Gizmo shown = Loom::gizmoFor(camera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
@@ -1674,6 +2136,7 @@ int main(int argc, char** argv){
         {
             Warp::Id splatId = Warp::None;
             stage.walk([&](const Warp::Entity& e, int){ if(splatId == Warp::None && e.visible && e.splat) splatId = e.id; });
+            splatShownId = showSplat ? splatId : Warp::None;
             if(showSplat && splatId != Warp::None){
                 viewportSplat.want(stage.get(splatId)->splat->path);
                 const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewportRect, view);
@@ -1684,10 +2147,19 @@ int main(int argc, char** argv){
                                                     camera.rect, pixelScaleX);
             }
             const bool loadingNow = viewportSplat.isLoading();
-            if(loadingNow && !splatWasLoading) message = "splat se cita...";
+            if(loadingNow && !splatWasLoading) message = "Loading splat...";
             if(!loadingNow && splatWasLoading){
+                glm::vec3 centre;
+                float radius = 0.0f;
+                if(splatFrameWhenLoaded != Warp::None && splatFrameWhenLoaded == splatShownId && viewportSplat.bounds(centre, radius)){
+                    const glm::mat4 world = stage.worldMatrix(splatShownId, frame);
+                    view.lookThrough = Warp::None;
+                    view.orbit.target = glm::vec3(world * glm::vec4(centre, 1.0f));
+                    view.orbit.distance = 2.2f * radius * glm::length(glm::vec3(world[0]));
+                }
+                splatFrameWhenLoaded = Warp::None;
                 const std::string problem = viewportSplat.error();
-                message = problem.empty() ? "splat u pogledu: " + std::to_string(viewportSplat.count()) + " gaussiana"
+                message = problem.empty() ? "Splat in viewport: " + std::to_string(viewportSplat.count()) + " gaussiana"
                                           : "splat se ne da procitati: " + problem;
             }
             splatWasLoading = loadingNow;
@@ -1701,7 +2173,7 @@ int main(int argc, char** argv){
             meshArea = camera.rect;
             const float nearPlane = std::max(1e-5f, extent.radius * 1e-3f);
             meshesActive = viewportMeshes.prepare(stage, frame, camera, pixelScaleX, nearPlane, std::max(100.0f, extent.radius * 500.0f));
-            for(const std::string& problem : viewportMeshes.takeErrors()) message = "model se ne da procitati: " + problem;
+            for(const std::string& problem : viewportMeshes.takeErrors()) message = "Could not read model: " + problem;
         }
 
         if(!loom.renderer.beginFrame()) continue;

@@ -495,11 +495,13 @@ inline float gizmoDrag(const ViewCamera& camera, const Gizmo& gizmo, int axis, g
 
 inline void paintGizmo(Treadle::DrawList& list, const ViewCamera& camera, const Gizmo& gizmo, int hotAxis){
     if(!gizmo.visible) return;
-    const Treadle::Color colours[3] = {{0.95f, 0.30f, 0.30f, 1.0f}, {0.40f, 0.90f, 0.35f, 1.0f}, {0.35f, 0.55f, 1.00f, 1.0f}};
+    const Treadle::Color colours[3] = {{1.0f, 0.16f, 0.28f, 1.0f}, {0.18f, 1.0f, 0.42f, 1.0f}, {0.24f, 0.52f, 1.0f, 1.0f}};
     for(int axis = 0; axis < 3; ++axis){
         const Treadle::Color colour = axis == hotAxis ? Treadle::Color{1.0f, 1.0f, 0.6f, 1.0f} : colours[axis];
         const glm::vec3 tip = gizmo.origin + gizmoAxis(axis) * gizmo.length;
-        segment(list, camera, gizmo.origin, tip, axis == hotAxis ? 4.0f : 3.0f, colour);
+        Treadle::Color glow{colour.r, colour.g, colour.b, 0.22f};
+        segment(list, camera, gizmo.origin, tip, axis == hotAxis ? 9.0f : 7.0f, glow);
+        segment(list, camera, gizmo.origin, tip, axis == hotAxis ? 3.5f : 2.5f, colour);
         glm::vec2 pixel;
         if(project(camera, tip, pixel) && camera.rect.contains(pixel.x, pixel.y)){
             list.rect(pixel.x - 5.0f, pixel.y - 5.0f, 10.0f, 10.0f, colour);
@@ -601,7 +603,11 @@ inline void paintRings(Treadle::DrawList& list, const ViewCamera& camera, const 
             const bool behind = glm::dot((a + b) * 0.5f - gizmo.origin, camera.eye - gizmo.origin) < 0.0f;
             Treadle::Color c = colour;
             if(behind) c.a = 0.35f;
-            segment(list, camera, a, b, axis == hotAxis ? 3.5f : (behind ? 1.5f : 2.5f), c);
+            if(!behind){
+                Treadle::Color glow{colour.r, colour.g, colour.b, 0.16f};
+                segment(list, camera, a, b, axis == hotAxis ? 7.0f : 5.0f, glow);
+            }
+            segment(list, camera, a, b, axis == hotAxis ? 3.5f : (behind ? 1.5f : 2.25f), c);
         }
     }
 }

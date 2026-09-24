@@ -395,6 +395,39 @@ bool Ui::selectable(const std::string& text, bool selected){
     return row.hot && pressed[uint32_t(MouseButton::Left)];
 }
 
+bool Ui::assetRow(const std::string& name, const std::string& badge, bool selected, const Color& accent){
+    const Row row = nextRow(theme.rowHeight);
+    if(!row.visible) return false;
+
+    const Color tint{accent.r, accent.g, accent.b, selected ? 0.92f : 0.14f};
+    list.rect(row.box, selected ? tint : (row.hot ? theme.hot : theme.control));
+    list.outline(row.box, selected ? 2.0f : 1.0f, accent);
+
+    const bool videoBadge = badge == "MP4" || badge == "MOV" || badge == "MKV" || badge == "AVI" || badge == "VID";
+    const float badgeWidth = std::max(30.0f, textWidth(badge, theme.textScale) + (videoBadge ? 19.0f : 10.0f));
+    const float badgeHeight = row.box.height - 8.0f;
+    const Rect badgeBox{row.box.x + 4.0f, row.box.y + 4.0f, badgeWidth, badgeHeight};
+    Color badgeFill{accent.r, accent.g, accent.b, selected ? 0.95f : 0.22f};
+    list.rect(badgeBox, badgeFill);
+    list.outline(badgeBox, 1.0f, accent);
+    const Color badgeInk = selected ? theme.textOnAccent : accent;
+    float badgeX = badgeBox.x + (badgeBox.width - textWidth(badge, theme.textScale)) * 0.5f;
+    if(videoBadge){
+        const float cy = badgeBox.y + badgeBox.height * 0.5f;
+        list.triangle(badgeBox.x + 5.0f, cy - 4.5f, badgeBox.x + 5.0f, cy + 4.5f,
+                      badgeBox.x + 12.0f, cy, badgeInk);
+        badgeX = badgeBox.x + 14.0f;
+    }
+    list.text(badgeX, badgeBox.y + (badgeBox.height - textHeight(theme.textScale)) * 0.5f,
+              badge, selected ? theme.textOnAccent : accent, theme.textScale);
+
+    const float textLeft = badgeBox.x + badgeBox.width + 7.0f;
+    const float room = row.box.x + row.box.width - textLeft - 5.0f;
+    list.text(textLeft, row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
+              fitText(name, room, theme.textScale), selected ? theme.textOnAccent : theme.text, theme.textScale);
+    return row.hot && pressed[uint32_t(MouseButton::Left)];
+}
+
 bool Ui::folderRow(const std::string& name, bool selected){
     const Row row = nextRow(theme.rowHeight);
     if(!row.visible) return false;
@@ -579,7 +612,7 @@ bool Ui::dragVector(const std::string& name, float* xyz, float speed){
     if(!row.visible) return false;
     const float width = (row.box.width - 2.0f * theme.spacing) / 3.0f;
     bool changed = false;
-    const Color axes[3] = {{0.95f, 0.35f, 0.35f, 1.0f}, {0.45f, 0.9f, 0.4f, 1.0f}, {0.4f, 0.6f, 1.0f, 1.0f}};
+    const Color axes[3] = {{1.0f, 0.18f, 0.28f, 1.0f}, {0.20f, 1.0f, 0.42f, 1.0f}, {0.24f, 0.55f, 1.0f, 1.0f}};
     for(int axis = 0; axis < 3; ++axis){
         const Rect field{row.box.x + float(axis) * (width + theme.spacing), row.box.y, width, row.box.height};
         if(dragField(idFor(name + char('x' + axis)), field, &xyz[axis], speed)) changed = true;

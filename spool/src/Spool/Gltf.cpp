@@ -577,6 +577,21 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
             out.nodes.push_back(node);
         }
     }
+    //Read joint identity for skeleton inspection; keep the skinning warning until runtime support exists.
+    if(const Json* skins = root.get("skins")){
+        for(const Json& skin : skins->items){
+            if(const Json* joints = skin.get("joints")){
+                for(const Json& joint : joints->items){
+                    if(joint.kind != Json::Kind::Number || !std::isfinite(joint.number) ||
+                       joint.number < 0 || joint.number >= double(out.nodes.size()) ||
+                       std::floor(joint.number) != joint.number){
+                        error = "skin joint index outside nodes"; return false;
+                    }
+                    out.nodes[size_t(joint.number)].joint = true;
+                }
+            }
+        }
+    }
     const Json* scenes = root.get("scenes");
     const int sceneIndex = root.integer("scene", 0);
     if(scenes && sceneIndex >= 0 && size_t(sceneIndex) < scenes->size()){
