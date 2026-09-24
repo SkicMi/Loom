@@ -348,9 +348,10 @@ int main(int realArgc, char** realArgv){
     uint32_t trackScale = 1;
     //--keyframes-only: bez poze za svaki kadar (pune slicice) - kamera samo na kljucnim kadrovima
     bool keyframesOnly = false;
-    //--gpu-match: poklapanje opisnika grafa na kartici (Loomov DescriptorMatcher, ista poklapanja
-    //kao procesor - test_gpu_match)
-    bool gpuMatch = false;
+    //Poklapanje opisnika grafa na kartici (Loomov DescriptorMatcher, ista poklapanja kao procesor -
+    //test_gpu_match; na 60 kadrova C0257 izlaz isti do bita, poklapanje 78 -> 25 s). ZADANO UKLJUCENO;
+    //--cpu-match vraca procesor, a bez kartice se na nj prelazi samo
+    bool gpuMatch = true;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
@@ -359,6 +360,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--focal-diagnostic") focalDiagnostic = true;
         else if(std::string(realArgv[i]) == "--keyframes-only") keyframesOnly = true;
         else if(std::string(realArgv[i]) == "--gpu-match") gpuMatch = true;
+        else if(std::string(realArgv[i]) == "--cpu-match") gpuMatch = false;
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
         else positional.push_back(realArgv[i]);
     }
@@ -647,8 +649,16 @@ int main(int realArgc, char** realArgv){
                     gpuConfig.appName = "VideoSolve"; gpuConfig.engineName = "Loom";
                     gpuConfig.headless = true;
                     gpuConfig.maxDescriptorSets = 64;
-                    gpu.emplace(gpuConfig);
-                    matcher.emplace(*gpu);
+                    try{
+                        gpu.emplace(gpuConfig);
+                        matcher.emplace(*gpu);
+                    }catch(const std::exception& error){
+                        std::printf("  kartica nedostupna (%s) - poklapanje na procesoru\n", error.what());
+                        matcher.reset();
+                        gpu.reset();
+                    }
+                }
+                if(matcher){
                     graphConfig.siftPairMatcher = [&](const std::vector<std::vector<Engine::SiftDescriptor>>& signatures,
                                                       const std::vector<std::vector<glm::vec2>>& pixels,
                                                       const std::vector<std::pair<uint32_t, uint32_t>>& pairs,
