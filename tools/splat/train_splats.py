@@ -252,6 +252,15 @@ def main():
     #scena bez njega (ut) 23.43, classic 24.46
     ap.add_argument("--camera-model", choices=["auto", "classic", "ut", "rolling"], default="auto",
                     help="auto: rolling kad postoje rs_top/rs_bottom, inace classic")
+    #ZAMUCENJE POKRETOM: kadar skuplja svjetlo cijelu ekspoziciju dok se kamera mice (C0257: 1/100 s
+    #uz ~10 st/s, dakle ~8 px na 4K). Crta se kao prosjek K trenutaka ekspozicije, svaki redak po
+    #redak. Trazi rolling shutter (rs_top/rs_bottom daju gibanje) i vrijeme ekspozicije
+    #(camera_metadata.txt iz VideoSolvea, ili --exposure-frames). 0 iskljucuje; cijena je K puta
+    #vise crtanja po koraku
+    ap.add_argument("--motion-blur", type=int, default=0,
+                    help="koliko trenutaka ekspozicije se crta po kadru (0/1 iskljucuje, npr. 3)")
+    ap.add_argument("--exposure-frames", type=float, default=0.0,
+                    help="ekspozicija u kadrovima (1/100 s pri 50 fps = 0.5); 0 cita camera_metadata.txt")
     ap.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
                     help="na kraju makni floatere (floaters.py): nevidljive i mrlje uz kameru")
     args = ap.parse_args()
@@ -463,7 +472,64 @@ def main():
     #Jedno mjesto koje crta, za trening, ocjenu i pregled - pa sva tri crtaju istim modelom kamere
     from gsplat.cuda._wrapper import RollingShutterType
     usesUt = args.camera_model != "classic"
+
+    #ZAMUCENJE POKRETOM: pomak u vremenu delta (u kadrovima) je pomak duz gibanja izmedju gornjeg i
+    #donjeg retka, alfa = delta / citanje. Poze se interpoliraju u prostoru kamere (sredista
+    #linearno, rotacija po osi relativnog zakreta), pa se vrate u svijet-u-kameru
+    blurSteps = []
+    if args.motion_blur > 1 and args.camera_model == "rolling":
+        def readValue(file, key):
+            if not file.exists(): return 0.0
+            for line in open(file):
+                parts = line.split()
+                if len(parts) == 2 and parts[0] == key: return float(parts[1])
+            return 0.0
+        exposure = args.exposure_frames or readValue(model / "camera_metadata.txt", "exposure_frames")
+        readout = readValue(model / "rolling_shutter.txt", "readout_frames")
+        if exposure > 0.0 and readout > 0.0:
+            k = args.motion_blur
+            blurSteps = [((i + 0.5) / k - 0.5) * exposure / readout for i in range(k)]
+            print(f"Zamucenje pokretom: {k} trenutaka, ekspozicija {exposure:.3f} kadra, citanje {readout:.3f}")
+        else:
+            print("Zamucenje pokretom trazi ekspoziciju (camera_metadata.txt) i citanje (rolling_shutter.txt) - iskljuceno")
+
+    def rotationLog(R):
+        cosine = ((R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2] - 1.0) * 0.5).clamp(-1.0, 1.0)
+        angle = torch.acos(cosine)
+        axis = torch.stack([R[..., 2, 1] - R[..., 1, 2], R[..., 0, 2] - R[..., 2, 0], R[..., 1, 0] - R[..., 0, 1]], -1)
+        scale = torch.where(angle > 1e-6, angle / (2.0 * torch.sin(angle).clamp(min=1e-9)), torch.full_like(angle, 0.5))
+        return axis * scale[..., None]
+    def rotationExp(w):
+        angle = w.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+        k = w / angle
+        K = torch.zeros(w.shape[:-1] + (3, 3), device=w.device, dtype=w.dtype)
+        K[..., 0, 1], K[..., 0, 2], K[..., 1, 0] = -k[..., 2], k[..., 1], k[..., 2]
+        K[..., 1, 2], K[..., 2, 0], K[..., 2, 1] = -k[..., 0], -k[..., 1], k[..., 0]
+        a = angle[..., None]
+        eye = torch.eye(3, device=w.device, dtype=w.dtype).expand_as(K)
+        return eye + torch.sin(a) * K + (1.0 - torch.cos(a)) * (K @ K)
+    def along(top, bottom, alpha):
+        #svijet-u-kameru -> kamera-u-svijet, interpolacija, natrag
+        Rt, Rb = top[..., :3, :3].transpose(-1, -2), bottom[..., :3, :3].transpose(-1, -2)
+        Ct = -(Rt @ top[..., :3, 3:])[..., 0]
+        Cb = -(Rb @ bottom[..., :3, 3:])[..., 0]
+        R = Rt @ rotationExp(alpha * rotationLog(Rt.transpose(-1, -2) @ Rb))
+        C = Ct + alpha * (Cb - Ct)
+        out = torch.eye(4, device=top.device, dtype=top.dtype).expand_as(top).clone()
+        out[..., :3, :3] = R.transpose(-1, -2)
+        out[..., :3, 3] = -(R.transpose(-1, -2) @ C[..., None])[..., 0]
+        return out
+
     def draw(view, viewEnd, degree, mode):
+        if blurSteps:
+            total, alpha, info = None, None, None
+            for step in blurSteps:
+                shown, alpha, info = drawOnce(along(view, viewEnd, step), along(view, viewEnd, 1.0 + step), degree, mode)
+                total = shown if total is None else total + shown
+            return total / len(blurSteps), alpha, info
+        return drawOnce(view, viewEnd, degree, mode)
+
+    def drawOnce(view, viewEnd, degree, mode):
         extra = dict(packed=True)
         if usesUt:
             extra = dict(packed=False, with_ut=True, with_eval3d=True)
