@@ -220,25 +220,30 @@ inline void paintSurfaceTool(const SurfaceTool& tool, const ViewCamera& camera, 
         if(project(camera, tool.selected[i], p) && camera.rect.contains(p.x, p.y)) list.rect(p.x - 1.5f, p.y - 1.5f, 3.0f, 3.0f, {1.0f, 0.9f, 0.4f, 0.8f});
     }
     if(!tool.fit.valid) return;
-    const glm::vec3 b = glm::normalize(glm::cross(tool.fit.normal, tool.fit.tangent));
-    const float r = std::max(tool.fit.extent, 1e-4f);
-    constexpr int segments = 48;
-    for(int i = 0; i < segments; ++i){
-        const float a0 = 6.2831853f * float(i) / segments, a1 = 6.2831853f * float(i + 1) / segments;
-        segment(list, camera, tool.fit.centre + (tool.fit.tangent * std::cos(a0) + b * std::sin(a0)) * r,
-                tool.fit.centre + (tool.fit.tangent * std::cos(a1) + b * std::sin(a1)) * r, 2.0f, gold);
-    }
+    //Pravokutnik koji ce ravnina pokriti, u osima u kojima ce stajati: na zidu uspravan
+    const glm::vec3 x = tool.fit.tangent * std::max(tool.fit.halfWidth, 1e-4f);
+    const glm::vec3 z = tool.fit.depthAxis() * std::max(tool.fit.halfDepth, 1e-4f);
+    const glm::vec3 corners[4] = {tool.fit.centre - x - z, tool.fit.centre + x - z, tool.fit.centre + x + z, tool.fit.centre - x + z};
+    for(int i = 0; i < 4; ++i) segment(list, camera, corners[i], corners[(i + 1) % 4], 2.0f, gold);
+    const float r = std::min(tool.fit.halfWidth, tool.fit.halfDepth);
     segment(list, camera, tool.fit.centre, tool.fit.centre + tool.fit.normal * r * 0.6f, 3.0f, {0.4f, 0.9f, 0.35f, 1.0f});
+    //Na zidu: kratka crta prema gore uz plohu, da se vidi da je panel uspravan
+    if(tool.fit.wall) segment(list, camera, tool.fit.centre, tool.fit.centre - tool.fit.depthAxis() * r * 0.5f, 2.0f, {0.4f, 0.7f, 1.0f, 1.0f});
 }
 
-//Tijelo koje lezi na odabranoj plohi, na vrhu scene. Velicina: 70 % duljine plohe
+//Tijelo na odabranoj plohi, na vrhu scene. Ravnina pokrije odabrani komad; kocka stoji na njemu,
+//velika 70 % krace strane komada
 inline Warp::Id placeOnSurface(Warp::Stage& stage, const SurfaceTool& tool, Warp::Shape shape){
     if(!tool.fit.valid) return Warp::None;
-    const float size = std::max(1e-4f, tool.fit.extent * (shape == Warp::Shape::Cube ? 0.7f : 2.0f));
     const Warp::Id id = stage.create(shape == Warp::Shape::Cube ? "Kocka" : "Ravnina");
     Warp::Entity& entity = *stage.get(id);
     entity.mesh = Warp::Mesh{shape};
-    entity.local = onSurface(tool.fit, size, shape);
+    if(shape == Warp::Shape::Cube){
+        const float size = std::max(1e-4f, 1.4f * std::min(tool.fit.halfWidth, tool.fit.halfDepth));
+        entity.local = onSurface(tool.fit, size, shape);
+    }else{
+        entity.local = panelOnSurface(tool.fit);
+    }
     return id;
 }
 
