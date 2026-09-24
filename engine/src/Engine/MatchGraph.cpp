@@ -236,13 +236,32 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
     //Isti kadar sudjeluje u do config.window parova, a njegova prostorna mreza ovisi samo o
     //znacajkama i stalnom radijusu. Pripremi je jednom umjesto da je ponovno gradi svaki par.
     std::vector<SiftMatchGrid> siftGrids;
-    if(bySift){
+    if(bySift && !config.siftPairMatcher){
         const auto matchingStarted = Clock::now();
         siftGrids.reserve(frames);
         for(uint32_t frame = 0; frame < frames; ++frame){
             siftGrids.push_back(prepareSiftMatchGrid(siftSignatures[frame], points[frame], radius));
         }
         result.matchingSeconds += secondsSince(matchingStarted);
+    }
+
+    //VANJSKO POKLAPANJE (config.siftPairMatcher): svi parovi odjednom, istim redom kao petlja nize
+    std::vector<std::vector<SiftMatch>> external;
+    size_t externalNext = 0;
+    if(bySift && config.siftPairMatcher){
+        std::vector<std::pair<uint32_t, uint32_t>> pairList;
+        for(uint32_t a = 0; a < frames; ++a){
+            for(uint32_t step = 1; step <= config.window; ++step){
+                const uint32_t b = a + step;
+                if(b >= frames) break;
+                if(siftSignatures[a].empty() || siftSignatures[b].empty()) continue;
+                pairList.push_back({a, b});
+            }
+        }
+        const auto matchingStarted = Clock::now();
+        external = config.siftPairMatcher(siftSignatures, points, pairList, radius, sift);
+        result.matchingSeconds += secondsSince(matchingStarted);
+        if(external.size() != pairList.size()) external.assign(pairList.size(), {});
     }
 
     for(uint32_t a = 0; a < frames; ++a){
@@ -258,7 +277,12 @@ MatchGraphResult buildMatchGraph(const std::vector<GrayImage>& images,
             std::vector<std::pair<uint32_t, uint32_t>> matches;
             std::vector<uint32_t> distances;
             const auto matchingStarted = Clock::now();
-            if(bySift){
+            if(bySift && config.siftPairMatcher){
+                for(const SiftMatch& one : external[externalNext++]){
+                    matches.push_back({one.from, one.to});
+                    distances.push_back(uint32_t(one.distance));
+                }
+            }else if(bySift){
                 for(const SiftMatch& one : matchSiftNear(siftSignatures[a], points[a],
                                                           siftGrids[a], siftSignatures[b], points[b],
                                                           siftGrids[b], radius, sift)){

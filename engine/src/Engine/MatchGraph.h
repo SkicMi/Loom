@@ -4,6 +4,8 @@
 #include "Engine/Sift.h"
 #include "Engine/TwoView.h"
 
+#include <functional>
+#include <utility>
 #include <vector>
 
 namespace Engine{
@@ -32,7 +34,18 @@ namespace Engine{
 // C u kadru 3, onda su sva tri jedna tocka - i to bez ijednog pracenja kroz kadrove izmedju njih.
 //=============================================================================================
 
+//Poklapanje SIFT potpisa za sve parove odjednom, izvana (VideoSolve ga priljepi na karticu - vidi
+//Loomov DescriptorMatcher). Mora dati isto sto matchSiftNear: isti radijus i pravila iz SiftConfig
+using SiftPairMatcher = std::function<std::vector<std::vector<SiftMatch>>(
+    const std::vector<std::vector<SiftDescriptor>>& signatures,
+    const std::vector<std::vector<glm::vec2>>& points,
+    const std::vector<std::pair<uint32_t, uint32_t>>& pairs,
+    float radius, const SiftConfig& config)>;
+
 struct MatchGraphConfig{
+    //Prazno: poklapanje na procesoru (matchSiftNear), par po par
+    SiftPairMatcher siftPairMatcher;
+
     TrackConfig detect;        //za detectCorners; maxCorners je ovdje bitno veci nego pri pracenju
     DescribeConfig describe;
     SiftConfig sift;

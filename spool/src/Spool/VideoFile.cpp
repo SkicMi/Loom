@@ -258,6 +258,12 @@ VideoReader::VideoReader(const std::string& path) : state(std::make_unique<State
         throw std::runtime_error("Spool::VideoReader: cannot set up the decoder for '" + path + "' - " + describe(copied));
     }
 
+    //VISE NITI. Bez ovoga libavcodec dekodira jednom niti: izmjereno na 4K H.264 (C0257, 2304
+    //kadra) 97 s po prolazu naspram 12 s s nitima - a VideoSolve snimku prolazi cetiri puta.
+    //Dekodiranje je deterministicko, pa su kadrovi bit po bit isti; niti samo skrate cekanje
+    state->codec->thread_count = 0;                                   //koliko jezgri ima
+    state->codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+
     int started = avcodec_open2(state->codec, decoder, nullptr);
     if(started < 0){
         throw std::runtime_error("Spool::VideoReader: cannot start the decoder for '" + path + "' - " + describe(started));

@@ -268,6 +268,7 @@ add_library(Loom STATIC
     src/Vulkan/ComputeMaterial.cpp
     src/Vulkan/RadixSort.cpp
     src/Vulkan/PrefixSum.cpp
+    src/Vulkan/DescriptorMatcher.cpp
     src/Vulkan/SplatRenderer.cpp
     src/Vulkan/VulkanAllocator.cpp
     src/Vulkan/VmaImplementation.cpp
@@ -450,7 +451,9 @@ add_executable(OverlayBox src/overlay_box.cpp)
 target_link_libraries(OverlayBox PRIVATE Engine Spool)
 
 add_executable(VideoSolve src/video_solve.cpp)
-target_link_libraries(VideoSolve PRIVATE Spool Engine)
+# Loom samo za --gpu-match (DescriptorMatcher na kartici); bez zastavice se kartica ne dira
+target_link_libraries(VideoSolve PRIVATE Spool Engine Loom)
+add_dependencies(VideoSolve LoomShaders)
 
 # RollingShutterProbe - koliko rolling shutter kvari gotovo rjesenje i koliko traje citanje senzora
 # (Bundle.h, BundleConfig::rowTime). Ne solva iznova: zavrsni bundle nad rezultatom, po vremenu citanja

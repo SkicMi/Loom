@@ -11,6 +11,7 @@
 // procijene iz view-grapha pa zajedno s pozama i tockama. Ako geometrija to ne moze odrediti,
 // rezultat se NE izmisli: ispisuje se razlog i tek tada se koristi stari FOV sweep kao fallback.
 #include <Spool/ImageFile.h>
+#include <Spool/CameraMetadata.h>
 #include <Spool/VideoFile.h>
 
 #include <Engine/CameraHints.h>
@@ -31,6 +32,12 @@
 #include <Engine/Bands.h>
 #include <Engine/SolvePose.h>
 #include <Engine/Track.h>
+
+#include "Core/LoomConfig.h"
+#include "Core/LoomInitializer.h"
+#include "Vulkan/DescriptorMatcher.h"
+
+#include <optional>
 
 #include <algorithm>
 #include <chrono>
@@ -118,80 +125,129 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     //"lokalizirano" dok je rjesenje pokrivalo njih dvjesto cetrdeset
     const uint32_t lastSolvedSource = keyframeFrames.back() * step;
 
+    //=====================================================================================
+    // ODSJECCI PARALELNO. Svaki lanac krece od svog kljucnog kadra (poza i tocke su ondje vec
+    // rijesene) i ide do sljedeceg, pa odsjecci ne ovise jedan o drugome - samo dekodiranje mora
+    // ici redom. Jedna nit dekodira i slaze kadrove po odsjecima, a gotov odsjecak ide radniku.
+    // Svaki radnik pise samo u svoje kadrove, pa je rezultat bit po bit isti kao kad se islo
+    // redom. Bilo je 425 s na C0257 (2072 medjukadra), od cega je dekodiranje manji dio.
+    //
+    // Najvise 'inFlight' odsjecaka u memoriji: kadar je 8 MB sive slike na 4K, odsjecak desetak
+    //=====================================================================================
+    struct Segment{
+        int keyframe = -1;
+        std::vector<uint32_t> sources;
+        std::vector<std::vector<uint8_t>> grays;
+    };
+    struct SegmentResult{
+        uint32_t localised = 0, failed = 0;
+        std::vector<uint32_t> inliers;
+    };
+    uint32_t width = 0, height = 0;
+    out.poses.resize(size_t(lastSolvedSource) + 1);
+    out.posed.resize(size_t(lastSolvedSource) + 1, uint8_t(0));
+
+    auto runSegment = [&](Segment segment){
+        SegmentResult result;
+        Engine::Pyramid previous;
+        Engine::Pose lastPose = solved.poses[size_t(segment.keyframe)];
+        std::vector<Engine::PointObservation> active = perKeyframe[size_t(segment.keyframe)];
+        for(size_t i = 0; i < segment.sources.size(); ++i){
+            const Engine::GrayImage image{segment.grays[i].data(), width, height, width};
+            Engine::Pyramid pyramid(image, trackConfig.levels);
+            const uint32_t source = segment.sources[i];
+            if(i == 0){
+                out.poses[source] = lastPose;
+                out.posed[source] = 1;
+            }else if(!active.empty()){
+                std::vector<Engine::PointObservation> moved(active.size());
+                std::vector<uint8_t> kept(active.size(), 0);
+                Engine::inBands(0, int(active.size()), [&](uint32_t, int first, int last){
+                    for(int k = first; k < last; ++k){
+                        glm::vec2 landed;
+                        if(Engine::trackPoint(previous, pyramid, active[size_t(k)].pixel, landed, trackConfig)){
+                            moved[size_t(k)] = Engine::PointObservation{active[size_t(k)].point, landed};
+                            kept[size_t(k)] = 1;
+                        }
+                    }
+                });
+                std::vector<Engine::PointObservation> survived;
+                survived.reserve(moved.size());
+                for(size_t k = 0; k < moved.size(); ++k) if(kept[k]) survived.push_back(moved[k]);
+
+                if(survived.size() >= 12){
+                    const Engine::PoseSolveResult solvedPose =
+                        Engine::solvePose(solved.points, survived, intrinsics, lastPose, poseConfig);
+                    if(solvedPose.solved){
+                        out.poses[source] = solvedPose.pose;
+                        out.posed[source] = 1;
+                        lastPose = solvedPose.pose;
+                        ++result.localised;
+                        result.inliers.push_back(uint32_t(survived.size()));
+                    }else{
+                        ++result.failed;
+                    }
+                }else{
+                    ++result.failed;
+                }
+                //Pracenje ide dalje od ONOGA STO JE NADJENO, da se sljedeci kadar ne trazi iz starog mjesta
+                active = survived;
+            }
+            previous = std::move(pyramid);
+            segment.grays[i].clear();
+            segment.grays[i].shrink_to_fit();
+        }
+        return result;
+    };
+
+    const size_t inFlight = 6;
+    std::vector<std::future<SegmentResult>> running;
+    std::vector<SegmentResult> finished;
+    auto launch = [&](Segment&& segment){
+        if(segment.keyframe < 0 || segment.sources.empty()) return;
+        while(running.size() >= inFlight){
+            finished.push_back(running.front().get());
+            running.erase(running.begin());
+        }
+        running.push_back(std::async(std::launch::async, runSegment, std::move(segment)));
+    };
+
     Spool::VideoReader reader(path);
     uint32_t sourceIndex = 0, usedIndex = 0;
-
-    Engine::Pyramid previous;
-    std::vector<Engine::PointObservation> active;
-    Engine::Pose lastPose;
-    bool havePose = false;
-    std::vector<uint32_t> inlierCounts;
-
+    Segment current;
     while(!reader.atEnd()){
         const Spool::Image frame = reader.readNext();
         if(frame.pixels.empty()) break;
-
-        const std::vector<uint8_t> gray = toGray(frame);
-        const Engine::GrayImage image{gray.data(), frame.width, frame.height, frame.width};
-        Engine::Pyramid pyramid(image, trackConfig.levels);
-
-        if(out.poses.size() <= sourceIndex){
-            out.poses.resize(sourceIndex + 1);
-            out.posed.resize(sourceIndex + 1, uint8_t(0));
-        }
+        width = frame.width;
+        height = frame.height;
 
         const bool isUsed = (step <= 1) || (sourceIndex % step == 0);
         int keyframe = -1;
         if(isUsed && usedIndex < keyframeOfUsed.size()) keyframe = keyframeOfUsed[usedIndex];
 
         if(keyframe >= 0){
-            //Kljucni kadar: poza je vec rijesena, i odavde krece novi lanac
-            out.poses[sourceIndex] = solved.poses[size_t(keyframe)];
-            out.posed[sourceIndex] = 1;
-            lastPose = solved.poses[size_t(keyframe)];
-            havePose = true;
-            active = perKeyframe[size_t(keyframe)];
-        }else if(havePose && !active.empty()){
-            //Medjukadar: prenesi tocke i rijesi pozu
-            std::vector<Engine::PointObservation> moved(active.size());
-            std::vector<uint8_t> kept(active.size(), 0);
-            Engine::inBands(0, int(active.size()), [&](uint32_t, int first, int last){
-                for(int i = first; i < last; ++i){
-                    glm::vec2 landed;
-                    if(Engine::trackPoint(previous, pyramid, active[size_t(i)].pixel, landed, trackConfig)){
-                        moved[size_t(i)] = Engine::PointObservation{active[size_t(i)].point, landed};
-                        kept[size_t(i)] = 1;
-                    }
-                }
-            });
-
-            std::vector<Engine::PointObservation> survived;
-            survived.reserve(moved.size());
-            for(size_t i = 0; i < moved.size(); ++i) if(kept[i]) survived.push_back(moved[i]);
-
-            if(survived.size() >= 12){
-                const Engine::PoseSolveResult result =
-                    Engine::solvePose(solved.points, survived, intrinsics, lastPose, poseConfig);
-                if(result.solved){
-                    out.poses[sourceIndex] = result.pose;
-                    out.posed[sourceIndex] = 1;
-                    lastPose = result.pose;
-                    ++out.localised;
-                    inlierCounts.push_back(uint32_t(survived.size()));
-                }else{
-                    ++out.failed;
-                }
-            }else{
-                ++out.failed;
-            }
-            //Pracenje ide dalje od ONOGA STO JE NADJENO, da se sljedeci kadar ne trazi iz starog mjesta
-            active = survived;
+            launch(std::move(current));
+            current = Segment{};
+            current.keyframe = keyframe;
+        }
+        //Kadrovi prije prvog kljucnog nemaju odakle krenuti - kao i prije, ostaju bez poze
+        if(current.keyframe >= 0){
+            current.sources.push_back(sourceIndex);
+            current.grays.push_back(toGray(frame));
         }
 
-        previous = std::move(pyramid);
         if(isUsed) ++usedIndex;
         ++sourceIndex;
         if(sourceIndex > lastSolvedSource) break;
+    }
+    launch(std::move(current));
+    for(auto& one : running) finished.push_back(one.get());
+
+    std::vector<uint32_t> inlierCounts;
+    for(const SegmentResult& one : finished){
+        out.localised += one.localised;
+        out.failed += one.failed;
+        inlierCounts.insert(inlierCounts.end(), one.inliers.begin(), one.inliers.end());
     }
 
     if(!inlierCounts.empty()){
@@ -280,13 +336,30 @@ int main(int realArgc, char** realArgv){
     //--subpixel-corners: uglovi grafa poklapanja dobiju subpikselni polozaj (TrackConfig::subpixel,
     //Foerstner na smanjenoj slici). Bez njega su na 4K tocni na cetiri piksela
     bool subpixelCorners = false;
-    //--no-rolling-shutter: bez mjerenja vremena citanja i bez rs_top/rs_bottom (Engine/RollingShutter.h)
-    bool rollingShutter = true;
+    //--rolling-shutter: izmjeri vrijeme citanja i zapisi rs_top/rs_bottom (Engine/RollingShutter.h).
+    //ZADANO ISKLJUCENO: solve bolji (izdvojeni -7 %), ali splat na izdvojenim kadrovima nije -
+    //parno po kadru -0.08 +- 0.14 dB (evaluate_splat.py) - a kosta ~80 s
+    bool rollingShutter = false;
+    //--focal-diagnostic: jos dva solvea sa zarisnom x0.75 i x1.25, samo za ispis koliko se putanja
+    //pri tome zakrene. Nista ne mijenja u rezultatu, a na C0257 su to dvije pune rekonstrukcije
+    bool focalDiagnostic = false;
+    //--track-scale N: pracenje na slici smanjenoj N puta. Uz graf poklapanja pracenje sluzi SAMO za
+    //izbor kljucnih kadrova (solve koristi opazanja grafa), pa mu puna 4K slika ne treba
+    uint32_t trackScale = 1;
+    //--keyframes-only: bez poze za svaki kadar (pune slicice) - kamera samo na kljucnim kadrovima
+    bool keyframesOnly = false;
+    //--gpu-match: poklapanje opisnika grafa na kartici (Loomov DescriptorMatcher, ista poklapanja
+    //kao procesor - test_gpu_match)
+    bool gpuMatch = false;
     std::vector<char*> positional;
     for(int i = 0; i < realArgc; ++i){
         if(std::string(realArgv[i]) == "--samo-kamera") cameraOnly = true;
         else if(std::string(realArgv[i]) == "--subpixel-corners") subpixelCorners = true;
-        else if(std::string(realArgv[i]) == "--no-rolling-shutter") rollingShutter = false;
+        else if(std::string(realArgv[i]) == "--rolling-shutter") rollingShutter = true;
+        else if(std::string(realArgv[i]) == "--focal-diagnostic") focalDiagnostic = true;
+        else if(std::string(realArgv[i]) == "--keyframes-only") keyframesOnly = true;
+        else if(std::string(realArgv[i]) == "--gpu-match") gpuMatch = true;
+        else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
         else positional.push_back(realArgv[i]);
     }
     const int argc = int(positional.size());
@@ -403,7 +476,7 @@ int main(int realArgc, char** realArgv){
     //
     //Mjereno je samo na 4K; omjer je odatle prenesen, a donja granica je stara vrijednost koja se
     //na malim slikama pokazala dobrom
-    trackConfig.window = std::max(6u, uint32_t(info.width) / 320u);
+    trackConfig.window = std::max(6u, uint32_t(info.width) / trackScale / 320u);
 
     //AFINO JE ISKLJUCENO NA PRAVOJ SNIMCI, i to je mjereno a ne pretpostavka. Na sintetici je afino
     //pracenje 15 do 19 puta tocnije, ali na snimci iz kamere ne prezivi. Isti isjecak, 40 kadrova
@@ -432,7 +505,19 @@ int main(int realArgc, char** realArgv){
         if(index++ % step != 0) continue;
 
         const std::vector<uint8_t> gray = toGray(frame);
-        tracker.addFrame(Engine::GrayImage{gray.data(), frame.width, frame.height, frame.width});
+        if(trackScale > 1){
+            const uint32_t w = frame.width / trackScale, h = frame.height / trackScale;
+            std::vector<uint8_t> small(size_t(w) * h);
+            for(uint32_t y = 0; y < h; ++y) for(uint32_t x = 0; x < w; ++x){
+                uint32_t sum = 0;
+                for(uint32_t dy = 0; dy < trackScale; ++dy)
+                    for(uint32_t dx = 0; dx < trackScale; ++dx) sum += gray[size_t(y * trackScale + dy) * frame.width + x * trackScale + dx];
+                small[size_t(y) * w + x] = uint8_t(sum / (trackScale * trackScale));
+            }
+            tracker.addFrame(Engine::GrayImage{small.data(), w, h, w});
+        }else{
+            tracker.addFrame(Engine::GrayImage{gray.data(), frame.width, frame.height, frame.width});
+        }
         ++used;
         std::printf("\r  kadar %u, tragova zivo %u  ", used, tracker.activeTracks());
         std::fflush(stdout);
@@ -446,9 +531,15 @@ int main(int realArgc, char** realArgv){
         return 1;
     }
 
+    //Opazanja pracenja u pikselima PUNE slike (vidi --track-scale)
+    std::vector<Engine::Observation> tracked = tracker.observations();
+    if(trackScale > 1){
+        for(Engine::Observation& one : tracked) one.pixel = (one.pixel + glm::vec2(0.5f)) * float(trackScale) - glm::vec2(0.5f);
+    }
+
     //Koliko se dugo tragovi drze - kratki tragovi znace da rekonstrukcija nema sto povezati
     std::vector<uint32_t> length(tracker.trackCount(), 0);
-    for(const Engine::Observation& observation : tracker.observations()) ++length[observation.point];
+    for(const Engine::Observation& observation : tracked) ++length[observation.point];
     std::vector<uint32_t> sorted = length;
     std::sort(sorted.begin(), sorted.end());
     std::printf("  duljina traga: medijan %u kadrova, najdulji %u\n",
@@ -459,7 +550,7 @@ int main(int realArgc, char** realArgv){
     // -------------------------------------------------------------------------------
 
     //Kljucni kadrovi - vidi Engine/Keyframes.h. Izbor ne ovisi o zarisnoj pa se radi jednom
-    const Engine::KeyframeSelection keys = Engine::chooseKeyframes(tracker.observations(), used, info.width);
+    const Engine::KeyframeSelection keys = Engine::chooseKeyframes(tracked, used, info.width);
     keyframeFrames = keys.frames;
     std::printf("  kljucnih kadrova %zu od %u (medijan paralakse %.1f px)\n",
                 keyframeFrames.size(), used, keys.medianParallaxPixels);
@@ -546,6 +637,45 @@ int main(int realArgc, char** realArgv){
                 const uint32_t perFrame = std::min(20000u, uint32_t(megapixels * 1000.0));
 
                 graphConfig.detect.maxCorners = perFrame;
+
+                //Poklapanje na kartici: Loom bez prozora, samo za compute
+                std::optional<LoomInitializer> gpu;
+                std::optional<DescriptorMatcher> matcher;
+                if(gpuMatch){
+                    LoomConfig gpuConfig;
+                    gpuConfig.width = 64; gpuConfig.height = 64;
+                    gpuConfig.appName = "VideoSolve"; gpuConfig.engineName = "Loom";
+                    gpuConfig.headless = true;
+                    gpuConfig.maxDescriptorSets = 64;
+                    gpu.emplace(gpuConfig);
+                    matcher.emplace(*gpu);
+                    graphConfig.siftPairMatcher = [&](const std::vector<std::vector<Engine::SiftDescriptor>>& signatures,
+                                                      const std::vector<std::vector<glm::vec2>>& pixels,
+                                                      const std::vector<std::pair<uint32_t, uint32_t>>& pairs,
+                                                      float radius, const Engine::SiftConfig& sift){
+                        std::vector<std::vector<uint8_t>> flat(signatures.size()), valid(signatures.size());
+                        std::vector<DescriptorMatcher::Frame> frames(signatures.size());
+                        for(size_t f = 0; f < signatures.size(); ++f){
+                            flat[f].reserve(signatures[f].size() * Engine::siftLength);
+                            for(const Engine::SiftDescriptor& d : signatures[f]){
+                                flat[f].insert(flat[f].end(), d.values.begin(), d.values.end());
+                                valid[f].push_back(d.valid ? 1 : 0);
+                            }
+                            frames[f] = DescriptorMatcher::Frame{flat[f].data(), reinterpret_cast<const float*>(pixels[f].data()),
+                                                                 valid[f].data(), uint32_t(signatures[f].size())};
+                        }
+                        DescriptorMatcher::Rules rules;
+                        rules.radius = radius; rules.maxDistance = sift.maxDistance;
+                        rules.ratio = sift.ratio; rules.secondBestApart = sift.secondBestApart;
+                        const auto found = matcher->match(frames, pairs, rules);
+                        std::vector<std::vector<Engine::SiftMatch>> out(found.size());
+                        for(size_t p = 0; p < found.size(); ++p){
+                            out[p].reserve(found[p].size());
+                            for(const auto& m : found[p]) out[p].push_back(Engine::SiftMatch{m.from, m.to, m.distance});
+                        }
+                        return out;
+                    };
+                }
                 graphConfig.detect.subpixel = subpixelCorners;
                 graphConfig.detect.minDistance = 12.0f;
                 graphConfig.describe.ratio = 0.9f;        //vidi mjerenje u MatchGraph.cpp
@@ -1128,21 +1258,23 @@ int main(int realArgc, char** realArgv){
             return solveWith(fov, false);
         });
     };
-    auto lowerDiagnostic = diagnosticSolve(0.75);
-    auto upperDiagnostic = diagnosticSolve(1.25);
+    if(focalDiagnostic){
+        auto lowerDiagnostic = diagnosticSolve(0.75);
+        auto upperDiagnostic = diagnosticSolve(1.25);
 
-    auto printDiagnostic = [&](double factor, const auto& other){
-        const auto otherShape = pathShape(other.first);
-        std::printf("  zarisna x%.2f: %u kamera, reprojekcija %.3f px, skretanje %.2f st\n",
-                    factor, other.first.posedCameras, other.first.medianReprojection, otherShape.first);
-    };
-    {
-        const auto lower = lowerDiagnostic.get();
-        printDiagnostic(0.75, lower);
-    }
-    {
-        const auto upper = upperDiagnostic.get();
-        printDiagnostic(1.25, upper);
+        auto printDiagnostic = [&](double factor, const auto& other){
+            const auto otherShape = pathShape(other.first);
+            std::printf("  zarisna x%.2f: %u kamera, reprojekcija %.3f px, skretanje %.2f st\n",
+                        factor, other.first.posedCameras, other.first.medianReprojection, otherShape.first);
+        };
+        {
+            const auto lower = lowerDiagnostic.get();
+            printDiagnostic(0.75, lower);
+        }
+        {
+            const auto upper = upperDiagnostic.get();
+            printDiagnostic(1.25, upper);
+        }
     }
 
     // -------------------------------------------------------------------------------
@@ -1257,7 +1389,7 @@ int main(int realArgc, char** realArgv){
             int exportStep = int(step);
 
 
-            if(step > 1){
+            if(step > 1 && !keyframesOnly){
                 const auto denseStarted = std::chrono::steady_clock::now();
                 const DenseTrack dense = localiseEveryFrame(path, step, best, solveObservations,
                                                             keyframeFrames, bestIntrinsics);
@@ -1328,6 +1460,20 @@ int main(int realArgc, char** realArgv){
             // ROLLING SHUTTER: koliko traje citanje senzora i poze gornjeg i donjeg retka za
             // trener - nad upravo zapisanim modelom i kamera.usda (Engine/RollingShutter.h)
             //=============================================================================
+            //METAPODACI KAMERE (Spool/CameraMetadata.h): vrijeme ekspozicije i citanja za trener -
+            //zamucenje pokretom i rolling shutter se modeliraju tek kad se zna koliko traju
+            {
+                const Spool::CameraMetadata camera = Spool::readCameraMetadata(path);
+                if(camera.present){
+                    std::ofstream note(std::filesystem::path(outputDirectory) / "camera_metadata.txt");
+                    note << "source " << camera.source << "\nframes_per_second " << camera.framesPerSecond
+                         << "\nexposure_seconds " << camera.exposureSeconds << "\nexposure_frames " << camera.exposureFrames()
+                         << "\nreadout_frames_metadata " << camera.readoutFrames << "\n";
+                    std::printf("  metapodaci kamere (%s): ekspozicija 1/%.0f s = %.2f kadra, citanje %.3f kadra\n",
+                                camera.source.c_str(), camera.exposureSeconds > 0.0 ? 1.0 / camera.exposureSeconds : 0.0,
+                                camera.exposureFrames(), camera.readoutFrames);
+                }
+            }
             if(rollingShutter){
                 const auto rollingStarted = std::chrono::steady_clock::now();
                 Engine::RollingShutterResult rolling;

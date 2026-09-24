@@ -250,8 +250,12 @@ def main():
     #ZADANO auto: rolling kad VideoSolve uz rezultat zapise rs_top i rs_bottom (izmjerio je rolling
     #shutter), inace classic. Izmjereno na C0257, 39 izdvojenih kadrova: rolling 25.52 dB, ista
     #scena bez njega (ut) 23.43, classic 24.46
-    ap.add_argument("--camera-model", choices=["auto", "classic", "ut", "rolling"], default="auto",
+    #ZADANO classic: rolling je izmjeren +1.06, +0.25 i -1.97 dB na tri para treninga - dakle unutar
+    #suma izmedju treninga, dok se ne izmjeri s vise sjemena i parno po kadru (evaluate_splat.py)
+    ap.add_argument("--camera-model", choices=["auto", "classic", "ut", "rolling"], default="classic",
                     help="auto: rolling kad postoje rs_top/rs_bottom, inace classic")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="sjeme za torch (MCMC premjestanje i sum); isti seed smanjuje razliku izmedju treninga")
     #ZAMUCENJE POKRETOM: kadar skuplja svjetlo cijelu ekspoziciju dok se kamera mice (C0257: 1/100 s
     #uz ~10 st/s, dakle ~8 px na 4K). Crta se kao prosjek K trenutaka ekspozicije, svaki redak po
     #redak. Trazi rolling shutter (rs_top/rs_bottom daju gibanje) i vrijeme ekspozicije
@@ -264,6 +268,8 @@ def main():
     ap.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
                     help="na kraju makni floatere (floaters.py): nevidljive i mrlje uz kameru")
     args = ap.parse_args()
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     device = "cuda"
     if not torch.cuda.is_available():
