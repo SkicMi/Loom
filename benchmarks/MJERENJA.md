@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (264 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (280 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -48,6 +48,7 @@ Iz `benchmarks/mjerenja.jsonl` (264 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 16:47 | C0257 | samokalibracija C: tezina 0.5, samo precizna |  |  |  |  |  |  |  | 4599 | -0.000 |  |  |  |  | nestabilno, brzi kandidat pokvaren |  |
 | 2026-09-25 16:47 | C0257 | samokalibracija D: tezina 1.0, samo precizna |  |  |  |  |  |  |  | 4354 | -0.000 |  |  |  |  | nestabilno, brzi kandidat pokvaren |  |
 | 2026-09-25 16:47 | C0257 | samokalibracija E: samokalibracija 1.0, obrada 0.5 (zadano) |  |  |  |  |  |  |  | 4259 | -0.025 |  |  |  |  | zadano: kalibracija A, rekonstrukcija kao E10 (izdvojeni 2.947, omjer 2.20) |  |
+| 2026-09-25 17:18 | C0257 | CISTO 2: cijeli lanac, popravljena samokalibracija | 231 | 1871 | 229/229 | 267089 | 1.367 | 4.452 | 3.550 | 4259 | -0.025 | 79.90 | 154.20 | 1266 | 343.90 | cijeli lanac 31m11 (solve 17m33 + trening jos 13m37); f 4259, k1 -0.025 | izdvojeni_od=brzog kandidata, zapisano_px=1.639, izlaz=lanac2, faze_s=pracenje i graf 250.9, brzi kandidat 214.3, puna obrada 181.8, provjere 0.0, slike kadrova 61.3, pune slicice i USD 344.0, COLMAP i provjera 1.0 |
 
 ## trening
 
@@ -92,6 +93,7 @@ Iz `benchmarks/mjerenja.jsonl` (264 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 04:54 | C0257 | E12 brisanje nevidljivih svakih 1000 + granica 2.5M | 15000 | 1920x1080 | 2094359 | 952 | 25.38 | 19.36 | 0.802 |  | kamera=classic, izlaz=prune.ply, izdvojenih=39 |
 | 2026-09-25 05:08 | C0257 | E13 12000 koraka (brisanje + 2.5M zadano) | 12000 | 1920x1080 | 2020453 | 745 | 25.23 | 21.34 | 0.810 |  | kamera=classic, izlaz=k12.ply, izdvojenih=39 |
 | 2026-09-25 15:53 | C0257 | CISTO: cijeli lanac sa zadanim postavkama (--then) | 15000 | 1920x1080 | 2148945 | 1143 | 26.34 | 21.08 | 0.801 |  | kamera=classic, izlaz=scena.ply, izdvojenih=39 |
+| 2026-09-25 17:18 | C0257 | CISTO 2: cijeli lanac sa zadanim postavkama (--then), popravljena samokalibracija | 15000 | 1920x1080 | 2156223 | 1161 | 25.91 | 21.44 | 0.802 |  | kamera=classic, izlaz=scena.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -138,6 +140,8 @@ Iz `benchmarks/mjerenja.jsonl` (264 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 05:09 | C0257 | E13 12000 koraka | 3840x2160 | 25.28 | 0.827 | 0.145 | 39 |  |  | psnr_medijan=25.15, splat=k12.ply |
 | 2026-09-25 15:53 | C0257 | CISTO: cijeli lanac, zadano | 1920x1080 | 26.10 | 0.799 | 0.445 | 39 |  |  | psnr_medijan=26.34, splat=scena.ply |
 | 2026-09-25 15:53 | C0257 | CISTO: cijeli lanac, zadano | 3840x2160 | 25.93 | 0.798 | 0.165 | 39 |  |  | psnr_medijan=26.23, splat=scena.ply |
+| 2026-09-25 17:19 | C0257 | CISTO 2: cijeli lanac | 1920x1080 | 25.90 | 0.807 | 0.443 | 39 |  |  | psnr_medijan=25.91, splat=scena.ply |
+| 2026-09-25 17:19 | C0257 | CISTO 2: cijeli lanac | 3840x2160 | 25.81 | 0.828 | 0.172 | 39 |  |  | psnr_medijan=25.87, splat=scena.ply |
 
 ## usporedba
 
@@ -277,6 +281,18 @@ Iz `benchmarks/mjerenja.jsonl` (264 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 15:53 | C0257 | cijeli lanac sada prema cistom mjerenju prije ubrzanja treninga (d1) | PSNR dB | 0.270 | 0.139 | 20/39 | PSNR +0.35/+0.27, ostrina +12/+21 %, ali SSIM -0.005/-0.029 (4K 0/39) - provjeriti (samokalibracija f 4402 k1 0 prema 4259 -0.025) | a=q_cist_d1, b=q_lanac_d1 |
 | 2026-09-25 15:53 | C0257 | cijeli lanac sada prema cistom mjerenju prije ubrzanja treninga (d1) | SSIM | -0.029 | 0.001 | 0/39 | PSNR +0.35/+0.27, ostrina +12/+21 %, ali SSIM -0.005/-0.029 (4K 0/39) - provjeriti (samokalibracija f 4402 k1 0 prema 4259 -0.025) | a=q_cist_d1, b=q_lanac_d1 |
 | 2026-09-25 15:53 | C0257 | cijeli lanac sada prema cistom mjerenju prije ubrzanja treninga (d1) | ostrina | 0.028 | 0.003 | 39/39 | PSNR +0.35/+0.27, ostrina +12/+21 %, ali SSIM -0.005/-0.029 (4K 0/39) - provjeriti (samokalibracija f 4402 k1 0 prema 4259 -0.025) | a=q_cist_d1, b=q_lanac_d1 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema jutru 24.9. (d2) | PSNR dB | 1.418 | 0.245 | 32/39 | +1.42/+1.62 dB, SSIM 39/39, ostrina +49/+97 % | a=q1_d2, b=q_lanac2_d2 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema jutru 24.9. (d2) | SSIM | 0.032 | 0.003 | 39/39 | +1.42/+1.62 dB, SSIM 39/39, ostrina +49/+97 % | a=q1_d2, b=q_lanac2_d2 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema jutru 24.9. (d2) | ostrina | 0.146 | 0.018 | 37/39 | +1.42/+1.62 dB, SSIM 39/39, ostrina +49/+97 % | a=q1_d2, b=q_lanac2_d2 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema cistom mjerenju prije ubrzanja (d2) | PSNR dB | 0.150 | 0.099 | 24/39 | sve tri mjere bolje, 46.8 -> 31.2 min | a=q_cist_d2, b=q_lanac2_d2 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema cistom mjerenju prije ubrzanja (d2) | SSIM | 0.004 | 0.001 | 26/39 | sve tri mjere bolje, 46.8 -> 31.2 min | a=q_cist_d2, b=q_lanac2_d2 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema cistom mjerenju prije ubrzanja (d2) | ostrina | 0.045 | 0.005 | 38/39 | sve tri mjere bolje, 46.8 -> 31.2 min | a=q_cist_d2, b=q_lanac2_d2 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema jutru 24.9. (d1) | PSNR dB | 1.620 | 0.228 | 36/39 | +1.42/+1.62 dB, SSIM 39/39, ostrina +49/+97 % | a=q1_d1, b=q_lanac2_d1 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema jutru 24.9. (d1) | SSIM | 0.049 | 0.002 | 39/39 | +1.42/+1.62 dB, SSIM 39/39, ostrina +49/+97 % | a=q1_d1, b=q_lanac2_d1 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema jutru 24.9. (d1) | ostrina | 0.085 | 0.008 | 39/39 | +1.42/+1.62 dB, SSIM 39/39, ostrina +49/+97 % | a=q1_d1, b=q_lanac2_d1 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema cistom mjerenju prije ubrzanja (d1) | PSNR dB | 0.152 | 0.097 | 24/39 | sve tri mjere bolje, 46.8 -> 31.2 min | a=q_cist_d1, b=q_lanac2_d1 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema cistom mjerenju prije ubrzanja (d1) | SSIM | 0.002 | 0.001 | 23/39 | sve tri mjere bolje, 46.8 -> 31.2 min | a=q_cist_d1, b=q_lanac2_d1 |
+| 2026-09-25 17:19 | C0257 | cijeli lanac (popravljen) prema cistom mjerenju prije ubrzanja (d1) | ostrina | 0.035 | 0.003 | 39/39 | sve tri mjere bolje, 46.8 -> 31.2 min | a=q_cist_d1, b=q_lanac2_d1 |
 
 ## dekodiranje
 
