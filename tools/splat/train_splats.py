@@ -296,6 +296,8 @@ def main():
     #ostrina +10 % (1080p) i +25 % (4K, bolja na 39/39), PSNR prosjek -0.18 +- 0.08 ali medijan +0.3
     ap.add_argument("--visible-adam", action=argparse.BooleanOptionalAction, default=True,
                     help="optimizator gaussiana azurira samo one vidljive u kadru (gsplat SelectiveAdam)")
+    ap.add_argument("--prune-every", type=int, default=0,
+                    help="svakih N koraka (od 3000.) ukloni gaussiane nevidljive u svim trening kadrovima")
     ap.add_argument("--profile", action="store_true",
                     help="svakih 500 koraka prosjecno vrijeme po dijelu koraka (sinkronizira karticu - samo za mjerenje)")
     ap.add_argument("--finish-full-res", type=int, default=0,
@@ -766,6 +768,27 @@ def main():
             for optimizer in optimizers.values():
                 optimizer.step()
         tick("optimizator")
+
+        #NEVIDLJIVI VAN USRED TRENINGA (--prune-every). Na kraju ih ciscenje ionako baci - na C0257
+        #2.17M od 3.74M - a dotad svaki korak placa njihovo crtanje, povratni prolaz i MCMC.
+        #Nevidljiv u svim trening kadrovima ne dobiva gradijent, pa ga nista ni ne treba
+        total = args.steps + args.finish_full_res
+        if args.prune_every > 0 and step >= 3000 and step % args.prune_every == 0 and step < total - 500:
+            import floaters
+            from gsplat.strategy import ops
+            #measure mjeri vidljivost gradijentom, pa bez no_grad; na odvojenim kopijama parametara
+            viewList = [views[i] for i in range(len(views))]
+            if "pruneDepths" not in locals():
+                pruneDepths = floaters.view_depths(torch.from_numpy(points).to(device), viewList)
+            most, _, _ = floaters.measure(
+                params["means"].detach(), params["quats"].detach(), torch.exp(params["scales"].detach()),
+                torch.sigmoid(params["opacities"].detach()), viewList, K, width, height, pruneDepths)
+            invisible = most < 0.5
+            if int(invisible.sum()) > 0:
+                before = params["means"].shape[0]
+                #MCMC-ovo stanje (binoms) nije po gaussianu i ne smije se rezati; zadana strategija ga ima po gaussianu
+                ops.remove(params=params, optimizers=optimizers, state=state if args.strategy != "mcmc" else {}, mask=invisible)
+                print(f"  {step:5d}  nevidljivih van: {int(invisible.sum())} od {before}", flush=True)
         if exposure is not None:
             exposureOptimizer.step()
 
