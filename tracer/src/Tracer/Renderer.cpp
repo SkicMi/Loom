@@ -18,12 +18,7 @@ namespace{
 constexpr float Pi = glm::pi<float>();
 constexpr float Infinity = std::numeric_limits<float>::infinity();
 
-enum TriangleFlag : uint8_t{
-    AlphaTested = 1,
-    Catcher = 2,
-    NoCamera = 4,
-    NoShadow = 8,
-};
+
 
 float luminance(const glm::vec3& c){ return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b; }
 
@@ -82,23 +77,6 @@ float spotFalloff(float cosAngle, float cosOuter, float cosInner){
 //---------------------------------------------------------------------------------------------
 // Svjetlo spremno za uzorkovanje
 //---------------------------------------------------------------------------------------------
-struct Renderer::Light{
-    enum Kind{ Sun, Sphere, Triangle, Sky };
-    Kind kind = Sun;
-    bool delta = false;
-    glm::vec3 radiance{0.0f};           //Sun: radijancija diska (ili ozracenost kad je delta);
-                                        //Sphere: radijancija plohe (ili intenzitet kad je delta)
-    glm::vec3 position{0.0f};
-    glm::vec3 axis{0.0f, 1.0f, 0.0f};   //Sun: prema suncu; Spot: smjer u kojem svijetli
-    float cosMax = 1.0f, oneMinusCos = 0.0f;
-    float radius = 0.0f;
-    bool spot = false;
-    float cosOuter = -1.0f, cosInner = -1.0f;
-    uint32_t triangle = 0;
-    float area = 0.0f;
-    int index = 0;                      //u lights
-};
-
 struct Renderer::Accumulator{
     glm::vec3 cg{0.0f};
     float coverage = 0.0f;
@@ -123,112 +101,8 @@ struct Renderer::PathResult{
 //---------------------------------------------------------------------------------------------
 // GRADNJA
 //---------------------------------------------------------------------------------------------
-Renderer::Renderer(Scene scene) : world(std::move(scene)){
-    const auto start = std::chrono::steady_clock::now();
-    if(world.materials.empty()) world.materials.push_back(Material{});
-    for(Triangle& t : world.triangles) if(t.material >= world.materials.size()) t.material = 0;
-    //Teksture koje ne postoje se odspoje - materijal radi s faktorima
-    for(Material& m : world.materials){
-        for(int* slot : {&m.baseColorTexture, &m.metallicRoughnessTexture, &m.normalTexture, &m.emissionTexture}){
-            if(*slot >= int(world.textures.size()) || (*slot >= 0 && !world.textures[size_t(*slot)].valid())) *slot = -1;
-        }
-    }
-    tree.build(world.positions, world.triangles);
-    cameraInverse = glm::inverse(world.camera.cameraToWorld);
-    const glm::vec3 extent = tree.boundsMax() - tree.boundsMin();
-    sceneRadius = world.triangles.empty() ? 1.0f : std::max(1e-4f, 0.5f * glm::length(extent));
-
-    triangleFlags.assign(world.triangles.size(), 0);
-    for(size_t i = 0; i < world.triangles.size(); ++i){
-        const Triangle& t = world.triangles[i];
-        const Material& m = world.materials[t.material];
-        uint8_t flags = 0;
-        if(m.alphaMode != Material::Alpha::Opaque) flags |= AlphaTested;
-        if(t.object < world.objects.size()){
-            const ObjectFlags& o = world.objects[t.object].flags;
-            if(o.shadowCatcher) flags |= Catcher;
-            if(!o.cameraVisible) flags |= NoCamera;
-            if(!o.castsShadows) flags |= NoShadow;
-        }
-        triangleFlags[i] = flags;
-    }
-
-    sky.build(world.environment);
-
-    //SVJETLA I VJEROJATNOST IZBORA. Tezina svakog je procjena ozracenosti koju daje na tipicnoj
-    //udaljenosti (pola scene) - nebo pi*L, sunce svoja ozracenost, kugla I/d^2, trokut L*A/d^2.
-    //Tezina ne mijenja ocekivanje, samo sum: svjetlo koje malo daje rjedje se bira
-    const float reference = std::max(1e-3f, sceneRadius * 0.5f);
-    const float reference2 = reference * reference;
-    std::vector<float> weights;
-    auto push = [&](Light light, float weight){
-        light.index = int(lights.size());
-        lights.push_back(light);
-        weights.push_back(std::max(weight, 0.0f));
-    };
-    for(const Tracer::Light& source : world.lights){
-        const glm::vec3 power = source.color * source.intensity;
-        if(luminance(power) <= 0.0f) continue;
-        Light light;
-        if(source.type == Tracer::Light::Type::Distant){
-            light.kind = Light::Sun;
-            light.axis = -glm::normalize(source.direction);
-            const float half = std::clamp(source.angle * 0.5f, 0.0f, 0.5f * Pi);
-            light.delta = half < 1e-5f;
-            if(light.delta){
-                light.radiance = power;
-            }else{
-                const float sin2 = std::sin(half) * std::sin(half);
-                light.oneMinusCos = oneMinusCosFromSin2(sin2);
-                light.cosMax = 1.0f - light.oneMinusCos;
-                //Disk kutnog polumjera theta daje okomitoj plohi ozracenost L * pi * sin^2(theta)
-                light.radiance = power / (Pi * sin2);
-            }
-            push(light, luminance(power));
-        }else{
-            light.kind = Light::Sphere;
-            light.position = source.position;
-            light.radius = std::max(0.0f, source.radius);
-            light.delta = light.radius <= 0.0f;
-            //Kugla polumjera R i radijancije L ima intenzitet L * pi * R^2 u svakom smjeru
-            light.radiance = light.delta ? power : power / (Pi * light.radius * light.radius);
-            if(source.type == Tracer::Light::Type::Spot){
-                light.spot = true;
-                light.axis = glm::normalize(source.direction);
-                const float outer = std::clamp(source.spotAngle, 1e-3f, Pi);
-                light.cosOuter = std::cos(outer);
-                light.cosInner = std::cos(outer * (1.0f - std::clamp(source.spotBlend, 0.0f, 1.0f)));
-            }
-            push(light, luminance(power) / reference2);
-        }
-    }
-    emitterOfTriangle.assign(world.triangles.size(), -1);
-    for(size_t i = 0; i < world.triangles.size(); ++i){
-        const Triangle& t = world.triangles[i];
-        const Material& m = world.materials[t.material];
-        const glm::vec3 emitted = m.emission * m.emissionStrength;
-        if(luminance(emitted) <= 0.0f) continue;
-        const glm::vec3& a = world.positions[t.v[0]];
-        const float area = 0.5f * glm::length(glm::cross(world.positions[t.v[1]] - a, world.positions[t.v[2]] - a));
-        if(area <= 0.0f) continue;
-        Light light;
-        light.kind = Light::Triangle;
-        light.triangle = uint32_t(i);
-        light.area = area;
-        emitterOfTriangle[i] = int(lights.size());
-        push(light, luminance(emitted) * (m.emissionTexture >= 0 ? 0.5f : 1.0f) * area / reference2);
-    }
-    if(sky.active()){
-        Light light;
-        light.kind = Light::Sky;
-        push(light, sky.averageLuminance() * Pi);
-    }
-    float total = 0.0f;
-    for(float w : weights) total += w;
-    lightCdf.assign(weights.size(), 0.0f);
-    for(size_t i = 0; i < weights.size(); ++i) lightCdf[i] = total > 0.0f ? weights[i] / total : 1.0f / float(weights.size());
-    buildTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-}
+Renderer::Renderer(Scene scene) : compiled(compile(std::move(scene))){}
+Renderer::Renderer(std::shared_ptr<const CompiledScene> scene) : compiled(std::move(scene)){}
 
 Renderer::~Renderer() = default;
 
@@ -237,6 +111,16 @@ Renderer::~Renderer() = default;
 //---------------------------------------------------------------------------------------------
 Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint32_t pixelSeed, float clampValue,
                                      uint32_t maxBounces, uint64_t& rays) const{
+    const CompiledScene& C = *compiled;
+    const Scene& world = C.world;
+    const Bvh& tree = C.tree;
+    const EnvironmentSampler& sky = C.sky;
+    const std::vector<LightRecord>& lights = C.lights;
+    const std::vector<float>& lightCdf = C.lightPick;
+    const std::vector<int>& emitterOfTriangle = C.emitterOfTriangle;
+    const std::vector<uint8_t>& triangleFlags = C.triangleFlags;
+    const float sceneRadius = C.sceneRadius;
+    const glm::mat4& cameraInverse = C.cameraInverse;
     PathResult result;
     Sampler sampler(pixelSeed, sampleIndex);
     const Camera& camera = world.camera;
@@ -274,17 +158,12 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     struct LightSample{ glm::vec3 wi{0.0f}; float distance = Infinity; glm::vec3 value{0.0f}; float pdf = 0.0f; bool delta = false; };
     auto sampleLight = [&](const glm::vec3& p, float choice, const glm::vec2& u, LightSample& out){
         if(lights.empty()) return false;
-        size_t index = 0;
-        float cumulative = 0.0f;
-        for(; index + 1 < lights.size(); ++index){
-            cumulative += lightCdf[index];
-            if(choice < cumulative) break;
-        }
-        const Light& light = lights[index];
+        const uint32_t index = C.pickLight(choice);
+        const LightRecord& light = lights[index];
         const float pick = lightCdf[index];
         if(pick <= 0.0f) return false;
         switch(light.kind){
-        case Light::Sky:{
+        case LightRecord::Sky:{
             float pdf = 0.0f;
             out.value = sky.sample(u, out.wi, pdf);
             if(!(pdf > 0.0f)) return false;
@@ -292,7 +171,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             out.distance = Infinity;
             return true;
         }
-        case Light::Sun:{
+        case LightRecord::Sun:{
             if(light.delta){
                 out.wi = light.axis; out.value = light.radiance; out.pdf = pick; out.delta = true;
                 return true;
@@ -302,7 +181,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             out.pdf = pick / (2.0f * Pi * light.oneMinusCos);
             return true;
         }
-        case Light::Sphere:{
+        case LightRecord::Sphere:{
             const glm::vec3 toCentre = light.position - p;
             const float d2 = glm::dot(toCentre, toCentre);
             if(d2 <= 0.0f) return false;
@@ -324,7 +203,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             out.pdf = pick / (2.0f * Pi * oneMinusCos);
             return true;
         }
-        case Light::Triangle:{
+        case LightRecord::Triangle:{
             const Triangle& t = world.triangles[light.triangle];
             const float su = std::sqrt(u.x);
             const float b1 = 1.0f - su, b2 = u.y * su;
@@ -354,7 +233,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     };
     //Gustoca kojom bi sampleLight izabrao smjer koji je BSDF vec izabrao - za MIS
     auto skyPdf = [&](const glm::vec3& d){
-        if(!sky.active() || lights.empty() || lights.back().kind != Light::Sky) return 0.0f;
+        if(!sky.active() || lights.empty() || lights.back().kind != LightRecord::Sky) return 0.0f;
         return sky.pdf(d) * lightCdf.back();
     };
     auto clampContribution = [&](glm::vec3 c, bool indirect){
@@ -382,8 +261,8 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             const float w = useMis ? powerHeuristic(bsdfPdf, skyPdf(d)) : 1.0f;
             total += sky.radiance(d) * w;
         }
-        for(const Light& light : lights){
-            if(light.kind != Light::Sun || light.delta) continue;
+        for(uint32_t sunIndex : C.suns){
+            const LightRecord& light = lights[sunIndex];
             if(glm::dot(d, light.axis) < light.cosMax) continue;
             const float lightPdf = lightCdf[size_t(light.index)] / (2.0f * Pi * light.oneMinusCos);
             total += light.radiance * (useMis ? powerHeuristic(bsdfPdf, lightPdf) : 1.0f);
@@ -392,11 +271,11 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         return total;
     };
     //Kugle svjetla na putu zrake (nisu u BVH-u): najbliza prije tMax
-    auto sphereOnRay = [&](const glm::vec3& o, const glm::vec3& d, float tMax, float& tHit, const Light*& which){
+    auto sphereOnRay = [&](const glm::vec3& o, const glm::vec3& d, float tMax, float& tHit, const LightRecord*& which){
         which = nullptr;
         tHit = tMax;
-        for(const Light& light : lights){
-            if(light.kind != Light::Sphere || light.delta) continue;
+        for(uint32_t sphereIndex : C.spheres){
+            const LightRecord& light = lights[sphereIndex];
             float t;
             if(hitSphere(o, d, light.position, light.radius, tHit, t)){ tHit = t; which = &light; }
         }
@@ -444,7 +323,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
 
         //Kugla svjetla ispred plohe
         float sphereT;
-        const Light* sphere = nullptr;
+        const LightRecord* sphere = nullptr;
         if(sphereOnRay(ray.origin, ray.direction, hit.valid() ? hit.t : Infinity, sphereT, sphere)){
             const glm::vec3 p = ray.origin + ray.direction * sphereT;
             float falloff = 1.0f;
@@ -585,7 +464,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         if(luminance(emitted) > 0.0f){
             float w = 1.0f;
             if(depth > 0 && emitterOfTriangle[hit.triangle] >= 0){
-                const Light& light = lights[size_t(emitterOfTriangle[hit.triangle])];
+                const LightRecord& light = lights[size_t(emitterOfTriangle[hit.triangle])];
                 const float dist2 = hit.t * hit.t;
                 const float cosLight = std::abs(glm::dot(ng, ray.direction));
                 const float lightPdf = cosLight > 0.0f ? lightCdf[size_t(light.index)] * dist2 / (cosLight * light.area) : 0.0f;
@@ -661,7 +540,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
 //---------------------------------------------------------------------------------------------
 void Renderer::renderPixel(uint32_t x, uint32_t y, uint32_t firstSample, uint32_t lastSample, uint32_t seed,
                            float clampValue, uint32_t maxBounces, uint64_t& rays){
-    const uint32_t width = world.camera.width;
+    const uint32_t width = compiled->world.camera.width;
     Accumulator& a = pixels[size_t(y) * width + x];
     const uint32_t pixelSeed = sampling::hash(sampling::hash(x * 0x9E3779B1u ^ y) ^ (y * 0x85EBCA77u)) ^ sampling::hash(seed);
     for(uint32_t s = firstSample; s < lastSample; ++s){
@@ -686,22 +565,22 @@ void Renderer::renderPixel(uint32_t x, uint32_t y, uint32_t firstSample, uint32_
     }
     //Dubina iz sredista piksela, jednom (ne ovisi o uzorku osim za alfu i dubinsku ostrinu)
     if(firstSample == 0){
-        Camera centreCamera = world.camera;
+        Camera centreCamera = compiled->world.camera;
         Ray ray;
         centreCamera.apertureRadius = 0.0f;
         centreCamera.ray(glm::vec2(float(x) + 0.5f, float(y) + 0.5f), glm::vec2(0.5f), ray.origin, ray.direction);
         Hit hit;
         ++rays;
-        if(tree.intersect(ray, hit, [&](uint32_t index, float, float){ return !(triangleFlags[index] & NoCamera); })){
+        if(compiled->tree.intersect(ray, hit, [&](uint32_t index, float, float){ return !(compiled->triangleFlags[index] & NoCamera); })){
             const glm::vec3 p = ray.origin + ray.direction * hit.t;
-            a.depth = -(cameraInverse * glm::vec4(p, 1.0f)).z;
+            a.depth = -(compiled->cameraInverse * glm::vec4(p, 1.0f)).z;
         }
     }
 }
 
 void Renderer::render(const RenderSettings& settings, const std::function<void(const RenderProgress&)>& onPass,
                       const std::atomic<bool>* cancel){
-    const uint32_t width = world.camera.width, height = world.camera.height;
+    const uint32_t width = compiled->world.camera.width, height = compiled->world.camera.height;
     if(width == 0 || height == 0) return;
     if(pixels.size() != size_t(width) * height){
         pixels.assign(size_t(width) * height, Accumulator{});
@@ -752,8 +631,8 @@ void Renderer::render(const RenderSettings& settings, const std::function<void(c
 
 Frame Renderer::frame(bool denoise) const{
     Frame out;
-    out.width = world.camera.width;
-    out.height = world.camera.height;
+    out.width = compiled->world.camera.width;
+    out.height = compiled->world.camera.height;
     out.samples = done;
     const size_t n = out.pixelCount();
     out.cg.assign(n * 4, 0.0f);

@@ -62,7 +62,7 @@ public:
     glm::vec3 boundsMin() const {return nodes.empty() ? glm::vec3(0.0f) : nodes[0].min;}
     glm::vec3 boundsMax() const {return nodes.empty() ? glm::vec3(0.0f) : nodes[0].max;}
 
-private:
+    //Ravna polja, za GPU tracer koji ih prepise u storage buffere istim rasporedom
     struct Node{
         glm::vec3 min;
         uint32_t leftOrFirst;           //list: prvi trokut; unutarnji: lijevo dijete
@@ -72,15 +72,22 @@ private:
     struct Prepared{
         glm::vec3 v0, e1, e2;
     };
+    const std::vector<Node>& nodeArray() const {return nodes;}
+    const std::vector<Prepared>& preparedArray() const {return prepared;}
+    const std::vector<uint32_t>& orderArray() const {return order;}
+
+private:
 
     std::vector<Node> nodes;
     std::vector<Prepared> prepared;     //redom listova
     std::vector<uint32_t> order;        //redom listova -> indeks u Scene::triangles
     int maxDepth = 0;
 
-    static bool slab(const Node& node, const glm::vec3& origin, const glm::vec3& inverse, float tMin, float tMax, float& entry){
-        const glm::vec3 t0 = (node.min - origin) * inverse;
-        const glm::vec3 t1 = (node.max - origin) * inverse;
+    //originScaled = origin * inverse: t = min * inverse - originScaled je jedno mnozenje-oduzimanje
+    //po osi (FMA) umjesto oduzimanja pa mnozenja
+    static bool slab(const Node& node, const glm::vec3& originScaled, const glm::vec3& inverse, float tMin, float tMax, float& entry){
+        const glm::vec3 t0 = node.min * inverse - originScaled;
+        const glm::vec3 t1 = node.max * inverse - originScaled;
         const glm::vec3 near = glm::min(t0, t1), far = glm::max(t0, t1);
         entry = std::max(std::max(near.x, near.y), std::max(near.z, tMin));
         const float exit = std::min(std::min(far.x, far.y), std::min(far.z, tMax));
@@ -112,10 +119,11 @@ bool Bvh::traverse(Ray& ray, Hit* hit, const Filter& accept) const{
     //Os s nultim smjerom: beskonacnost s predznakom, ne 0*inf = NaN na rubu kutije
     auto safe = [](float d){ return std::abs(d) > 1e-20f ? d : (d < 0.0f ? -1e-20f : 1e-20f); };
     const glm::vec3 inverse(1.0f / safe(ray.direction.x), 1.0f / safe(ray.direction.y), 1.0f / safe(ray.direction.z));
+    const glm::vec3 originScaled = ray.origin * inverse;
     uint32_t stack[96];
     int top = 0;
     float entry;
-    if(!slab(nodes[0], ray.origin, inverse, ray.tMin, ray.tMax, entry)) return false;
+    if(!slab(nodes[0], originScaled, inverse, ray.tMin, ray.tMax, entry)) return false;
     stack[top++] = 0;
     bool found = false;
     while(top > 0){
@@ -135,8 +143,8 @@ bool Bvh::traverse(Ray& ray, Hit* hit, const Filter& accept) const{
         }
         const uint32_t left = node.leftOrFirst, right = left + 1;
         float entryLeft, entryRight;
-        const bool hitLeft = slab(nodes[left], ray.origin, inverse, ray.tMin, ray.tMax, entryLeft);
-        const bool hitRight = slab(nodes[right], ray.origin, inverse, ray.tMin, ray.tMax, entryRight);
+        const bool hitLeft = slab(nodes[left], originScaled, inverse, ray.tMin, ray.tMax, entryLeft);
+        const bool hitRight = slab(nodes[right], originScaled, inverse, ray.tMin, ray.tMax, entryRight);
         //Blizi na vrh stoga: on se obidje prvi, pa daleki cesto otpadne jer je tMax vec kraci
         if(hitLeft && hitRight){
             if(entryLeft <= entryRight){ stack[top++] = right; stack[top++] = left; }

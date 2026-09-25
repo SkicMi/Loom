@@ -6,12 +6,19 @@
 //               [--dubina | --bez-dubine] [--normale] [--albedo] [--bez-filtra]
 //               [--sunce elevacija azimut jakost] [--velicina-sunca 0.53] [--zamucenost 3] [--nebo 0.35]
 //               [--hdri nebo.hdr] [--hdri-jakost 1] [--hdri-rotacija 0] [--jednoliko]
-//               [--agx] [--ekspozicija 0] [--bez-exr] [--bez-png] [--dretve N]
+//               [--agx] [--ekspozicija 0] [--bez-exr] [--bez-png] [--dretve N] [--procesor]
+//
+// Racuna na KARTICI (Vulkan compute, TracerGpu) kad je ima; bez Vulkana, ili s --procesor, na
+// procesoru. Oba daju istu sliku (test_tracer_gpu).
 //
 // Isti most (LoomRender.h) i isti tracer kao gumb Render u editoru - pa se render provjerava i na
 // stroju bez kartice i bez zaslona, i pokrece u noci za cijelu sekvencu. Na kraju ispise sto je
 // zapisao; greska je izlazni kod 1 s razlogom, nikad tiho prazna slika.
 #include "LoomRender.h"
+#include "LoomRenderGpu.h"
+
+#include "Core/LoomConfig.h"
+#include "Core/LoomInitializer.h"
 
 #include <Warp/Project.h>
 
@@ -36,7 +43,8 @@ void usage(){
         "  --dubina --bez-dubine --normale --albedo --bez-filtra\n"
         "  --sunce E A J  --velicina-sunca STUP  --zamucenost T  --nebo L\n"
         "  --hdri DATOTEKA --hdri-jakost J --hdri-rotacija STUP  --jednoliko\n"
-        "  --agx --ekspozicija EV --bez-exr --bez-png --dretve N\n");
+        "  --agx --ekspozicija EV --bez-exr --bez-png --dretve N\n"
+        "  --procesor            racunaj na procesoru i kad kartica postoji\n");
 }
 
 }
@@ -88,6 +96,7 @@ int main(int argc, char** argv){
         else if(a == "--bez-exr") options.writeExr = false;
         else if(a == "--bez-png") options.writePng = false;
         else if(a == "--dretve") options.threads = uint32_t(std::max(0.0, number(i)));
+        else if(a == "--procesor") options.gpu = false;
         else{ std::fprintf(stderr, "Nepoznata zastavica: %s\n", a.c_str()); usage(); return 1; }
     }
     Warp::Stage stage;
@@ -112,23 +121,58 @@ int main(int argc, char** argv){
     std::string folder = options.outputFolder;
     if(folder.empty()) folder = (fs::path(projectPath).parent_path() / "render").string();
 
+    //Kartica bez prozora. Ako Vulkana nema (ili nema uredjaja), render ide na procesor
+    std::unique_ptr<LoomInitializer> loom;
+    std::unique_ptr<Loom::GpuRenderDriver> driver;
+    if(options.gpu){
+        try{
+            LoomConfig config;
+            config.width = 64;
+            config.height = 64;
+            config.headless = true;
+            config.appName = "loom-render";
+            config.engineName = "Loom";
+            loom = std::make_unique<LoomInitializer>(config);
+            driver = std::make_unique<Loom::GpuRenderDriver>(*loom, 0.25);
+            driver->previewMilliseconds = 1000000;          //bez prozora nema komu pokazati
+        }catch(const std::exception& failure){
+            std::printf("Nema Vulkana (%s) - render na procesoru\n", failure.what());
+            driver.reset();
+            loom.reset();
+        }
+    }
+
     Loom::RenderSession session;
+    session.attachGpu(driver != nullptr);
+    if(driver) std::printf("Render na kartici (Vulkan compute)\n");
     session.start(stage, options, folder);
     size_t printed = 0;
     std::string lastStatus;
+    auto lastPrint = std::chrono::steady_clock::now();
     while(true){
+        if(driver){
+            driver->beforeFrame(session);
+            if(driver->busy() && loom->renderer.beginFrame()){
+                driver->inFrame(session);
+                loom->renderer.endFrame();
+            }else if(!driver->busy()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }else std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
         const Loom::RenderSession::State state = session.snapshot();
         for(; printed < state.log.size(); ++printed) std::printf("%s\n", state.log[printed].c_str());
-        if(state.running && state.status != lastStatus && state.status.rfind("Rendering", 0) == 0){
+        const auto now = std::chrono::steady_clock::now();
+        if(state.running && state.status != lastStatus && state.status.rfind("Rendering", 0) == 0 &&
+           now - lastPrint > std::chrono::milliseconds(200)){
             std::printf("\r%s   ", state.status.c_str());
             std::fflush(stdout);
             lastStatus = state.status;
+            lastPrint = now;
         }
         if(!state.running){
             std::printf("\n");
             session.join();
+            if(loom) loom->waitIdle();
             return state.finished ? 0 : 1;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }

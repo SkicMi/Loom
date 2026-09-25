@@ -28,6 +28,7 @@
 // broj dretvi: svaki piksel ima svoj Sobolov niz iz svoje adrese, a plocice su disjunktne.
 //=============================================================================================
 #include "Tracer/Bvh.h"
+#include "Tracer/Compiled.h"
 #include "Tracer/Environment.h"
 #include "Tracer/Film.h"
 #include "Tracer/Scene.h"
@@ -57,8 +58,10 @@ struct RenderProgress{
 
 class Renderer{
 public:
-    //Gradi BVH, popis svjetala i tablice neba. Scena se preuzima (move)
+    //Gradi BVH, popis svjetala i tablice neba (compile). Scena se preuzima (move)
     explicit Renderer(Scene scene);
+    //Vec prevedena scena - ista koju moze dobiti i GPU tracer
+    explicit Renderer(std::shared_ptr<const CompiledScene> scene);
     ~Renderer();
 
     //Racuna do settings.samples uzoraka ili do prekida. onPass se zove poslije svakog prolaza, iz
@@ -70,28 +73,19 @@ public:
     Frame frame(bool denoise = false) const;
 
     uint32_t samplesDone() const {return done;}
-    const Scene& scene() const {return world;}
-    const Bvh& bvh() const {return tree;}
-    double buildSeconds() const {return buildTime;}
+    const Scene& scene() const {return compiled->world;}
+    const Bvh& bvh() const {return compiled->tree;}
+    double buildSeconds() const {return compiled->buildSeconds;}
+    const std::shared_ptr<const CompiledScene>& compiledScene() const {return compiled;}
 
     //Radijancija jedne zrake iz kamere kroz piksel (za testove): isti put kao render, bez filma
     glm::vec3 tracePixel(glm::vec2 pixel, uint32_t sampleIndex) const;
 
 private:
-    struct Light;
     struct Accumulator;
     struct PathResult;
 
-    Scene world;
-    Bvh tree;
-    EnvironmentSampler sky;
-    std::vector<Light> lights;
-    std::vector<float> lightCdf;            //po lights, zbroj 1
-    std::vector<int> emitterOfTriangle;     //indeks u lights ili -1
-    std::vector<uint8_t> triangleFlags;
-    float sceneRadius = 1.0f;
-    glm::mat4 cameraInverse{1.0f};          //svijet -> kamera, jednom za sve zrake
-    double buildTime = 0.0;
+    std::shared_ptr<const CompiledScene> compiled;
     uint32_t done = 0;
     std::vector<Accumulator> pixels;
     std::atomic<uint64_t> rayCount{0};

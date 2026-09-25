@@ -31,6 +31,7 @@ find_package(Threads REQUIRED)
 
 add_library(Tracer STATIC
     src/Tracer/Bvh.cpp
+    src/Tracer/Compiled.cpp
     src/Tracer/Bsdf.cpp
     src/Tracer/Environment.cpp
     src/Tracer/Scene.cpp

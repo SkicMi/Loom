@@ -87,6 +87,12 @@ float ggxAlbedo(float mu, float roughness);
 float ggxSchlickA(float mu, float roughness);
 float ggxSchlickB(float mu, float roughness);
 
+//Sirove tablice (TableSize x TableSize, redak = hrapavost, stupac = mu) - GPU ih dobije iste
+constexpr int EnergyTableSize = 32;
+const float* ggxAlbedoTable();
+const float* ggxSchlickATable();
+const float* ggxSchlickBTable();
+
 //Fresnel dielektrika, tocno (obje polarizacije). eta = n_druga / n_upadna
 float fresnelDielectric(float cosTheta, float eta);
 

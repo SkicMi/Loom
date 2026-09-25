@@ -37,7 +37,7 @@ Sve je vlastito osim `gsplat`-a (rasterizacija i zgušnjavanje pri treningu) i F
 | **`Spool`** (`spool/src/Spool`) | čita i piše datoteke | `ImageFile.h`, `VideoFile.h`, `GaussianPly.h` |
 | **`Engine`** (`engine/src/Engine`) | rekonstrukcija | `ScaleSpace.h`, `MatchGraph.h`, `Reconstruct.h`, `Bundle.h`, `ColmapExport.h`, `CameraHints.h` |
 | **`Treadle`** (`treadle/src/Treadle`) | UI, **nula vanjskih ovisnosti** | `Ui.h`, `Draw.h` |
-| **`Tracer`** (`tracer/src/Tracer`) | **LoomTracer** — fizikalni path tracer za render iz kamere, samo glm + dretve | `Renderer.h`, `Scene.h`, `Bsdf.h`, `Film.h` |
+| **`Tracer`** (`tracer/src/Tracer`) | **LoomTracer** — fizikalni path tracer za render iz kamere, samo glm + dretve (procesor, referenca) | `Compiled.h`, `Renderer.h`, `Scene.h`, `Bsdf.h`, `Film.h` |
 | **`Warp`** (`warp/src/Warp`) | scena: stablo entiteta s komponentama, ključevi kroz vrijeme (USD-oblik), samo glm; projekt se sprema kao pravi `.usda` (vlastiti čitač podskupa, bez OpenUSD-a) | `Stage.h`, `Project.h`, `Usda.h`, `UsdCamera.h` |
 
 Tier disciplina u Loomu je **branjena testom**: `<Loom/Loom.h>` se preprocesira i u 1 622 367 znakova
@@ -651,9 +651,42 @@ CG-a **jednak snimci bajt po bajt**, EXR slojevi, sekvenca u pozadinskoj sesiji.
 
 **Brzina** (CPU, 4 jezgre ovog sandboxa): ~9 M zraka/s; 1280×720, 64 uzorka, 10 k trokuta ≈ 18 s.
 
+**LoomTracer na kartici (26.9.)** — `TracerGpu` (`src/TracerGpu/`, spaja Loom i Tracer kao
+LoomPreset) + `shaders/tracer.slang` (port `Renderer::trace` redak po redak) i
+`shaders/tracer_resolve.slang` (prosjek, composite, AgX/Standard, šahovnica → RGBA8). Scenu gradi
+procesor jednom (`Tracer::compile`: BVH, svjetla, CDF-ovi, tablice energije) i **ista** se prepiše
+u storage buffere — kartica nema svoju gradnju ni svoju težinu svjetala. Vulkan compute nad
+vlastitim BVH-om, ne ray query: radi na svakoj kartici i na llvmpipeu (testira se ovdje).
+
+- Posao: jedan dispatch = jedan uzorak za pojas redaka. `LoomRenderGpu.h` (pogon) ga raspoređuje
+  kroz kadrove editora tako da render kadru doda ~12 ms (mjeri se kadar s renderom minus kadar
+  bez njega), `loom-render` ~250 ms po predaji (ispod Windows TDR-a). Natrag se čita samo slika za
+  prikaz (4 B/px, 2× u sekundi), film tek na kraju.
+- `RenderSession` objavi posao (prevedenu scenu), pogon ga u niti koja crta izvrši i vrati film;
+  filtar i zapis rade u render niti. Bez Vulkana ili s `--procesor` (panel: Engine CPU) sve ide
+  na procesor, a padne li kartica usred kadra, taj kadar se ponovi na procesoru.
+- `test_tracer_gpu` (13/13, llvmpipe): bijela peć 0.9997–1.0001, sunce 0.47746, kugla 0.63662,
+  svijetli kvadrat 0.55415 (0.55413), projekcija 0.015 px, **slika kartica–procesor RMSE 0.0022**
+  uz šum procesora 0.0099 (drugi materijal 0.25 — negativna kontrola), prikaz s kartice =
+  procesorski composite+toDisplay **bajt po bajt**, 0 validacijskih poruka. `test_render_bridge`
+  (14/14) isto kroz cijelu sesiju s pogonom: snimka izvan sjene netaknuta (4.6e-4, half).
+- **Brzina na pravoj kartici NIJE izmjerena** — sandbox ima samo llvmpipe (softverski Vulkan,
+  ovdje ~3.7× sporiji od CPU tracera). Prvo mjerenje na RTX-u: `loom-render x.usda --uzorci 256`
+  sa i bez `--procesor`.
+
+**Optimizacije CPU puta (isti rezultat, izmjereno na 1280×720, 16 uzoraka, demo scena):**
+
+| korak | prije | poslije | kako |
+|---|---|---|---|
+| filtar šuma | 3.13 s | 0.62 s | sve jezgre po recima; vodiči u gusta polja; tri `exp` u jedan; x^64 kvadriranjem |
+| zapis PNG+EXR | 1.08 s | 0.42 s | svaka datoteka u svojoj niti |
+| render | 3.58 s | 3.09 s | Sobol 2. dimenzija tablicom po bajtu (bila je petlja od 32 koraka, callgrind 6.3 %), izbor svjetla binarnom pretragom, popisi sunaca/kugli, slab test u FMA obliku |
+
+Filtrirana slika je ista (RMSE prema referenci 0.0262 prije i poslije).
+
 **Poznata ograničenja — ne skrivati:**
-- **Samo CPU.** Sljedeći korak je GPU (Vulkan ray query ili compute nad istim BVH-om) — scena,
-  BSDF i testovi su već odvojeni od izvršavanja, pa se protiv istih analitičkih brojeva provjerava.
+- Kartica koristi compute nad BVH2; hardverske zrake (ray query) i širi BVH su sljedeći korak za
+  RTX — mijenjaju samo obilazak. Filtar šuma je još na procesoru.
 - Staklo baca **tamnu sjenu** (zraka sjene ne prolazi kroz lom; kaustike dolaze samo BSDF putem i
   šumne su) — isto kao Cycles bez caustics trikova.
 - Warp još **nema svjetala kao entiteta** (UsdLux); svjetlo je sunce/nebo/HDRI iz postavki rendera

@@ -388,6 +388,24 @@ target_compile_options(TreadlePaint PRIVATE
 add_dependencies(TreadlePaint LoomShaders)   # crta iz ui.vert.spv i ui.frag.spv
 
 # ----------------------------------------------------------------------------
+# TracerGpu - LoomTracer na kartici (Vulkan compute).
+#   Zaseban target iz istog razloga kao LoomPreset i TreadlePaint: jedini zna i za
+#   Loom i za Tracer. Tracer tako ostaje bez Vulkana i testira se bez kartice
+# ----------------------------------------------------------------------------
+add_library(TracerGpu STATIC
+    src/TracerGpu/GpuTracer.cpp
+)
+
+target_link_libraries(TracerGpu PUBLIC Loom Tracer)
+target_include_directories(TracerGpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_compile_options(TracerGpu PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra>
+)
+
+add_dependencies(TracerGpu LoomShaders)   # tracer.comp.spv, tracer_resolve.comp.spv
+
+# ----------------------------------------------------------------------------
 # Primjeri - specifikacija stepenice 1.
 #   Grade se s ostatkom da bi se znalo da se JOS UVIJEK prevode: primjer koji
 #   se ne prevodi je specifikacija koja laze. Ne pokrecu se kao testovi jer
@@ -471,7 +489,7 @@ target_link_libraries(RollingShutterProbe PRIVATE Engine)
 # zauzeti; BINARY se zove loom, malim slovom, jer se tako pokrece iz terminala
 add_executable(LoomDesk src/loom_app.cpp)
 set_target_properties(LoomDesk PROPERTIES OUTPUT_NAME loom)
-target_link_libraries(LoomDesk PRIVATE Loom TreadlePaint Engine Warp Spool Tracer)
+target_link_libraries(LoomDesk PRIVATE Loom TreadlePaint Engine Warp Spool Tracer TracerGpu)
 # KORIJEN PROJEKTA U KODU. Aplikacija se pokrece iz build mape, a trener splatova i njegov venv
 # zive u korijenu - bez ovoga bi radila samo kad se slucajno pokrene s pravog mjesta
 target_compile_definitions(LoomDesk PRIVATE LOOM_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -481,7 +499,8 @@ add_dependencies(LoomDesk LoomShaders VideoSolve)
 # editoru (src/LoomRender.h), ali bez Vulkana: radi i na stroju bez kartice i zaslona
 add_executable(LoomRender src/loom_render.cpp)
 set_target_properties(LoomRender PROPERTIES OUTPUT_NAME loom-render)
-target_link_libraries(LoomRender PRIVATE Warp Spool Tracer)
+target_link_libraries(LoomRender PRIVATE Warp Spool Tracer TracerGpu)
+add_dependencies(LoomRender LoomShaders)
 target_compile_options(LoomRender PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra>)
 
 add_executable(SolveViewer src/solve_viewer.cpp)
@@ -558,7 +577,7 @@ if(LOOM_BUILD_TESTS)
         endif()
         # Testovi linkaju obje biblioteke. To je dozvoljeno i tu prestaje: same
         # biblioteke jedna o drugoj ne znaju nista.
-        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool Engine Treadle Warp Tracer LoomPreset TreadlePaint)
+        target_link_libraries(${TEST_NAME} PRIVATE Loom Spool Engine Treadle Warp Tracer TracerGpu LoomPreset TreadlePaint)
         target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         add_dependencies(${TEST_NAME} LoomShaders)
         add_dependencies(LoomTests ${TEST_NAME})

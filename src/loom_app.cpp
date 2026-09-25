@@ -54,6 +54,7 @@
 #include "LoomMoodboard.h"
 #include "LoomAutoRig.h"
 #include "LoomRender.h"
+#include "LoomRenderGpu.h"
 
 #include "Vulkan/ImageData.h"
 #include "Vulkan/Material.h"
@@ -1557,6 +1558,9 @@ int main(int argc, char** argv){
     //u koju se slika koja se cisti prepise svaki put kad stigne nova
     Loom::RenderOptions renderOptions;
     Loom::RenderSession renderSession;
+    //LoomTracer na kartici: posao se rasporedjuje kroz kadrove editora (LoomRenderGpu.h), ~12 ms po kadru
+    Loom::GpuRenderDriver renderDriver(loom, 0.012);
+    renderSession.attachGpu(true);
     bool renderWindowOpen = false;
     float renderScroll = 0.0f;
     size_t renderLogSeen = 0;
@@ -2753,8 +2757,11 @@ int main(int argc, char** argv){
                 if(ui.selectable(Treadle::fitText(e->name, fitWidth - 20.0f, theme.textScale), id == renderOptions.camera))
                     renderOptions.camera = id;
             }
-            int engine = renderOptions.pathTraced ? 0 : 1;
-            if(ui.choice("Engine", {"LoomTracer", "Viewport"}, &engine)) renderOptions.pathTraced = engine == 0;
+            int engine = renderOptions.pathTraced ? (renderOptions.gpu ? 0 : 1) : 2;
+            if(ui.choice("Engine", {"GPU", "CPU", "Viewport"}, &engine)){
+                renderOptions.pathTraced = engine != 2;
+                renderOptions.gpu = engine == 0;
+            }
             int range = renderOptions.sequence ? 1 : 0;
             if(ui.choice("Frames", {"Current", "Timeline"}, &range)) renderOptions.sequence = range == 1;
             ui.value("Range", renderOptions.sequence
@@ -5984,7 +5991,9 @@ int main(int argc, char** argv){
             for(const std::string& problem : viewportMeshes.takeErrors()) message = "Could not read model: " + problem;
         }
 
-        //RENDER: nova slika iz niti; tekstura se (ponovno) stvara kad se velicina promijeni
+        //RENDER: kartica preuzme posao / procita sliku, pa nova slika u teksturu (stvara se kad se
+        //velicina promijeni)
+        renderDriver.beforeFrame(renderSession);
         {
             uint32_t w = 0, h = 0;
             if(renderSession.takePreview(renderPixels, w, h) && w > 0 && h > 0){
@@ -6008,6 +6017,7 @@ int main(int argc, char** argv){
         }
 
         if(!loom.renderer.beginFrame()) continue;
+        renderDriver.inFrame(renderSession);
         if(splatActive) viewportSplat.compute();
         if(meshesActive) viewportMeshes.render();
         //Tek NAKON beginFrame: prsten teksture se oslanja na to da je renderer vec pricekao

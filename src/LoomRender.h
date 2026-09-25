@@ -28,6 +28,7 @@
 #include <Spool/Gltf.h>
 #include <Spool/ImageFile.h>
 #include <Spool/VideoFile.h>
+#include <Tracer/Denoise.h>
 #include <Tracer/Renderer.h>
 #include <Warp/Stage.h>
 
@@ -38,11 +39,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -59,6 +63,8 @@ struct RenderOptions{
     float resolutionScale = 1.0f;           //udio rezolucije kamere (snimke)
 
     bool pathTraced = true;                 //false: slika pogleda (raster), samo u editoru
+    bool gpu = true;                        //LoomTracer na kartici kad je netko prikljucio GPU pogon
+                                            //(editor, loom-render); inace i kao rezerva: procesor
 
     //Sto se vidi u slici
     bool plate = true;                      //snimka iza CG-a
@@ -507,16 +513,22 @@ inline std::vector<std::string> writeRender(const Tracer::Frame& frame, const Tr
         const Tracer::Backdrop backdrop = backdropFor(options, plateLoaded);
         const std::vector<float> beauty = Tracer::composite(frame, backdrop, plateLoaded ? &scene.backplate : nullptr);
         const size_t n = frame.pixelCount();
-        auto save = [&](const std::string& path, const std::vector<uint8_t>& rgba){
-            Spool::saveImage(path, Spool::imageFromPixels(rgba.data(), frame.width, frame.height));
-            written.push_back(path);
+        //SVAKA DATOTEKA U SVOJOJ NITI. PNG sabijanje i EXR su nezavisni i svaki drzi jednu jezgru;
+        //redom su bili sekunda po kadru 720p (izmjereno), sto je u sekvenci vise od samog rendera
+        std::vector<std::future<std::string>> jobs;
+        auto save = [&](std::string path, auto makePixels){
+            jobs.push_back(std::async(std::launch::async, [&frame, path, makePixels]{
+                const std::vector<uint8_t> rgba = makePixels();
+                Spool::saveImage(path, Spool::imageFromPixels(rgba.data(), frame.width, frame.height));
+                return path;
+            }));
         };
         const std::string base = (fs::path(folder) / stem).string();
-        if(options.writePng) save(base + ".png", Tracer::toDisplay(beauty, frame.width, frame.height, options.view, options.exposure));
-        if(options.writePng && options.depth) save((fs::path(folder) / (stem + "_depth.png")).string(), Tracer::depthToDisplay(frame));
-        if(options.writePng && options.normal) save((fs::path(folder) / (stem + "_normal.png")).string(), Tracer::normalToDisplay(frame));
-        if(options.writePng && options.albedo) save((fs::path(folder) / (stem + "_albedo.png")).string(), Tracer::albedoToDisplay(frame));
-        if(options.writeExr){
+        if(options.writePng) save(base + ".png", [&]{ return Tracer::toDisplay(beauty, frame.width, frame.height, options.view, options.exposure); });
+        if(options.writePng && options.depth) save((fs::path(folder) / (stem + "_depth.png")).string(), [&]{ return Tracer::depthToDisplay(frame); });
+        if(options.writePng && options.normal) save((fs::path(folder) / (stem + "_normal.png")).string(), [&]{ return Tracer::normalToDisplay(frame); });
+        if(options.writePng && options.albedo) save((fs::path(folder) / (stem + "_albedo.png")).string(), [&]{ return Tracer::albedoToDisplay(frame); });
+        if(options.writeExr) jobs.push_back(std::async(std::launch::async, [&]{
             std::vector<Spool::ExrChannel> channels;
             auto channel = [&](const std::string& name, const std::vector<float>& source, size_t stride, size_t offset, bool half = true){
                 Spool::ExrChannel c;
@@ -537,8 +549,15 @@ inline std::vector<std::string> writeRender(const Tracer::Frame& frame, const Tr
             if(options.normal){ channel("N.X", frame.normal, 3, 0); channel("N.Y", frame.normal, 3, 1); channel("N.Z", frame.normal, 3, 2); }
             if(options.albedo){ channel("albedo.R", frame.albedo, 3, 0); channel("albedo.G", frame.albedo, 3, 1); channel("albedo.B", frame.albedo, 3, 2); }
             Spool::saveExr(base + ".exr", frame.width, frame.height, std::move(channels));
-            written.push_back(base + ".exr");
+            return base + ".exr";
+        }));
+        //Sve se saceka i prije nego se javi greska - nit ne smije nadzivjeti okvir koji je cita
+        std::string firstProblem;
+        for(std::future<std::string>& job : jobs){
+            try{ written.push_back(job.get()); }
+            catch(const std::exception& e){ if(firstProblem.empty()) firstProblem = e.what(); }
         }
+        if(!firstProblem.empty()) error = firstProblem;
     }catch(const std::exception& e){
         error = e.what();
     }
@@ -551,6 +570,66 @@ inline std::vector<std::string> writeRender(const Tracer::Frame& frame, const Tr
 class RenderSession{
 public:
     ~RenderSession(){ cancel(); join(); }
+
+    //=========================================================================================
+    // GPU POGON. Kartica se smije dirati samo iz niti koja crta (editor) - pa render nit ne racuna
+    // sama nego OBJAVI posao: prevedenu scenu kadra. Pogon (LoomRenderGpu.h) ga u svojoj niti
+    // preuzme, rasporedi preko kadrova, objavljuje sliku za prikaz i vrati gotov film. Render nit
+    // za to vrijeme ceka, a poslije sama filtrira i pise datoteke - EXR od 50 MB ne koci prozor.
+    //
+    // Bez prikljucenog pogona (testovi, stroj bez Vulkana) sve ide na procesoru, isto kao prije
+    //=========================================================================================
+    struct GpuJob{
+        std::shared_ptr<const Tracer::CompiledScene> scene;
+        Tracer::RenderSettings settings;
+        RenderOptions options;
+        bool plateLoaded = false;
+        double frame = 1.0;
+        size_t index = 0, count = 1;
+        uint64_t id = 0;
+    };
+    void attachGpu(bool attached){ gpuAttached = attached; }
+    bool hasGpu() const {return gpuAttached;}
+    //Pogon: novi posao, ako ga ima
+    bool takeGpuJob(GpuJob& job){
+        std::lock_guard<std::mutex> guard(lock);
+        if(!gpuPending) return false;
+        job = *gpuPending;
+        gpuPending.reset();
+        return true;
+    }
+    void gpuProgress(const GpuJob& job, uint32_t samples, double mraysPerSecond = 0.0){
+        std::lock_guard<std::mutex> guard(lock);
+        state.samples = samples;
+        state.frameDone = uint32_t(job.index);
+        state.progress = (float(job.index) + float(samples) / float(std::max(1u, job.settings.samples))) / float(job.count);
+        char text[192];
+        std::snprintf(text, sizeof(text), "Rendering frame %.0f (%zu/%zu) on GPU: %u/%u samples%s", job.frame, job.index + 1,
+                      job.count, samples, job.settings.samples, mraysPerSecond > 0.0 ? "" : "");
+        state.status = text;
+    }
+    void publishPreview(std::vector<uint8_t> rgba, uint32_t width, uint32_t height){
+        std::lock_guard<std::mutex> guard(lock);
+        preview.swap(rgba);
+        previewWidth = width;
+        previewHeight = height;
+        previewFresh = true;
+    }
+    void finishGpuJob(const GpuJob& job, Tracer::Frame frame){
+        std::lock_guard<std::mutex> guard(lock);
+        if(job.id != gpuJobId) return;
+        gpuResult = std::move(frame);
+        gpuDone = true;
+        gpuWake.notify_all();
+    }
+    void failGpuJob(const GpuJob& job, const std::string& reason){
+        std::lock_guard<std::mutex> guard(lock);
+        if(job.id != gpuJobId) return;
+        gpuError = reason.empty() ? "GPU error" : reason;
+        gpuDone = true;
+        gpuWake.notify_all();
+    }
+    bool cancelled() const {return stopFlag;}
 
     //Pocinje render. Scena se KOPIRA: umjetnik smije dalje uredjivati, render ostaje ono sto je bilo
     void start(const Warp::Stage& stage, const RenderOptions& options, const std::string& folder){
@@ -567,7 +646,7 @@ public:
         worker = std::thread([this, stage, options, folder]{ run(stage, options, folder); });
     }
 
-    void cancel(){ stopFlag = true; }
+    void cancel(){ stopFlag = true; gpuWake.notify_all(); }
     void join(){ if(worker.joinable()) worker.join(); }
 
     struct State{
@@ -613,6 +692,30 @@ private:
     bool previewFresh = false;
     std::atomic<bool> stopFlag{false};
     std::thread worker;
+    std::atomic<bool> gpuAttached{false};
+    std::condition_variable gpuWake;
+    std::optional<GpuJob> gpuPending;
+    std::optional<Tracer::Frame> gpuResult;
+    std::string gpuError;
+    bool gpuDone = false;
+    uint64_t gpuJobId = 0;
+
+    //Posao kartici, pa cekanje. false: kartica je pala (razlog u error) ili je prekinuto
+    bool renderOnGpu(GpuJob job, Tracer::Frame& out, std::string& error){
+        std::unique_lock<std::mutex> guard(lock);
+        job.id = ++gpuJobId;
+        gpuPending = job;
+        gpuResult.reset();
+        gpuError.clear();
+        gpuDone = false;
+        gpuWake.wait(guard, [&]{ return gpuDone || stopFlag.load(); });
+        gpuPending.reset();
+        if(!gpuDone){ ++gpuJobId; return false; }          //prekid: kasni rezultat se odbaci
+        if(!gpuError.empty()){ error = gpuError; return false; }
+        out = std::move(*gpuResult);
+        gpuResult.reset();
+        return true;
+    }
 
     void say(const std::string& line){
         std::lock_guard<std::mutex> guard(lock);
@@ -666,37 +769,57 @@ private:
             say(line);
             const bool plateLoaded = built.plateLoaded;
             const bool catchers = built.catchersUsed && built.catchers > 0;
-            Tracer::Renderer renderer(std::move(built.scene));
+            const std::shared_ptr<const Tracer::CompiledScene> compiled = Tracer::compile(std::move(built.scene));
             Tracer::RenderSettings settings;
             settings.samples = std::max(1u, options.samples);
             settings.maxBounces = options.maxBounces;
             settings.indirectClamp = options.indirectClamp;
             settings.threads = options.threads;
-            auto lastPublish = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-            renderer.render(settings, [&](const Tracer::RenderProgress& progress){
-                {
-                    std::lock_guard<std::mutex> guard(lock);
-                    state.samples = progress.samplesDone;
-                    state.frameDone = uint32_t(index);
-                    state.progress = (float(index) + float(progress.samplesDone) / float(progress.samplesTotal)) / float(frames.size());
-                    state.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-                    char text[160];
-                    std::snprintf(text, sizeof(text), "Rendering frame %.0f (%zu/%zu): %u/%u samples, %.1f Mrays/s", frame,
-                                  index + 1, frames.size(), progress.samplesDone, progress.samplesTotal,
-                                  progress.seconds > 0.0 ? double(progress.rays) / progress.seconds / 1e6 : 0.0);
-                    state.status = text;
-                }
-                //Slika u prozor najvise dvaput u sekundi: kompozit velikog kadra nije besplatan
-                const auto now = std::chrono::steady_clock::now();
-                if(now - lastPublish > std::chrono::milliseconds(500) || progress.samplesDone == progress.samplesTotal){
-                    lastPublish = now;
-                    publish(renderer.frame(false), renderer.scene(), options, plateLoaded);
-                }
-            }, &stopFlag);
-            if(stopFlag){ say("Render cancelled."); break; }
-            const Tracer::Frame result = renderer.frame(options.denoise);
-            publish(result, renderer.scene(), options, plateLoaded);
-            const std::vector<std::string> files = writeRender(result, renderer.scene(), options, plateLoaded, catchers, folder,
+            Tracer::Frame result;
+            bool rendered = false;
+            if(options.gpu && gpuAttached){
+                GpuJob job;
+                job.scene = compiled;
+                job.settings = settings;
+                job.options = options;
+                job.plateLoaded = plateLoaded;
+                job.frame = frame;
+                job.index = index;
+                job.count = frames.size();
+                std::string problem;
+                rendered = renderOnGpu(job, result, problem);
+                if(stopFlag){ say("Render cancelled."); break; }
+                if(!rendered) say("GPU render failed (" + problem + ") - rendering this frame on the CPU.");
+                else if(options.denoise) Tracer::denoiseFrame(result);
+            }
+            if(!rendered){
+                Tracer::Renderer renderer(compiled);
+                auto lastPublish = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+                renderer.render(settings, [&](const Tracer::RenderProgress& progress){
+                    {
+                        std::lock_guard<std::mutex> guard(lock);
+                        state.samples = progress.samplesDone;
+                        state.frameDone = uint32_t(index);
+                        state.progress = (float(index) + float(progress.samplesDone) / float(progress.samplesTotal)) / float(frames.size());
+                        state.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+                        char text[160];
+                        std::snprintf(text, sizeof(text), "Rendering frame %.0f (%zu/%zu) on CPU: %u/%u samples, %.1f Mrays/s", frame,
+                                      index + 1, frames.size(), progress.samplesDone, progress.samplesTotal,
+                                      progress.seconds > 0.0 ? double(progress.rays) / progress.seconds / 1e6 : 0.0);
+                        state.status = text;
+                    }
+                    //Slika u prozor najvise dvaput u sekundi: kompozit velikog kadra nije besplatan
+                    const auto now = std::chrono::steady_clock::now();
+                    if(now - lastPublish > std::chrono::milliseconds(500) || progress.samplesDone == progress.samplesTotal){
+                        lastPublish = now;
+                        publish(renderer.frame(false), renderer.scene(), options, plateLoaded);
+                    }
+                }, &stopFlag);
+                if(stopFlag){ say("Render cancelled."); break; }
+                result = renderer.frame(options.denoise);
+            }
+            publish(result, compiled->world, options, plateLoaded);
+            const std::vector<std::string> files = writeRender(result, compiled->world, options, plateLoaded, catchers, folder,
                                                                frameStem(options, frame), error);
             if(!error.empty()){ say("Could not write render: " + error); failed = true; break; }
             for(const std::string& file : files) say("Wrote " + file);

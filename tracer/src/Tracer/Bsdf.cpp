@@ -121,6 +121,10 @@ const EnergyTables& tables(){
 
 }
 
+const float* ggxAlbedoTable(){ return tables().e.data(); }
+const float* ggxSchlickATable(){ return tables().a.data(); }
+const float* ggxSchlickBTable(){ return tables().b.data(); }
+
 float ggxAlbedo(float mu, float roughness){ return EnergyTables::lookup(tables().e, mu, roughness); }
 float ggxSchlickA(float mu, float roughness){ return EnergyTables::lookup(tables().a, mu, roughness); }
 float ggxSchlickB(float mu, float roughness){ return EnergyTables::lookup(tables().b, mu, roughness); }

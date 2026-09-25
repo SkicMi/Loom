@@ -31,6 +31,16 @@ public:
     //Prosjecna radijancija (luminancija) - za odluku koliko cesto uzorkovati nebo
     float averageLuminance() const {return average;}
 
+    //Za GPU tracer: ista mapa i iste tablice
+    bool isTextured() const {return textured;}
+    uint32_t mapWidth() const {return width;}
+    uint32_t mapHeight() const {return height;}
+    const glm::mat3& worldToMap() const {return toMap;}
+    const glm::mat3& mapToWorld() const {return fromMap;}
+    const std::vector<float>& marginalCdf() const {return marginal;}
+    const std::vector<float>& conditionalCdf() const {return conditional;}
+    const Environment* environment() const {return env;}
+
 private:
     const Environment* env = nullptr;
     bool nonBlack = false;

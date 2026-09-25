@@ -58,10 +58,31 @@ inline uint32_t hash(uint32_t a, uint32_t b){ return hash(a ^ hash(b + 0x9e3779b
 //Prve dvije Sobolove dimenzije. Prva je van der Corput (obrnuti bitovi), druga iz rekurzije
 //smjernih brojeva v_k = v_{k-1} ^ (v_{k-1} >> 1)
 inline uint32_t sobol0(uint32_t index){ return reverseBits(index); }
+//Po bajtu indeksa tablica XOR-a smjernih brojeva: cetiri citanja umjesto do 32 koraka petlje.
+//Owen promijesa indeks u slucajan 32-bitni broj, pa je petlja po bitovima uvijek bila puna
+//(callgrind: next2D 6.3 % cijelog rendera)
+struct SobolTables{
+    uint32_t bytes[4][256];
+    SobolTables(){
+        uint32_t direction[32];
+        uint32_t v = 1u << 31;
+        for(int bit = 0; bit < 32; ++bit, v ^= v >> 1) direction[bit] = v;
+        for(int b = 0; b < 4; ++b){
+            for(uint32_t value = 0; value < 256; ++value){
+                uint32_t x = 0;
+                for(int bit = 0; bit < 8; ++bit) if(value & (1u << bit)) x ^= direction[b * 8 + bit];
+                bytes[b][value] = x;
+            }
+        }
+    }
+};
+inline const SobolTables& sobolTables(){
+    static const SobolTables tables;
+    return tables;
+}
 inline uint32_t sobol1(uint32_t index){
-    uint32_t result = 0, v = 1u << 31;
-    for(; index; index >>= 1, v ^= v >> 1) if(index & 1u) result ^= v;
-    return result;
+    const SobolTables& t = sobolTables();
+    return t.bytes[0][index & 255u] ^ t.bytes[1][(index >> 8) & 255u] ^ t.bytes[2][(index >> 16) & 255u] ^ t.bytes[3][index >> 24];
 }
 
 inline float toUnit(uint32_t x){ return float(x >> 8) * (1.0f / 16777216.0f); }

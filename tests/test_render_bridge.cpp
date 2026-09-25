@@ -14,6 +14,10 @@
 #include "TestHarness.h"
 
 #include "LoomRender.h"
+#include "LoomRenderGpu.h"
+
+#include "Core/LoomConfig.h"
+#include "Core/LoomInitializer.h"
 #include "LoomViewport.h"
 
 #include <Spool/Sequence.h>
@@ -220,6 +224,58 @@ int main(){
         const Spool::Image half = named ? Spool::loadImage((work / "sequence" / "render_0002.png").string()) : Spool::Image{};
         report.check("sekvenca", state.finished && named && half.width == PlateWidth / 2,
                      fmt("%s, %zu poruka, sirina %u", state.status.c_str(), state.log.size(), half.width));
+    }
+
+    //-- 7. isti render kroz GPU pogon (kartica bez prozora): posao iz sesije, isti zapis --------------
+    {
+        LoomConfig config;
+        config.width = 64;
+        config.height = 64;
+        config.headless = true;
+        config.appName = "test_render_bridge";
+        config.engineName = "Loom tests";
+        LoomInitializer loom(config);
+        Loom::GpuRenderDriver driver(loom, 0.05);
+        Loom::RenderSession session;
+        session.attachGpu(true);
+        Loom::RenderOptions gpuOptions = options;
+        gpuOptions.samples = 32;
+        gpuOptions.gpu = true;
+        session.start(stage, gpuOptions, (work / "gpu").string());
+        bool usedGpu = false;
+        while(session.snapshot().running){
+            driver.beforeFrame(session);
+            usedGpu = usedGpu || driver.busy();
+            if(driver.busy() && loom.renderer.beginFrame()){
+                driver.inFrame(session);
+                loom.renderer.endFrame();
+            }else std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        session.join();
+        loom.waitIdle();
+        const Loom::RenderSession::State state = session.snapshot();
+        bool gpuLog = false;
+        for(const std::string& line : state.log) gpuLog = gpuLog || line.find("GPU render failed") != std::string::npos;
+        const bool written = fs::exists(work / "gpu" / "render.png") && fs::exists(work / "gpu" / "render.exr");
+        report.check("gpu: sesija", state.finished && usedGpu && !gpuLog && written, state.status);
+        if(written){
+            const Spool::ExrImage exr = Spool::loadExr((work / "gpu" / "render.exr").string());
+            const Spool::ExrChannel* r = exr.find("R");
+            const Spool::ExrChannel* a = exr.find("cg.A");
+            const Spool::ExrChannel* sh = exr.find("shadow.G");
+            const Spool::Image plate = plateFrame(1);
+            size_t untouched = 0, shadowed = 0;
+            float worst = 0.0f;
+            for(size_t i = 0; r && a && sh && i < size_t(PlateWidth) * PlateHeight; ++i){
+                if(sh->values[i] < 0.5f) ++shadowed;
+                if(a->values[i] != 0.0f || sh->values[i] != 1.0f) continue;
+                const float expected = Tracer::srgbToLinear(float(plate.pixels[i * 4]) / 255.0f);
+                worst = std::max(worst, std::abs(r->values[i] - expected) / expected);
+                ++untouched;
+            }
+            report.check("gpu: snimka netaknuta", untouched > 5000 && worst < 1e-3f && shadowed > 30,
+                         fmt("%zu piksela bez CG-a i sjene (rel. %.1e), %zu u sjeni", untouched, double(worst), shadowed));
+        }
     }
 
     fs::remove_all(work);
