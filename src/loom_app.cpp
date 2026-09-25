@@ -356,6 +356,9 @@
             std::vector<Loom::PoseKey> keys;    //uredjene poze po kadrovima; izmedju njih pretapanje
         } poseEdit;
         int poseKeyEnding = 0;                  //0: povratak u pokret iza zadnjeg kljuca, 1: drzi pozu
+        int poseBlendStep = 0;                  //0 nista, 1-2 biranje kadrova, 3-4 poza svakog, 5 jedna poza
+        double poseBlendFirst = -1.0, poseBlendSecond = -1.0;
+        bool poseBlendOptionsOpen = false;
         float poseBlendInFrames = 8.0f;
         float poseBlendHoldFrames = 24.0f;
         float poseBlendOutFrames = 12.0f;
@@ -2780,11 +2783,13 @@
                             ui.value("Frames", frameRange);
 
                             ui.separator();
-                            ui.caption("POSE KEYS");
+                            ui.caption("POSE BLEND");
                             const double poseFrame = std::round(frame);
                             const bool frameInClip = poseFrame >= active.startFrame && poseFrame <= active.endFrame;
-                            //Poza trenutnog kljuca se procita iz scene: uredjuje se zivo u klipu (rig u
-                            //pogledu, Transform), pa je ono sto stoji u kadru kljuca upravo uredjena poza
+                            //VODJENI TOK, korak po korak: Blend -> prvi kadar -> drugi kadar -> poza prvog ->
+                            //poza drugog -> Blend. Svaki korak ima jednu recenicu i jedan glavni gumb;
+                            //prva verzija je sve nudila odjednom (kljucevi, dodavanje, brisanje, klizaci)
+                            //pa se nije znalo sto je sljedece
                             auto storeCurrentKey = [&]{
                                 Loom::PoseKey key{poseEdit.frame, {}};
                                 for(const auto& joint : poseEdit.basePose)
@@ -2793,113 +2798,148 @@
                                     [&](const Loom::PoseKey& k){ return k.frame == poseEdit.frame; });
                                 if(found != poseEdit.keys.end()) *found = key;
                                 else poseEdit.keys.push_back(key);
-                                std::sort(poseEdit.keys.begin(), poseEdit.keys.end(),
-                                    [](const Loom::PoseKey& a, const Loom::PoseKey& b){ return a.frame < b.frame; });
                             };
-                            if(!poseEdit.active){
-                                if(frameInClip && ui.button("Edit pose at this frame")){
-                                    poseEdit = PoseEditSession{};
-                                    poseEdit.active = true;
-                                    animatorRigDrag.control = -1;
-                                    motionPanel.open = false;
-                                    followAnimatorPreview = true;
-                                    poseEdit.rig = animatorRig;
-                                    poseEdit.animation = animator.activeAnimation;
-                                    poseEdit.frame = poseFrame;
-                                    frame = poseFrame;
-                                    poseEdit.original = active;
-                                    selected = animatorRig;
-                                    focus = Focus::Entity;
-                                    motionPanel.controlRigMode = true;
-                                    const Loom::MotionRigRestPose rigPose = Loom::motionRigRestPose(stage, animatorRig);
-                                    for(const Loom::MotionRigJointRest& joint : rigPose.joints)
-                                        if(stage.get(joint.id)) poseEdit.basePose.emplace_back(joint.id, stage.localAt(joint.id, poseFrame));
-                                    playing = false;
-                                    message = "Pose key at frame " + std::to_string(int(poseFrame)) +
-                                              ". Shape it, then add a second key - the pose blends between keys.";
-                                }
-                                if(frameInClip) ui.hint("Edit the pose at two or more frames; between them the pose blends key to key.");
-                                else ui.hint("Move the playhead inside the clip to edit its pose.");
-                            }else{
-                                const bool editTarget = poseEdit.rig == animatorRig &&
-                                    poseEdit.animation == animator.activeAnimation;
-                                if(!editTarget) ui.status("Return to the clip being edited to continue.", theme.warning);
-                                //Kljucevi kao pilule; trenutni je oznacen. Klik prebaci uredjivanje na taj kadar
-                                std::vector<double> keyFrames;
-                                for(const Loom::PoseKey& k : poseEdit.keys) keyFrames.push_back(k.frame);
-                                if(std::find(keyFrames.begin(), keyFrames.end(), poseEdit.frame) == keyFrames.end())
-                                    keyFrames.push_back(poseEdit.frame);
-                                std::sort(keyFrames.begin(), keyFrames.end());
-                                std::vector<std::string> keyLabels;
-                                int current = -1;
-                                for(size_t i = 0; i < keyFrames.size() && i < 8; ++i){
-                                    keyLabels.push_back(std::to_string(int(keyFrames[i])));
-                                    if(keyFrames[i] == poseEdit.frame) current = int(i);
-                                }
-                                const int picked = ui.pills(keyLabels, current);
-                                if(editTarget && picked >= 0 && keyFrames[size_t(picked)] != poseEdit.frame){
-                                    storeCurrentKey();
-                                    poseEdit.frame = keyFrames[size_t(picked)];
-                                    frame = poseEdit.frame;
-                                    playing = false;
-                                    animatorRigDrag.control = -1;
-                                }
-                                const bool isKey = std::find(keyFrames.begin(), keyFrames.end(), poseFrame) != keyFrames.end();
-                                if(editTarget && frameInClip && !isKey && keyFrames.size() < 8){
-                                    if(ui.button("+ Key at frame " + std::to_string(int(poseFrame)))){
-                                        storeCurrentKey();
-                                        poseEdit.frame = poseFrame;
-                                        playing = false;
-                                        animatorRigDrag.control = -1;
-                                    }
-                                }else if(editTarget && poseFrame != poseEdit.frame && isKey){
-                                    ui.hint("Click the key above to edit it.");
-                                }
-                                if(editTarget && keyFrames.size() > 1 && ui.button("Remove key " + std::to_string(int(poseEdit.frame)))){
-                                    poseEdit.keys.erase(std::remove_if(poseEdit.keys.begin(), poseEdit.keys.end(),
-                                        [&](const Loom::PoseKey& k){ return k.frame == poseEdit.frame; }), poseEdit.keys.end());
-                                    poseEdit.frame = poseEdit.keys.empty() ? poseEdit.frame : poseEdit.keys.front().frame;
-                                    frame = poseEdit.frame;
-                                }
-                                ui.hint("Shape each key in the viewport. Between keys the pose blends key to key; "
-                                        "the original motion only leads in before the first key.");
-                                ui.slider("Blend in", &poseBlendInFrames, 0.0f, 30.0f, " fr");
-                                ui.choice("After last key", {"Return to motion", "Hold pose"}, &poseKeyEnding);
-                                if(poseKeyEnding == 0){
-                                    ui.slider("Hold", &poseBlendHoldFrames, 0.0f, 180.0f, " fr");
-                                    ui.slider("Blend out", &poseBlendOutFrames, 1.0f, 60.0f, " fr");
-                                }
-                                poseBlendInFrames = std::round(poseBlendInFrames);
-                                poseBlendHoldFrames = std::round(poseBlendHoldFrames);
-                                poseBlendOutFrames = std::round(poseBlendOutFrames);
-                                const int poseAction = ui.buttonRow({"Blend keys", "Keys only", "Cancel"});
-                                if(poseAction == 2){
+                            auto beginPoseSession = [&](double at){
+                                poseEdit.active = true;
+                                poseEdit.rig = animatorRig;
+                                poseEdit.animation = animator.activeAnimation;
+                                poseEdit.original = active;
+                                poseEdit.basePose.clear();
+                                poseEdit.keys.clear();
+                                const Loom::MotionRigRestPose rigPose = Loom::motionRigRestPose(stage, animatorRig);
+                                for(const Loom::MotionRigJointRest& joint : rigPose.joints)
+                                    if(stage.get(joint.id)) poseEdit.basePose.emplace_back(joint.id, stage.localAt(joint.id, at));
+                                selected = animatorRig;
+                                focus = Focus::Entity;
+                                motionPanel.open = false;
+                                motionPanel.controlRigMode = true;
+                                followAnimatorPreview = true;
+                            };
+                            auto goToPoseFrame = [&](double at){
+                                poseEdit.frame = at;
+                                frame = at;
+                                playing = false;
+                                animatorRigDrag.control = -1;
+                            };
+                            auto cancelPoseBlend = [&]{
+                                if(poseEdit.active)
                                     if(Warp::Entity* owner = stage.get(poseEdit.rig); owner && owner->animator &&
                                        poseEdit.animation < owner->animator->animations.size())
                                         owner->animator->animations[poseEdit.animation] = poseEdit.original;
-                                    poseEdit = PoseEditSession{};
-                                    message = "Pose edit cancelled; original clip restored.";
-                                }else if(poseAction >= 0 && editTarget){
-                                    storeCurrentKey();
-                                    const std::vector<Loom::PoseKey> keys = poseEdit.keys;
-                                    //Kljucevi su procitani; klip se vrati na original pa se iz njega racuna
-                                    //ulaz prije prvog i povratak iza zadnjeg kljuca (LoomPoseBlend.h)
-                                    active = poseEdit.original;
-                                    Loom::PoseKeySettings settings;
-                                    settings.inFrames = poseBlendInFrames;
-                                    settings.holdFrames = poseBlendHoldFrames;
-                                    settings.outFrames = poseBlendOutFrames;
-                                    settings.ending = poseKeyEnding == 0 ? Loom::PoseKeyEnding::Return : Loom::PoseKeyEnding::Hold;
-                                    settings.blendBetween = poseAction == 0;
-                                    Loom::applyPoseKeys(stage, keys, active.startFrame, active.endFrame, settings);
-                                    frame = keys.front().frame;
-                                    playing = false;
-                                    poseEdit = PoseEditSession{};
-                                    message = std::string(poseAction == 0 ? "Blended " : "Set ") + std::to_string(keys.size()) +
-                                              (keys.size() == 1 ? " pose key" : " pose keys") +
-                                              (poseAction == 0 ? " key to key." : " (only the key frames changed).");
+                                poseEdit = PoseEditSession{};
+                                poseBlendStep = 0;
+                            };
+                            auto applyPoseKeys = [&](bool blendBetween){
+                                storeCurrentKey();
+                                const std::vector<Loom::PoseKey> keys = poseEdit.keys;
+                                //Kljucevi su procitani; klip se vrati na original pa se iz njega racuna
+                                //ulaz prije prvog i povratak iza zadnjeg kljuca (LoomPoseBlend.h)
+                                active = poseEdit.original;
+                                Loom::PoseKeySettings settings;
+                                settings.inFrames = poseBlendInFrames;
+                                settings.holdFrames = poseBlendHoldFrames;
+                                settings.outFrames = poseBlendOutFrames;
+                                settings.ending = poseKeyEnding == 0 ? Loom::PoseKeyEnding::Return : Loom::PoseKeyEnding::Hold;
+                                settings.blendBetween = blendBetween;
+                                Loom::applyPoseKeys(stage, keys, active.startFrame, active.endFrame, settings);
+                                frame = keys.front().frame;
+                                playing = false;
+                                poseEdit = PoseEditSession{};
+                                poseBlendStep = 0;
+                            };
+                            //Sesiju smije zatvoriti i netko drugi (Escape, zatvaranje Animatora): tada
+                            //koraci poze nemaju sto uredjivati i tok se vrati na pocetak
+                            if(poseBlendStep >= 3 && !poseEdit.active) poseBlendStep = 0;
+                            const bool editTarget = !poseEdit.active || (poseEdit.rig == animatorRig &&
+                                                                         poseEdit.animation == animator.activeAnimation);
+                            const std::string here = std::to_string(int(poseFrame));
+                            if(!editTarget){
+                                ui.status("Go back to the clip you are editing to continue.", theme.warning);
+                                if(ui.button("Cancel pose blend")) cancelPoseBlend();
+                            }else if(poseBlendStep == 0){
+                                if(ui.primaryButton("BLEND BETWEEN TWO POSES", frameInClip)){
+                                    poseBlendStep = 1;
+                                    poseBlendFirst = poseBlendSecond = -1.0;
                                 }
+                                if(ui.button("Edit pose at frame " + here + " only") && frameInClip){
+                                    beginPoseSession(poseFrame);
+                                    goToPoseFrame(poseFrame);
+                                    poseBlendStep = 5;
+                                }
+                                ui.hint(frameInClip ? "Blend: pick two frames, pose each one, and the motion between them blends from the first pose to the second."
+                                                    : "Move the playhead inside the clip.");
+                            }else if(poseBlendStep == 1 || poseBlendStep == 2){
+                                const bool first = poseBlendStep == 1;
+                                ui.status(first ? "Step 1 of 4 - move the playhead to the FIRST frame"
+                                                : "Step 2 of 4 - move the playhead to the SECOND frame", theme.accent);
+                                if(!first) ui.value("First frame", std::to_string(int(poseBlendFirst)));
+                                const bool usable = frameInClip && (first || poseFrame != poseBlendFirst);
+                                if(ui.primaryButton("USE FRAME " + here, usable)){
+                                    if(first){
+                                        poseBlendFirst = poseFrame;
+                                        poseBlendStep = 2;
+                                    }else{
+                                        poseBlendSecond = poseFrame;
+                                        if(poseBlendSecond < poseBlendFirst) std::swap(poseBlendFirst, poseBlendSecond);
+                                        beginPoseSession(poseBlendFirst);
+                                        goToPoseFrame(poseBlendFirst);
+                                        poseBlendStep = 3;
+                                    }
+                                }
+                                if(!first && poseFrame == poseBlendFirst) ui.hint("Pick a different frame than the first one.");
+                                if(ui.button("Cancel")) cancelPoseBlend();
+                            }else if(poseBlendStep == 3 || poseBlendStep == 4){
+                                const bool first = poseBlendStep == 3;
+                                const double at = first ? poseBlendFirst : poseBlendSecond;
+                                ui.status((first ? "Step 3 of 4 - pose frame " : "Step 4 of 4 - pose frame ") +
+                                          std::to_string(int(at)) + " in the viewport", theme.accent);
+                                std::vector<std::string> frames{std::to_string(int(poseBlendFirst)), std::to_string(int(poseBlendSecond))};
+                                const int jump = ui.pills(frames, first ? 0 : 1);
+                                if(jump >= 0 && jump != (first ? 0 : 1)){
+                                    storeCurrentKey();
+                                    poseBlendStep = jump == 0 ? 3 : 4;
+                                    goToPoseFrame(jump == 0 ? poseBlendFirst : poseBlendSecond);
+                                }
+                                if(poseFrame != at) ui.hint("The rig controls appear on frame " + std::to_string(int(at)) + ".");
+                                if(first){
+                                    if(ui.primaryButton("NEXT: POSE FRAME " + std::to_string(int(poseBlendSecond)))){
+                                        storeCurrentKey();
+                                        poseBlendStep = 4;
+                                        goToPoseFrame(poseBlendSecond);
+                                    }
+                                }else if(ui.primaryButton("BLEND")){
+                                    applyPoseKeys(true);
+                                    message = "Blended frame " + std::to_string(int(poseBlendFirst)) + " into frame " +
+                                              std::to_string(int(poseBlendSecond)) + ".";
+                                }
+                                if(ui.disclosure("Blend options", poseKeyEnding == 0 ? "return to motion" : "hold last pose", &poseBlendOptionsOpen)){
+                                    ui.slider("Blend in before first", &poseBlendInFrames, 0.0f, 30.0f, " fr");
+                                    ui.choice("After second frame", {"Return to motion", "Hold pose"}, &poseKeyEnding);
+                                    if(poseKeyEnding == 0){
+                                        ui.slider("Hold", &poseBlendHoldFrames, 0.0f, 180.0f, " fr");
+                                        ui.slider("Blend out", &poseBlendOutFrames, 1.0f, 60.0f, " fr");
+                                    }
+                                }
+                                if(ui.button("Cancel")) cancelPoseBlend();
+                            }else if(poseBlendStep == 5){
+                                ui.status("Pose frame " + std::to_string(int(poseEdit.frame)) + " in the viewport", theme.accent);
+                                if(ui.primaryButton("APPLY POSE")){
+                                    applyPoseKeys(true);
+                                    message = "Pose applied at frame " + std::to_string(int(frame)) + ".";
+                                }
+                                if(ui.disclosure("Blend options", "", &poseBlendOptionsOpen)){
+                                    ui.slider("Blend in", &poseBlendInFrames, 0.0f, 30.0f, " fr");
+                                    ui.choice("After this frame", {"Return to motion", "Hold pose"}, &poseKeyEnding);
+                                    if(poseKeyEnding == 0){
+                                        ui.slider("Hold", &poseBlendHoldFrames, 0.0f, 180.0f, " fr");
+                                        ui.slider("Blend out", &poseBlendOutFrames, 1.0f, 60.0f, " fr");
+                                    }
+                                }
+                                if(ui.button("Cancel")) cancelPoseBlend();
                             }
+                            poseBlendInFrames = std::round(poseBlendInFrames);
+                            poseBlendHoldFrames = std::round(poseBlendHoldFrames);
+                            poseBlendOutFrames = std::round(poseBlendOutFrames);
 
                             std::vector<MotionPlaybackCheckpoint> fallbackCheckpoints;
                             const std::vector<MotionPlaybackCheckpoint>* checkpoints = nullptr;
