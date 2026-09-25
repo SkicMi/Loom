@@ -52,6 +52,7 @@
 #include <thread>
 #include <filesystem>
 #include <future>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -87,8 +88,39 @@ std::vector<uint8_t> toGray(const Spool::Image& image){
 // nakuplja pomak, pa bi zadnji kadar prije sljedeceg kljucnog bio najlosiji. Ovako je svaki
 // medjukadar udaljen najvise step-1 kadrova od mjesta s tocnom pozom
 //=============================================================================================
+//OSTRINA KADRA za izbor ostrog kadra (--sharpest): energija Laplacea na sivoj slici smanjenoj 4x4
+//prosjekom. Na punoj 4K razlucivosti Laplace mjeri sum senzora; na cetvrtini mjeri rubove, isto kao
+//mjerenje u pokusu E17 (960x540)
+inline float sharpnessOf(const std::vector<uint8_t>& gray, uint32_t width, uint32_t height){
+    const uint32_t w = width / 4, h = height / 4;
+    if(w < 3 || h < 3) return 0.0f;
+    std::vector<float> small(size_t(w) * h);
+    Engine::inBands(0, int(h), [&](uint32_t, int first, int last){
+        for(int y = first; y < last; ++y){
+            for(uint32_t x = 0; x < w; ++x){
+                uint32_t sum = 0;
+                for(uint32_t dy = 0; dy < 4; ++dy){
+                    const uint8_t* row = gray.data() + (size_t(y) * 4 + dy) * width + size_t(x) * 4;
+                    sum += uint32_t(row[0]) + row[1] + row[2] + row[3];
+                }
+                small[size_t(y) * w + x] = float(sum) / 16.0f;
+            }
+        }
+    });
+    double energy = 0.0;
+    for(uint32_t y = 1; y + 1 < h; ++y){
+        for(uint32_t x = 1; x + 1 < w; ++x){
+            const float* c = small.data() + size_t(y) * w + x;
+            const float laplace = c[-1] + c[1] + c[-int(w)] + c[w] - 4.0f * c[0];
+            energy += double(laplace) * laplace;
+        }
+    }
+    return float(energy / double((w - 2) * (h - 2)));
+}
+
 struct DenseTrack{
     std::vector<Engine::Pose> poses;      //po IZVORNOM kadru snimke
+    std::vector<float> sharpness;         //po izvornom kadru, 0 gdje nije mjerena (sharpnessOf)
     std::vector<uint8_t> posed;
     uint32_t localised = 0;
     uint32_t failed = 0;
@@ -108,7 +140,8 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
                               const std::vector<Engine::Observation>& observations,
                               const std::vector<uint32_t>& keyframeFrames,
                               const Engine::Intrinsics& intrinsics,
-                              uint32_t maxPoints = 0, bool bothWays = true, uint32_t levels = 4){
+                              uint32_t maxPoints = 0, bool bothWays = true, uint32_t levels = 4,
+                              bool measureSharpness = false){
     DenseTrack out;
     if(step <= 1 || keyframeFrames.empty()) return out;
 
@@ -171,6 +204,7 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     uint32_t width = 0, height = 0;
     out.poses.resize(size_t(lastSolvedSource) + 1);
     out.posed.resize(size_t(lastSolvedSource) + 1, uint8_t(0));
+    out.sharpness.resize(size_t(lastSolvedSource) + 1, 0.0f);
 
     struct ChainStep{ Engine::Pose pose; bool ok = false; uint32_t kept = 0; };
 
@@ -382,6 +416,7 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         if(keyframe >= 0 || current.keyframe >= 0){
             const auto grayStarted = Clock::now();
             gray = toGray(frame);
+            if(measureSharpness && sourceIndex < out.sharpness.size()) out.sharpness[sourceIndex] = sharpnessOf(gray, frame.width, frame.height);
             out.graySeconds += since(grayStarted);
         }
         if(keyframe >= 0){
@@ -561,6 +596,11 @@ int main(int realArgc, char** realArgv){
     uint32_t densePoints = 0;
     //--dense-levels N: razina piramide pracenja punih slicica (zadano 4) - vidi localiseEveryFrame
     uint32_t denseLevels = 4;
+    //--sharpest R: kljucni kadar za splat se zamijeni najostrijim susjedom unutar +-R kadrova koji
+    //ima pozu iz punih slicica (0 iskljucuje). ZADANO 4: pokus E17 na C0257 - ostrina +28 % na
+    //1080p i +48 % na 4K, bolje na 39/39 izdvojenih kadrova, PSNR isti. Cijena: trening (--then)
+    //krece tek nakon punih slicica, jer tek one daju pozu susjeda
+    uint32_t sharpest = 4;
     //--then "naredba": pokrene se cim je COLMAP zapisan (prije punih slicica), ispis ide ovamo s
     //oznakom [trening], a VideoSolve na kraju ceka da zavrsi. Editor tako trenira splat dok se
     //lokaliziraju medjukadrovi
@@ -594,6 +634,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--then" && i + 1 < realArgc) thenCommand = realArgv[++i];
         else if(std::string(realArgv[i]) == "--coarse-weight" && i + 1 < realArgc) coarseWeight = std::atof(realArgv[++i]);
         else if(std::string(realArgv[i]) == "--precise-points-from" && i + 1 < realArgc) precisePointsOverride = std::atoll(realArgv[++i]);
+        else if(std::string(realArgv[i]) == "--sharpest" && i + 1 < realArgc) sharpest = uint32_t(std::max(0, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--dense-levels" && i + 1 < realArgc) denseLevels = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--dense-points" && i + 1 < realArgc) densePoints = uint32_t(std::max(0, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
@@ -1798,8 +1839,9 @@ int main(int realArgc, char** realArgv){
         // trenira dok procesor lokalizira medjukadrove
         //=================================================================================
         const bool colmapWritten = Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours);
-        if(colmapWritten && !thenCommand.empty()){
-            std::printf("  --then: pokrecem uz pune slicice: %s\n", thenCommand.c_str());
+        auto launchThen = [&](const char* when){
+            if(!colmapWritten || thenCommand.empty() || thenWorker.joinable()) return;
+            std::printf("  --then: pokrecem %s: %s\n", when, thenCommand.c_str());
             thenWorker = std::thread([&thenCommand, &thenStatus]{
                 FILE* pipe = popen((thenCommand + " 2>&1").c_str(), "r");
                 if(!pipe){ thenStatus = -1; return; }
@@ -1807,7 +1849,10 @@ int main(int realArgc, char** realArgv){
                 while(std::fgets(line, sizeof(line), pipe)) std::printf("  [trening] %s", line);
                 thenStatus = pclose(pipe);
             });
-        }
+        };
+        //Ostri kadrovi trebaju poze susjeda iz punih slicica - trening onda ceka njih
+        const bool sharpenKeyframes = sharpest > 0 && !cameraOnly && step > 1 && !keyframesOnly;
+        if(!sharpenKeyframes) launchThen("uz pune slicice");
 
 
         //=================================================================================
@@ -1832,7 +1877,8 @@ int main(int realArgc, char** realArgv){
             if(step > 1 && !keyframesOnly){
                 const auto denseStarted = std::chrono::steady_clock::now();
                 const DenseTrack dense = localiseEveryFrame(path, step, best, solveObservations,
-                                                            keyframeFrames, bestIntrinsics, densePoints, !denseOneWay, denseLevels);
+                                                            keyframeFrames, bestIntrinsics, densePoints, !denseOneWay, denseLevels,
+                                                            sharpenKeyframes);
                 const double denseSeconds = std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - denseStarted).count();
 
@@ -1859,6 +1905,70 @@ int main(int realArgc, char** realArgv){
                     forExport.poses = dense.poses;
                     forExport.posed = dense.posed;
                     exportStep = 1;
+
+                    //=====================================================================
+                    // OSTRI KADROVI (--sharpest). Ekspozicija je pola kadra, pa je dio kljucnih
+                    // kadrova zamucen trzajem ruke, a susjed dva kadra dalje ostar (C0257: kod 17 %
+                    // kljucnih je susjed barem 1.5x ostriji). Za svaki kljucni se uzme najostriji
+                    // kadar unutar +-sharpest koji ima pozu iz punih slicica; slika i poza se
+                    // zamijene u images/ i COLMAP-u. Tocke i njihova opazanja ostaju s kljucnog
+                    // kadra - trener iz points3D uzima samo polozaj i boju
+                    //=====================================================================
+                    if(sharpenKeyframes && colmapWritten){
+                        const auto sharpStarted = std::chrono::steady_clock::now();
+                        std::vector<int64_t> chosen(best.poses.size(), -1);
+                        std::map<int64_t, uint32_t> placeOfSource;
+                        std::vector<double> gains;
+                        for(size_t place = 0; place < best.poses.size() && place < keyframeFrames.size(); ++place){
+                            if(place >= best.posed.size() || !best.posed[place]) continue;
+                            const int64_t source = int64_t(keyframeFrames[place]) * int64_t(step);
+                            if(source < 0 || size_t(source) >= dense.sharpness.size() || dense.sharpness[size_t(source)] <= 0.0f) continue;
+                            int64_t pick = source;
+                            for(int64_t c = source - int64_t(sharpest); c <= source + int64_t(sharpest); ++c){
+                                if(c < 0 || size_t(c) >= dense.sharpness.size() || !dense.posed[size_t(c)]) continue;
+                                if(dense.sharpness[size_t(c)] > dense.sharpness[size_t(pick)]) pick = c;
+                            }
+                            if(pick == source) continue;
+                            chosen[place] = pick;
+                            placeOfSource[pick] = uint32_t(place);
+                            gains.push_back(double(dense.sharpness[size_t(pick)]) / double(dense.sharpness[size_t(source)]));
+                        }
+                        if(!placeOfSource.empty()){
+                            Spool::VideoReader reader(path);
+                            int64_t sourceIndex = 0;
+                            const int64_t last = placeOfSource.rbegin()->first;
+                            std::vector<std::future<void>> saving;
+                            while(!reader.atEnd() && sourceIndex <= last){
+                                const Spool::Image frame = reader.readNext();
+                                if(frame.pixels.empty()) break;
+                                auto found = placeOfSource.find(sourceIndex++);
+                                if(found == placeOfSource.end()) continue;
+                                std::vector<uint8_t> pixels = frame.pixels;
+                                if(havePhysicalLens && (physicalLens.k1 != 0.0f || physicalLens.k2 != 0.0f))
+                                    pixels = Engine::undistortRgba(frame.pixels.data(), frame.width, frame.height, frame.width, physicalLens);
+                                char name[64];
+                                std::snprintf(name, sizeof(name), "frame_%04u.png", found->second);
+                                while(saving.size() >= 12){ saving.front().get(); saving.erase(saving.begin()); }
+                                saving.push_back(std::async(std::launch::async,
+                                    [target = (imageDirectory / name).string(), pixels = std::move(pixels), w = frame.width, h = frame.height]{
+                                        Spool::savePng(target, Spool::imageFromPixels(pixels.data(), w, h));
+                                    }));
+                            }
+                            for(auto& one : saving) one.get();
+                            Engine::Reconstruction sharpened = best;
+                            for(size_t place = 0; place < chosen.size(); ++place){
+                                if(chosen[place] >= 0) sharpened.poses[place] = dense.poses[size_t(chosen[place])];
+                            }
+                            Engine::writeColmapText(outputDirectory, sharpened, bestIntrinsics, solveObservations, {}, colours);
+                            std::sort(gains.begin(), gains.end());
+                            std::printf("  ostri kadrovi: %zu od %u kljucnih zamijenjeno susjedom (+-%u), ostrina medijan %.2fx, "
+                                        "najvise %.2fx, %.1f s\n", gains.size(), best.posedCameras, sharpest,
+                                        gains[gains.size() / 2], gains.back(),
+                                        std::chrono::duration<double>(std::chrono::steady_clock::now() - sharpStarted).count());
+                        }else{
+                            std::printf("  ostri kadrovi: svi kljucni su vec najostriji u svom susjedstvu\n");
+                        }
+                    }
 
                 }else{
                     std::printf("  pune slicice nisu uspjele (%u medjukadrova), izvozi se svaki %u. kadar\n",
@@ -1905,6 +2015,7 @@ int main(int realArgc, char** realArgv){
             }
         }
 
+        launchThen("nakon ostrih kadrova");
         phaseClock.mark("pune slicice i USD");
         if(colmapWritten){
             std::printf("Zapisano u %s (cameras.txt, images.txt, points3D.txt)\n", outputDirectory.c_str());
