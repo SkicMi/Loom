@@ -249,6 +249,15 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     auto runSegment = [&](Segment segment){
         SegmentResult result;
         const size_t count = segment.sources.size();
+
+        //NERIJESEN KLJUCNI KADAR NEMA ODAKLE KRENUTI. Prije se njegova "poza" (ostatak neuspjelog
+        //pokusaja u solved.poses) upisivala kao prava i oznacavala kao lokalizirana: na C0255 je
+        //kamera.usda imao 70 takvih laznih poza, a kamera je na njima skakala 1-2 jedinice scene.
+        //Njegovi medjukadrovi ionako nisu imali tocaka (perKeyframe uzima samo rijesene kamere)
+        if(size_t(segment.keyframe) >= solved.posed.size() || !solved.posed[size_t(segment.keyframe)]){
+            result.failed = uint32_t(count > 0 ? count - 1 : 0);
+            return result;
+        }
         std::vector<ChainStep> forward(count), backward(count);
 
         Engine::Pyramid previous = pyramidOf(segment.grays[0], result);
@@ -263,6 +272,9 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
         Engine::Pyramid nextPyramid;
         if(haveNext) nextPyramid = pyramidOf(segment.checkGray, result);
         //Provjera drifta: lanac naprijed jos jedan kadar, do sljedeceg kljucnog, i koliko ga promasi
+        bool haveDrift = false;
+        glm::quat driftTurn{1.0f, 0.0f, 0.0f, 0.0f};
+        glm::vec3 driftShift{0.0f};
         if(haveNext && active.size() >= 12){
             std::vector<Engine::PointObservation> moved;
             for(const Engine::PointObservation& one : active){
@@ -277,6 +289,9 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
                     result.checkAngles.push_back(glm::degrees(2.0 * std::asin(std::min(1.0, double(glm::length(glm::vec3(turn.x, turn.y, turn.z)))))));
                     const double step = glm::length(truth.position - solved.poses[size_t(segment.keyframe)].position);
                     if(step > 1e-9) result.checkShifts.push_back(glm::length(check.pose.position - truth.position) / step);
+                    driftTurn = truth.orientation * glm::inverse(check.pose.orientation);
+                    driftShift = truth.position - check.pose.position;
+                    haveDrift = true;
                 }
             }
         }
@@ -305,6 +320,20 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
                 if(glm::dot(a.pose.orientation, qb) < 0.0f) qb = -qb;
                 out.poses[source].position = glm::mix(a.pose.position, b.pose.position, t);
                 out.poses[source].orientation = glm::normalize(glm::slerp(a.pose.orientation, qb, t));
+            }else if(a.ok && haveDrift){
+                //=========================================================================
+                // PROMASAJ SE RASPODIJELI PO ODSJECKU. Jednosmjerni lanac na kraju promasi sljedeci
+                // kljucni kadar (provjera gore), pa je kamera na granici odsjecka skakala: na C0255
+                // do 1.45 jedinica scene izmedju dva susjedna kadra, uz uobicajenih 0.02. Kadar i
+                // dobije dio i/count ispravka - prvi gotovo nista, zadnji gotovo sve - pa lanac
+                // stigne tocno na kljucni kadar
+                //=========================================================================
+                const float t = float(i) / float(count);
+                glm::quat turn = driftTurn;
+                if(turn.w < 0.0f) turn = -turn;
+                out.poses[source].orientation = glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), turn, t) *
+                                                               a.pose.orientation);
+                out.poses[source].position = a.pose.position + t * driftShift;
             }else if(a.ok || b.ok){
                 out.poses[source] = a.ok ? a.pose : b.pose;
             }else{

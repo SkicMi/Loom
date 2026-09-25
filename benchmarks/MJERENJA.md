@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (340 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (341 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -376,4 +376,5 @@ Iz `benchmarks/mjerenja.jsonl` (340 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 21:10 | C0257 | E15 povrsina u treningu (normale 0.1, plosnatost 0.1 od 7000): odbaceno - PSNR -1.03 dB (38/39 losije), ostrina 0.44->0.33, 21 min umjesto 16 |  |
 | 2026-09-25 21:34 | C0257 | E16 bilateralna mreza umjesto ekspozicije: odbaceno - PSNR -0.02+-0.13 (sum), ostrina -0.018, trening 24 min umjesto 16 |  |
 | 2026-09-25 21:45 | C0255 | pune slicice s 6 razina piramide: isto 1121/1772 (63.3 %), drift p90 1.14->1.98 st - odbaceno; neuspjeli medjukadrovi su odsjecci od 70 neriješenih kljucnih kadrova, ne raspon pracenja |  |
+| 2026-09-25 22:08 | C0255 | pune slicice: lazne poze nerijesenih kljucnih kadrova uklonjene (70 na C0255); promasaj lanca raspodijeljen po odsjecku - skok na granici najveci 1.45->0.145, p90 0.098->0.036 (unutar odsjecka 0.023) |  |
 
