@@ -3,6 +3,7 @@
 #include <Engine/WeaverProcedura.h>
 #include <Treadle/Ui.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>

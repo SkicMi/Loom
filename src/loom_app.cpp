@@ -44,6 +44,7 @@
     #include "LoomMotionPanel.h"
     #include "LoomProcedura.h"
     #include "LoomMotionLive.h"
+    #include "LoomPoseBlend.h"
     #include "LoomMoodboard.h"
     #include "LoomAutoRig.h"
     
@@ -351,8 +352,10 @@
             size_t animation = 0;
             double frame = 0.0;
             Warp::AnimationClip original;
-            std::vector<std::pair<Warp::Id, Warp::Transform>> basePose;
+            std::vector<std::pair<Warp::Id, Warp::Transform>> basePose;   //zglobovi riga (id), poza pri pocetku
+            std::vector<Loom::PoseKey> keys;    //uredjene poze po kadrovima; izmedju njih pretapanje
         } poseEdit;
+        int poseKeyEnding = 0;                  //0: povratak u pokret iza zadnjeg kljuca, 1: drzi pozu
         float poseBlendInFrames = 8.0f;
         float poseBlendHoldFrames = 24.0f;
         float poseBlendOutFrames = 12.0f;
@@ -2777,11 +2780,25 @@
                             ui.value("Frames", frameRange);
 
                             ui.separator();
-                            ui.label("POSE OVERWRITE");
+                            ui.caption("POSE KEYS");
                             const double poseFrame = std::round(frame);
                             const bool frameInClip = poseFrame >= active.startFrame && poseFrame <= active.endFrame;
+                            //Poza trenutnog kljuca se procita iz scene: uredjuje se zivo u klipu (rig u
+                            //pogledu, Transform), pa je ono sto stoji u kadru kljuca upravo uredjena poza
+                            auto storeCurrentKey = [&]{
+                                Loom::PoseKey key{poseEdit.frame, {}};
+                                for(const auto& joint : poseEdit.basePose)
+                                    if(stage.get(joint.first)) key.pose.emplace_back(joint.first, stage.localAt(joint.first, poseEdit.frame));
+                                auto found = std::find_if(poseEdit.keys.begin(), poseEdit.keys.end(),
+                                    [&](const Loom::PoseKey& k){ return k.frame == poseEdit.frame; });
+                                if(found != poseEdit.keys.end()) *found = key;
+                                else poseEdit.keys.push_back(key);
+                                std::sort(poseEdit.keys.begin(), poseEdit.keys.end(),
+                                    [](const Loom::PoseKey& a, const Loom::PoseKey& b){ return a.frame < b.frame; });
+                            };
                             if(!poseEdit.active){
                                 if(frameInClip && ui.button("Edit pose at this frame")){
+                                    poseEdit = PoseEditSession{};
                                     poseEdit.active = true;
                                     animatorRigDrag.control = -1;
                                     motionPanel.open = false;
@@ -2791,125 +2808,96 @@
                                     poseEdit.frame = poseFrame;
                                     frame = poseFrame;
                                     poseEdit.original = active;
-                                    poseEdit.basePose.clear();
                                     selected = animatorRig;
                                     focus = Focus::Entity;
                                     motionPanel.controlRigMode = true;
-                                    animatorRigDrag.control = -1;
                                     const Loom::MotionRigRestPose rigPose = Loom::motionRigRestPose(stage, animatorRig);
                                     for(const Loom::MotionRigJointRest& joint : rigPose.joints)
                                         if(stage.get(joint.id)) poseEdit.basePose.emplace_back(joint.id, stage.localAt(joint.id, poseFrame));
                                     playing = false;
-                                    message = "Pose edit started at frame " + std::to_string(int(poseFrame)) +
-                                              ". Select and adjust bones, then choose a blend mode.";
+                                    message = "Pose key at frame " + std::to_string(int(poseFrame)) +
+                                              ". Shape it, then add a second key - the pose blends between keys.";
                                 }
-                                if(!frameInClip) ui.label("Move the playhead inside the clip to edit its pose.");
+                                if(frameInClip) ui.hint("Edit the pose at two or more frames; between them the pose blends key to key.");
+                                else ui.hint("Move the playhead inside the clip to edit its pose.");
                             }else{
                                 const bool editTarget = poseEdit.rig == animatorRig &&
                                     poseEdit.animation == animator.activeAnimation;
-                                const bool editFrame = editTarget && poseFrame == poseEdit.frame;
-                                ui.label("Editing frame " + std::to_string(int(poseEdit.frame)) +
-                                         " · adjust bones in the viewport or Transform panel.");
-                                if(!editTarget) ui.label("Return to the original clip to finish this pose edit.");
-                                else if(!editFrame) ui.label("Return to the original frame to finish this pose edit.");
-                                ui.label("Smart Blend: fade in, hold, then return to the original motion.");
-                                ui.slider("Blend in (frames)", &poseBlendInFrames, 0.0f, 30.0f);
-                                ui.slider("Hold (frames)", &poseBlendHoldFrames, 0.0f, 180.0f);
-                                ui.slider("Blend out (frames)", &poseBlendOutFrames, 1.0f, 60.0f);
+                                if(!editTarget) ui.status("Return to the clip being edited to continue.", theme.warning);
+                                //Kljucevi kao pilule; trenutni je oznacen. Klik prebaci uredjivanje na taj kadar
+                                std::vector<double> keyFrames;
+                                for(const Loom::PoseKey& k : poseEdit.keys) keyFrames.push_back(k.frame);
+                                if(std::find(keyFrames.begin(), keyFrames.end(), poseEdit.frame) == keyFrames.end())
+                                    keyFrames.push_back(poseEdit.frame);
+                                std::sort(keyFrames.begin(), keyFrames.end());
+                                std::vector<std::string> keyLabels;
+                                int current = -1;
+                                for(size_t i = 0; i < keyFrames.size() && i < 8; ++i){
+                                    keyLabels.push_back(std::to_string(int(keyFrames[i])));
+                                    if(keyFrames[i] == poseEdit.frame) current = int(i);
+                                }
+                                const int picked = ui.pills(keyLabels, current);
+                                if(editTarget && picked >= 0 && keyFrames[size_t(picked)] != poseEdit.frame){
+                                    storeCurrentKey();
+                                    poseEdit.frame = keyFrames[size_t(picked)];
+                                    frame = poseEdit.frame;
+                                    playing = false;
+                                    animatorRigDrag.control = -1;
+                                }
+                                const bool isKey = std::find(keyFrames.begin(), keyFrames.end(), poseFrame) != keyFrames.end();
+                                if(editTarget && frameInClip && !isKey && keyFrames.size() < 8){
+                                    if(ui.button("+ Key at frame " + std::to_string(int(poseFrame)))){
+                                        storeCurrentKey();
+                                        poseEdit.frame = poseFrame;
+                                        playing = false;
+                                        animatorRigDrag.control = -1;
+                                    }
+                                }else if(editTarget && poseFrame != poseEdit.frame && isKey){
+                                    ui.hint("Click the key above to edit it.");
+                                }
+                                if(editTarget && keyFrames.size() > 1 && ui.button("Remove key " + std::to_string(int(poseEdit.frame)))){
+                                    poseEdit.keys.erase(std::remove_if(poseEdit.keys.begin(), poseEdit.keys.end(),
+                                        [&](const Loom::PoseKey& k){ return k.frame == poseEdit.frame; }), poseEdit.keys.end());
+                                    poseEdit.frame = poseEdit.keys.empty() ? poseEdit.frame : poseEdit.keys.front().frame;
+                                    frame = poseEdit.frame;
+                                }
+                                ui.hint("Shape each key in the viewport. Between keys the pose blends key to key; "
+                                        "the original motion only leads in before the first key.");
+                                ui.slider("Blend in", &poseBlendInFrames, 0.0f, 30.0f, " fr");
+                                ui.choice("After last key", {"Return to motion", "Hold pose"}, &poseKeyEnding);
+                                if(poseKeyEnding == 0){
+                                    ui.slider("Hold", &poseBlendHoldFrames, 0.0f, 180.0f, " fr");
+                                    ui.slider("Blend out", &poseBlendOutFrames, 1.0f, 60.0f, " fr");
+                                }
                                 poseBlendInFrames = std::round(poseBlendInFrames);
                                 poseBlendHoldFrames = std::round(poseBlendHoldFrames);
                                 poseBlendOutFrames = std::round(poseBlendOutFrames);
-                                const int poseAction = ui.buttonRow({"Smart Blend", "No Blend", "Cancel"});
+                                const int poseAction = ui.buttonRow({"Blend keys", "Keys only", "Cancel"});
                                 if(poseAction == 2){
                                     if(Warp::Entity* owner = stage.get(poseEdit.rig); owner && owner->animator &&
                                        poseEdit.animation < owner->animator->animations.size())
                                         owner->animator->animations[poseEdit.animation] = poseEdit.original;
                                     poseEdit = PoseEditSession{};
                                     message = "Pose edit cancelled; original clip restored.";
-                                }else if(poseAction >= 0 && editFrame){
-                                    frame = poseEdit.frame;
-                                    playing = false;
-                                    std::vector<Warp::Transform> editedPose;
-                                    editedPose.reserve(poseEdit.basePose.size());
-                                    for(const auto& joint : poseEdit.basePose)
-                                        editedPose.push_back(stage.get(joint.first) ?
-                                            stage.localAt(joint.first, poseEdit.frame) : joint.second);
+                                }else if(poseAction >= 0 && editTarget){
+                                    storeCurrentKey();
+                                    const std::vector<Loom::PoseKey> keys = poseEdit.keys;
+                                    //Kljucevi su procitani; klip se vrati na original pa se iz njega racuna
+                                    //ulaz prije prvog i povratak iza zadnjeg kljuca (LoomPoseBlend.h)
                                     active = poseEdit.original;
-                                    size_t changedJoints = 0;
-                                    for(size_t i = 0; i < editedPose.size(); ++i){
-                                        const Warp::Id id = poseEdit.basePose[i].first;
-                                        if(!stage.get(id)) continue;
-                                        const Warp::Transform& before = poseEdit.basePose[i].second;
-                                        const Warp::Transform& after = editedPose[i];
-                                        const bool changed = glm::length(after.translation - before.translation) > 1e-4f ||
-                                            glm::length(after.scale - before.scale) > 1e-4f ||
-                                            std::fabs(glm::dot(after.rotation, before.rotation)) < 0.99999f;
-                                        if(!changed) continue;
-                                        ++changedJoints;
-                                        if(poseAction == 1){
-                                            stage.setLocalAt(id, poseEdit.frame, after);
-                                            continue;
-                                        }
-                                        // Apply the pose offset only within the chosen blend window.
-                                        const double first = std::max(active.startFrame,
-                                            poseEdit.frame - double(std::lround(poseBlendInFrames)));
-                                        const double requestedOut = std::max(1.0, double(std::lround(poseBlendOutFrames)));
-                                        const double last = std::min(active.endFrame,
-                                            poseEdit.frame + double(std::lround(poseBlendHoldFrames)) + requestedOut);
-                                        const double holdEnd = std::min(
-                                            poseEdit.frame + double(std::lround(poseBlendHoldFrames)),
-                                            std::max(poseEdit.frame, last - requestedOut));
-                                        std::vector<double> blendFrames{first, poseEdit.frame, holdEnd, last};
-                                        for(const Warp::AnimatorTrack& track : active.tracks){
-                                            if(track.target != id) continue;
-                                            auto appendKeyTimes = [&](const auto& keys){
-                                                for(double t : keys.times)
-                                                    if(t >= first && t <= last) blendFrames.push_back(t);
-                                            };
-                                            appendKeyTimes(track.translationKeys);
-                                            appendKeyTimes(track.rotationKeys);
-                                            appendKeyTimes(track.scaleKeys);
-                                            break;
-                                        }
-                                        for(double t = std::ceil(first); t < poseEdit.frame; t += 1.0)
-                                            blendFrames.push_back(t);
-                                        for(double t = std::floor(holdEnd) + 1.0; t < last; t += 1.0)
-                                            blendFrames.push_back(t);
-                                        std::sort(blendFrames.begin(), blendFrames.end());
-                                        blendFrames.erase(std::unique(blendFrames.begin(), blendFrames.end()), blendFrames.end());
-                                        std::vector<Warp::Transform> originals;
-                                        originals.reserve(blendFrames.size());
-                                        for(double t : blendFrames) originals.push_back(stage.localAt(id, t));
-                                        const glm::quat rotationDelta = glm::normalize(after.rotation * glm::inverse(before.rotation));
-                                        const glm::vec3 translationDelta = after.translation - before.translation;
-                                        const glm::vec3 scaleDelta = after.scale - before.scale;
-                                        for(size_t key = 0; key < blendFrames.size(); ++key){
-                                            const double t = blendFrames[key];
-                                            float weight = 1.0f;
-                                            if(t < poseEdit.frame)
-                                                weight = float((t - first) / std::max(1e-6, poseEdit.frame - first));
-                                            else if(t > holdEnd)
-                                                weight = float((last - t) / std::max(1e-6, last - holdEnd));
-                                            weight = std::clamp(weight, 0.0f, 1.0f);
-                                            weight = weight * weight * (3.0f - 2.0f * weight);
-                                            Warp::Transform blended = originals[key];
-                                            blended.translation += translationDelta * weight;
-                                            blended.scale += scaleDelta * weight;
-                                            const glm::quat weightedRotation = glm::normalize(glm::slerp(
-                                                glm::quat(1.0f, 0.0f, 0.0f, 0.0f), rotationDelta, weight));
-                                            blended.rotation = glm::normalize(weightedRotation * originals[key].rotation);
-                                            stage.setLocalAt(id, t, blended);
-                                        }
-                                        // The chosen frame must match the pose the artist just edited exactly.
-                                        stage.setLocalAt(id, poseEdit.frame, after);
-                                    }
+                                    Loom::PoseKeySettings settings;
+                                    settings.inFrames = poseBlendInFrames;
+                                    settings.holdFrames = poseBlendHoldFrames;
+                                    settings.outFrames = poseBlendOutFrames;
+                                    settings.ending = poseKeyEnding == 0 ? Loom::PoseKeyEnding::Return : Loom::PoseKeyEnding::Hold;
+                                    settings.blendBetween = poseAction == 0;
+                                    Loom::applyPoseKeys(stage, keys, active.startFrame, active.endFrame, settings);
+                                    frame = keys.front().frame;
+                                    playing = false;
                                     poseEdit = PoseEditSession{};
-                                    message = changedJoints ?
-                                        (std::string(poseAction == 0 ? "Smart Blend" : "No Blend") +
-                                         " overwrote pose on " + std::to_string(changedJoints) + " joints.") :
-                                        "No bone changes to overwrite.";
-                                }else if(poseAction >= 0){
-                                    message = "Return to the selected clip and frame before overwriting the pose.";
+                                    message = std::string(poseAction == 0 ? "Blended " : "Set ") + std::to_string(keys.size()) +
+                                              (keys.size() == 1 ? " pose key" : " pose keys") +
+                                              (poseAction == 0 ? " key to key." : " (only the key frames changed).");
                                 }
                             }
 
@@ -3843,7 +3831,7 @@
                         hudY = std::clamp(hudY, layout.viewport.y + 8.0f,
                                           layout.viewport.y + layout.viewport.height - hudHeight - 8.0f);
                         ui.panel("CURVE POINT / P" + std::to_string(pointIndex + 1), hudX, hudY, hudWidth);
-                        ui.value("Position", Loom::vectorText(curve.points[size_t(pointIndex)]) + " m");
+                        ui.value("Position", vectorText(curve.points[size_t(pointIndex)]) + " m");
                         ui.hint("Drag in viewport to move; right-click for point actions.");
                         const int action = ui.buttonRow({"Frame", "Before", "After", "More"});
                         if(action == 0) frameProceduraCurve();
