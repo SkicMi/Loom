@@ -191,6 +191,24 @@ Image VideoReader::State::convert(){
         if(!scaler){
             throw std::runtime_error("Spool::VideoReader: this pixel format cannot be converted to RGBA");
         }
+
+        //MATRICA BOJA IZ SNIMKE. Bez ovoga swscale uzima BT.601, a Sonyjev 4K (i gotovo sav HD i 4K
+        //video) je BT.709: izvezeni kadrovi su bili pomaknuti u boji (C0257: R -0.5, G +0.3, B +1.2
+        //razine prema dekodiranju s BT.709), dok Blender i Nuke istu snimku citaju kao 709 - pa se
+        //render splata i podloga nisu slagali. Neoznacena snimka od 720 redaka navise je HD, pa 709
+        int matrix = SWS_CS_ITU601;
+        switch(frame->colorspace){
+            case AVCOL_SPC_BT709: matrix = SWS_CS_ITU709; break;
+            case AVCOL_SPC_BT2020_NCL:
+            case AVCOL_SPC_BT2020_CL: matrix = SWS_CS_BT2020; break;
+            case AVCOL_SPC_SMPTE240M: matrix = SWS_CS_SMPTE240M; break;
+            case AVCOL_SPC_FCC: matrix = SWS_CS_FCC; break;
+            case AVCOL_SPC_UNSPECIFIED: matrix = decodedHeight >= 720 ? SWS_CS_ITU709 : SWS_CS_ITU601; break;
+            default: break;
+        }
+        const int fullRange = frame->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
+        sws_setColorspaceDetails(scaler, sws_getCoefficients(matrix), fullRange,
+                                 sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
     }
 
     //Odrediste je nas vektor; sws_scale_frame bi inace alocirao svoj i trebalo bi ga kopirati

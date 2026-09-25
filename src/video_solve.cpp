@@ -108,7 +108,7 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
                               const std::vector<Engine::Observation>& observations,
                               const std::vector<uint32_t>& keyframeFrames,
                               const Engine::Intrinsics& intrinsics,
-                              uint32_t maxPoints = 0, bool bothWays = true){
+                              uint32_t maxPoints = 0, bool bothWays = true, uint32_t levels = 4){
     DenseTrack out;
     if(step <= 1 || keyframeFrames.empty()) return out;
 
@@ -130,7 +130,9 @@ DenseTrack localiseEveryFrame(const std::string& path, uint32_t step,
     }
 
     Engine::TrackConfig trackConfig;
-    trackConfig.levels = 4;          //medjukadar je blizu, ali kamera iz ruke zna skociti
+    //Razina piramide udvostruci doseg: 4 razine s prozorom 10 hvataju oko 80 px na 4K. Na makro
+    //dijelu C0255 je pomak ~120 px po kadru, i ondje je lokalizirano samo 63 % medjukadrova
+    trackConfig.levels = int(levels);
     trackConfig.window = 10;
 
     Engine::PoseSolveConfig poseConfig;
@@ -528,6 +530,8 @@ int main(int realArgc, char** realArgv){
     bool focalFromMetadata = false;
     //--dense-points N: pune slicice prate najvise N tocaka po odsjecku, ravnomjerno po kadru (0 = sve)
     uint32_t densePoints = 0;
+    //--dense-levels N: razina piramide pracenja punih slicica (zadano 4) - vidi localiseEveryFrame
+    uint32_t denseLevels = 4;
     //--then "naredba": pokrene se cim je COLMAP zapisan (prije punih slicica), ispis ide ovamo s
     //oznakom [trening], a VideoSolve na kraju ceka da zavrsi. Editor tako trenira splat dok se
     //lokaliziraju medjukadrovi
@@ -561,6 +565,7 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--then" && i + 1 < realArgc) thenCommand = realArgv[++i];
         else if(std::string(realArgv[i]) == "--coarse-weight" && i + 1 < realArgc) coarseWeight = std::atof(realArgv[++i]);
         else if(std::string(realArgv[i]) == "--precise-points-from" && i + 1 < realArgc) precisePointsOverride = std::atoll(realArgv[++i]);
+        else if(std::string(realArgv[i]) == "--dense-levels" && i + 1 < realArgc) denseLevels = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--dense-points" && i + 1 < realArgc) densePoints = uint32_t(std::max(0, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
@@ -1798,7 +1803,7 @@ int main(int realArgc, char** realArgv){
             if(step > 1 && !keyframesOnly){
                 const auto denseStarted = std::chrono::steady_clock::now();
                 const DenseTrack dense = localiseEveryFrame(path, step, best, solveObservations,
-                                                            keyframeFrames, bestIntrinsics, densePoints, !denseOneWay);
+                                                            keyframeFrames, bestIntrinsics, densePoints, !denseOneWay, denseLevels);
                 const double denseSeconds = std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - denseStarted).count();
 

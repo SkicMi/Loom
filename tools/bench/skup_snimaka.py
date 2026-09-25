@@ -31,12 +31,10 @@ def run(command, log):
 
 
 def held_names(model, holdout=6, block=3):
-    names = []
-    for line in (model / "images.txt").read_text().splitlines()[4::2]:
-        parts = line.split()
-        if len(parts) >= 10 and (model / "images" / parts[9]).exists():
-            names.append(parts[9])
-    names.sort()
+    """Izdvojeni kadrovi istim pravilom kao trener i ocjena (read_images, pa svaki 6. blok od 3)"""
+    sys.path.insert(0, str(ROOT / "tools" / "splat"))
+    from train_splats import read_images
+    names = [n for n, _ in read_images(model / "images.txt") if (model / "images" / n).exists()]
     held = []
     for start in range(0, len(names), holdout * block):
         held.extend(names[start:start + block])
