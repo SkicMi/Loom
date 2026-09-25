@@ -150,8 +150,6 @@ inline void editMaterial(Treadle::Ui& ui, Warp::Stage& stage, int index, Materia
 //materijala na koji pokazuje prva veza koja nije zadani materijal
 inline void materialPanel(Treadle::Ui& ui, Warp::Stage& stage, Warp::Entity& entity, MaterialPanelState& state){
     if(!entity.mesh && !entity.model) return;
-    ui.separator();
-    ui.label("MATERIAL");
     int editing = -1;
     if(entity.mesh){
         tools::bindingRow(ui, stage, "Material", entity.mesh->material);

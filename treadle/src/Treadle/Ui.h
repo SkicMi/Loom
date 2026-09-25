@@ -82,6 +82,9 @@ class Ui{
     //Vodoravno poredani gumbi, jedan red. Vraca indeks kliknutog ili -1
     int buttonRow(const std::vector<std::string>& labels);
 
+    //Kompaktni naglaseni chipovi za povratak na nedavne odabire; vraca kliknuti indeks ili -1
+    int chipRow(const std::vector<std::string>& labels, const Color& accent);
+
     //Vraca true kad se vrijednost promijenila. Vrijednost se odsijeca na raspon
     bool slider(const std::string& name, float* target, float low, float high,
                 const std::string& unit = std::string());
@@ -96,6 +99,9 @@ class Ui{
 
     //Medijski red s formatnom značkom i neon obrubom po tipu datoteke.
     bool assetRow(const std::string& name, const std::string& badge, bool selected, const Color& accent);
+
+    //Collapsible instrument header for component-style property groups.
+    bool componentHeader(const std::string& title, const Color& accent, bool* expanded, bool active = true);
 
     //Red popisa datoteka za MAPU: mali zlatni znak mape na pocetku, pa ime. Isti kilk i
     //odabir kao selectable, samo sto prvi pogled odmah kaze da je ovo mapa
@@ -112,6 +118,13 @@ class Ui{
     //Red stabla. depth uvlaci, strelica lijevo otvara i zatvara djecu kad ih ima
     enum class TreeClick{ None, Select, Toggle };
     TreeClick treeRow(const std::string& text, int depth, bool hasChildren, bool expanded, bool selected);
+    TreeClick atlasRow(const std::string& name, const std::string& kind, int depth, bool hasChildren,
+                       bool expanded, bool selected, const Color& accent, bool visible);
+    void selectionCard(const std::string& name, const std::string& kind, const Color& accent, bool visible);
+    void linkedPreview(const std::string& name, const std::string& kind, const Color& accent);
+    int breadcrumb(const std::vector<std::string>& labels);
+    bool lastRowHovered() const {return lastRowHoveredValue;}
+    Rect lastRowRect() const {return lastRowBox;}
 
     //POLJE ZA TEKST, vise redaka s prelamanjem po rijecima. Klik postavi kursor, vucenje odabire;
     //strelice, Home/End, Ctrl+strelice po rijecima, Shift za odabir, Backspace/Delete (s Ctrl po
@@ -166,6 +179,10 @@ class Ui{
     bool menuItem(const std::string& text, bool enabled = true);
     void menuSeparator();
     void endMenu();
+    //Radial context menu positioned at the pointer; returns the item index selected this frame.
+    int orbitMenu(const std::string& id, const std::vector<std::string>& labels,
+                  const std::vector<bool>& enabled = {}, const std::vector<std::string>& shortcuts = {},
+                  std::vector<bool>* favorites = nullptr);
     void closeMenu(){openMenuId = 0;}
 
     //-- slobodna povrsina ---------------------------------------------------------------------
@@ -237,6 +254,8 @@ class Ui{
     float scrollOffset = 0.0f;
 
     bool lastRowRightPressed = false;
+    bool lastRowHoveredValue = false;
+    Rect lastRowBox;
 
     //Polje za tekst u fokusu: kursor i sidro odabira su bajtovi u UTF-8 tekstu
     uint64_t focusedField = 0;

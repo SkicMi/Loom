@@ -57,6 +57,7 @@ void Ui::begin(const Input& newInput, float width, float height){
     panelIndex = 0;
     pointerOverUi = false;
     lastRowRightPressed = false;
+    lastRowHoveredValue = false;
 
     //OTVOREN IZBORNIK UZIMA KLIK prije svih widgeta ovog kadra. Klik u njemu ide samo njegovim
     //stavkama; klik pokraj njega ga zatvori i nestane - ne smije usput kliknuti ono ispod
@@ -145,10 +146,22 @@ void Ui::dock(const std::string& title, const Rect& box, float* scroll){
     panelDocked = true;
     ++panelIndex;
     panelBox = box;
+    if(box.contains(input.mouseX, input.mouseY)) pointerOverUi = true;
 
     //Visina se zna unaprijed, pa pozadini ne treba zakrpa kao kod obicne plohe
     panelVertexBase = list.vertices.size();
-    list.rect(panelBox, Color{theme.panel.r, theme.panel.g, theme.panel.b, 1.0f});
+    list.rect(panelBox, Color{theme.panel.r, theme.panel.g, theme.panel.b, 0.97f});
+
+    //A quiet botanical weave sits in the panel gutter: warm sage/gold strokes, low contrast.
+    const Color grain{0.78f, 0.67f, 0.39f, 0.045f};
+    const float grainX = box.x + box.width - 8.0f;
+    for(float y = box.y + 42.0f; y < box.y + box.height - 10.0f; y += 34.0f){
+        list.line(grainX - 3.0f, y, grainX, y + 6.0f, 1.0f, grain);
+        list.line(grainX, y + 6.0f, grainX + 2.0f, y + 12.0f, 1.0f, grain);
+    }
+    const Color headerWash{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, 0.10f};
+    list.rect(box.x + 1.0f, box.y + 1.0f, std::max(0.0f, box.width - 2.0f),
+              textHeight(theme.textScale) + theme.padding * 1.15f, headerWash);
 
     cursorY = box.y + theme.padding;
     list.text(box.x + theme.padding, cursorY, fitText(title, box.width - 2.0f * theme.padding, theme.textScale),
@@ -219,6 +232,8 @@ Ui::Row Ui::nextRow(float height){
     }
     row.hot = row.visible && row.box.contains(input.mouseX, input.mouseY);
     lastRowRightPressed = row.hot && pressed[uint32_t(MouseButton::Right)];
+    lastRowHoveredValue = row.hot;
+    lastRowBox = row.box;
     return row;
 }
 
@@ -284,6 +299,30 @@ int Ui::buttonRow(const std::vector<std::string>& labels){
         list.text(textLeft, box.y + (box.height - textHeight(theme.textScale)) * 0.5f,
                   labels[index], theme.text, theme.textScale);
 
+        if(hot && pressed[uint32_t(MouseButton::Left)]) clicked = int(index);
+    }
+    return clicked;
+}
+
+int Ui::chipRow(const std::vector<std::string>& labels, const Color& accent){
+    if(labels.empty()) return -1;
+
+    const Row row = nextRow(theme.rowHeight);
+    if(!row.visible) return -1;
+    const float gap = std::max(4.0f, theme.spacing * 0.6f);
+    const float width = (row.box.width - gap * float(labels.size() - 1)) / float(labels.size());
+    const float scale = theme.textScale * 0.78f;
+    int clicked = -1;
+    for(size_t index = 0; index < labels.size(); ++index){
+        const Rect box{row.box.x + float(index) * (width + gap), row.box.y, width, row.box.height};
+        const bool hot = box.contains(input.mouseX, input.mouseY);
+        const Color edge{accent.r, accent.g, accent.b, hot ? 0.88f : 0.48f};
+        list.rect(box, Color{accent.r, accent.g, accent.b, hot ? 0.20f : 0.08f});
+        list.outline(box, hot ? 1.4f : 1.0f, edge);
+        const std::string label = fitText(labels[index], box.width - 10.0f, scale);
+        list.text(box.x + (box.width - textWidth(label, scale)) * 0.5f,
+                  box.y + (box.height - textHeight(scale)) * 0.5f,
+                  label, hot ? theme.title : theme.text, scale);
         if(hot && pressed[uint32_t(MouseButton::Left)]) clicked = int(index);
     }
     return clicked;
@@ -373,9 +412,12 @@ bool Ui::choice(const std::string& name, const std::vector<std::string>& options
 
         list.rect(box, chosen ? theme.accent : (hot ? theme.hot : theme.control));
 
-        const float textLeft = box.x + (box.width - textWidth(options[option], theme.textScale)) * 0.5f;
+        const std::string fitted = fitText(options[option],
+                                            std::max(0.0f, box.width - theme.padding * 1.2f),
+                                            theme.textScale);
+        const float textLeft = box.x + (box.width - textWidth(fitted, theme.textScale)) * 0.5f;
         list.text(textLeft, box.y + (box.height - textHeight(theme.textScale)) * 0.5f,
-                  options[option], chosen ? theme.textOnAccent : theme.text, theme.textScale);
+                  fitted, chosen ? theme.textOnAccent : theme.text, theme.textScale);
 
         if(hot && pressed[uint32_t(MouseButton::Left)] && !chosen){
             *index = int(option);
@@ -396,36 +438,118 @@ bool Ui::selectable(const std::string& text, bool selected){
 }
 
 bool Ui::assetRow(const std::string& name, const std::string& badge, bool selected, const Color& accent){
-    const Row row = nextRow(theme.rowHeight);
+    const Row row = nextRow(theme.rowHeight + 27.0f);
     if(!row.visible) return false;
 
-    const Color tint{accent.r, accent.g, accent.b, selected ? 0.92f : 0.14f};
-    list.rect(row.box, selected ? tint : (row.hot ? theme.hot : theme.control));
-    list.outline(row.box, selected ? 2.0f : 1.0f, accent);
+    const Color cardFill = selected ? Color{accent.r, accent.g, accent.b, 0.18f}
+                                    : (row.hot ? theme.hot : theme.control);
+    Color edge{accent.r, accent.g, accent.b, selected ? 0.92f : (row.hot ? 0.78f : 0.48f)};
+    list.rect(row.box, cardFill);
+    list.outline(row.box, selected ? 1.8f : 1.0f, edge);
 
-    const bool videoBadge = badge == "MP4" || badge == "MOV" || badge == "MKV" || badge == "AVI" || badge == "VID";
-    const float badgeWidth = std::max(30.0f, textWidth(badge, theme.textScale) + (videoBadge ? 19.0f : 10.0f));
-    const float badgeHeight = row.box.height - 8.0f;
-    const Rect badgeBox{row.box.x + 4.0f, row.box.y + 4.0f, badgeWidth, badgeHeight};
-    Color badgeFill{accent.r, accent.g, accent.b, selected ? 0.95f : 0.22f};
-    list.rect(badgeBox, badgeFill);
-    list.outline(badgeBox, 1.0f, accent);
-    const Color badgeInk = selected ? theme.textOnAccent : accent;
-    float badgeX = badgeBox.x + (badgeBox.width - textWidth(badge, theme.textScale)) * 0.5f;
-    if(videoBadge){
-        const float cy = badgeBox.y + badgeBox.height * 0.5f;
-        list.triangle(badgeBox.x + 5.0f, cy - 4.5f, badgeBox.x + 5.0f, cy + 4.5f,
-                      badgeBox.x + 12.0f, cy, badgeInk);
-        badgeX = badgeBox.x + 14.0f;
+    const Rect thumb{row.box.x + 6.0f, row.box.y + 6.0f, 44.0f, row.box.height - 12.0f};
+    list.rect(thumb, Color{accent.r, accent.g, accent.b, 0.09f});
+    list.outline(thumb, 1.0f, Color{accent.r, accent.g, accent.b, 0.45f});
+    const float cx = thumb.x + thumb.width * 0.5f;
+    const float cy = thumb.y + thumb.height * 0.5f;
+    const std::string type = badge;
+    const bool video = type == "MP4" || type == "MOV" || type == "MKV" || type == "AVI" || type == "VID";
+    const bool image = type == "IMG" || type == "JPG" || type == "JPEG" || type == "PNG" ||
+                       type == "WEBP" || type == "EXR" || type == "TIF" || type == "TIFF";
+    const bool model = type == "GLTF" || type == "GLB" || type == "OBJ" || type == "FBX" ||
+                       type == "USD" || type == "USDZ" || type == "3D";
+    const bool motion = type == "BVH" || type == "MOTION";
+    const bool splat = type == "SPLAT";
+    const Color ink{accent.r, accent.g, accent.b, 0.95f};
+    if(video){
+        const Rect screen{thumb.x + 9.0f, thumb.y + 7.0f, thumb.width - 18.0f, thumb.height - 14.0f};
+        list.rect(screen, Color{accent.r, accent.g, accent.b, 0.12f});
+        list.outline(screen, 1.0f, ink);
+        list.line(screen.x + 2.0f, screen.y + 3.0f, screen.x + screen.width - 2.0f, screen.y + 3.0f, 1.0f, ink);
+        list.line(screen.x + 2.0f, screen.y + screen.height - 3.0f, screen.x + screen.width - 2.0f, screen.y + screen.height - 3.0f, 1.0f, ink);
+        list.triangle(cx - 2.0f, cy - 5.0f, cx - 2.0f, cy + 5.0f, cx + 6.0f, cy, ink);
+    }else if(image){
+        list.rect(cx - 11.0f, cy - 9.0f, 22.0f, 18.0f, Color{accent.r, accent.g, accent.b, 0.10f});
+        list.outline(Rect{cx - 11.0f, cy - 9.0f, 22.0f, 18.0f}, 1.0f, ink);
+        list.rect(cx + 4.0f, cy - 6.0f, 3.0f, 3.0f, ink);
+        list.line(cx - 9.0f, cy + 6.0f, cx - 2.0f, cy - 1.0f, 1.5f, ink);
+        list.line(cx - 2.0f, cy - 1.0f, cx + 2.0f, cy + 3.0f, 1.5f, ink);
+        list.line(cx + 2.0f, cy + 3.0f, cx + 7.0f, cy - 2.0f, 1.5f, ink);
+    }else if(model){
+        list.line(cx, cy - 11.0f, cx + 10.0f, cy - 5.0f, 1.3f, ink);
+        list.line(cx + 10.0f, cy - 5.0f, cx + 10.0f, cy + 6.0f, 1.3f, ink);
+        list.line(cx + 10.0f, cy + 6.0f, cx, cy + 12.0f, 1.3f, ink);
+        list.line(cx, cy + 12.0f, cx - 10.0f, cy + 6.0f, 1.3f, ink);
+        list.line(cx - 10.0f, cy + 6.0f, cx - 10.0f, cy - 5.0f, 1.3f, ink);
+        list.line(cx - 10.0f, cy - 5.0f, cx, cy - 11.0f, 1.3f, ink);
+        list.line(cx, cy - 11.0f, cx, cy + 1.0f, 1.3f, ink);
+        list.line(cx - 10.0f, cy - 5.0f, cx, cy + 1.0f, 1.3f, ink);
+        list.line(cx + 10.0f, cy - 5.0f, cx, cy + 1.0f, 1.3f, ink);
+        list.line(cx, cy + 1.0f, cx, cy + 12.0f, 1.3f, ink);
+    }else if(motion){
+        list.line(cx, cy - 11.0f, cx, cy - 2.0f, 1.6f, ink);
+        list.line(cx, cy - 2.0f, cx - 8.0f, cy + 5.0f, 1.6f, ink);
+        list.line(cx, cy - 2.0f, cx + 8.0f, cy + 5.0f, 1.6f, ink);
+        list.line(cx, cy - 2.0f, cx - 6.0f, cy + 12.0f, 1.6f, ink);
+        list.line(cx, cy - 2.0f, cx + 6.0f, cy + 12.0f, 1.6f, ink);
+        list.rect(cx - 2.0f, cy - 13.0f, 4.0f, 4.0f, ink);
+        list.rect(cx - 10.0f, cy + 4.0f, 4.0f, 4.0f, ink);
+        list.rect(cx + 6.0f, cy + 4.0f, 4.0f, 4.0f, ink);
+    }else if(splat){
+        list.rect(cx - 10.0f, cy - 7.0f, 3.0f, 3.0f, ink);
+        list.rect(cx - 2.0f, cy - 11.0f, 3.0f, 3.0f, ink);
+        list.rect(cx + 6.0f, cy - 5.0f, 3.0f, 3.0f, ink);
+        list.rect(cx - 7.0f, cy + 1.0f, 3.0f, 3.0f, ink);
+        list.rect(cx + 2.0f, cy + 5.0f, 3.0f, 3.0f, ink);
+        list.rect(cx + 8.0f, cy + 9.0f, 3.0f, 3.0f, ink);
+        list.line(cx - 8.0f, cy - 5.0f, cx - 1.0f, cy - 8.0f, 1.0f, ink);
+        list.line(cx, cy - 7.0f, cx + 7.0f, cy - 3.0f, 1.0f, ink);
+    }else{
+        list.line(cx - 8.0f, cy - 10.0f, cx + 5.0f, cy - 10.0f, 1.3f, ink);
+        list.line(cx - 8.0f, cy - 10.0f, cx - 8.0f, cy + 10.0f, 1.3f, ink);
+        list.line(cx - 8.0f, cy + 10.0f, cx + 8.0f, cy + 10.0f, 1.3f, ink);
+        list.line(cx + 8.0f, cy + 10.0f, cx + 8.0f, cy - 7.0f, 1.3f, ink);
+        list.line(cx + 5.0f, cy - 10.0f, cx + 8.0f, cy - 7.0f, 1.3f, ink);
+        list.line(cx - 4.0f, cy - 4.0f, cx + 4.0f, cy - 4.0f, 1.0f, ink);
+        list.line(cx - 4.0f, cy + 1.0f, cx + 4.0f, cy + 1.0f, 1.0f, ink);
     }
-    list.text(badgeX, badgeBox.y + (badgeBox.height - textHeight(theme.textScale)) * 0.5f,
-              badge, selected ? theme.textOnAccent : accent, theme.textScale);
 
-    const float textLeft = badgeBox.x + badgeBox.width + 7.0f;
-    const float room = row.box.x + row.box.width - textLeft - 5.0f;
-    list.text(textLeft, row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
-              fitText(name, room, theme.textScale), selected ? theme.textOnAccent : theme.text, theme.textScale);
+    const float textLeft = thumb.x + thumb.width + 9.0f;
+    const float smallScale = std::max(2.0f, theme.textScale - 0.6f);
+    const float badgeWidth = std::max(30.0f, std::min(55.0f, textWidth(badge, smallScale) + 10.0f));
+    const Rect badgeBox{row.box.x + row.box.width - badgeWidth - 7.0f, row.box.y + row.box.height - 22.0f,
+                        badgeWidth, 16.0f};
+    const float nameRoom = std::max(12.0f, badgeBox.x - textLeft - 6.0f);
+    list.text(textLeft, row.box.y + 7.0f, fitText(name, nameRoom, theme.textScale),
+              selected ? theme.title : theme.text, theme.textScale);
+    list.rect(badgeBox, Color{accent.r, accent.g, accent.b, selected ? 0.27f : 0.13f});
+    list.outline(badgeBox, 1.0f, Color{accent.r, accent.g, accent.b, 0.66f});
+    const float badgeTextWidth = textWidth(badge, smallScale);
+    list.text(badgeBox.x + (badgeBox.width - badgeTextWidth) * 0.5f,
+              badgeBox.y + (badgeBox.height - textHeight(smallScale)) * 0.5f,
+              fitText(badge, badgeBox.width - 4.0f, smallScale), accent, smallScale);
+    const Color signal{accent.r, accent.g, accent.b, 0.9f};
+    list.rect(textLeft, row.box.y + row.box.height - 13.0f, 3.0f, 3.0f, signal);
     return row.hot && pressed[uint32_t(MouseButton::Left)];
+}
+
+bool Ui::componentHeader(const std::string& title, const Color& accent, bool* expanded, bool active){
+    if(!expanded) return false;
+    const Row row = nextRow(theme.rowHeight + 2.0f);
+    if(!row.visible) return *expanded;
+    if(row.hot && pressed[uint32_t(MouseButton::Left)]) *expanded = !*expanded;
+
+    list.rect(row.box, row.hot ? theme.hot : theme.control);
+    Color edge{accent.r, accent.g, accent.b, row.hot ? 0.72f : 0.30f};
+    list.outline(row.box, 1.0f, edge);
+    const Color signal = active ? accent : theme.dim;
+    list.rect(row.box.x + 7.0f, row.box.y + row.box.height * 0.5f - 2.5f, 5.0f, 5.0f, signal);
+    const float labelY = row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f;
+    list.text(row.box.x + 19.0f, labelY, fitText(title, row.box.width - 48.0f, theme.textScale),
+              active ? theme.title : theme.dim, theme.textScale);
+    list.text(row.box.x + row.box.width - 18.0f, labelY, *expanded ? "v" : ">",
+              accent, theme.textScale);
+    return *expanded;
 }
 
 bool Ui::folderRow(const std::string& name, bool selected){
@@ -448,6 +572,146 @@ bool Ui::folderRow(const std::string& name, bool selected){
               selected ? theme.textOnAccent : theme.text, theme.textScale);
 
     return row.hot && pressed[uint32_t(MouseButton::Left)];
+}
+
+
+Ui::TreeClick Ui::atlasRow(const std::string& name, const std::string& kind, int depth, bool hasChildren,
+                           bool expanded, bool selected, const Color& accent, bool visible){
+    const Row row = nextRow(theme.rowHeight + 3.0f);
+    if(!row.visible) return TreeClick::None;
+
+    list.rect(row.box, selected ? Color{accent.r, accent.g, accent.b, 0.15f} : (row.hot ? theme.hot : theme.control));
+    list.outline(row.box, selected ? 1.5f : 1.0f,
+                 Color{accent.r, accent.g, accent.b, selected ? 0.88f : 0.20f});
+    if(selected) list.rect(row.box.x, row.box.y + 4.0f, 2.0f, row.box.height - 8.0f, accent);
+
+    const float indent = float(std::min(depth, 7)) * 14.0f;
+    const float branchX = row.box.x + 9.0f + indent;
+    const Color branch{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, 0.55f};
+    if(depth > 0){
+        list.line(branchX, row.box.y, branchX, row.box.y + row.box.height, 1.0f, branch);
+        list.line(branchX, row.box.y + row.box.height * 0.5f, branchX + 6.0f,
+                  row.box.y + row.box.height * 0.5f, 1.0f, branch);
+    }
+
+    const Rect arrow{branchX + (depth > 0 ? 6.0f : 0.0f), row.box.y, 17.0f, row.box.height};
+    const float cx = arrow.x + arrow.width * 0.5f;
+    const float cy = row.box.y + row.box.height * 0.5f;
+    if(hasChildren){
+        if(expanded) list.triangle(cx - 4.0f, cy - 2.0f, cx + 4.0f, cy - 2.0f, cx, cy + 3.5f, theme.dim);
+        else list.triangle(cx - 2.0f, cy - 4.0f, cx - 2.0f, cy + 4.0f, cx + 3.5f, cy, theme.dim);
+    }
+
+    const float iconX = arrow.x + arrow.width + 3.0f;
+    const Color icon{accent.r, accent.g, accent.b, visible ? 0.96f : 0.35f};
+    list.rect(iconX, cy - 4.0f, 8.0f, 8.0f, Color{accent.r, accent.g, accent.b, 0.16f});
+    list.outline(Rect{iconX, cy - 4.0f, 8.0f, 8.0f}, 1.0f, icon);
+    list.rect(iconX + 2.0f, cy - 2.0f, 4.0f, 4.0f, icon);
+
+    const float smallScale = 2.15f;
+    const float pillWidth = std::max(34.0f, std::min(66.0f, textWidth(kind, smallScale) + 10.0f));
+    const Rect pill{row.box.x + row.box.width - pillWidth - 7.0f, row.box.y + 7.0f, pillWidth, row.box.height - 14.0f};
+    const float nameX = iconX + 14.0f;
+    const float nameRoom = std::max(10.0f, pill.x - nameX - 15.0f);
+    list.text(nameX, row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
+              fitText(name, nameRoom, theme.textScale), selected ? theme.title : (visible ? theme.text : theme.dim),
+              theme.textScale);
+    list.rect(pill, Color{accent.r, accent.g, accent.b, 0.10f});
+    list.outline(pill, 1.0f, Color{accent.r, accent.g, accent.b, 0.26f});
+    list.text(pill.x + (pill.width - textWidth(kind, smallScale)) * 0.5f,
+              pill.y + (pill.height - textHeight(smallScale)) * 0.5f,
+              fitText(kind, pill.width - 4.0f, smallScale), accent, smallScale);
+
+    if(!(row.hot && pressed[uint32_t(MouseButton::Left)])) return TreeClick::None;
+    if(hasChildren && arrow.contains(input.mouseX, input.mouseY)) return TreeClick::Toggle;
+    return TreeClick::Select;
+}
+
+void Ui::selectionCard(const std::string& name, const std::string& kind, const Color& accent, bool visible){
+    const Row row = nextRow(theme.rowHeight + 20.0f);
+    if(!row.visible) return;
+    list.rect(row.box, Color{accent.r, accent.g, accent.b, 0.11f});
+    list.outline(row.box, 1.0f, Color{accent.r, accent.g, accent.b, 0.42f});
+    list.rect(row.box.x, row.box.y + 4.0f, 3.0f, row.box.height - 8.0f, accent);
+
+    const float left = row.box.x + 12.0f;
+    const float titleRoom = row.box.width - 24.0f;
+    list.text(left, row.box.y + 4.0f, fitText(name, titleRoom, theme.textScale), theme.title, theme.textScale);
+
+    const float smallScale = 2.1f;
+    const float pillWidth = std::max(50.0f, std::min(row.box.width - 100.0f, textWidth(kind, smallScale) + 12.0f));
+    const Rect pill{left, row.box.y + row.box.height - 19.0f, pillWidth, 14.0f};
+    list.rect(pill, Color{accent.r, accent.g, accent.b, 0.15f});
+    list.text(pill.x + (pill.width - textWidth(kind, smallScale)) * 0.5f,
+              pill.y + (pill.height - textHeight(smallScale)) * 0.5f,
+              fitText(kind, pill.width - 4.0f, smallScale), accent, smallScale);
+
+    const Color stateColor = visible ? Color{0.36f, 0.95f, 0.61f, 0.95f} : theme.dim;
+    const float statusX = row.box.x + row.box.width - 78.0f;
+    list.rect(statusX, pill.y + 4.0f, 5.0f, 5.0f, stateColor);
+    const std::string status = visible ? "VISIBLE" : "HIDDEN";
+    list.text(statusX + 10.0f, pill.y + (pill.height - textHeight(smallScale)) * 0.5f,
+              status, stateColor, smallScale);
+}
+
+void Ui::linkedPreview(const std::string& name, const std::string& kind, const Color& accent){
+    const Row row = nextRow(theme.rowHeight + 10.0f);
+    if(!row.visible) return;
+    list.rect(row.box, Color{accent.r, accent.g, accent.b, 0.075f});
+    list.outline(row.box, 1.0f, Color{accent.r, accent.g, accent.b, 0.30f});
+    list.rect(row.box.x, row.box.y + 4.0f, 2.0f, row.box.height - 8.0f,
+              Color{accent.r, accent.g, accent.b, 0.72f});
+    const float left = row.box.x + 10.0f;
+    const float micro = 1.8f;
+    list.text(left, row.box.y + 3.0f, "ATLAS LINK / " + kind, accent, micro);
+    list.text(left, row.box.y + 18.0f,
+              fitText(name, row.box.width - 20.0f, theme.textScale * 0.82f),
+              theme.title, theme.textScale * 0.82f);
+}
+
+int Ui::breadcrumb(const std::vector<std::string>& labels){
+    if(labels.empty()) return -1;
+    std::vector<int> visible;
+    if(labels.size() <= 4){
+        for(size_t i = 0; i < labels.size(); ++i) visible.push_back(int(i));
+    }else{
+        visible = {0, -1, int(labels.size()) - 2, int(labels.size()) - 1};
+    }
+
+    const Row row = nextRow(theme.rowHeight + 2.0f);
+    if(!row.visible) return -1;
+    const float gap = 4.0f;
+    const float slot = std::max(24.0f, (row.box.width - gap * float(visible.size() - 1)) /
+                                           float(visible.size()));
+    float x = row.box.x;
+    int clicked = -1;
+    for(size_t i = 0; i < visible.size(); ++i){
+        const int index = visible[i];
+        const Rect chip{x, row.box.y + 2.0f, slot, row.box.height - 4.0f};
+        const bool hot = index >= 0 && chip.contains(input.mouseX, input.mouseY);
+        const bool current = index == int(labels.size()) - 1;
+        const Color fill = current ? Color{theme.active.r, theme.active.g, theme.active.b, 0.17f}
+                                   : hot ? theme.hot : theme.control;
+        const Color edge = current ? theme.active : Color{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, 0.58f};
+        list.rect(chip, fill);
+        list.outline(chip, current || hot ? 1.4f : 0.8f, edge);
+        const float scale = theme.textScale * 0.76f;
+        const std::string text = index < 0 ? "..." : labels[size_t(index)];
+        const Color ink = current ? theme.title : (hot ? theme.text : theme.dim);
+        const std::string display = fitText(text, chip.width - 8.0f, scale);
+        list.text(chip.x + (chip.width - textWidth(display, scale)) * 0.5f,
+                  chip.y + (chip.height - textHeight(scale)) * 0.5f, display, ink, scale);
+        if(hot && pressed[uint32_t(MouseButton::Left)]) clicked = index;
+        if(i + 1 < visible.size()){
+            const float midY = chip.y + chip.height * 0.5f;
+            const float arrowX = chip.x + chip.width + gap * 0.5f;
+            list.line(arrowX - 1.5f, midY - 3.0f, arrowX + 1.5f, midY, 1.0f, theme.dim);
+            list.line(arrowX + 1.5f, midY, arrowX - 1.5f, midY + 3.0f, 1.0f, theme.dim);
+        }
+        x += slot + gap;
+    }
+    if(row.hot) pointerOverUi = true;
+    return clicked;
 }
 
 Ui::TreeClick Ui::treeRow(const std::string& text, int depth, bool hasChildren, bool expanded, bool selected){
@@ -541,6 +805,129 @@ void Ui::menuSeparator(){
     cursorY += theme.spacing * 0.5f;
     list.rect(menuBuilding.x + theme.padding, cursorY, menuBuilding.width - 2.0f * theme.padding, 1.0f, theme.panelEdge);
     cursorY += theme.spacing * 0.5f + 1.0f;
+}
+
+
+int Ui::orbitMenu(const std::string& id, const std::vector<std::string>& labels,
+                  const std::vector<bool>& enabled, const std::vector<std::string>& shortcuts,
+                  std::vector<bool>* favorites){
+    if(!menuOpen(id) || labels.empty()) return -1;
+    closePanel();
+    std::swap(list, overlay);
+
+    if(favorites && favorites->size() < labels.size()) favorites->resize(labels.size(), false);
+    std::vector<int> order;
+    order.reserve(labels.size());
+    for(size_t i = 0; i < labels.size(); ++i) order.push_back(int(i));
+    if(favorites){
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b){
+            return (*favorites)[size_t(a)] && !(*favorites)[size_t(b)];
+        });
+    }
+
+    const float scale = theme.textScale * 0.76f;
+    const float keyScale = scale * 0.68f;
+    const float cardHeight = theme.rowHeight + 8.0f;
+    const float maxLabelWidth = std::clamp(screenWidth * 0.24f, 148.0f, 218.0f);
+    float widest = 0.0f, widestKey = 0.0f;
+    for(size_t i = 0; i < labels.size(); ++i){
+        widest = std::max(widest, textWidth(fitText(labels[i], maxLabelWidth, scale), scale));
+        if(i < shortcuts.size() && !shortcuts[i].empty())
+            widestKey = std::max(widestKey, textWidth(shortcuts[i], keyScale) + 10.0f);
+    }
+    const float maxCardWidth = std::clamp(screenWidth * 0.24f, 164.0f, 216.0f);
+    const float cardWidth = std::clamp(widest + widestKey + 2.0f * theme.padding + 22.0f,
+                                       150.0f, maxCardWidth);
+    const float radiusLimit = std::max(48.0f, std::min(screenWidth, screenHeight) * 0.29f);
+    const float requestedRadius = std::max(58.0f + 7.5f * float(labels.size()), cardWidth * 0.60f + 4.0f);
+    const float orbitRadius = std::min(requestedRadius, radiusLimit);
+    const float reach = orbitRadius + cardWidth * 0.5f + 16.0f;
+    const float cx = screenWidth >= reach * 2.0f ? std::clamp(menuX, reach, screenWidth - reach) : screenWidth * 0.5f;
+    const float cy = screenHeight >= reach * 2.0f ? std::clamp(menuY, reach, screenHeight - reach) : screenHeight * 0.5f;
+    menuBox = Rect{cx - reach, cy - reach, reach * 2.0f, reach * 2.0f};
+    if(menuBox.contains(input.mouseX, input.mouseY)) pointerOverUi = true;
+
+    const Color ring{theme.accent.r, theme.accent.g, theme.accent.b, 0.30f};
+    constexpr int segments = 48;
+    for(int segment = 0; segment < segments; ++segment){
+        const float a = 6.28318530718f * float(segment) / float(segments);
+        const float b = 6.28318530718f * float(segment + 1) / float(segments);
+        list.line(cx + std::cos(a) * orbitRadius, cy + std::sin(a) * orbitRadius,
+                  cx + std::cos(b) * orbitRadius, cy + std::sin(b) * orbitRadius, 1.0f, ring);
+    }
+
+    int selected = -1;
+    bool pinnedThisFrame = false;
+    for(size_t slot = 0; slot < order.size(); ++slot){
+        const int action = order[slot];
+        const float angle = -1.57079632679f + 6.28318530718f * float(slot) / float(order.size());
+        const float ix = cx + std::cos(angle) * orbitRadius;
+        const float iy = cy + std::sin(angle) * orbitRadius;
+        const Rect box{ix - cardWidth * 0.5f, iy - cardHeight * 0.5f, cardWidth, cardHeight};
+        const bool hot = box.contains(input.mouseX, input.mouseY);
+        const bool active = enabled.empty() || (size_t(action) < enabled.size() && enabled[size_t(action)]);
+        const bool favorite = favorites && (*favorites)[size_t(action)];
+        if(hot) pointerOverUi = true;
+
+        list.rect(box, hot && active ? theme.hot : theme.panel);
+        const bool destructive = labels[size_t(action)] == "Delete";
+        const Color edge = destructive && active ? theme.warning
+                         : favorite ? Color{theme.active.r, theme.active.g, theme.active.b, 0.82f}
+                         : (hot && active ? theme.active : theme.panelEdge);
+        list.outline(box, hot ? 1.8f : 1.0f, edge);
+
+        const float labelLeft = box.x + (favorite ? 22.0f : 11.0f);
+        const bool hasShortcut = active && size_t(action) < shortcuts.size() && !shortcuts[size_t(action)].empty();
+        const float keyWidth = hasShortcut ? textWidth(shortcuts[size_t(action)], keyScale) + 10.0f : 0.0f;
+        const float labelRight = hasShortcut ? box.x + box.width - keyWidth - 12.0f : box.x + box.width - 10.0f;
+        const float labelRoom = std::max(20.0f, labelRight - labelLeft);
+        const std::string display = fitText(labels[size_t(action)], labelRoom, scale);
+        const Color ink = !active ? theme.dim : hot ? theme.title : theme.text;
+        list.text(labelLeft, box.y + (box.height - textHeight(scale)) * 0.5f, display, ink, scale);
+        if(favorite){
+            const float fx = box.x + 10.0f, fy = box.y + box.height * 0.5f;
+            const Color gold{theme.active.r, theme.active.g, theme.active.b, 0.96f};
+            list.line(fx, fy - 4.0f, fx + 4.0f, fy, 1.2f, gold);
+            list.line(fx + 4.0f, fy, fx, fy + 4.0f, 1.2f, gold);
+            list.line(fx, fy + 4.0f, fx - 4.0f, fy, 1.2f, gold);
+            list.line(fx - 4.0f, fy, fx, fy - 4.0f, 1.2f, gold);
+        }
+        if(hasShortcut){
+            const float keyHeight = 16.0f;
+            const Rect key{box.x + box.width - keyWidth - 7.0f,
+                           box.y + (box.height - keyHeight) * 0.5f, keyWidth, keyHeight};
+            list.rect(key, Color{theme.active.r, theme.active.g, theme.active.b, 0.10f});
+            list.outline(key, 0.8f, Color{theme.active.r, theme.active.g, theme.active.b, 0.42f});
+            list.text(key.x + (key.width - textWidth(shortcuts[size_t(action)], keyScale)) * 0.5f,
+                      key.y + (key.height - textHeight(keyScale)) * 0.5f,
+                      shortcuts[size_t(action)], theme.active, keyScale);
+        }
+        if(active && hot && menuPressed[uint32_t(MouseButton::Left)]){
+            if(input.shift && favorites){
+                (*favorites)[size_t(action)] = !(*favorites)[size_t(action)];
+                pinnedThisFrame = true;
+            }else{
+                selected = action;
+            }
+        }
+    }
+
+    const Rect hub{cx - 31.0f, cy - 20.0f, 62.0f, 36.0f};
+    list.rect(hub, theme.control);
+    list.outline(hub, 1.5f, theme.accent);
+    const std::string brand = "LOOM";
+    const float markScale = scale * 0.70f;
+    list.text(cx - textWidth(brand, markScale) * 0.5f,
+              cy - textHeight(markScale) * 0.5f, brand, theme.title, markScale);
+    const std::string hint = pinnedThisFrame ? "PINNED" : "SHIFT-CLICK TO PIN";
+    const float hintScale = 1.45f;
+    const float hintY = cy + orbitRadius + cardHeight * 0.5f + 8.0f;
+    list.text(cx - textWidth(hint, hintScale) * 0.5f, hintY, hint,
+              pinnedThisFrame ? theme.active : theme.dim, hintScale);
+
+    std::swap(list, overlay);
+    if(selected >= 0) openMenuId = 0;
+    return selected;
 }
 
 void Ui::endMenu(){

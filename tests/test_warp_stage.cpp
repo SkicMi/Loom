@@ -208,7 +208,53 @@ int main(){
                 stage.localAt(cube, 1.0).translation.y, stage.localAt(cube, 1.0).translation.z));
     }
 
-    //-- 7. biblioteka materijala: imena i brisanje ---------------------------------------------
+    //-- 7. Animator: aktivni klip daje lokalnu pozu zglobovima -------------------------------
+    {
+        Warp::Stage stage;
+        const Warp::Id rig = stage.create("Mascot");
+        stage.get(rig)->local.translation = glm::vec3(4.0f, 0.0f, 0.0f);
+        const Warp::Id arm = stage.create("Arm", rig);
+        stage.get(arm)->local.translation = glm::vec3(9.0f, 0.0f, 0.0f);
+        Warp::Animator animator;
+        Warp::AnimationClip wave;
+        wave.name = "Wave"; wave.startFrame = 10.0; wave.endFrame = 20.0;
+        Warp::AnimatorTrack rootMotionTrack;
+        rootMotionTrack.target = rig; rootMotionTrack.targetPath = stage.path(rig); rootMotionTrack.rootMotion = true;
+        rootMotionTrack.translationKeys.set(10.0, glm::vec3(4.0f, 0.0f, 0.0f));
+        rootMotionTrack.translationKeys.set(20.0, glm::vec3(14.0f, 0.0f, 0.0f));
+        wave.tracks.push_back(rootMotionTrack);
+        Warp::AnimatorTrack waveTrack;
+        waveTrack.target = arm; waveTrack.targetPath = stage.path(arm);
+        waveTrack.translationKeys.set(10.0, glm::vec3(0.0f));
+        waveTrack.translationKeys.set(20.0, glm::vec3(2.0f, 0.0f, 0.0f));
+        wave.tracks.push_back(waveTrack);
+        Warp::AnimationClip point;
+        point.name = "Point"; point.startFrame = 30.0; point.endFrame = 40.0;
+        Warp::AnimatorTrack pointTrack;
+        pointTrack.target = arm; pointTrack.targetPath = stage.path(arm);
+        pointTrack.translationKeys.set(30.0, glm::vec3(0.0f, 1.0f, 0.0f));
+        pointTrack.translationKeys.set(40.0, glm::vec3(0.0f, 3.0f, 0.0f));
+        point.tracks.push_back(pointTrack);
+        animator.animations = {wave, point};
+        stage.get(rig)->animator = animator;
+        const glm::vec3 waveMiddle = stage.localAt(arm, 15.0).translation;
+        const float rootMovesWithClip = stage.worldMatrix(rig, 15.0)[3].x;
+        stage.get(rig)->animator->animations[0].inPlace = true;
+        const float rootStaysInPlace = stage.worldMatrix(rig, 15.0)[3].x;
+        stage.get(rig)->animator->activeAnimation = 1;
+        const glm::vec3 pointMiddle = stage.localAt(arm, 35.0).translation;
+        stage.get(rig)->animator->enabled = false;
+        const glm::vec3 disabled = stage.localAt(arm, 35.0).translation;
+        report.check("Animator odabire i interpolira klip, a iskljucen vraca mirnu transformaciju",
+            glm::length(waveMiddle - glm::vec3(1.0f, 0.0f, 0.0f)) < 1e-5f &&
+            std::fabs(rootMovesWithClip - 9.0f) < 1e-5f && std::fabs(rootStaysInPlace - 4.0f) < 1e-5f &&
+            glm::length(pointMiddle - glm::vec3(0.0f, 2.0f, 0.0f)) < 1e-5f &&
+            disabled == glm::vec3(9.0f, 0.0f, 0.0f),
+            fmt("Wave (%.1f, %.1f, %.1f), Point (%.1f, %.1f, %.1f)", waveMiddle.x, waveMiddle.y, waveMiddle.z,
+                pointMiddle.x, pointMiddle.y, pointMiddle.z));
+    }
+
+    //-- 8. biblioteka materijala: imena i brisanje ---------------------------------------------
     {
         Warp::Stage stage;
         Warp::Material m;

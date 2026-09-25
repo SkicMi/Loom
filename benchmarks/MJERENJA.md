@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (309 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (329 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -100,6 +100,8 @@ Iz `benchmarks/mjerenja.jsonl` (309 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 17:18 | C0257 | CISTO 2: cijeli lanac sa zadanim postavkama (--then), popravljena samokalibracija | 15000 | 1920x1080 | 2156223 | 1161 | 25.91 | 21.44 | 0.802 |  | kamera=classic, izlaz=scena.ply, izdvojenih=39 |
 | 2026-09-25 18:10 | C0255 | C0255: cijeli lanac sada | 15000 | 1920x1080 | 223175 | 739 | 14.95 | 10.24 | 0.792 |  | kamera=classic, izlaz=scena.ply, izdvojenih=21 |
 | 2026-09-25 18:46 | C0255 | C0255: cijeli lanac, ograde + kamere pa tocke | 15000 | 1920x1080 | 243656 | 738 | 26.71 | 12.81 | 0.925 |  | kamera=classic, izlaz=scena.ply, izdvojenih=21 |
+| 2026-09-25 20:47 | C0257 | E14: ispravak poza u treningu | 15000 | 1920x1080 | 1866479 | 1713 | 26.87 | 21.96 | 0.802 |  | kamera=classic, izlaz=e14_pose.ply, izdvojenih=39 |
+| 2026-09-25 21:09 | C0257 | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) | 15000 | 1920x1080 | 1930114 | 1262 | 25.27 | 20.44 | 0.781 |  | kamera=classic, izlaz=e15_surface.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -159,6 +161,10 @@ Iz `benchmarks/mjerenja.jsonl` (309 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 19:21 | C0257 | C0257: rastavljanje linearno + sigurnost smjera | 960x540 | 23.58 |  |  | 39 |  |  | splat=cist.ply, izvorni_psnr=25.91, povrsinski_psnr=26.10, sunce_visina=-42.90, smjer_raspon_db=1.069, smjer_nesigurnost_st=173 |
 | 2026-09-25 19:26 | C0257 | C0257: rastavljanje, sunce + nebo gore/dolje | 960x540 | 23.57 |  |  | 39 |  |  | splat=cist.ply, izvorni_psnr=25.91, povrsinski_psnr=26.10, sunce_visina=4.400, smjer_raspon_db=0.137, smjer_nesigurnost_st=164 |
 | 2026-09-25 19:30 | C0255 | C0255: rastavljanje, sunce + nebo gore/dolje | 960x540 | 21.96 |  |  | 21 |  |  | splat=scena.ply, izvorni_psnr=25.79, povrsinski_psnr=26.12, sunce_visina=27.40, smjer_raspon_db=0.124, smjer_nesigurnost_st=169 |
+| 2026-09-25 20:47 | C0257 | E14 ispravak poza | 1920x1080 | 26.58 | 0.790 | 0.135 | 39 |  |  | psnr_medijan=26.87, splat=e14_pose.ply |
+| 2026-09-25 20:47 | C0257 | E14 ispravak poza | 3840x2160 | 26.49 | 0.824 | 0.028 | 39 |  |  | psnr_medijan=26.81, splat=e14_pose.ply |
+| 2026-09-25 21:09 | C0257 | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) | 1920x1080 | 24.87 | 0.788 | 0.329 | 39 |  |  | psnr_medijan=25.27, splat=e15_surface.ply |
+| 2026-09-25 21:09 | C0257 | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) | 3840x2160 | 24.81 | 0.819 | 0.143 | 39 |  |  | psnr_medijan=25.22, splat=e15_surface.ply |
 
 ## usporedba
 
@@ -322,6 +328,18 @@ Iz `benchmarks/mjerenja.jsonl` (309 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 18:47 |  | C0255: popravljeni solve prema jutru (d1) | PSNR dB | 4.138 | 0.821 | 16/21 |  | a=q_c55j_d1, b=q_c55f_d1 |
 | 2026-09-25 18:47 |  | C0255: popravljeni solve prema jutru (d1) | SSIM | 0.017 | 0.004 | 17/21 |  | a=q_c55j_d1, b=q_c55f_d1 |
 | 2026-09-25 18:47 |  | C0255: popravljeni solve prema jutru (d1) | ostrina | 0.061 | 0.017 | 16/21 |  | a=q_c55j_d1, b=q_c55f_d1 |
+| 2026-09-25 20:47 |  | E14 ispravak poza prema zadanom (d2) | PSNR dB | 0.683 | 0.249 | 24/39 |  | a=q_lanac2_d2, b=q_e14_d2 |
+| 2026-09-25 20:47 |  | E14 ispravak poza prema zadanom (d2) | SSIM | -0.017 | 0.004 | 9/39 |  | a=q_lanac2_d2, b=q_e14_d2 |
+| 2026-09-25 20:47 |  | E14 ispravak poza prema zadanom (d2) | ostrina | -0.308 | 0.020 | 0/39 |  | a=q_lanac2_d2, b=q_e14_d2 |
+| 2026-09-25 20:47 |  | E14 ispravak poza prema zadanom (d1) | PSNR dB | 0.674 | 0.244 | 24/39 |  | a=q_lanac2_d1, b=q_e14_d1 |
+| 2026-09-25 20:47 |  | E14 ispravak poza prema zadanom (d1) | SSIM | -0.005 | 0.002 | 12/39 |  | a=q_lanac2_d1, b=q_e14_d1 |
+| 2026-09-25 20:47 |  | E14 ispravak poza prema zadanom (d1) | ostrina | -0.144 | 0.010 | 0/39 |  | a=q_lanac2_d1, b=q_e14_d1 |
+| 2026-09-25 21:09 |  | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) prema zadanom (d2) | PSNR dB | -1.032 | 0.092 | 1/39 |  | a=q_lanac2_d2, b=q_e15_surface_d2 |
+| 2026-09-25 21:09 |  | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) prema zadanom (d2) | SSIM | -0.018 | 0.001 | 0/39 |  | a=q_lanac2_d2, b=q_e15_surface_d2 |
+| 2026-09-25 21:09 |  | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) prema zadanom (d2) | ostrina | -0.114 | 0.013 | 2/39 |  | a=q_lanac2_d2, b=q_e15_surface_d2 |
+| 2026-09-25 21:09 |  | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) prema zadanom (d1) | PSNR dB | -1.003 | 0.092 | 1/39 |  | a=q_lanac2_d1, b=q_e15_surface_d1 |
+| 2026-09-25 21:09 |  | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) prema zadanom (d1) | SSIM | -0.009 | 0.001 | 1/39 |  | a=q_lanac2_d1, b=q_e15_surface_d1 |
+| 2026-09-25 21:09 |  | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) prema zadanom (d1) | ostrina | -0.030 | 0.008 | 8/39 |  | a=q_lanac2_d1, b=q_e15_surface_d1 |
 
 ## dekodiranje
 
@@ -340,4 +358,11 @@ Iz `benchmarks/mjerenja.jsonl` (309 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 00:35 | C0257 | --dense-points 4000 (60 kljucnih, 532 medjukadra) | 38.30 | 0.049 | 0.120 | 2.350 | 10.73 | medijan isti, p90 +16 %; 2.7x brze - opcija |  |
 | 2026-09-25 00:35 | C0257 | --dense-points 2000 (60 kljucnih, 532 medjukadra) | 22.20 | 0.051 | 0.131 | 2.410 | 10.80 | p90 +27 % |  |
 | 2026-09-25 00:35 | C0257 | --dense-points 1000 (60 kljucnih, 532 medjukadra) | 13.40 | 0.062 | 0.146 | 3.600 | 12.78 | losije |  |
+
+## odluka
+
+| datum | snimka | opis | ostalo |
+|---|---|---|---|
+| 2026-09-25 20:48 | C0257 | E14 ispravak poza (Adam 1e-4 od 500): odbaceno - PSNR +0.68 dB ali ostrina 0.44->0.14 (1080p), 0.17->0.03 (4K); zakret medijan 0.42 st, poze odlutale |  |
+| 2026-09-25 21:10 | C0257 | E15 povrsina u treningu (normale 0.1, plosnatost 0.1 od 7000): odbaceno - PSNR -1.03 dB (38/39 losije), ostrina 0.44->0.33, 21 min umjesto 16 |  |
 

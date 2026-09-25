@@ -1,0 +1,1 @@
+MotionBricks stealth_walk	4 s

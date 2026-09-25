@@ -202,7 +202,7 @@ inline const std::array<glm::vec3, 8>& cubeCorners(){
 //extent je sceneExtent() - racuna se kad se scena promijeni, ne svaki kadar
 inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const ViewCamera& camera,
                                  const ViewportState& state, const SceneExtent& extent, Warp::Id selected,
-                                 Treadle::DrawList& list){
+                                 Treadle::DrawList& list, uint32_t pointBudget = maxDisplayPoints){
     ViewportReport report;
     const Treadle::Color accent{1.0f, 0.78f, 0.25f, 1.0f};
 
@@ -231,7 +231,8 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
             const std::vector<glm::vec3>& positions = entity.points->positions;
             const std::vector<glm::u8vec3>& colours = entity.points->colours;
             const bool coloured = colours.size() == positions.size();
-            const size_t stride = std::max<size_t>(1, positions.size() / maxDisplayPoints);
+            const size_t budget = std::max<size_t>(1, std::min<size_t>(maxDisplayPoints, pointBudget));
+            const size_t stride = std::max<size_t>(1, positions.size() / budget);
             const float low = extent.centre.y - extent.radius, span = 2.0f * extent.radius;
             for(size_t i = 0; i < positions.size(); i += stride){
                 const glm::vec3 p = glm::vec3(world * glm::vec4(positions[i], 1.0f));

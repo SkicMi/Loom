@@ -3,12 +3,14 @@
 Mesh::Mesh(const VulkanDevice& device,
     const VulkanCommand& command,
     const std::vector<Vertex>& vertices,
-    const std::vector<uint16_t>& indices) :
-    vertexBuffer(device, 
-    sizeof(Vertex) * vertices.size(), 
-    vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst, 
-    MemoryUsage::GPU_ONLY), 
-    vertexCount(static_cast<uint32_t>(vertices.size())){
+    const std::vector<uint16_t>& indices,
+    bool dynamic) :
+    vertexBuffer(device,
+    sizeof(Vertex) * vertices.size(),
+    vk::BufferUsageFlagBits::eVertexBuffer | (dynamic ? vk::BufferUsageFlags{} : vk::BufferUsageFlags(vk::BufferUsageFlagBits::eTransferDst)),
+    dynamic ? MemoryUsage::CPU_TO_GPU : MemoryUsage::GPU_ONLY),
+    vertexCount(static_cast<uint32_t>(vertices.size())),
+    dynamic(dynamic){
 
         
 
@@ -23,9 +25,11 @@ Mesh::Mesh(const VulkanDevice& device,
         vk::DeviceSize vertexBytes = sizeof(Vertex) * vertices.size();
 
 
-        {
+        if(dynamic){
+            vertexBuffer.upload(vertices.data(), vertexBytes);
+        }else{
             VulkanBuffer staging(device, vertexBytes, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CPU_TO_GPU);
-            staging.upload(vertices.data(),vertexBytes);
+            staging.upload(vertices.data(), vertexBytes);
             command.copyBuffer(staging.getBuffer(), vertexBuffer.getBuffer(), vertexBytes);
         }
 
@@ -40,3 +44,9 @@ Mesh::Mesh(const VulkanDevice& device,
         }
     }
 
+
+void Mesh::updateVertices(const std::vector<Vertex>& vertices){
+    if(!dynamic) throw std::logic_error("Mesh::updateVertices requires a dynamic mesh");
+    if(vertices.size() != vertexCount) throw std::invalid_argument("Mesh::updateVertices cannot change vertex count");
+    vertexBuffer.upload(vertices.data(), sizeof(Vertex) * vertices.size());
+}

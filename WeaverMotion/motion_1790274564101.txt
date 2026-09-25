@@ -1,0 +1,6 @@
+# model	Kimodo-SOMA-RP-v1.1
+# target	2
+# first_heading_angle	0
+# root_margin	0.04
+person walks and wawes	4
+rolls to ground forward	3

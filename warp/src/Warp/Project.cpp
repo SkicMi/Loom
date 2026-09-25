@@ -182,6 +182,16 @@ public:
             const Model& model = *entity.model;
             indent(in); out << "custom asset loom:model = "; asset(model.path); out << '\n';
             indent(in); out << "custom int loom:mesh = " << model.mesh << '\n';
+            indent(in); out << "custom int loom:skin = " << model.skin << '\n';
+            indent(in); out << "custom string[] loom:skinJointPaths = [";
+            const size_t jointPathCount = std::max(model.skinJointPaths.size(), model.skinJoints.size());
+            for(size_t i = 0; i < jointPathCount; ++i){
+                if(i) out << ", ";
+                std::string path = i < model.skinJointPaths.size() ? model.skinJointPaths[i] : std::string();
+                if(i < model.skinJoints.size() && stage.contains(model.skinJoints[i])) path = stage.path(model.skinJoints[i]);
+                string(path);
+            }
+            out << "]\n";
             indent(in); out << "custom string[] loom:materials = [";
             for(size_t i = 0; i < model.materials.size(); ++i){
                 if(i) out << ", ";
@@ -192,6 +202,47 @@ public:
         }
         if(entity.splat){ indent(in); out << "custom asset loom:splat = "; asset(entity.splat->path); out << '\n'; }
         if(entity.joint){ indent(in); out << "custom color3f loom:joint = "; vector(entity.joint->colour); out << '\n'; }
+        if(entity.animator){
+            const Animator& animator = *entity.animator;
+            indent(in); out << "\ndef Scope \"LoomAnimator\"\n";
+            indent(in); out << "{\n";
+            const int animatorDepth = in + 1;
+            indent(animatorDepth); out << "custom bool loom:animatorComponent = 1\n";
+            indent(animatorDepth); out << "custom bool loom:enabled = " << (animator.enabled ? 1 : 0) << '\n';
+            indent(animatorDepth); out << "custom bool loom:relaxedUniRigPose = " << (animator.relaxedUniRigPose ? 1 : 0) << '\n';
+            indent(animatorDepth); out << "custom int loom:activeAnimation = " << animator.activeAnimation << '\n';
+            for(size_t clipIndex = 0; clipIndex < animator.animations.size(); ++clipIndex){
+                const AnimationClip& clip = animator.animations[clipIndex];
+                indent(animatorDepth); out << "\ndef Scope "; string("Animation_" + std::to_string(clipIndex)); out << "\n";
+                indent(animatorDepth); out << "{\n";
+                const int clipDepth = animatorDepth + 1;
+                indent(clipDepth); out << "custom bool loom:animationClip = 1\n";
+                indent(clipDepth); out << "custom string loom:name = "; string(clip.name); out << '\n';
+                indent(clipDepth); out << "custom double loom:startFrame = "; number(clip.startFrame); out << '\n';
+                indent(clipDepth); out << "custom double loom:endFrame = "; number(clip.endFrame); out << '\n';
+                indent(clipDepth); out << "custom bool loom:loop = " << (clip.loop ? 1 : 0) << '\n';
+                indent(clipDepth); out << "custom bool loom:inPlace = " << (clip.inPlace ? 1 : 0) << '\n';
+                for(size_t trackIndex = 0; trackIndex < clip.tracks.size(); ++trackIndex){
+                    const AnimatorTrack& track = clip.tracks[trackIndex];
+                    const std::string targetPath = stage.contains(track.target) ? stage.path(track.target) : track.targetPath;
+                    indent(clipDepth); out << "\ndef Xform "; string("Track_" + std::to_string(trackIndex)); out << "\n";
+                    indent(clipDepth); out << "{\n";
+                    const int trackDepth = clipDepth + 1;
+                    indent(trackDepth); out << "custom bool loom:animationTrack = 1\n";
+                    indent(trackDepth); out << "custom string loom:targetPath = "; string(targetPath); out << '\n';
+                    if(track.rootMotion) { indent(trackDepth); out << "custom bool loom:rootMotionTrack = 1\n"; }
+                    attribute(trackDepth, "double3", "xformOp:translate", glm::vec3(0.0f), track.translationKeys,
+                              [&](const glm::vec3& v){ vector(v); });
+                    attribute(trackDepth, "quatf", "xformOp:orient", glm::quat(1,0,0,0), track.rotationKeys,
+                              [&](const glm::quat& q){ quaternion(q); });
+                    attribute(trackDepth, "float3", "xformOp:scale", glm::vec3(1.0f), track.scaleKeys,
+                              [&](const glm::vec3& v){ vector(v); });
+                    indent(clipDepth); out << "}\n";
+                }
+                indent(animatorDepth); out << "}\n";
+            }
+            indent(in); out << "}\n";
+        }
 
         for(Id child : entity.children){
             out << '\n';
@@ -226,6 +277,48 @@ double numberOf(const usda::Prim& prim, const std::string& name, double fallback
 std::string textOf(const usda::Prim& prim, const std::string& name){
     const usda::Attribute* a = prim.find(name);
     return a && a->value.kind == usda::Value::Kind::String ? a->value.text : std::string();
+}
+
+void readTrack(const usda::Prim& prim, const char* attribute, Track<glm::vec3>& track){
+    if(const usda::Attribute* a = prim.find(attribute)){
+        for(const auto& [time, value] : a->samples.samples) track.set(time, asVector(value, glm::vec3(0.0f)));
+    }
+}
+
+void readTrack(const usda::Prim& prim, const char* attribute, Track<glm::quat>& track){
+    if(const usda::Attribute* a = prim.find(attribute)){
+        for(const auto& [time, value] : a->samples.samples) track.set(time, asQuaternion(value, glm::quat(1,0,0,0)));
+    }
+}
+
+Animator readAnimator(const usda::Prim& prim){
+    Animator animator;
+    animator.enabled = numberOf(prim, "loom:enabled", 1.0) != 0.0;
+    animator.relaxedUniRigPose = numberOf(prim, "loom:relaxedUniRigPose", 0.0) != 0.0;
+    animator.activeAnimation = size_t(std::max(0.0, numberOf(prim, "loom:activeAnimation", 0.0)));
+    for(const usda::Prim& clipPrim : prim.children){
+        if(numberOf(clipPrim, "loom:animationClip", 0.0) == 0.0) continue;
+        AnimationClip clip;
+        clip.name = textOf(clipPrim, "loom:name");
+        clip.startFrame = numberOf(clipPrim, "loom:startFrame", 1.0);
+        clip.endFrame = numberOf(clipPrim, "loom:endFrame", clip.startFrame);
+        clip.loop = numberOf(clipPrim, "loom:loop", 0.0) != 0.0;
+        clip.inPlace = numberOf(clipPrim, "loom:inPlace", 0.0) != 0.0;
+        for(const usda::Prim& trackPrim : clipPrim.children){
+            if(numberOf(trackPrim, "loom:animationTrack", 0.0) == 0.0) continue;
+            AnimatorTrack track;
+            track.targetPath = textOf(trackPrim, "loom:targetPath");
+            track.rootMotion = numberOf(trackPrim, "loom:rootMotionTrack", 0.0) != 0.0;
+            readTrack(trackPrim, "xformOp:translate", track.translationKeys);
+            readTrack(trackPrim, "xformOp:orient", track.rotationKeys);
+            readTrack(trackPrim, "xformOp:scale", track.scaleKeys);
+            clip.tracks.push_back(std::move(track));
+        }
+        animator.animations.push_back(std::move(clip));
+    }
+    if(animator.animations.empty()) animator.activeAnimation = 0;
+    else animator.activeAnimation = std::min(animator.activeAnimation, animator.animations.size() - 1);
+    return animator;
 }
 
 void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
@@ -297,6 +390,10 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
         Model model;
         model.path = modelPath;
         model.mesh = int(numberOf(prim, "loom:mesh", -1.0));
+        model.skin = int(numberOf(prim, "loom:skin", -1.0));
+        if(const usda::Attribute* paths = prim.find("loom:skinJointPaths")){
+            for(const usda::Value& value : paths->value.items) model.skinJointPaths.push_back(value.text);
+        }
         if(const usda::Attribute* list = prim.find("loom:materials")){
             for(const usda::Value& v : list->value.items){
                 int index = -1;
@@ -310,7 +407,10 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
     const std::string splat = textOf(prim, "loom:splat");
     if(!splat.empty()) entity.splat = Splat{splat};
 
-    for(const usda::Prim& child : prim.children) readEntity(child, stage, id);
+    for(const usda::Prim& child : prim.children){
+        if(numberOf(child, "loom:animatorComponent", 0.0) != 0.0) entity.animator = readAnimator(child);
+        else readEntity(child, stage, id);
+    }
 }
 
 }
@@ -447,6 +547,20 @@ bool loadProject(const std::string& path, Stage& stage, std::string& error){
         }
         readEntity(prim, loaded, None);
     }
+    loaded.walk([&](const Entity& entity, int){
+        if(!entity.model || entity.model->skinJointPaths.empty()) return;
+        Model* model = &loaded.get(entity.id)->model.value();
+        model->skinJoints.clear();
+        model->skinJoints.reserve(model->skinJointPaths.size());
+        for(const std::string& jointPath : model->skinJointPaths) model->skinJoints.push_back(loaded.find(jointPath));
+    });
+    loaded.walk([&](const Entity& entity, int){
+        if(!entity.animator) return;
+        Animator* animator = &loaded.get(entity.id)->animator.value();
+        for(AnimationClip& clip : animator->animations){
+            for(AnimatorTrack& track : clip.tracks) track.target = loaded.find(track.targetPath);
+        }
+    });
     stage = std::move(loaded);
     return true;
 }

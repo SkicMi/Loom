@@ -1,21 +1,16 @@
 #pragma once
 //=============================================================================================
-// EDITOR: raspored prozora i ono sto stupci pokazuju.
+// EDITOR: Scene Atlas, centralni viewport, Instrument Deck i vremenska traka.
 //
 //   +--------------------------------------------------------------+
 //   | alatna traka                                                 |
-//   +-----------+--------------------------------+-----------------+
-//   |           |                                | hijerarhija     |
-//   |  media    |           pogled               |                 |
-//   |           |                                +-----------------+
-//   |           |                                | svojstva        |
-//   +-----------+--------------------------------+-----------------+
+//   +-----+--------------------------------------------------------+
+//   | rail | Scene Atlas |             viewport | Instrument Deck |
+//   +-----+--------------------------------------------------------+
 //   | timeline                                                     |
 //   +--------------------------------------------------------------+
 //
-// RASPORED JE CISTI RACUN, bez prozora: dobije velicinu, vrati pravokutnike. Zato se da
-// provjeriti testom - da se stupci ne preklapaju, da pokriju prozor i da pogled ostane
-// upotrebljiv i u malom prozoru. Greska u rasporedu ne rusi nista, samo sakrije pola pogleda
+// RASPORED JE CISTI RACUN: dva side panela ostaju uz viewport, neovisno jedan o drugome.
 //=============================================================================================
 #include <Treadle/Draw.h>
 
@@ -30,34 +25,45 @@ namespace Loom{
 
 struct EditorLayout{
     Treadle::Rect toolbar;
-    Treadle::Rect media;
+    Treadle::Rect rail;
+    Treadle::Rect media;        //legacy alias for the tool rail
     Treadle::Rect viewport;
-    Treadle::Rect hierarchy;
-    Treadle::Rect properties;
+    Treadle::Rect hierarchy;    //Scene Atlas dock
+    Treadle::Rect properties;   //Instrument Deck dock
     Treadle::Rect timeline;
+    Treadle::Rect terminal;
 };
 
-inline EditorLayout layoutEditor(float width, float height){
+inline EditorLayout layoutEditor(float width, float height, bool outlineVisible = true, bool componentsVisible = true,
+                                 bool timelineVisible = true, bool terminalVisible = false){
     EditorLayout layout;
     const float toolbarHeight = 40.0f;
-    const float timelineHeight = std::clamp(height * 0.2f, 110.0f, 190.0f);
-
-    //Stupci su sirine razmjerne prozoru, u granicama; u uskom prozoru se stisnu toliko da pogled
-    //zadrzi barem 40 % sirine - pogled je razlog zasto editor postoji
-    float side = std::clamp(width * 0.2f, 220.0f, 340.0f);
-    if(width - 2.0f * side < width * 0.4f) side = width * 0.3f;
-
-    const float middleTop = toolbarHeight;
-    const float middleHeight = std::max(0.0f, height - toolbarHeight - timelineHeight);
+    const float timelineHeight = timelineVisible ? std::clamp(height * 0.2f, 110.0f, 190.0f) : 0.0f;
+    const float terminalHeight = terminalVisible ? std::min(std::clamp(height * 0.23f, 150.0f, 250.0f),
+                                                        std::max(0.0f, height - toolbarHeight - timelineHeight - 170.0f)) : 0.0f;
+    const float railWidth = std::min(56.0f, std::max(46.0f, width * 0.045f));
+    const float middleHeight = std::max(0.0f, height - toolbarHeight - timelineHeight - terminalHeight);
+    const float desiredOutline = std::clamp(width * 0.16f, 214.0f, 264.0f);
+    const float desiredComponents = std::clamp(width * 0.205f, 288.0f, 336.0f);
+    const float panelGap = 6.0f;
+    const int visiblePanels = int(outlineVisible) + int(componentsVisible);
+    const float availablePanels = std::max(0.0f, width - railWidth - 360.0f - panelGap * float(visiblePanels));
+    const float requestedPanels = (outlineVisible ? desiredOutline : 0.0f) +
+                                  (componentsVisible ? desiredComponents : 0.0f);
+    const float panelScale = requestedPanels > 0.0f ? std::min(1.0f, availablePanels / requestedPanels) : 1.0f;
+    const float outlineWidth = outlineVisible ? desiredOutline * panelScale : 0.0f;
+    const float componentsWidth = componentsVisible ? desiredComponents * panelScale : 0.0f;
 
     layout.toolbar = Treadle::Rect{0.0f, 0.0f, width, toolbarHeight};
-    layout.media = Treadle::Rect{0.0f, middleTop, side, middleHeight};
-    layout.viewport = Treadle::Rect{side, middleTop, std::max(0.0f, width - 2.0f * side), middleHeight};
-
-    const float hierarchyHeight = std::floor(middleHeight * 0.5f);
-    layout.hierarchy = Treadle::Rect{width - side, middleTop, side, hierarchyHeight};
-    layout.properties = Treadle::Rect{width - side, middleTop + hierarchyHeight, side, middleHeight - hierarchyHeight};
-    layout.timeline = Treadle::Rect{0.0f, middleTop + middleHeight, width, height - middleTop - middleHeight};
+    layout.rail = Treadle::Rect{0.0f, toolbarHeight, railWidth, middleHeight};
+    layout.media = layout.rail;
+    layout.hierarchy = Treadle::Rect{railWidth, toolbarHeight, outlineWidth, middleHeight};
+    layout.properties = Treadle::Rect{width - componentsWidth, toolbarHeight, componentsWidth, middleHeight};
+    const float viewportX = railWidth + outlineWidth + (outlineVisible ? panelGap : 0.0f);
+    const float viewportRight = width - componentsWidth - (componentsVisible ? panelGap : 0.0f);
+    layout.viewport = Treadle::Rect{viewportX, toolbarHeight, std::max(0.0f, viewportRight - viewportX), middleHeight};
+    layout.terminal = Treadle::Rect{0.0f, toolbarHeight + middleHeight, width, terminalHeight};
+    layout.timeline = Treadle::Rect{0.0f, toolbarHeight + middleHeight + terminalHeight, width, timelineHeight};
     return layout;
 }
 

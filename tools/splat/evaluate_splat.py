@@ -56,6 +56,8 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--compare", nargs=2, default=None)
     ap.add_argument("--exposure", default="", help="<splat>_exposure.json iz treninga s --exposure")
+    ap.add_argument("--bilagrid", default="", help="<splat>_bilagrid.npz iz treninga s --bilagrid")
+    ap.add_argument("--poses", default="", help="<splat>_poses.json iz treninga s --pose-opt")
     ap.add_argument("--renders", default="", help="mapa u koju se spreme iscrtani izdvojeni kadrovi (PNG), za gledanje okom")
     ap.add_argument("--opis", default="",
                     help="sto se mjeri; s njim ocjena i usporedba idu u dnevnik mjerenja (benchmarks/mjerenja.jsonl)")
@@ -112,6 +114,12 @@ def main():
 
     import json
     exposureFor = json.load(open(args.exposure)) if args.exposure else {}
+    poseFile = json.load(open(args.poses)) if args.poses else {}
+    from train_splats import pose_correction, bilagrid_apply
+    gridFor = {}
+    if args.bilagrid:
+        stored = np.load(args.bilagrid)
+        gridFor = {str(n): g for n, g in zip(stored["names"], stored["grids"])}
     from train_splats import ssim, gaussian_window
     window = gaussian_window(11, 1.5, device)
     psnrs = []
@@ -126,6 +134,10 @@ def main():
                 extra["viewmats_rs"] = torch.from_numpy(bottom[name]).float().to(device)[None]
             else:
                 vm = torch.from_numpy(view).float().to(device)[None]
+            if poseFile and name in poseFile["poze"]:
+                correction = pose_correction(torch.tensor(poseFile["poze"][name], device=device), poseFile["mjerilo"])
+                vm = correction @ vm
+                if "viewmats_rs" in extra: extra["viewmats_rs"] = correction @ extra["viewmats_rs"]
             if steps:
                 end = extra["viewmats_rs"]
                 drawn = sum(gsplat.rasterization(means, quats, scales, opacities, sh, along(vm, end, t), K[None], width, height,
@@ -141,6 +153,8 @@ def main():
             if exposureFor and name in exposureFor:
                 correction = torch.tensor(exposureFor[name], device=device, dtype=shown.dtype)
                 shown = shown * (1.0 + correction[0]) + correction[1]
+            if name in gridFor:
+                shown = bilagrid_apply(torch.from_numpy(gridFor[name]).float().to(device), shown)
             shown = shown.clamp(0, 1)
             if args.renders:
                 Path(args.renders).mkdir(parents=True, exist_ok=True)

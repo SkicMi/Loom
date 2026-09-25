@@ -181,12 +181,97 @@ Transform Stage::localAt(Id id, double frame) const{
     if(!entity->translationKeys.empty()) t.translation = entity->translationKeys.at(frame);
     if(!entity->rotationKeys.empty()) t.rotation = entity->rotationKeys.at(frame);
     if(!entity->scaleKeys.empty()) t.scale = entity->scaleKeys.at(frame);
+
+    //The nearest enabled Animator owns playback for its rig subtree. Animator keys override the
+    //legacy entity tracks so the selected clip is what both the viewport and renderers evaluate.
+    for(Id owner = id; owner != None;){
+        const Entity* candidate = get(owner);
+        if(!candidate) break;
+        if(candidate->animator && candidate->animator->enabled &&
+           candidate->animator->activeAnimation < candidate->animator->animations.size()){
+            const AnimationClip& clip = candidate->animator->animations[candidate->animator->activeAnimation];
+            for(const AnimatorTrack& track : clip.tracks){
+                if(track.target != id) continue;
+                if(!track.translationKeys.empty() && !(track.rootMotion && clip.inPlace))
+                    t.translation = track.translationKeys.at(frame);
+                if(!track.rotationKeys.empty()) t.rotation = track.rotationKeys.at(frame);
+                if(!track.scaleKeys.empty()) t.scale = track.scaleKeys.at(frame);
+                break;
+            }
+            break;
+        }
+        owner = candidate->parent;
+    }
     return t;
+}
+
+AnimatorTrack* Stage::activeAnimatorTrack(Id id){
+    for(Id owner = id; owner != None;){
+        Entity* candidate = get(owner);
+        if(!candidate) break;
+        if(candidate->animator && candidate->animator->enabled &&
+           candidate->animator->activeAnimation < candidate->animator->animations.size()){
+            AnimationClip& clip = candidate->animator->animations[candidate->animator->activeAnimation];
+            for(AnimatorTrack& track : clip.tracks) if(track.target == id) return &track;
+            return nullptr;
+        }
+        owner = candidate->parent;
+    }
+    return nullptr;
+}
+
+const AnimatorTrack* Stage::activeAnimatorTrack(Id id) const{
+    for(Id owner = id; owner != None;){
+        const Entity* candidate = get(owner);
+        if(!candidate) break;
+        if(candidate->animator && candidate->animator->enabled &&
+           candidate->animator->activeAnimation < candidate->animator->animations.size()){
+            const AnimationClip& clip = candidate->animator->animations[candidate->animator->activeAnimation];
+            for(const AnimatorTrack& track : clip.tracks) if(track.target == id) return &track;
+            return nullptr;
+        }
+        owner = candidate->parent;
+    }
+    return nullptr;
+}
+
+AnimationClip* Stage::activeAnimationClip(Id id){
+    for(Id owner = id; owner != None;){
+        Entity* candidate = get(owner);
+        if(!candidate) break;
+        if(candidate->animator && candidate->animator->enabled &&
+           candidate->animator->activeAnimation < candidate->animator->animations.size())
+            return &candidate->animator->animations[candidate->animator->activeAnimation];
+        owner = candidate->parent;
+    }
+    return nullptr;
+}
+
+AnimatorTrack* Stage::ensureAnimatorTrack(Id id){
+    Entity* target = get(id);
+    AnimationClip* clip = target && target->joint ? activeAnimationClip(id) : nullptr;
+    if(!clip) return nullptr;
+    for(AnimatorTrack& track : clip->tracks) if(track.target == id) return &track;
+    AnimatorTrack track;
+    track.target = id;
+    track.targetPath = path(id);
+    clip->tracks.push_back(std::move(track));
+    return &clip->tracks.back();
 }
 
 void Stage::setLocalAt(Id id, double frame, const Transform& transform){
     Entity* entity = get(id);
     if(!entity) return;
+    if(AnimatorTrack* track = ensureAnimatorTrack(id)){
+        track->translationKeys.set(frame, transform.translation);
+        track->rotationKeys.set(frame, transform.rotation);
+        track->scaleKeys.set(frame, transform.scale);
+        if(AnimationClip* clip = activeAnimationClip(id)){
+            clip->startFrame = std::min(clip->startFrame, frame);
+            clip->endFrame = std::max(clip->endFrame, frame);
+        }
+        return;
+    }
     if(entity->translationKeys.empty()) entity->local.translation = transform.translation;
     else entity->translationKeys.set(frame, transform.translation);
     if(entity->rotationKeys.empty()) entity->local.rotation = transform.rotation;
@@ -199,6 +284,16 @@ void Stage::keyAll(Id id, double frame){
     Entity* entity = get(id);
     if(!entity) return;
     const Transform now = localAt(id, frame);
+    if(AnimatorTrack* track = ensureAnimatorTrack(id)){
+        track->translationKeys.set(frame, now.translation);
+        track->rotationKeys.set(frame, now.rotation);
+        track->scaleKeys.set(frame, now.scale);
+        if(AnimationClip* clip = activeAnimationClip(id)){
+            clip->startFrame = std::min(clip->startFrame, frame);
+            clip->endFrame = std::max(clip->endFrame, frame);
+        }
+        return;
+    }
     entity->translationKeys.set(frame, now.translation);
     entity->rotationKeys.set(frame, now.rotation);
     entity->scaleKeys.set(frame, now.scale);
@@ -207,9 +302,14 @@ void Stage::keyAll(Id id, double frame){
 size_t Stage::eraseKeysAt(Id id, double frame){
     Entity* entity = get(id);
     if(!entity) return 0;
-    //Kad os izgubi ZADNJI kljuc, vrijednost koju je drzala postaje mirna - inace bi kocka
-    //odskocila natrag na mjesto od prije animiranja
     const Transform held = localAt(id, frame);
+    if(AnimatorTrack* track = activeAnimatorTrack(id)){
+        size_t erased = 0;
+        if(track->translationKeys.erase(frame)){ ++erased; if(track->translationKeys.empty()) entity->local.translation = held.translation; }
+        if(track->rotationKeys.erase(frame)){ ++erased; if(track->rotationKeys.empty()) entity->local.rotation = held.rotation; }
+        if(track->scaleKeys.erase(frame)){ ++erased; if(track->scaleKeys.empty()) entity->local.scale = held.scale; }
+        return erased;
+    }
     size_t erased = 0;
     if(entity->translationKeys.erase(frame)){ ++erased; if(entity->translationKeys.empty()) entity->local.translation = held.translation; }
     if(entity->rotationKeys.erase(frame)){ ++erased; if(entity->rotationKeys.empty()) entity->local.rotation = held.rotation; }
@@ -228,9 +328,15 @@ bool Stage::neighbourKey(Id id, double frame, int direction, double& found) cons
             if(!any || (direction > 0 ? t < found : t > found)){ found = t; any = true; }
         }
     };
-    consider(entity->translationKeys.times);
-    consider(entity->rotationKeys.times);
-    consider(entity->scaleKeys.times);
+    if(const AnimatorTrack* track = activeAnimatorTrack(id)){
+        consider(track->translationKeys.times);
+        consider(track->rotationKeys.times);
+        consider(track->scaleKeys.times);
+    }else{
+        consider(entity->translationKeys.times);
+        consider(entity->rotationKeys.times);
+        consider(entity->scaleKeys.times);
+    }
     return any;
 }
 
@@ -295,8 +401,21 @@ uint64_t Stage::fingerprint() const{
         if(e.joint) h.add(e.joint->colour);
         if(e.mesh) h.add(e.mesh->material);
         h.add(e.model.has_value());
-        if(e.model){ h.text(e.model->path); h.add(e.model->mesh); h.add(e.model->materials.size());
-                     for(int m : e.model->materials) h.add(m); }
+        if(e.model){ h.text(e.model->path); h.add(e.model->mesh); h.add(e.model->skin); h.add(e.model->materials.size());
+                     for(int m : e.model->materials) h.add(m);
+                     h.add(e.model->skinJointPaths.size()); for(const std::string& path : e.model->skinJointPaths) h.text(path); }
+        h.add(e.animator.has_value());
+        if(e.animator){
+            h.add(e.animator->enabled); h.add(e.animator->activeAnimation); h.add(e.animator->relaxedUniRigPose); h.add(e.animator->animations.size());
+            for(const AnimationClip& clip : e.animator->animations){
+                h.text(clip.name); h.add(clip.startFrame); h.add(clip.endFrame); h.add(clip.loop); h.add(clip.inPlace); h.add(clip.tracks.size());
+                for(const AnimatorTrack& track : clip.tracks){
+                    h.text(contains(track.target) ? path(track.target) : track.targetPath);
+                    h.add(track.rootMotion);
+                    h.track(track.translationKeys); h.track(track.rotationKeys); h.track(track.scaleKeys);
+                }
+            }
+        }
     });
     h.add(materials.size());
     for(const Material& m : materials){

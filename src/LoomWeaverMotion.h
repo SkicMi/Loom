@@ -29,6 +29,8 @@
 #include <string_view>
 #include <vector>
 
+#include "LoomMotionRetarget.h"
+
 namespace Loom{
 
 // Quote one argument for the existing popen based job launcher.
@@ -67,6 +69,11 @@ struct WeaverMotionImportReport{
     size_t frames = 0;
     double firstFrame = 1.0, lastFrame = 1.0;   //gdje je klip pao na timelineu scene
     float height = 0.0f;                        //visina kostura u mirovanju, u jedinicama klipa
+    float importedScale = 1.0f;
+    size_t mappedJoints = 0;
+    size_t footContactFrames = 0;
+    std::string rigProfile;
+    std::string floorSource;
     std::string problem;
 };
 
@@ -77,6 +84,9 @@ struct MotionPlacement{
     glm::vec3 position{0.0f};       //u svijetu: ondje lik pocinje, na tlu
     float scale = 1.0f;
     Warp::Id parent = Warp::None;
+    bool fitToParentRig = false;    //primijeni mapiranje i uklapanje u rest pose odabranog lika
+    bool footContactIK = true;
+    std::string animationName;
 };
 
 inline std::vector<std::filesystem::path> weaverMotionFilesIn(const std::filesystem::path& directory){
@@ -94,18 +104,6 @@ inline std::vector<std::filesystem::path> weaverMotionFilesIn(const std::filesys
     return found;
 }
 
-//Visina kostura u mirovanju (samo pomaci zglobova), u jedinicama klipa - za mjerilo u sceni
-inline float motionRestHeight(const Engine::WeaverMotion::Clip& clip){
-    std::vector<glm::vec3> at(clip.joints.size(), glm::vec3(0.0f));
-    float low = 0.0f, high = 0.0f;
-    for(size_t i = 0; i < clip.joints.size(); ++i){
-        const int parent = clip.joints[i].parent;
-        at[i] = (parent >= 0 && size_t(parent) < i ? at[size_t(parent)] : glm::vec3(0.0f)) + clip.joints[i].offset;
-        low = std::min(low, at[i].y);
-        high = std::max(high, at[i].y);
-    }
-    return high - low;
-}
 
 inline WeaverMotionImportReport importWeaverMotionClip(Warp::Stage& stage,
                                                        const Engine::WeaverMotion::Clip& clip,
@@ -120,13 +118,99 @@ inline WeaverMotionImportReport importWeaverMotionClip(Warp::Stage& stage,
     const double step = adopt ? 1.0 : placement.sceneFps / std::max(1e-6, clip.framesPerSecond);
     const double first = adopt ? 1.0 : placement.startFrame;
 
-    //Lik pocinje na zadanom mjestu: vodoravni pomak korijena u prvom kadru se ponisti na grupi,
-    //visina ostaje - tlo klipa je y = 0
-    const glm::vec3 rootStart = clip.joints[0].offset + (clip.frames[0].translations.empty()
-                                                         ? glm::vec3(0.0f) : clip.frames[0].translations[0]);
+    //Sidri BVH na najnizi zglob prvog kadra, jer root moze biti na kukovima ili na podu.
+    //Kad je odabran lik, fit mjeri visinu, mapira kukove i koristi njegov mirni kostur kao referencu.
+    const std::vector<glm::vec3> firstPosePositions = motionPoseJointPositions(clip, 0);
+    const MotionBounds firstPoseBounds = motionPoseBounds(clip, 0);
+    if(!firstPoseBounds.valid){ report.problem = "clip has no finite joint positions"; return report; }
+    float importScale = placement.scale;
+    glm::vec3 groupTranslation(placement.position.x - importScale * firstPosePositions[0].x,
+                               placement.position.y - importScale * firstPoseBounds.low.y,
+                               placement.position.z - importScale * firstPosePositions[0].z);
+    if(placement.fitToParentRig){
+        if(!ensureRigAnimator(stage, placement.parent)){
+            report.problem = "selected character root is missing";
+            return report;
+        }
+        const MotionRigRestPose rest = motionRigRestPose(stage, placement.parent);
+        struct StashedTracks{
+            Warp::Id id;
+            Warp::Track<glm::vec3> translation, scale;
+            Warp::Track<glm::quat> rotation;
+        };
+        std::vector<StashedTracks> stashed;
+        stashed.reserve(rest.joints.size());
+        for(const MotionRigJointRest& joint : rest.joints){
+            Warp::Entity* entity = stage.get(joint.id);
+            if(!entity) continue;
+            stashed.push_back({joint.id, entity->translationKeys, entity->scaleKeys, entity->rotationKeys});
+            entity->translationKeys = {};
+            entity->rotationKeys = {};
+            entity->scaleKeys = {};
+        }
+        MotionRigFit rigFit;
+        MotionRigMapping mapping;
+        Warp::Track<glm::vec3> rootMotionKeys;
+        std::string problem;
+        if(!retargetMotionToRig(stage, clip, placement.parent, first, step, rigFit, mapping, problem,
+                                rootMotionKeys, placement.footContactIK)){
+            for(const StashedTracks& saved : stashed) if(Warp::Entity* entity = stage.get(saved.id)){
+                entity->translationKeys = saved.translation;
+                entity->rotationKeys = saved.rotation;
+                entity->scaleKeys = saved.scale;
+            }
+            report.problem = "rig retarget failed: " + problem;
+            return report;
+        }
+        Warp::AnimationClip animation;
+        animation.name = placement.animationName.empty() ? (name.empty() ? "Animation" : name) : placement.animationName;
+        animation.startFrame = first;
+        animation.endFrame = first + double(clip.frames.size() - 1) * step;
+        if(!rootMotionKeys.empty()){
+            Warp::AnimatorTrack rootTrack;
+            rootTrack.target = placement.parent;
+            rootTrack.targetPath = stage.path(placement.parent);
+            rootTrack.rootMotion = true;
+            rootTrack.translationKeys = std::move(rootMotionKeys);
+            animation.tracks.push_back(std::move(rootTrack));
+        }
+        for(const MotionRigJointRest& joint : rest.joints){
+            Warp::Entity* entity = stage.get(joint.id);
+            if(!entity || (entity->translationKeys.empty() && entity->rotationKeys.empty() && entity->scaleKeys.empty())) continue;
+            Warp::AnimatorTrack track;
+            track.target = entity->id;
+            track.targetPath = stage.path(entity->id);
+            track.translationKeys = entity->translationKeys;
+            track.rotationKeys = entity->rotationKeys;
+            track.scaleKeys = entity->scaleKeys;
+            animation.tracks.push_back(std::move(track));
+        }
+        for(const StashedTracks& saved : stashed) if(Warp::Entity* entity = stage.get(saved.id)){
+            entity->translationKeys = saved.translation;
+            entity->rotationKeys = saved.rotation;
+            entity->scaleKeys = saved.scale;
+        }
+        Warp::Animator& animator = *stage.get(placement.parent)->animator;
+        animator.animations.push_back(std::move(animation));
+        animator.activeAnimation = animator.animations.size() - 1;
+        report.group = placement.parent;
+        report.root = mapping.targetHips;
+        report.joints = clip.joints.size();
+        report.frames = clip.frames.size();
+        report.firstFrame = first;
+        report.lastFrame = first + double(clip.frames.size() - 1) * step;
+        stage.endFrame = std::max(stage.endFrame, report.lastFrame);
+        report.height = motionRestHeight(clip);
+        report.importedScale = rigFit.scale;
+        report.mappedJoints = mapping.matched;
+        report.footContactFrames = mapping.footContactFrames;
+        report.rigProfile = mapping.profile;
+        report.floorSource = rigFit.floorSource;
+        return report;
+    }
     const Warp::Id group = stage.create(name.empty() ? "Motion" : name, placement.parent);
-    stage.get(group)->local.translation = placement.position - placement.scale * glm::vec3(rootStart.x, 0.0f, rootStart.z);
-    stage.get(group)->local.scale = glm::vec3(placement.scale);
+    stage.get(group)->local.translation = groupTranslation;
+    stage.get(group)->local.scale = glm::vec3(importScale);
 
     std::vector<Warp::Id> ids(clip.joints.size(), Warp::None);
     for(size_t i = 0; i < clip.joints.size(); ++i){
@@ -164,15 +248,16 @@ inline WeaverMotionImportReport importWeaverMotionClip(Warp::Stage& stage,
     report.lastFrame = first + double(clip.frames.size() - 1) * step;
     if(adopt){
         stage.startFrame = report.firstFrame;
-        stage.endFrame = std::max(report.lastFrame, report.firstFrame + 1.0);
         stage.framesPerSecond = clip.framesPerSecond;
     }
+    stage.endFrame = std::max(stage.endFrame, std::max(report.lastFrame, report.firstFrame + 1.0));
 
     report.group = group;
     report.root = ids.front();
     report.joints = clip.joints.size();
     report.frames = clip.frames.size();
     report.height = motionRestHeight(clip);
+    report.importedScale = importScale;
     return report;
 }
 

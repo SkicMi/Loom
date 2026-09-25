@@ -64,6 +64,34 @@ struct Transform{
     glm::mat4 matrix() const;
 };
 
+//Animation clips live on a character Animator component. Tracks address joints by stable
+//entity id at runtime and by USD path in saved projects.
+struct AnimatorTrack{
+    Id target = None;
+    std::string targetPath;
+    //Translation track on an Animator root that represents locomotion across the scene.
+    bool rootMotion = false;
+    Track<glm::vec3> translationKeys;
+    Track<glm::quat> rotationKeys;
+    Track<glm::vec3> scaleKeys;
+};
+
+struct AnimationClip{
+    std::string name;
+    double startFrame = 1.0;
+    double endFrame = 1.0;
+    bool loop = false;
+    bool inPlace = false;
+    std::vector<AnimatorTrack> tracks;
+};
+
+struct Animator{
+    std::vector<AnimationClip> animations;
+    size_t activeAnimation = 0;
+    bool enabled = true;
+    bool relaxedUniRigPose = false;
+};
+
 //---------------------------------------------------------------------------------------------
 // KOMPONENTE
 //---------------------------------------------------------------------------------------------
@@ -140,6 +168,9 @@ struct Model{
     std::string path;
     int mesh = -1;
     std::vector<int> materials;
+    int skin = -1;
+    std::vector<Id> skinJoints;             //runtime joint ids in GLTF skin order
+    std::vector<std::string> skinJointPaths; //stable references saved in the USD project
 };
 
 //ZGLOB KOSTURA (lik iz pokreta, npr. Kimodo). Zglob je obican entitet - transformacija i kljucevi
@@ -173,8 +204,10 @@ struct Entity{
     std::optional<Splat> splat;
     std::optional<Joint> joint;
     std::optional<Model> model;
+    std::optional<Animator> animator;
 
-    bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty();}
+    bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty() ||
+                                  (animator && animator->enabled && !animator->animations.empty());}
 };
 
 //Snimka ili slika u projektu. Stoji u sceni jer kamera iz solvea na nju pokazuje, a timeline iz
@@ -221,9 +254,13 @@ public:
     //Transformacija u kadru: lokalna (roditelj -> entitet) i svjetska (entitet -> svijet)
     Transform localAt(Id id, double frame) const;
 
-    //UREDJIVANJE KROZ VRIJEME. Os koja vec ima kljuceve dobiva kljuc u ovom kadru - inace bi
-    //promjena nestala cim se timeline pomakne, jer kljucevi imaju prednost. Os bez kljuceva mijenja
-    //mirnu vrijednost, pa kocka koja nije animirana ne postane animirana slucajno
+    // Animator track attached to the nearest enabled Animator that owns this entity.
+    // Bone editing and timeline drawing use this so edits land in the selected clip.
+    AnimatorTrack* activeAnimatorTrack(Id id);
+    const AnimatorTrack* activeAnimatorTrack(Id id) const;
+
+    //UREDJIVANJE KROZ VRIJEME. Kost unutar aktivnog Animatora dobiva kljuc u aktivnom klipu;
+    //kod ostalih entiteta os koja vec ima kljuceve dobiva kljuc, a mirna os ostaje mirna.
     void setLocalAt(Id id, double frame, const Transform& transform);
 
     //Kljuc na svim trima osima u ovom kadru, s vrijednoscu koju entitet u njemu upravo ima
@@ -264,6 +301,8 @@ public:
     void removeMaterial(int index);
 
 private:
+    AnimationClip* activeAnimationClip(Id id);
+    AnimatorTrack* ensureAnimatorTrack(Id id);
     std::string uniqueName(const std::string& wanted, Id parent, Id except) const;
     std::vector<Id>& siblingsOf(Id parent);
 

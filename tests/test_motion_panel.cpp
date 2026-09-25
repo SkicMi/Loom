@@ -18,6 +18,19 @@ int main(){
     TestReport report("pokret iz teksta");
 
     {
+        double frame = 8.0;
+        const bool continues = Loom::advanceClipPlaybackFrame(frame, 5.0, 1.0, 10.0, false);
+        report.check("one-shot drzi zadnji kadar bez povratka", !continues && frame == 10.0,
+                     fmt("nastavak %s, kadar %.1f", continues ? "da" : "ne", frame));
+    }
+    {
+        double frame = 1.0;
+        const bool continues = Loom::advanceClipPlaybackFrame(frame, 10.0, 1.0, 10.0, true);
+        report.check("loop prelazi preko kraja i nastavlja unaprijed", continues && frame == 2.0,
+                     fmt("nastavak %s, kadar %.1f", continues ? "da" : "ne", frame));
+    }
+
+    {
         Warp::Stage stage;
         const Warp::Id group = stage.create("Characters");
         auto addRig = [&](const std::string& name){
@@ -37,6 +50,12 @@ int main(){
         const Warp::Id previewId = stage.create("SkeletonPreview");
         stage.get(previewId)->joint = Warp::Joint{};
         const std::vector<Loom::MotionCharacter> candidates = Loom::motionCharactersIn(stage);
+        const Warp::Id selectedMesh = stage.find("/Characters/RigA/Mesh");
+        const Warp::Id selectedContainer = Loom::motionCharacterForEntity(stage, group);
+        report.check("Animator target follows a selected mesh to its rig and rejects an ambiguous multi-character group",
+            Loom::motionCharacterForEntity(stage, selectedMesh) == first &&
+            Loom::motionCharacterForEntity(stage, second) == second && selectedContainer == Warp::None,
+            selectedContainer == Warp::None ? stage.path(first) : stage.path(selectedContainer));
         report.check("scene selector includes both mesh+joint characters and excludes static mesh/skeleton preview",
             candidates.size() == 2 && candidates[0].id == first && candidates[1].id == second &&
             candidates[0].path == "/Characters/RigA" && candidates[1].path == "/Characters/RigB",
@@ -140,7 +159,7 @@ int main(){
     //-- 1. prazne radnje ispadaju, tocka u opisu postaje zarez ------------------------------------
     const std::vector<Loom::MotionAction> filled = Loom::filledActions(request.actions);
     report.check("prazna radnja ispada, tocka unutar opisa ne dijeli radnju",
-        filled.size() == 2 && filled[0].prompt == "a person walks forward, slowly" && filled[1].prompt == "sits down on it's chair",
+        filled.size() == 2 && filled[0].prompt == "a person walks forward, slowly" && filled[1].prompt == "A person sits down on it's chair",
         filled.empty() ? "" : filled[0].prompt + " | " + filled.back().prompt);
 
     //-- 2. naredba: pravom ljuskom stizu tocno ti argumenti ----------------------------------------
@@ -167,7 +186,7 @@ int main(){
             return false;
         };
         const bool ok = status == 0 && !args.empty() &&
-                        args[0] == "a person walks forward, slowly. sits down on it's chair" &&
+                        args[0] == "a person walks forward, slowly. A person sits down on it's chair" &&
                         has("--duration", "3.00 2.50") && has("--seed", "7") && has("--diffusion_steps", "60") &&
                         has("--output", "/tmp/izlaz s razmakom/motion_1") &&
                         std::find(args.begin(), args.end(), "--no-postprocess") != args.end() &&

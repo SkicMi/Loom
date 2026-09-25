@@ -19,9 +19,9 @@ COMMIT = "6793c6640ff01c8fb389f3993434124bb43d2933"
 
 
 def inspect_input(path: Path) -> dict:
-    """Accept only self-contained, unrigged GLB v2 for this first pipeline."""
+    """Validate the normalized, self-contained GLB that UniRig will process."""
     if path.suffix.lower() != ".glb":
-        raise ValueError("Auto Rig currently accepts GLB files. Export your unrigged mesh as GLB.")
+        raise ValueError("Expected a normalized GLB input.")
     with path.open("rb") as file:
         header = file.read(20)
         if len(header) != 20:
@@ -121,7 +121,11 @@ def verify_flash_attention() -> str:
 def generate(source: Path, output: Path, seed: int) -> None:
 
     source = source.resolve(strict=True)
-    inspect_input(source)
+    source_suffix = source.suffix.lower()
+    if source_suffix not in {".glb", ".gltf"}:
+        raise ValueError("Auto Rig accepts GLB or glTF models.")
+    if source_suffix == ".glb":
+        inspect_input(source)
     revision = subprocess.check_output(["git", "-C", str(VENDOR), "rev-parse", "HEAD"], text=True).strip()
     if revision != COMMIT:
         raise RuntimeError("Unexpected UniRig version. Run tools/autorig/setup.sh.")
@@ -139,7 +143,16 @@ def generate(source: Path, output: Path, seed: int) -> None:
     work = output / "work"
     work.mkdir()
     shutil.copytree(VENDOR / "configs", work / "configs")
-    shutil.copy2(source, work / "input.glb")
+    normalized = work / "input.glb"
+    if source_suffix == ".gltf":
+        print("Auto Rig: packing glTF assets into a self-contained GLB", flush=True)
+        converter = ROOT / "gltf_to_glb.py"
+        blender_command = ["blender", "--background", "--factory-startup", "--python-exit-code", "1",
+                           "--python", str(converter), "--", str(source), str(normalized)]
+        run_process(blender_command, work, os.environ.copy(), log_path)
+    else:
+        shutil.copy2(source, normalized)
+    inspect_input(normalized)
     configure_model_configs(work)
     base_extract = ["-m", "src.data.extract", "--config=configs/data/quick_inference.yaml",
                     "--require_suffix=glb,fbx", "--faces_target_count=50000", "--num_runs=1",
@@ -157,10 +170,16 @@ def generate(source: Path, output: Path, seed: int) -> None:
              "--task=configs/task/quick_inference_unirig_skin.yaml", f"--seed={seed}",
              "--input=skeleton.fbx", "--output=skin.fbx", "--npz_dir=cache", "--data_name=raw_data.npz"], work)
     require_file(work / "skin.fbx")
-    result = output / "rigged.glb"
-    run_step("5/5 Restore materials and validate deformation", ["-m", "src.inference.merge",
+    unirig_result = output / "rigged_unirig.glb"
+    run_step("5/6 Restore materials", ["-m", "src.inference.merge",
              "--require_suffix=glb,fbx", "--num_runs=1", "--id=0", "--source=skin.fbx",
-             "--target=input.glb", f"--output={result}"], work)
+             "--target=input.glb", f"--output={unirig_result}"], work)
+    require_file(unirig_result)
+    result = output / "rigged.glb"
+    print("AutoRig: 6/6 Fit UE5 Manny skeleton to inferred joints", flush=True)
+    run_process(["blender", "--background", "--factory-startup", "--python-exit-code", "1",
+                 "--python", str(ROOT / "manny_rig.py"), "--", str(unirig_result),
+                 str(result), str(ROOT / "manny_template.json")], work, os.environ.copy(), log_path)
     require_file(result)
     blender_command = ["blender", "--background", "--factory-startup", "--python-exit-code", "1",
                        "--python", str(ROOT / "validate.py"), "--", str(result),
@@ -170,7 +189,7 @@ def generate(source: Path, output: Path, seed: int) -> None:
     run_process(blender_command, work, os.environ.copy(), log_path)
     require_file(output / "validation.json")
     manifest = {"source": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-                "backend": "UniRig", "revision": revision, "seed": seed,
+                "backend": "UniRig", "rig_profile": "UE5 Manny", "revision": revision, "seed": seed,
                 "seconds": round(time.monotonic() - started, 2), "result": str(result)}
     # This marker is written only after all steps and independent deformation validation passed.
     (output / "complete.json").write_text(json.dumps(manifest, indent=2) + "\n")

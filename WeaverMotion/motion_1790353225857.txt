@@ -1,0 +1,11 @@
+# model	Kimodo-SOMA-RP-v1.1
+# target	2
+# first_heading_angle	0
+# root_margin	0.04
+# transition_frames	5
+# movement_preset	Walk
+# contact_settings	automatic
+# foot_contact_ik	on
+# kimodo_foot_cleanup	on
+# root_path	none
+A person walks forward at a relaxed pace with a natural arm swing	4

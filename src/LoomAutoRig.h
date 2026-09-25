@@ -28,16 +28,16 @@ inline AutoRigAction drawAutoRigPanel(Treadle::Ui& ui, AutoRigState& state,
                                       bool busy, const std::string& lastLine, float& scroll){
     AutoRigAction action;
     ui.dock("WEAVERMOTION / AUTO RIG", area, &scroll);
-    ui.label("Unrigged GLB -> skeleton + skin weights");
-    ui.label("Local UniRig backend. Original file is preserved.");
+    ui.label("GLB/glTF -> UE5 Manny humanoid rig + skin weights");
+    ui.label("UniRig fits joints; Manny is the output skeleton. Original is preserved.");
     ui.separator();
     Treadle::Ui::TextFieldConfig field;
     field.lines = 2;
     field.maxLength = 4096;
-    field.placeholder = "Paste the full path to an unrigged .glb";
+    field.placeholder = "Paste the full path to an unrigged .glb or .gltf";
     ui.textField("autorig-source", &state.source, field);
     if(ui.button("Use selected scene model")) action.useSelected = true;
-    ui.label("Or right-click a GLB in the file browser.");
+    ui.label("Right-click a Media model to import as humanoid.");
     ui.separator();
     ui.label("Best starting point: upright character, arms apart.");
     ui.label("AI rig quality varies; inspect the result before animation.");
@@ -52,10 +52,10 @@ inline AutoRigAction drawAutoRigPanel(Treadle::Ui& ui, AutoRigState& state,
     const bool complete = !state.output.empty() && std::filesystem::is_regular_file(state.output / "complete.json", error);
     if(complete){
         ui.separator();
-        ui.label("Rig exported and deformation checks passed.");
+        ui.label("Manny rig exported and deformation checks passed.");
         ui.label("Rest mesh + bones are shown in the viewport.");
         if(ui.button("Import bend-test snapshot")) action.preview = true;
-        ui.label("Snapshot is static; live skinning/Kimodo retargeting is next.");
+        ui.label("Live skinning and Kimodo retargeting are ready for this rig.");
         ui.label(Treadle::fitText(state.output.string(), area.width - 30.0f, ui.style().textScale));
     }else if(!running && !state.output.empty() &&
              std::filesystem::is_regular_file(state.output / "autorig.log", error)){

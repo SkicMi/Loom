@@ -65,8 +65,10 @@ struct PbrData{
 };
 
 //Trokuti u komade od najvise 65535 vrhova, u Loomov format vrha. Normale se izracunaju kad ih
-//datoteka nema (glatke: zbroj normala susjednih lica)
-inline std::vector<std::pair<std::vector<Vertex>, std::vector<uint16_t>>> meshChunks(const Spool::GltfPrimitive& p){
+//datoteka nema (glatke: zbroj normala susjednih lica). Source indeksi ostaju uz komad radi CPU skinninga.
+struct MeshChunkData{ std::vector<Vertex> vertices; std::vector<uint16_t> indices; std::vector<uint32_t> sourceVertices; };
+
+inline std::vector<MeshChunkData> meshChunks(const Spool::GltfPrimitive& p){
     const size_t count = p.vertexCount();
     std::vector<float> normals = p.normals;
     if(normals.size() != count * 3){
@@ -90,14 +92,15 @@ inline std::vector<std::pair<std::vector<Vertex>, std::vector<uint16_t>>> meshCh
         return v;
     };
 
-    std::vector<std::pair<std::vector<Vertex>, std::vector<uint16_t>>> chunks;
+    std::vector<MeshChunkData> chunks;
     std::unordered_map<uint32_t, uint16_t> local;
     std::vector<Vertex> vertices;
     std::vector<uint16_t> indices;
+    std::vector<uint32_t> sourceVertices;
     for(size_t t = 0; t + 2 < p.indices.size(); t += 3){
         if(vertices.size() + 3 > 65535){
-            chunks.push_back({std::move(vertices), std::move(indices)});
-            vertices.clear(); indices.clear(); local.clear();
+            chunks.push_back({std::move(vertices), std::move(indices), std::move(sourceVertices)});
+            vertices.clear(); indices.clear(); sourceVertices.clear(); local.clear();
         }
         for(int k = 0; k < 3; ++k){
             const uint32_t original = p.indices[t + size_t(k)];
@@ -105,11 +108,12 @@ inline std::vector<std::pair<std::vector<Vertex>, std::vector<uint16_t>>> meshCh
             if(found == local.end()){
                 found = local.emplace(original, uint16_t(vertices.size())).first;
                 vertices.push_back(vertexAt(original));
+                sourceVertices.push_back(original);
             }
             indices.push_back(found->second);
         }
     }
-    if(!indices.empty()) chunks.push_back({std::move(vertices), std::move(indices)});
+    if(!indices.empty()) chunks.push_back({std::move(vertices), std::move(indices), std::move(sourceVertices)});
     return chunks;
 }
 
@@ -163,6 +167,14 @@ inline Camera loomCameraFor(const ViewCamera& view, const Treadle::Rect& area, f
 
 class ViewportMeshes{
 public:
+    struct SkinningDebug{
+        bool hasSkin = false;
+        bool rendered = false;
+        size_t vertices = 0;
+        size_t movedVertices = 0;
+        float maxDisplacement = 0.0f;
+    };
+
     //readable: meta se moze procitati (test); tada se ne moze i prikazati
     explicit ViewportMeshes(LoomInitializer& loom, bool readable = false) : loom(loom), readable(readable){
         const uint8_t white[4] = {255, 255, 255, 255};
@@ -212,6 +224,11 @@ public:
         return out;
     }
 
+    const SkinningDebug* skinningDebug(Warp::Id id) const{
+        const auto found = lastSkinningDebug.find(id);
+        return found == lastSkinningDebug.end() ? nullptr : &found->second;
+    }
+
     float exposure = 1.0f;
     size_t drawnPrimitives = 0;
 
@@ -220,6 +237,7 @@ public:
                  float nearPlane, float farPlane){
         items.clear();
         drawnPrimitives = 0;
+        lastSkinningDebug.clear();
         for(auto& [path, a] : assets){
             if(a->state != 0 && a->loader.joinable()) a->loader.join();
             if(a->state == 1 && !a->uploaded) upload(*a);
@@ -228,6 +246,7 @@ public:
         //Sto se crta: tijela i modeli koji su na kartici
         stage.walk([&](const Warp::Entity& entity, int){
             if(!entity.visible) return;
+            if(entity.model && entity.model->skin >= 0) lastSkinningDebug[entity.id].hasSkin = true;
             if(entity.mesh){
                 GpuPrimitive& gpu = primitive(entity.mesh->shape);
                 for(Mesh& mesh : gpu.chunks){
@@ -237,14 +256,56 @@ public:
             }
             if(entity.model){
                 Asset& a = asset(entity.model->path);
-                if(a.state != 1 || !a.uploaded || entity.model->mesh < 0 || size_t(entity.model->mesh) >= a.gpu.size()) return;
+                if(a.state != 1 || !a.uploaded || entity.model->mesh < 0 || size_t(entity.model->mesh) >= a.gpu.size() ||
+                   size_t(entity.model->mesh) >= a.cpu->meshes.size()) return;
                 const glm::mat4 world = stage.worldMatrix(entity.id, frame);
-                const std::vector<GpuPrimitive>& prims = a.gpu[size_t(entity.model->mesh)];
+                const size_t meshIndex = size_t(entity.model->mesh);
+                const Spool::GltfSkin* skin = entity.model->skin >= 0 && size_t(entity.model->skin) < a.cpu->skins.size()
+                    ? &a.cpu->skins[size_t(entity.model->skin)] : nullptr;
+                std::vector<Warp::Id> jointIds = entity.model->skinJoints;
+                if(skin && jointIds.size() != skin->joints.size() && entity.model->skinJointPaths.size() == skin->joints.size()){
+                    jointIds.clear();
+                    for(const std::string& path : entity.model->skinJointPaths) jointIds.push_back(stage.find(path));
+                }
+                std::vector<glm::mat4> palette;
+                if(skin && jointIds.size() == skin->joints.size()) palette = skinPalette(stage, frame, entity.id, jointIds, *skin);
+                bool skinned = skin && palette.size() == skin->joints.size();
+                const std::vector<Spool::GltfPrimitive>& sourcePrimitives = a.cpu->meshes[meshIndex].primitives;
+                if(skinned){
+                    for(const Spool::GltfPrimitive& primitive : sourcePrimitives){
+                        const size_t count = primitive.vertexCount();
+                        if((primitive.jointIndices.size() != count * 4u && primitive.jointIndices.size() != count * 8u) ||
+                           primitive.jointWeights.size() != primitive.jointIndices.size()){ skinned = false; break; }
+                    }
+                }
+                if(skinned){
+                    SkinnedInstance& instance = skinnedInstance(entity.id, entity.model->path, meshIndex, entity.model->skin,
+                                                                 a.cpu->meshes[meshIndex]);
+                    if(instance.primitives.size() != sourcePrimitives.size()) skinned = false;
+                    SkinningDebug deformation;
+                    deformation.hasSkin = true;
+                    for(size_t p = 0; skinned && p < sourcePrimitives.size(); ++p){
+                        SkinningDebug primitiveDebug;
+                        if(!deform(instance.primitives[p], sourcePrimitives[p], palette, primitiveDebug)){ skinned = false; break; }
+                        deformation.vertices += primitiveDebug.vertices;
+                        deformation.movedVertices += primitiveDebug.movedVertices;
+                        deformation.maxDisplacement = std::max(deformation.maxDisplacement, primitiveDebug.maxDisplacement);
+                    }
+                    if(skinned){
+                        deformation.rendered = true;
+                        lastSkinningDebug[entity.id] = deformation;
+                        for(size_t p = 0; p < instance.primitives.size(); ++p){
+                            const int material = p < entity.model->materials.size() ? entity.model->materials[p] : -1;
+                            for(Mesh& mesh : instance.primitives[p].gpu.chunks) items.push_back({&mesh, world, material, glm::vec3(0.8f), false});
+                        }
+                        return;
+                    }
+                    lastSkinningDebug[entity.id] = deformation;
+                }
+                const std::vector<GpuPrimitive>& prims = a.gpu[meshIndex];
                 for(size_t p = 0; p < prims.size(); ++p){
                     const int material = p < entity.model->materials.size() ? entity.model->materials[p] : -1;
-                    for(Mesh& mesh : const_cast<GpuPrimitive&>(prims[p]).chunks){
-                        items.push_back({&mesh, world, material, glm::vec3(0.8f), false});
-                    }
+                    for(Mesh& mesh : const_cast<GpuPrimitive&>(prims[p]).chunks) items.push_back({&mesh, world, material, glm::vec3(0.8f), false});
                 }
             }
         });
@@ -324,6 +385,19 @@ public:
 private:
     struct GpuPrimitive{ std::vector<Mesh> chunks; };
 
+    struct SkinnedPrimitive{
+        GpuPrimitive gpu;
+        std::vector<std::vector<Vertex>> bindVertices;
+        std::vector<std::vector<uint32_t>> sourceVertices;
+    };
+
+    struct SkinnedInstance{
+        std::string path;
+        size_t mesh = 0;
+        int skin = -1;
+        std::vector<SkinnedPrimitive> primitives;
+    };
+
     struct Asset{
         std::shared_ptr<Spool::GltfScene> cpu = std::make_shared<Spool::GltfScene>();
         std::thread loader;
@@ -349,6 +423,101 @@ private:
         GpuMaterial* gpu = nullptr;
     };
 
+    SkinnedInstance& skinnedInstance(Warp::Id id, const std::string& path, size_t meshIndex, int skinIndex,
+                                     const Spool::GltfMesh& source){
+        auto found = skinnedInstances.find(id);
+        if(found != skinnedInstances.end() && found->second.path == path && found->second.mesh == meshIndex &&
+           found->second.skin == skinIndex && found->second.primitives.size() == source.primitives.size()) return found->second;
+        SkinnedInstance created;
+        created.path = path;
+        created.mesh = meshIndex;
+        created.skin = skinIndex;
+        created.primitives.reserve(source.primitives.size());
+        for(const Spool::GltfPrimitive& primitive : source.primitives){
+            SkinnedPrimitive skinned;
+            for(MeshChunkData& chunk : meshChunks(primitive)){
+                skinned.gpu.chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices, true);
+                skinned.bindVertices.push_back(std::move(chunk.vertices));
+                skinned.sourceVertices.push_back(std::move(chunk.sourceVertices));
+            }
+            created.primitives.push_back(std::move(skinned));
+        }
+        if(found != skinnedInstances.end()) skinnedInstances.erase(found);
+        return skinnedInstances.emplace(id, std::move(created)).first->second;
+    }
+
+    static std::vector<glm::mat4> skinPalette(const Warp::Stage& stage, double frame, Warp::Id meshEntity,
+                                              const std::vector<Warp::Id>& joints, const Spool::GltfSkin& skin){
+        std::vector<glm::mat4> palette;
+        if(joints.size() != skin.joints.size() || skin.inverseBindMatrices.size() != joints.size() * 16u) return palette;
+        const glm::mat4 meshWorld = stage.worldMatrix(meshEntity, frame);
+        const float determinant = glm::determinant(glm::mat3(meshWorld));
+        if(!std::isfinite(determinant) || std::abs(determinant) < 1e-10f) return palette;
+        const glm::mat4 inverseMesh = glm::inverse(meshWorld);
+        palette.reserve(joints.size());
+        for(size_t joint = 0; joint < joints.size(); ++joint){
+            if(joints[joint] == Warp::None || !stage.contains(joints[joint])) return {};
+            glm::mat4 inverseBind(1.0f);
+            for(size_t column = 0; column < 4; ++column) for(size_t row = 0; row < 4; ++row){
+                inverseBind[column][row] = skin.inverseBindMatrices[joint * 16u + column * 4u + row];
+            }
+            palette.push_back(inverseMesh * stage.worldMatrix(joints[joint], frame) * inverseBind);
+        }
+        return palette;
+    }
+
+    static bool deform(SkinnedPrimitive& target, const Spool::GltfPrimitive& source,
+                       const std::vector<glm::mat4>& palette, SkinningDebug& debug){
+        const size_t count = source.vertexCount();
+        if(count == 0 || palette.empty() || target.bindVertices.size() != target.sourceVertices.size() ||
+           target.bindVertices.size() != target.gpu.chunks.size() ||
+           (source.jointIndices.size() != count * 4u && source.jointIndices.size() != count * 8u) ||
+           source.jointWeights.size() != source.jointIndices.size()) return false;
+        const size_t influences = source.jointIndices.size() / count;
+        for(size_t chunk = 0; chunk < target.bindVertices.size(); ++chunk){
+            const std::vector<Vertex>& bind = target.bindVertices[chunk];
+            const std::vector<uint32_t>& sourceIndices = target.sourceVertices[chunk];
+            if(bind.size() != sourceIndices.size()) return false;
+            std::vector<Vertex> vertices = bind;
+            for(size_t vertex = 0; vertex < vertices.size(); ++vertex){
+                ++debug.vertices;
+                const size_t sourceIndex = sourceIndices[vertex];
+                if(sourceIndex >= count) return false;
+                const glm::vec3 bindPosition(source.positions[sourceIndex * 3u], source.positions[sourceIndex * 3u + 1u], source.positions[sourceIndex * 3u + 2u]);
+                glm::vec4 position(0.0f);
+                glm::vec3 normal(0.0f);
+                float totalWeight = 0.0f;
+                for(size_t influence = 0; influence < influences; ++influence){
+                    const size_t at = sourceIndex * influences + influence;
+                    const float weight = source.jointWeights[at];
+                    if(weight <= 0.0f) continue;
+                    const size_t joint = source.jointIndices[at];
+                    if(joint >= palette.size() || !std::isfinite(weight)) return false;
+                    const glm::mat4& matrix = palette[joint];
+                    position += matrix * glm::vec4(bindPosition, 1.0f) * weight;
+                    const glm::mat3 linear(matrix);
+                    const float linearDeterminant = glm::determinant(linear);
+                    const glm::mat3 normalMatrix = std::isfinite(linearDeterminant) && std::abs(linearDeterminant) > 1e-10f
+                        ? glm::transpose(glm::inverse(linear)) : linear;
+                    normal += normalMatrix * bind[vertex].normal * weight;
+                    totalWeight += weight;
+                }
+                if(totalWeight > 1e-8f){
+                    const glm::vec3 deformedPosition(position / totalWeight);
+                    const float displacement = glm::length(deformedPosition - bindPosition);
+                    if(!std::isfinite(displacement)) return false;
+                    if(displacement > 1e-5f) ++debug.movedVertices;
+                    debug.maxDisplacement = std::max(debug.maxDisplacement, displacement);
+                    vertices[vertex].position = deformedPosition;
+                    const glm::vec3 normalized = normal / totalWeight;
+                    vertices[vertex].normal = glm::dot(normalized, normalized) > 1e-20f ? glm::normalize(normalized) : bind[vertex].normal;
+                }
+            }
+            target.gpu.chunks[chunk].updateVertices(vertices);
+        }
+        return true;
+    }
+
     Asset& asset(const std::string& path){
         auto found = assets.find(path);
         if(found != assets.end()) return *found->second;
@@ -369,7 +538,7 @@ private:
             std::vector<GpuPrimitive> prims;
             for(const Spool::GltfPrimitive& p : mesh.primitives){
                 GpuPrimitive gpu;
-                for(auto& [vertices, indices] : meshChunks(p)) gpu.chunks.emplace_back(loom.device, loom.command, vertices, indices);
+                for(MeshChunkData& chunk : meshChunks(p)) gpu.chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices);
                 prims.push_back(std::move(gpu));
             }
             a.gpu.push_back(std::move(prims));
@@ -381,7 +550,7 @@ private:
         std::optional<GpuPrimitive>& slot = shape == Warp::Shape::Cube ? cube : plane;
         if(!slot){
             slot.emplace();
-            for(auto& [vertices, indices] : meshChunks(unitShape(shape))) slot->chunks.emplace_back(loom.device, loom.command, vertices, indices);
+            for(MeshChunkData& chunk : meshChunks(unitShape(shape))) slot->chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices);
         }
         return *slot;
     }
@@ -507,6 +676,8 @@ private:
     std::optional<Texture> whiteSrgb, whiteLinear, flatNormal;
     std::optional<Light> keyLight, fillLight;
     std::map<std::string, std::unique_ptr<Asset>> assets;
+    std::map<Warp::Id, SkinnedInstance> skinnedInstances;
+    std::map<Warp::Id, SkinningDebug> lastSkinningDebug;
     std::map<std::string, std::unique_ptr<Texture>> textures;
     std::set<std::string> failed;
     std::optional<GpuPrimitive> cube, plane;

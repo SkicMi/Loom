@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -71,6 +72,8 @@ struct Job{
     Task task = Task::Solve;
     std::atomic<float> fraction{-1.0f};   //trening zna tocno gdje je; solve samo procjenjuje
     std::vector<std::string> lines;
+    std::uint64_t firstLineIndex = 0;
+    std::uint64_t nextLineIndex = 0;
     std::atomic<bool> running{false};
     std::atomic<bool> failed{false};
     std::atomic<int> phase{-1};
@@ -91,7 +94,10 @@ inline void runSolve(Job& job, std::string command, std::string outputDirectory,
     {
         std::lock_guard<std::mutex> guard(job.lock);
         job.lines.clear();
+        job.firstLineIndex = 0;
+        job.nextLineIndex = 0;
         job.lines.push_back("> " + command);
+        ++job.nextLineIndex;
     }
 
     FILE* pipe = popen((command + " 2>&1").c_str(), "r");
@@ -127,7 +133,11 @@ inline void runSolve(Job& job, std::string command, std::string outputDirectory,
 
         std::lock_guard<std::mutex> guard(job.lock);
         job.lines.push_back(line);
-        if(job.lines.size() > 400) job.lines.erase(job.lines.begin());
+        ++job.nextLineIndex;
+        if(job.lines.size() > 400){
+            job.lines.erase(job.lines.begin());
+            ++job.firstLineIndex;
+        }
     }
 
     const int status = pclose(pipe);

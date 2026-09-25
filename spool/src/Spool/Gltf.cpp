@@ -345,7 +345,7 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
         }
     }
 
-    for(const char* unsupported : {"skins", "animations", "cameras"}){
+    for(const char* unsupported : {"animations", "cameras"}){
         if(const Json* list = root.get(unsupported)){
             if(list->size() > 0) out.skipped.push_back(std::string(unsupported) + ": " + std::to_string(list->size()));
         }
@@ -496,6 +496,63 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
                 if(!optional("NORMAL", primitive.normals, 3) || !optional("TEXCOORD_0", primitive.uv0, 2) ||
                    !optional("TEXCOORD_1", primitive.uv1, 2) || !optional("COLOR_0", primitive.colors, 4)) return false;
 
+                const bool hasJoints0 = attributes->get("JOINTS_0") != nullptr;
+                const bool hasWeights0 = attributes->get("WEIGHTS_0") != nullptr;
+                const bool hasJoints1 = attributes->get("JOINTS_1") != nullptr;
+                const bool hasWeights1 = attributes->get("WEIGHTS_1") != nullptr;
+                if(hasJoints0 != hasWeights0 || hasJoints1 != hasWeights1 || (hasJoints1 && !hasJoints0)){
+                    error = "JOINTS_n and WEIGHTS_n must be supplied in matching pairs"; return false;
+                }
+                if(attributes->get("JOINTS_2") || attributes->get("WEIGHTS_2")){
+                    error = "skin influences beyond JOINTS_1/WEIGHTS_1 are not supported"; return false;
+                }
+                if(hasJoints0){
+                    const size_t influenceSets = hasJoints1 ? 2u : 1u;
+                    primitive.jointIndices.resize(size_t(vertices) * influenceSets * 4u);
+                    primitive.jointWeights.resize(size_t(vertices) * influenceSets * 4u);
+                    const Json* accessors = root.get("accessors");
+                    for(size_t set = 0; set < influenceSets; ++set){
+                        const std::string suffix = std::to_string(set);
+                        const int jointAccessorIndex = attributes->integer(("JOINTS_" + suffix).c_str(), -1);
+                        const int weightAccessorIndex = attributes->integer(("WEIGHTS_" + suffix).c_str(), -1);
+                        if(!accessors || jointAccessorIndex < 0 || weightAccessorIndex < 0 ||
+                           size_t(jointAccessorIndex) >= accessors->size() || size_t(weightAccessorIndex) >= accessors->size()){
+                            error = "skin attribute accessor does not exist"; return false;
+                        }
+                        const Json& jointAccessor = accessors->items[size_t(jointAccessorIndex)];
+                        const int jointType = jointAccessor.integer("componentType", 0);
+                        if((jointType != 5121 && jointType != 5123) || jointAccessor.flag("normalized", false)){
+                            error = "JOINTS_" + suffix + " must contain unnormalized unsigned bytes or shorts"; return false;
+                        }
+                        const Json& weightAccessor = accessors->items[size_t(weightAccessorIndex)];
+                        const int weightType = weightAccessor.integer("componentType", 0);
+                        if(weightType != 5126 && !((weightType == 5121 || weightType == 5123) && weightAccessor.flag("normalized", false))){
+                            error = "WEIGHTS_" + suffix + " must contain floats or normalized unsigned values"; return false;
+                        }
+                        std::vector<float> jointValues, weightValues;
+                        int jointComponents = 0, weightComponents = 0;
+                        const long jointCount = readAccessor(model, jointAccessorIndex, jointValues, jointComponents, error);
+                        const long weightCount = readAccessor(model, weightAccessorIndex, weightValues, weightComponents, error);
+                        if(jointCount < 0 || weightCount < 0) return false;
+                        if(jointCount != vertices || weightCount != vertices || jointComponents != 4 || weightComponents != 4){
+                            error = "JOINTS_n/WEIGHTS_n must be VEC4 with one element per vertex"; return false;
+                        }
+                        for(long v = 0; v < vertices; ++v){
+                            for(size_t k = 0; k < 4; ++k){
+                                const float joint = jointValues[size_t(v) * 4u + k];
+                                const float weight = weightValues[size_t(v) * 4u + k];
+                                if(!std::isfinite(joint) || joint < 0.0f || joint > 65535.0f || std::floor(joint) != joint ||
+                                   !std::isfinite(weight) || weight < 0.0f){
+                                    error = "skin attribute contains an invalid joint index or weight"; return false;
+                                }
+                                const size_t at = size_t(v) * influenceSets * 4u + set * 4u + k;
+                                primitive.jointIndices[at] = uint16_t(joint);
+                                primitive.jointWeights[at] = weight;
+                            }
+                        }
+                    }
+                }
+
                 std::vector<uint32_t> order;
                 if(const Json* indices = prim.get("indices")){
                     std::vector<float> values;
@@ -536,6 +593,7 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
             GltfNode node;
             node.name = n.str("name");
             node.mesh = n.integer("mesh", -1);
+            node.skin = n.integer("skin", -1);
             if(const Json* children = n.get("children")) for(const Json& c : children->items) node.children.push_back(int(c.number));
             if(const Json* matrix = n.get("matrix"); matrix && matrix->size() == 16){
                 //Po stupcima (glTF je column-major, kao glm); rastav u TRS
@@ -573,23 +631,64 @@ bool loadGltf(const std::string& path, GltfScene& out, std::string& error, const
                 if(const Json* r = n.get("rotation")) for(size_t c = 0; c < 4 && c < r->size(); ++c) node.rotation[c] = float(r->items[c].number);
                 if(const Json* s = n.get("scale")) for(size_t c = 0; c < 3 && c < s->size(); ++c) node.scale[c] = float(s->items[c].number);
             }
-            if(n.get("skin")) out.skipped.push_back("cvor " + node.name + ": skin");
+            if(n.get("skin") && node.skin < 0){ error = "node skin index is invalid"; return false; }
             out.nodes.push_back(node);
         }
     }
-    //Read joint identity for skeleton inspection; keep the skinning warning until runtime support exists.
+    //Skin definitions and inverse bind matrices are read after node indices are known.
     if(const Json* skins = root.get("skins")){
-        for(const Json& skin : skins->items){
-            if(const Json* joints = skin.get("joints")){
-                for(const Json& joint : joints->items){
-                    if(joint.kind != Json::Kind::Number || !std::isfinite(joint.number) ||
-                       joint.number < 0 || joint.number >= double(out.nodes.size()) ||
-                       std::floor(joint.number) != joint.number){
-                        error = "skin joint index outside nodes"; return false;
-                    }
-                    out.nodes[size_t(joint.number)].joint = true;
+        for(size_t skinIndex = 0; skinIndex < skins->size(); ++skinIndex){
+            const Json& source = skins->items[skinIndex];
+            GltfSkin skin;
+            skin.name = source.str("name");
+            skin.skeleton = source.integer("skeleton", -1);
+            if(source.get("skeleton") && (skin.skeleton < 0 || size_t(skin.skeleton) >= out.nodes.size())){ error = "skin skeleton index outside nodes"; return false; }
+            const Json* joints = source.get("joints");
+            if(!joints || joints->size() == 0){ error = "skin has no joints"; return false; }
+            skin.joints.reserve(joints->size());
+            for(const Json& joint : joints->items){
+                if(joint.kind != Json::Kind::Number || !std::isfinite(joint.number) ||
+                   joint.number < 0 || joint.number >= double(out.nodes.size()) || std::floor(joint.number) != joint.number){
+                    error = "skin joint index outside nodes"; return false;
                 }
+                const int nodeIndex = int(joint.number);
+                skin.joints.push_back(nodeIndex);
+                out.nodes[size_t(nodeIndex)].joint = true;
             }
+            skin.inverseBindMatrices.resize(skin.joints.size() * 16u, 0.0f);
+            for(size_t jointIndex = 0; jointIndex < skin.joints.size(); ++jointIndex){
+                for(size_t diagonal = 0; diagonal < 4; ++diagonal) skin.inverseBindMatrices[jointIndex * 16u + diagonal * 5u] = 1.0f;
+            }
+            const int bindAccessorIndex = source.integer("inverseBindMatrices", -1);
+            if(bindAccessorIndex >= 0){
+                const Json* accessors = root.get("accessors");
+                if(!accessors || size_t(bindAccessorIndex) >= accessors->size()){ error = "inverseBindMatrices accessor does not exist"; return false; }
+                const Json& accessor = accessors->items[size_t(bindAccessorIndex)];
+                if(accessor.integer("componentType", 0) != 5126){ error = "inverseBindMatrices must contain floats"; return false; }
+                std::vector<float> values;
+                int components = 0;
+                const long count = readAccessor(model, bindAccessorIndex, values, components, error);
+                if(count < 0) return false;
+                if(size_t(count) != skin.joints.size() || components != 16){ error = "inverseBindMatrices count/type does not match skin joints"; return false; }
+                for(float value : values) if(!std::isfinite(value)){ error = "inverseBindMatrices contains a non-finite value"; return false; }
+                skin.inverseBindMatrices = std::move(values);
+            }
+            out.skins.push_back(std::move(skin));
+        }
+    }
+    for(size_t nodeIndex = 0; nodeIndex < out.nodes.size(); ++nodeIndex){
+        const GltfNode& node = out.nodes[nodeIndex];
+        if(node.skin < 0) continue;
+        if(size_t(node.skin) >= out.skins.size()){ error = "node skin index outside skins"; return false; }
+        if(node.mesh < 0 || size_t(node.mesh) >= out.meshes.size()) continue;
+        const GltfSkin& skin = out.skins[size_t(node.skin)];
+        for(const GltfPrimitive& primitive : out.meshes[size_t(node.mesh)].primitives){
+            if(primitive.jointIndices.size() != primitive.vertexCount() * 4u &&
+               primitive.jointIndices.size() != primitive.vertexCount() * 8u){
+                error = "skinned mesh primitive has no matching JOINTS_0/WEIGHTS_0 data"; return false;
+            }
+            if(primitive.jointWeights.size() != primitive.jointIndices.size()){ error = "skin index/weight counts do not match"; return false; }
+            for(uint16_t index : primitive.jointIndices) if(size_t(index) >= skin.joints.size()){ error = "vertex skin index outside skin joints"; return false; }
         }
     }
     const Json* scenes = root.get("scenes");

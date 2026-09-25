@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 
@@ -24,6 +25,11 @@ def install_generation_defaults(model_type, first_heading_angle: float, root_mar
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Kimodo fits on the available GPU; keeping LLM2Vec on CPU avoids the
+    # encoder competing with diffusion for VRAM on 12 GB cards. Preserve an
+    # explicit user override for hosts with a separate text-encoder service.
+    os.environ.setdefault("TEXT_ENCODER_DEVICE", "cpu")
+
     incoming = list(sys.argv[1:] if argv is None else argv)
     options, forwarded = parse_adapter_args(incoming)
     sys.argv = [sys.argv[0], *forwarded]

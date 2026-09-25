@@ -212,6 +212,76 @@ def read_pfm(path):
         return image[..., 0].copy()
 
 
+def pose_correction(delta, spread):
+    """Ispravak poze kadra iz 6 brojeva (os-kut zakreta u radijanima, pomak u jedinicama mjerila
+    scene) -> 4x4 koji se mnozi s lijeve strane matrice svijet->kamera: ispravlja kameru, ne scenu.
+    Isti racun koristi evaluate_splat.py za <splat>_poses.json"""
+    w = delta[..., :3]
+    zero = torch.zeros_like(w[..., 0])
+    skew = torch.stack([zero, -w[..., 2], w[..., 1], w[..., 2], zero, -w[..., 0],
+                        -w[..., 1], w[..., 0], zero], -1).reshape(*w.shape[:-1], 3, 3)
+    M = torch.eye(4, device=delta.device, dtype=delta.dtype).expand(*w.shape[:-1], 4, 4).clone()
+    M[..., :3, :3] = torch.linalg.matrix_exp(skew)
+    M[..., :3, 3] = delta[..., 3:] * spread
+    return M
+
+
+def depth_normals(depth, K, step=1):
+    """Normale iz nacrtane dubine (H, W) u sustavu kamere (OpenCV), okrenute prema kameri"""
+    H, W = depth.shape
+    v, u = torch.meshgrid(torch.arange(H, device=depth.device, dtype=depth.dtype),
+                          torch.arange(W, device=depth.device, dtype=depth.dtype), indexing="ij")
+    P = torch.stack([(u - K[0, 2]) / K[0, 0] * depth, (v - K[1, 2]) / K[1, 1] * depth, depth], -1)
+    s = step
+    dx = P[s:-s, 2 * s:] - P[s:-s, :-2 * s]
+    dy = P[2 * s:, s:-s] - P[:-2 * s, s:-s]
+    n = torch.nn.functional.normalize(-torch.cross(dx, dy, dim=-1), dim=-1)
+    return torch.nn.functional.pad(n.permute(2, 0, 1)[None], (s, s, s, s), mode="replicate")[0].permute(1, 2, 0)
+
+
+def bilagrid_identity(count, device):
+    """Bilateralna mreza po kadru: 12 brojeva (afina 3x4 boje) u mrezi 8 (svjetlina) x 16 x 16"""
+    grid = torch.zeros(count, 12, 8, 16, 16, device=device)
+    grid[:, 0] = grid[:, 5] = grid[:, 10] = 1.0
+    return grid
+
+
+def bilagrid_apply(grid, image):
+    """Wang i sur. 2024: afina boje po pikselu iz mreze (x, y, svjetlina slike). grid (12, 8, 16, 16),
+    image (h, w, 3). Svjetlina vodilja se ne derivira"""
+    h, w = image.shape[:2]
+    grey = (image.detach() * torch.tensor([0.299, 0.587, 0.114], device=image.device)).sum(-1).clamp(0, 1)
+    ys, xs = torch.meshgrid(torch.linspace(-1, 1, h, device=image.device),
+                            torch.linspace(-1, 1, w, device=image.device), indexing="ij")
+    coords = torch.stack([xs, ys, grey * 2 - 1], -1)[None, None]
+    affine = torch.nn.functional.grid_sample(grid[None], coords, align_corners=True)[0, :, 0]
+    affine = affine.permute(1, 2, 0).reshape(h, w, 3, 4)
+    return (affine[..., :3] @ image[..., None])[..., 0] + affine[..., 3]
+
+
+def bilagrid_tv(grid):
+    return sum(((grid.narrow(d, 1, grid.shape[d] - 1) - grid.narrow(d, 0, grid.shape[d] - 1)) ** 2).mean()
+               for d in (-1, -2, -3))
+
+
+def fill_between(trained, names):
+    """Vrijednosti po kadru za kadrove koji nisu ucili (izdvojeni): linearno izmedju najblizeg
+    ucenog prije i poslije po imenu (redoslijed snimke)"""
+    order = sorted(set(trained) | set(names))
+    out = {}
+    for position, name in enumerate(order):
+        if name in trained: continue
+        before = next((order[j] for j in range(position - 1, -1, -1) if order[j] in trained), None)
+        after = next((order[j] for j in range(position + 1, len(order)) if order[j] in trained), None)
+        if before and after:
+            a, b = order.index(before), order.index(after)
+            t = (position - a) / max(1, b - a)
+            out[name] = (1 - t) * trained[before] + t * trained[after]
+        elif before or after:
+            out[name] = trained[before or after]
+    return out
+
+
 def rgb_to_sh0(rgb):
     return (rgb - 0.5) / 0.28209479177387814            # C0 clan sfernih harmonika
 
@@ -306,9 +376,43 @@ def main():
                     help="svakih 500 koraka prosjecno vrijeme po dijelu koraka (sinkronizira karticu - samo za mjerenje)")
     ap.add_argument("--finish-full-res", type=int, default=0,
                     help="jos toliko koraka NA PUNOJ RAZLUCIVOSTI nakon --steps (postupno: grubo pa fino)")
+    #=============================================================================================
+    # POZE SE DOTJERUJU U TRENINGU (--pose-opt). Solve ima 0.87 px na 4K preciznim znacajkama, a
+    # pola do jednog piksela krive poze je zamucenje koje nijedan broj gaussiana ne moze skinuti:
+    # svaki kadar vidi scenu malo pomaknutu, pa splat nauci prosjek. Svaki kadar dobije mali
+    # ispravak (zakret + pomak) koji se uci s gradijentom zajedno sa splatom; izdvojeni kadrovi
+    # dobiju ispravak interpoliran od susjeda (isto kao ekspozicija) i zapisu se u <izlaz>_poses.json
+    #=============================================================================================
+    ap.add_argument("--pose-opt", action=argparse.BooleanOptionalAction, default=False,
+                    help="uci ispravak poze po kadru; zapisuje <izlaz>_poses.json")
+    #PRVI POKUSAJ (E14, obicni Adam, 1e-4 od 500. koraka) je poze pustio da odlutaju: zakret
+    #medijan 0.42 st umjesto ocekivanih stotinki, PSNR +0.68 dB ali ostrina 0.44 -> 0.14. Adam je
+    #zamahom micao i kadrove koji u tom koraku nisu ni crtani. Sad: rijetki Adam (samo crtani kadar),
+    #deset puta manji korak, od 3000. koraka kad je raspored nadjen
+    ap.add_argument("--pose-lr", type=float, default=1e-5, help="korak ucenja ispravka poze (radijani / mjerilo scene)")
+    ap.add_argument("--pose-from", type=int, default=3000, help="od kojeg koraka se poze uce")
+    #=============================================================================================
+    # POVRSINA U TRENINGU (--surface W). Normala gaussiane (najkraca os) se slaze s normalom nacrtane
+    # dubine, a gaussiana je plosnata (--surface-flat). Na gotovom C0257 splatu je isto dotjerivanje
+    # (relight.py faza 1) dalo +0.2 dB na izdvojenim i normale koje su povrsina; ovdje ide od koraka
+    # --surface-from, kad je raspored vec nadjen (kao 2DGS od 7000)
+    #=============================================================================================
+    ap.add_argument("--surface", type=float, default=0.0, help="tezina slaganja normale gaussiane i dubine (0 = iskljuceno)")
+    ap.add_argument("--surface-flat", type=float, default=0.1, help="tezina plosnatosti (najkraca / najdulja os)")
+    ap.add_argument("--surface-from", type=int, default=7000)
+    #=============================================================================================
+    # BILATERALNA MREZA (--bilagrid) umjesto pojacanja i pomaka po kadru: afina boje koja ovisi o
+    # mjestu u kadru i svjetlini (vinjeta, lokalno tonsko mapiranje, bijela ravnoteza koja se mijenja).
+    # Wang i sur. 2024 (Bilateral Guided Radiance Field Processing). Izdvojeni kadrovi dobiju mrezu
+    # interpoliranu od susjeda; zapis <izlaz>_bilagrid.npz
+    #=============================================================================================
+    ap.add_argument("--bilagrid", action=argparse.BooleanOptionalAction, default=False)
+    ap.add_argument("--bilagrid-tv", type=float, default=10.0, help="glatkoca mreze")
     ap.add_argument("--opis", default="",
                     help="sto se ovim treningom mjeri; ide u dnevnik mjerenja (benchmarks/mjerenja.jsonl)")
     args = ap.parse_args()
+    if args.surface > 0 and args.depth:
+        raise SystemExit("--surface i --depth zajedno nisu podrzani: oba citaju dodatne kanale istog crtanja")
     started = time.time()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -488,6 +592,17 @@ def main():
     #pa ista ploha u razlicitim kadrovima ima razlicitu svjetlinu - a bez ovoga je trener mora
     #objasniti bojom i geometrijom gaussiana, tj. mrljama i floaterima. Svaki kadar dobije pojacanje i
     #pomak po kanalu; splat uci prosjecnu, pravu boju scene
+    poseDelta, poseOptimizer = None, None
+    if args.pose_opt:
+        poseTable = torch.nn.Embedding(len(pictures), 6, sparse=True).to(device)
+        torch.nn.init.zeros_(poseTable.weight)
+        poseDelta = poseTable.weight
+        poseOptimizer = torch.optim.SparseAdam(poseTable.parameters(), lr=args.pose_lr)
+    bilagrid, bilagridOptimizer = None, None
+    if args.bilagrid:
+        bilagrid = bilagrid_identity(len(pictures), device).requires_grad_(True)
+        bilagridOptimizer = torch.optim.Adam([bilagrid], lr=2e-3)
+        args.exposure = False
     exposure, exposureOptimizer = None, None
     if args.exposure:
         exposure = torch.zeros(len(pictures), 2, 3, device=device, requires_grad=True)
@@ -589,6 +704,27 @@ def main():
         out[..., :3, 3] = -(R.transpose(-1, -2) @ C[..., None])[..., 0]
         return out
 
+    def drawSurface(view, degree):
+        """Kao drawOnce za obicnu kameru, ali uz boju crta i normalu gaussiane (6 kanala + dubina).
+        SH se racuna ovdje (isto sto rasterizacija radi iznutra), da sve ide u jednom prolazu"""
+        centre = torch.linalg.inv(view[0])[:3, 3]
+        colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
+        colour = (gsplat.spherical_harmonics(degree, params["means"] - centre, colours_sh) + 0.5).clamp_min(0.0)
+        scales = torch.exp(params["scales"])
+        q = torch.nn.functional.normalize(params["quats"], dim=-1)
+        w, x, y, z = q.unbind(-1)
+        R = torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y),
+                         2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+                         2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], -1).view(-1, 3, 3)
+        axis = torch.argmin(scales, dim=1)
+        normal = R.gather(2, axis[:, None, None].expand(-1, 3, 1))[..., 0]
+        normal = torch.where(((centre - params["means"]) * normal).sum(-1, keepdim=True) < 0, -normal, normal)
+        return gsplat.rasterization(
+            means=params["means"], quats=params["quats"], scales=scales,
+            opacities=torch.sigmoid(params["opacities"]), colors=torch.cat([colour, normal], -1),
+            viewmats=view, Ks=K[None], width=width, height=height, sh_degree=None,
+            rasterize_mode=args.rasterize, render_mode="RGB+ED", packed=True)
+
     def draw(view, viewEnd, degree, mode):
         if blurSteps:
             total, alpha, info = None, None, None
@@ -663,15 +799,25 @@ def main():
         truth = pictures[index].to(device, non_blocking=True).float() / 255.0
         tick("slika")
 
-        rendered, alpha, info = draw(views[index:index+1], viewsEnd[index:index+1],
-                                     min(args.sh_degree, step // 1000),     #niži redovi prvi, kao u izvornom radu
-                                     "RGB+ED" if len(depthMaps) else "RGB")
+        view, viewEnd = views[index:index+1], viewsEnd[index:index+1]
+        if poseDelta is not None and step >= args.pose_from:
+            correction = pose_correction(poseTable(torch.tensor([index], device=device))[0], spread)
+            view, viewEnd = correction @ view, correction @ viewEnd
+        surfaceNow = args.surface > 0 and step >= args.surface_from and not usesUt and not blurSteps
+        if surfaceNow:
+            rendered, alpha, info = drawSurface(view, min(args.sh_degree, step // 1000))
+        else:
+            rendered, alpha, info = draw(view, viewEnd,
+                                         min(args.sh_degree, step // 1000),     #niži redovi prvi, kao u izvornom radu
+                                         "RGB+ED" if len(depthMaps) else "RGB")
 
         tick("crtanje")
         strategy.step_pre_backward(params, optimizers, state, step, info)
         image = rendered[0][..., :3]
         if exposure is not None:
             image = image * (1.0 + exposure[index, 0]) + exposure[index, 1]
+        if bilagrid is not None:
+            image = bilagrid_apply(bilagrid[index], image)
 
         #ZASICENI PIKSEL NE NOSI PODATAK. Gdje je senzor u zasicenju - zarulja, odsjaj - prava
         #vrijednost je "barem ovoliko", ne "tocno ovoliko", pa optimizacija pokusava pogoditi broj
@@ -746,6 +892,18 @@ def main():
                 depthTerm = (a * x + b - y).abs().mean()
                 loss = loss + args.depth_weight * depthTerm
                 lastDepthTerm = float(depthTerm)
+        if surfaceNow:
+            gaussianNormal = torch.nn.functional.normalize(rendered[0][..., 3:6], dim=-1)
+            depthNormal = depth_normals(rendered[0][..., 6], K)
+            solid = (alpha[0].detach() > 0.5).float()
+            consistency = (solid * (1 - (gaussianNormal * depthNormal).sum(-1, keepdim=True))).sum() / solid.sum().clamp(min=1.0)
+            gaussianScales = torch.exp(params["scales"])
+            flatness = (gaussianScales.min(1).values / gaussianScales.max(1).values).mean()
+            loss = loss + args.surface * consistency + args.surface_flat * flatness
+            lastSurface = (float(consistency), float(flatness))
+        if bilagrid is not None:
+            loss = loss + args.bilagrid_tv * bilagrid_tv(bilagrid[index])
+            bilagridOptimizer.zero_grad(set_to_none=True)
         if exposure is not None:
             #Blago prema nuli: korekcija smije objasniti ekspoziciju, ne boju scene
             loss = loss + 1e-3 * exposure[index].pow(2).sum()
@@ -796,6 +954,11 @@ def main():
                 print(f"  {step:5d}  nevidljivih van: {int(invisible.sum())} od {before}", flush=True)
         if exposure is not None:
             exposureOptimizer.step()
+        if bilagrid is not None:
+            bilagridOptimizer.step()
+        if poseDelta is not None and step >= args.pose_from:
+            poseOptimizer.step()
+            poseOptimizer.zero_grad(set_to_none=True)
 
         #Kad se granica dosegne, zgusnjavanje staje a ucenje ide dalje - preostali koraci jos
         #popravljaju polozaj, boju i neprozirnost onoga sto vec postoji
@@ -808,6 +971,8 @@ def main():
         if step % 500 == 0 or step == args.steps + args.finish_full_res - 1:
             extra = f"  dubina {lastDepthTerm:.4f} (tezina {args.depth_weight})" if len(depthMaps) else ""
             if args.anisotropy_weight > 0.0: extra += f"  iglice {lastNeedles:.3f} (tezina {args.anisotropy_weight})"
+            if args.surface > 0 and step >= args.surface_from and "lastSurface" in locals():
+                extra += f"  normale {lastSurface[0]:.3f} plosnatost {lastSurface[1]:.3f}"
             print(f"  {step:5d}  gubitak {loss.item():.4f}  gaussiana {params['means'].shape[0]}{extra}")
             if args.profile and phaseTimes:
                 total = sum(phaseTimes.values())
@@ -867,28 +1032,41 @@ def main():
     heldExposure = {}
     if exposure is not None:
         trained = {name: exposure[i].detach().cpu().numpy() for i, name in enumerate(pictureNames)}
-        order = sorted(list(trained) + (heldNames if heldOut else []))
-        for position, name in enumerate(order):
-            if name in trained: continue
-            before = next((order[j] for j in range(position - 1, -1, -1) if order[j] in trained), None)
-            after = next((order[j] for j in range(position + 1, len(order)) if order[j] in trained), None)
-            if before and after:
-                a, b = order.index(before), order.index(after)
-                t = (position - a) / max(1, b - a)
-                heldExposure[name] = (1 - t) * trained[before] + t * trained[after]
-            elif before or after:
-                heldExposure[name] = trained[before or after]
+        heldExposure = fill_between(trained, heldNames if heldOut else [])
         with open(str(Path(args.output).with_suffix("")) + "_exposure.json", "w") as f:
             json.dump({name: value.tolist() for name, value in {**trained, **heldExposure}.items()}, f)
         spread_gain = np.array([v[0] for v in trained.values()])
         print(f"Ekspozicija po kadru: pojacanje {spread_gain.min():+.3f} do {spread_gain.max():+.3f}")
+
+    heldGrid = {}
+    if bilagrid is not None:
+        trainedGrid = {name: bilagrid[i].detach().cpu().numpy() for i, name in enumerate(pictureNames)}
+        heldGrid = fill_between(trainedGrid, heldNames if heldOut else [])
+        allGrids = {**trainedGrid, **heldGrid}
+        np.savez_compressed(str(Path(args.output).with_suffix("")) + "_bilagrid.npz",
+                            names=np.array(list(allGrids)), grids=np.stack(list(allGrids.values())))
+
+    heldPose = {}
+    if poseDelta is not None:
+        trainedPose = {name: poseDelta[i].detach().cpu().numpy() for i, name in enumerate(pictureNames)}
+        heldPose = fill_between(trainedPose, heldNames if heldOut else [])
+        with open(str(Path(args.output).with_suffix("")) + "_poses.json", "w") as f:
+            json.dump(dict(mjerilo=spread, poze={name: value.tolist() for name, value in {**trainedPose, **heldPose}.items()}), f)
+        size = np.array([np.linalg.norm(v[:3]) for v in trainedPose.values()]) * 180 / math.pi
+        shift = np.array([np.linalg.norm(v[3:]) for v in trainedPose.values()]) * spread
+        print(f"Ispravak poza: zakret medijan {np.median(size):.4f} st (najveci {size.max():.4f}), "
+              f"pomak medijan {np.median(shift):.5f} (najveci {shift.max():.5f}; mjerilo scene {spread:.3f})")
 
     if heldOut:
         with torch.no_grad():
             colours_sh = torch.cat([params["sh0"], params["shN"]], dim=1)
             psnrs, ssims = [], []
             for i in range(len(heldPictures)):
-                shown, _, _ = draw(heldViews[i:i+1], heldViewsEnd[i:i+1], args.sh_degree,
+                heldView, heldViewEnd = heldViews[i:i+1], heldViewsEnd[i:i+1]
+                if heldNames[i] in heldPose:
+                    correction = pose_correction(torch.from_numpy(heldPose[heldNames[i]]).float().to(device), spread)
+                    heldView, heldViewEnd = correction @ heldView, correction @ heldViewEnd
+                shown, _, _ = draw(heldView, heldViewEnd, args.sh_degree,
                                    "RGB+ED" if len(depthMaps) else "RGB")
 
                 truth = heldPictures[i].to(device).float() / 255.0
@@ -897,6 +1075,8 @@ def main():
                 if heldNames[i] in heldExposure:
                     correction = torch.from_numpy(heldExposure[heldNames[i]]).float().to(device)
                     shown = shown * (1.0 + correction[0]) + correction[1]
+                if heldNames[i] in heldGrid:
+                    shown = bilagrid_apply(torch.from_numpy(heldGrid[heldNames[i]]).float().to(device), shown)
                 mse = float(((shown - truth) ** 2).mean())
                 psnrs.append(10.0 * math.log10(1.0 / max(mse, 1e-12)))
                 ssims.append(float(ssim(shown, truth, window, windowSize)))

@@ -16,10 +16,14 @@
 #include "Core/LoomInitializer.h"
 
 #include "../src/LoomPbr.h"
+#include "../src/LoomModel.h"
 
 #include <Spool/ImageFile.h>
 
 #include <cmath>
+#include <chrono>
+#include <fstream>
+#include <thread>
 #include <cstring>
 #include <filesystem>
 
@@ -194,6 +198,67 @@ int main(){
         const glm::vec4 middle = image.width ? image.at(uint32_t(c.x), uint32_t(c.y)) : glm::vec4(0.0f);
         report.check("tijelo bez materijala se crta u svojoj boji", middle.a > 0.99f && middle.r > middle.b * 2.0f,
             fmt("sredina (%.2f %.2f %.2f %.2f), nacrtano %zu", middle.r, middle.g, middle.b, middle.a, meshes.drawnPrimitives));
+    }
+
+    //-- 6. animated GLTF skin: a bone key must move the skinned triangle ------------------------
+    {
+        const std::filesystem::path directory = std::filesystem::temp_directory_path() / "loom_pbr_skin_test";
+        std::filesystem::create_directories(directory);
+        const std::filesystem::path gltfPath = directory / "skin.gltf";
+        const std::vector<float> positions{-0.2f,0.0f,0.0f, 0.2f,0.0f,0.0f, 0.0f,0.4f,0.0f};
+        const uint8_t joints[12] = {1,0,0,0, 1,0,0,0, 1,0,0,0};
+        const std::vector<float> weights{1,0,0,0, 1,0,0,0, 1,0,0,0};
+        std::vector<float> inverseBind(32, 0.0f);
+        for(size_t joint = 0; joint < 2; ++joint) for(size_t i = 0; i < 4; ++i) inverseBind[joint * 16 + i * 5] = 1.0f;
+        inverseBind[29] = -0.2f; //inverse bind translates the child joint back to the mesh origin
+        {
+            std::ofstream binary(directory / "skin.bin", std::ios::binary);
+            binary.write(reinterpret_cast<const char*>(positions.data()), std::streamsize(positions.size() * sizeof(float)));
+            binary.write(reinterpret_cast<const char*>(joints), sizeof(joints));
+            binary.write(reinterpret_cast<const char*>(weights.data()), std::streamsize(weights.size() * sizeof(float)));
+            binary.write(reinterpret_cast<const char*>(inverseBind.data()), std::streamsize(inverseBind.size() * sizeof(float)));
+        }
+        {
+            std::ofstream gltf(gltfPath);
+            gltf << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"Hips","children":[1,2]},{"name":"Chest","translation":[0,0.2,0]},{"name":"Body","mesh":0,"skin":0}],"skins":[{"skeleton":0,"joints":[0,1],"inverseBindMatrices":3}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}}]}],"buffers":[{"uri":"skin.bin","byteLength":224}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":12},{"buffer":0,"byteOffset":48,"byteLength":48},{"buffer":0,"byteOffset":96,"byteLength":128}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5121,"count":3,"type":"VEC4"},{"bufferView":2,"componentType":5126,"count":3,"type":"VEC4"},{"bufferView":3,"componentType":5126,"count":2,"type":"MAT4"}]})";
+        }
+        Spool::GltfScene skinScene;
+        std::string skinError;
+        const bool loaded = Spool::loadGltf(gltfPath.string(), skinScene, skinError);
+        Warp::Stage skinStage;
+        const Loom::ModelImportReport imported = loaded ? Loom::importGltf(skinStage, skinScene) : Loom::ModelImportReport{};
+        const Warp::Id chest = skinStage.find("/skin/Hips/Chest");
+        if(skinStage.get(chest)){
+            skinStage.get(chest)->rotationKeys.set(1.0, glm::quat(1,0,0,0));
+            skinStage.get(chest)->rotationKeys.set(2.0, glm::angleAxis(glm::radians(90.0f), glm::vec3(0,0,1)));
+        }
+        auto renderSkinFrame = [&](double frame){
+            bool ready = false;
+            for(int attempt = 0; attempt < 100 && !ready; ++attempt){
+                ready = meshes.prepare(skinStage, frame, view, 1.0f, 0.01f, 100.0f);
+                if(!ready) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            if(!ready) return Pixels{};
+            loom.renderer.beginFrame();
+            meshes.render();
+            loom.renderer.endFrame();
+            return decode(meshes.readPixels());
+        };
+        const Pixels restImage = renderSkinFrame(1.0);
+        const Pixels bentImage = renderSkinFrame(2.0);
+        double difference = 0.0;
+        size_t visible = 0;
+        if(restImage.width == bentImage.width && restImage.height == bentImage.height){
+            for(uint32_t y = 0; y < restImage.height; ++y) for(uint32_t x = 0; x < restImage.width; ++x){
+                const glm::vec4 a = restImage.at(x, y), b = bentImage.at(x, y);
+                if(a.a > 0.05f || b.a > 0.05f) ++visible;
+                difference += glm::length(glm::vec3(a) - glm::vec3(b));
+            }
+        }
+        report.check("GLTF skin weights deform the imported mesh when a joint is animated",
+            loaded && imported.problem.empty() && restImage.width > 0 && bentImage.width > 0 && visible > 10 && difference > 1.0,
+            fmt("visible samples %zu, accumulated image change %.3f", visible, difference));
+        std::filesystem::remove_all(directory);
     }
 
     std::filesystem::remove(green);

@@ -16,18 +16,21 @@
 // onome sto su bili, ne po broju u imenu - i opis se da vratiti u panel i promijeniti
 //=============================================================================================
 #include "LoomJob.h"
+#include "LoomMotionDirect.h"
 #include "LoomWeaverMotion.h"
 
 #include <Treadle/Ui.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -38,6 +41,87 @@ struct MotionAction{
     std::string prompt;
     float duration = 4.0f;          //sekunde
 };
+enum class MotionPreset : int{ Idle, Walk, Run, Jump, Crawl, Crouch };
+struct MotionPresetInfo{
+    const char* label;
+    const char* prompt;
+    const char* motionBricksStyle;
+    float seconds;
+    float defaultPathSpeed;
+    bool realtime;
+    bool footContactIK;
+    bool kimodoPostprocess;
+};
+inline constexpr MotionPresetInfo motionPresetInfo[] = {
+    {"Idle", "A person stands relaxed, shifts weight subtly, and breathes naturally", "idle", 4.0f, 0.0f, true, true, true},
+    {"Walk", "A person walks forward at a relaxed pace with a natural arm swing", "walk", 4.0f, 0.8f, true, true, true},
+    {"Run", "A person runs forward with an athletic stride and coordinated arm swing", "walk", 3.0f, 2.2f, false, true, true},
+    {"Jump", "A person jumps straight up, lands softly with bent knees, and regains balance", "walk", 2.5f, 0.0f, false, true, true},
+    {"Crawl", "A person crawls forward on hands and knees close to the floor with steady contacts", "hand_crawling", 4.0f, 0.55f, true, false, true},
+    {"Crouch", "A person walks forward in a low crouch while keeping the torso balanced", "walk_stealth", 4.0f, 0.7f, true, true, true},
+};
+
+inline const MotionPresetInfo& motionPresetSettings(int index){
+    return motionPresetInfo[std::clamp(index, 0, int(sizeof(motionPresetInfo) / sizeof(motionPresetInfo[0])) - 1)];
+}
+
+// Map the movement word in a prompt to the closest editable recipe preset.
+// Searching the original text keeps compound prompts such as "walk, then jump" predictable.
+inline int motionPresetMentionedInPrompt(const std::string& prompt){
+    std::string lower = prompt;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c){ return char(std::tolower(c)); });
+    if(lower.find("low crouch") != std::string::npos || lower.find("crouch walk") != std::string::npos ||
+       lower.find("crouch-walk") != std::string::npos) return int(MotionPreset::Crouch);
+    struct Keyword{ const char* word; MotionPreset preset; };
+    static constexpr Keyword keywords[] = {
+        {"crawling", MotionPreset::Crawl}, {"crawls", MotionPreset::Crawl}, {"crawl", MotionPreset::Crawl},
+        {"crouching", MotionPreset::Crouch}, {"crouches", MotionPreset::Crouch}, {"crouch", MotionPreset::Crouch},
+        {"running", MotionPreset::Run}, {"runs", MotionPreset::Run}, {"run", MotionPreset::Run},
+        {"walking", MotionPreset::Walk}, {"walks", MotionPreset::Walk}, {"walk", MotionPreset::Walk},
+        {"jumping", MotionPreset::Jump}, {"jumps", MotionPreset::Jump}, {"jump", MotionPreset::Jump},
+        {"idle", MotionPreset::Idle}, {"standing", MotionPreset::Idle}, {"stands", MotionPreset::Idle},
+        {"stand", MotionPreset::Idle}
+    };
+    size_t earliest = std::string::npos;
+    int preset = -1;
+    for(const Keyword& keyword : keywords){
+        size_t at = lower.find(keyword.word);
+        while(at != std::string::npos){
+            const bool leftBoundary = at == 0 || !std::isalpha(static_cast<unsigned char>(lower[at - 1]));
+            const size_t end = at + std::char_traits<char>::length(keyword.word);
+            const bool rightBoundary = end == lower.size() || !std::isalpha(static_cast<unsigned char>(lower[end]));
+            const size_t contextStart = lower.rfind(' ', at);
+            const std::string context = lower.substr(contextStart == std::string::npos ? 0 : contextStart + 1,
+                                                     at - (contextStart == std::string::npos ? 0 : contextStart + 1));
+            const bool negated = context == "not" || context == "no" || context == "without" ||
+                                 context == "never" || context == "dont" || context == "don't";
+            if(leftBoundary && rightBoundary && !negated){
+                if(at < earliest){
+                    earliest = at;
+                    preset = int(keyword.preset);
+                }
+                break;
+            }
+            at = lower.find(keyword.word, at + 1);
+        }
+    }
+    return preset;
+}
+
+inline bool motionPromptRequestsNoIk(const std::string& prompt){
+    std::string lower = prompt;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c){ return char(std::tolower(c)); });
+    static constexpr const char* phrases[] = {
+        "no ik", "no foot ik", "without ik", "without foot ik", "disable ik", "disable foot ik",
+        "no inverse kinematics", "without inverse kinematics", "don't use ik", "dont use ik",
+        "do not use ik", "don't use foot ik"
+    };
+    for(const char* phrase : phrases) if(lower.find(phrase) != std::string::npos) return true;
+    return false;
+}
+
 struct MotionRootWaypoint{
     int frame = 0;                 //Kimodo clip frame, zero-based
     float x = 0.0f, z = 0.0f;      //meters on Kimodo's Y-up ground plane
@@ -48,10 +132,12 @@ inline constexpr float kimodoMotionFps = 30.0f;
 
 struct MotionRequest{
     std::vector<MotionAction> actions;
+    int movementPreset = int(MotionPreset::Walk);
+    bool automaticContactSettings = true;
     std::string model = "Kimodo-SOMA-RP-v1.1";
     int seed = -1;                  //-1: bez sjemena, svaki put drukcije
-    int diffusionSteps = 100;
-    int numSamples = 1;
+    int diffusionSteps = 200;
+    int numSamples = 4;
     int transitionFrames = 5;
     std::string cfgType;            //empty: model default; nocfg, regular, separated
     float textGuidance = 2.0f;
@@ -60,9 +146,14 @@ struct MotionRequest{
     float rootMargin = 0.04f;
     std::filesystem::path constraints;
     std::vector<MotionRootWaypoint> rootWaypoints;
+    std::vector<MotionPoseConstraint> poseConstraints;
+    bool directedFlow = false;
     bool constrainRootHeading = false;
+    bool smoothRootPath = true;
+    bool allowFastPath = false;
     Warp::Id targetCharacter = Warp::None;
-    bool footCleanup = true;
+    bool kimodoPostprocess = true;
+    bool footContactIK = true;
     bool saveExample = false;
 };
 
@@ -111,6 +202,91 @@ inline std::vector<MotionCharacter> motionCharactersIn(const Warp::Stage& stage)
     return candidates;
 }
 
+inline Warp::Id motionCharacterForEntity(const Warp::Stage& stage, Warp::Id selected){
+    if(!stage.contains(selected)) return Warp::None;
+    //A selected mesh, joint or rig group resolves to the nearest character root above it.
+    for(Warp::Id current = selected; current != Warp::None;){
+        const Warp::Entity* entity = stage.get(current);
+        if(!entity) break;
+        if(motionSubtreeHasRig(stage, current)){
+            //Resolve selected scene wrappers to the smallest containing mesh + skeleton subtree.
+            while(true){
+                Warp::Id childRig = Warp::None;
+                bool ambiguous = false;
+                for(Warp::Id child : entity->children){
+                    if(!motionSubtreeHasRig(stage, child)) continue;
+                    if(childRig != Warp::None){ ambiguous = true; break; }
+                    childRig = child;
+                }
+                if(ambiguous) return Warp::None;
+                if(childRig == Warp::None) break;
+                current = childRig;
+                entity = stage.get(current);
+                if(!entity) break;
+            }
+            return current;
+        }
+        current = entity->parent;
+    }
+    //A selected scene group can contain one character without being part of its rig hierarchy.
+    Warp::Id only = Warp::None;
+    for(const MotionCharacter& character : motionCharactersIn(stage)){
+        Warp::Id current = character.id;
+        while(current != Warp::None && current != selected){
+            const Warp::Entity* entity = stage.get(current);
+            current = entity ? entity->parent : Warp::None;
+        }
+        if(current == selected){
+            if(only != Warp::None) return Warp::None;
+            only = character.id;
+        }
+    }
+    return only;
+}
+
+inline std::string motionClipName(const std::filesystem::path& bvh){
+    std::ifstream sidecar(bvh.parent_path() / (bvh.stem().string() + ".txt"));
+    std::string line;
+    while(std::getline(sidecar, line)){
+        if(line.empty() || line.front() == '#') continue;
+        const size_t tab = line.find('\t');
+        std::string name = line.substr(0, tab);
+        while(!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+        const size_t first = name.find_first_not_of(" \t");
+        if(first == std::string::npos) continue;
+        name.erase(0, first);
+        if(name.size() > 48) name.resize(48);
+        return name;
+    }
+    std::string fallback = bvh.stem().string();
+    if(fallback.size() > 48) fallback.resize(48);
+    return fallback.empty() ? "Imported animation" : fallback;
+}
+
+inline const std::vector<std::string>& motionBricksStyles(){
+    static const std::vector<std::string> styles{
+        "Idle", "Walk", "Slow walk", "Hand crawl", "Elbow crawl", "Crouch walk",
+        "Walk boxing", "Stealth walk", "Happy dance", "Zombie walk", "Injured walk",
+        "Scared walk", "Gun walk"
+    };
+    return styles;
+}
+
+inline const std::vector<std::string>& motionBricksStyleIds(){
+    static const std::vector<std::string> ids{
+        "idle", "walk", "slow_walk", "hand_crawling", "elbow_crawling", "walk_stealth",
+        "walk_boxing", "stealth_walk", "walk_happy_dance", "walk_zombie", "injured_walk",
+        "walk_scared", "walk_gun"
+    };
+    return ids;
+}
+
+inline int motionBricksStyleIndex(const std::string& style){
+    const std::vector<std::string>& names = motionBricksStyleIds();
+    const auto found = std::find(names.begin(), names.end(), style);
+    return found == names.end() ? 1 : int(found - names.begin());
+}
+
 inline const std::vector<std::string>& kimodoModels(){
     static const std::vector<std::string> models{
         "Kimodo-SOMA-RP-v1.1", "Kimodo-SOMA-RP-v1", "Kimodo-SOMA-SEED-v1.1",
@@ -138,12 +314,73 @@ inline std::string cleanPrompt(const std::string& prompt){
     return out;
 }
 
-//Radnje koje imaju opis; prazne se preskacu
+inline std::string motionPromptSubject(const std::string& prompt){
+    std::string lower = prompt;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c){ return char(std::tolower(c)); });
+    static const char* actors[] = {"person", "woman", "man", "child", "teenager", "adult", "human", "humanoid", "robot", "character"};
+    size_t first = std::string::npos, end = 0;
+    for(const char* actor : actors){
+        const size_t at = lower.find(actor);
+        if(at != std::string::npos && at < first && at <= 48){
+            const size_t after = at + std::char_traits<char>::length(actor);
+            const bool leftWord = at == 0 || !std::isalnum(static_cast<unsigned char>(lower[at - 1]));
+            const bool rightWord = after == lower.size() || !std::isalnum(static_cast<unsigned char>(lower[after]));
+            if(leftWord && rightWord){ first = at; end = after; }
+        }
+    }
+    if(first == std::string::npos) return "A person";
+    const size_t firstText = lower.find_first_not_of(" \t");
+    const bool hasSubjectLead = firstText != std::string::npos &&
+        (lower.compare(firstText, 2, "a ") == 0 || lower.compare(firstText, 3, "an ") == 0 ||
+         lower.compare(firstText, 4, "the ") == 0 || first == firstText);
+    if(!hasSubjectLead) return "A person";
+    std::string subject = prompt.substr(0, end);
+    while(!subject.empty() && std::isspace(static_cast<unsigned char>(subject.back()))) subject.pop_back();
+    return subject.empty() ? "A person" : subject;
+}
+
+inline bool motionPromptStartsWithSubject(const std::string& prompt){
+    std::string lower = prompt;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c){ return char(std::tolower(c)); });
+    static const char* actors[] = {"person", "woman", "man", "child", "teenager", "adult", "human", "humanoid", "robot", "character"};
+    for(const char* actor : actors){
+        const size_t at = lower.find(actor);
+        if(at != std::string::npos && at <= 12){
+            const size_t after = at + std::char_traits<char>::length(actor);
+            const bool leftWord = at == 0 || !std::isalnum(static_cast<unsigned char>(lower[at - 1]));
+            const bool rightWord = after == lower.size() || !std::isalnum(static_cast<unsigned char>(lower[after]));
+            if(leftWord && rightWord) return true;
+        }
+    }
+    return false;
+}
+
+//A sentence such as "walk and wave, then show a peace sign, then roll forward" is a
+//sequence. Give each step its own Kimodo time segment, just like separate Action rows.
 inline std::vector<MotionAction> filledActions(const std::vector<MotionAction>& actions){
     std::vector<MotionAction> out;
     for(const MotionAction& a : actions){
-        const std::string clean = cleanPrompt(a.prompt);
-        if(!clean.empty()) out.push_back({clean, std::clamp(a.duration, 1.0f, 10.0f)});
+        const std::string subject = motionPromptSubject(a.prompt);
+        std::string lower = a.prompt;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c){ return char(std::tolower(c)); });
+        size_t start = 0;
+        while(start < a.prompt.size()){
+            const size_t separator = lower.find(" then ", start);
+            std::string part = a.prompt.substr(start, separator == std::string::npos ? separator : separator - start);
+            std::string clean = cleanPrompt(part);
+            if(clean.size() >= 4 && clean.compare(clean.size() - 4, 4, " and") == 0)
+                clean.resize(clean.size() - 4);
+            while(!clean.empty() && (clean.back() == ' ' || clean.back() == ',')) clean.pop_back();
+            if(!clean.empty()){
+                if(!motionPromptStartsWithSubject(clean)) clean = subject + " " + clean;
+                out.push_back({clean, std::clamp(a.duration, 1.0f, 10.0f)});
+            }
+            if(separator == std::string::npos) break;
+            start = separator + 6;
+        }
     }
     return out;
 }
@@ -162,6 +399,19 @@ inline int kimodoMotionFrameCount(const std::vector<MotionAction>& actions){
 
 inline int kimodoMotionLastFrame(const std::vector<MotionAction>& actions){
     return std::max(0, kimodoMotionFrameCount(actions) - 1);
+}
+
+//A usable starting path for a locomotion clip. Kimodo faces +Z at heading zero.
+inline MotionRootWaypoint motionDefaultRootEnd(int lastFrame, float heading, float speed = 0.8f){
+    MotionRootWaypoint end;
+    end.frame = std::max(1, lastFrame);
+    const float seconds = float(end.frame + 1) / kimodoMotionFps;
+    //Keep the preview compact even when a clip contains long stationary gestures after walking.
+    const float distance = speed <= 1e-4f ? 0.0f : std::clamp(speed * seconds, 0.75f, 12.0f);
+    end.x = std::sin(heading) * distance;
+    end.z = std::cos(heading) * distance;
+    end.heading = heading;
+    return end;
 }
 
 inline std::string motionRootPathProblem(const std::vector<MotionRootWaypoint>& waypoints, int lastFrame){
@@ -202,29 +452,129 @@ inline int moveMotionRootWaypoint(std::vector<MotionRootWaypoint>& waypoints, si
     return int(selected);
 }
 
+inline MotionRootWaypoint motionRootPathAt(const std::vector<MotionRootWaypoint>& keys, float frame, bool smooth){
+    MotionRootWaypoint result;
+    result.frame = int(std::lround(frame));
+    if(keys.empty()) return result;
+    if(frame <= keys.front().frame) return keys.front();
+    if(frame >= keys.back().frame) return keys.back();
+    const auto right = std::upper_bound(keys.begin(), keys.end(), frame,
+        [](float f, const MotionRootWaypoint& key){ return f < key.frame; });
+    const size_t i = size_t(right - keys.begin()) - 1;
+    const MotionRootWaypoint& a = keys[i];
+    const MotionRootWaypoint& b = keys[i + 1];
+    const float span = float(b.frame - a.frame);
+    const float t = (frame - a.frame) / span;
+    result.x = a.x + (b.x - a.x) * t;
+    result.z = a.z + (b.z - a.z) * t;
+    // Heading always takes the shortest turn. The position curve passes through every authored point.
+    result.heading = a.heading + std::remainder(b.heading - a.heading, 6.28318530718f) * t;
+    if(!smooth || keys.size() < 3) return result;
+    auto coordinate = [&](float av, float bv, float previous, float next){
+        const float current = (bv - av) / span;
+        const float in = i > 0 ? (av - previous) / float(a.frame - keys[i - 1].frame) : current;
+        const float out = i + 2 < keys.size() ? (next - bv) / float(keys[i + 2].frame - b.frame) : current;
+        const float tangentA = i > 0 ? (in + current) * 0.5f : current;
+        const float tangentB = i + 2 < keys.size() ? (current + out) * 0.5f : current;
+        const float t2 = t * t, t3 = t2 * t;
+        return (2*t3 - 3*t2 + 1)*av + (t3 - 2*t2 + t)*span*tangentA +
+               (-2*t3 + 3*t2)*bv + (t3 - t2)*span*tangentB;
+    };
+    result.x = coordinate(a.x, b.x, i > 0 ? keys[i - 1].x : a.x,
+                          i + 2 < keys.size() ? keys[i + 2].x : b.x);
+    result.z = coordinate(a.z, b.z, i > 0 ? keys[i - 1].z : a.z,
+                          i + 2 < keys.size() ? keys[i + 2].z : b.z);
+    return result;
+}
+
+struct MotionPathSpeed{
+    float distance = 0.0f;
+    float peakMetersPerSecond = 0.0f;
+};
+inline MotionPathSpeed motionPathSpeed(const std::vector<MotionRootWaypoint>& keys, bool smooth){
+    MotionPathSpeed result;
+    if(keys.size() < 2) return result;
+    MotionRootWaypoint previous = motionRootPathAt(keys, float(keys.front().frame), smooth);
+    for(int frame = keys.front().frame + 1; frame <= keys.back().frame; ++frame){
+        const MotionRootWaypoint current = motionRootPathAt(keys, float(frame), smooth);
+        const float step = glm::length(glm::vec2(current.x - previous.x, current.z - previous.z));
+        result.distance += step;
+        result.peakMetersPerSecond = std::max(result.peakMetersPerSecond, step * kimodoMotionFps);
+        previous = current;
+    }
+    return result;
+}
+inline float motionPromptPathSpeedLimit(const std::string& prompt){
+    switch(motionPresetMentionedInPrompt(prompt)){
+        case int(MotionPreset::Idle): return 0.25f;
+        case int(MotionPreset::Walk): return 1.8f;
+        case int(MotionPreset::Run): return 5.0f;
+        case int(MotionPreset::Jump): return 3.0f;
+        case int(MotionPreset::Crawl): return 0.9f;
+        case int(MotionPreset::Crouch): return 1.4f;
+        default: return 0.0f; // Unclassified action: show speed without imposing a gait.
+    }
+}
+inline std::string motionPathSpeedProblem(const std::vector<MotionRootWaypoint>& keys,
+                                          bool smooth, const std::string& prompt){
+    const float limit = motionPromptPathSpeedLimit(prompt);
+    const MotionPathSpeed speed = motionPathSpeed(keys, smooth);
+    if(limit <= 0.0f || speed.peakMetersPerSecond <= limit) return {};
+    char message[160];
+    std::snprintf(message, sizeof(message), "Path peaks at %.1f m/s; this prompt suggests at most %.1f m/s. Slow or reshape the path.",
+                  double(speed.peakMetersPerSecond), double(limit));
+    return message;
+}
+
+inline int motionRootInsertionFrame(const std::vector<MotionRootWaypoint>& keys, int selected){
+    if(keys.size() < 2) return -1;
+    const int from = std::clamp(selected, 0, int(keys.size()) - 2);
+    // Prefer the selected segment, then find the widest available gap.
+    int gapIndex = from;
+    if(keys[size_t(from + 1)].frame - keys[size_t(from)].frame < 2){
+        int widest = 1;
+        for(size_t i = 0; i + 1 < keys.size(); ++i){
+            const int gap = keys[i + 1].frame - keys[i].frame;
+            if(gap > widest){ widest = gap; gapIndex = int(i); }
+        }
+        if(widest < 2) return -1;
+    }
+    return keys[size_t(gapIndex)].frame +
+           (keys[size_t(gapIndex + 1)].frame - keys[size_t(gapIndex)].frame) / 2;
+}
+
 inline bool writeMotionRootConstraints(const std::filesystem::path& path,
                                        const std::vector<MotionRootWaypoint>& waypoints,
                                        bool constrainHeading, int lastFrame,
-                                       std::string& problem){
+                                       std::string& problem, bool smoothPath = false){
     problem = motionRootPathProblem(waypoints, lastFrame);
     if(!problem.empty()) return false;
+    std::vector<MotionRootWaypoint> samples;
+    if(smoothPath && waypoints.size() > 2){
+        for(size_t i = 0; i + 1 < waypoints.size(); ++i){
+            samples.push_back(waypoints[i]);
+            for(int f = waypoints[i].frame + 3; f < waypoints[i + 1].frame; f += 3)
+                samples.push_back(motionRootPathAt(waypoints, float(f), true));
+        }
+        samples.push_back(waypoints.back());
+    }else samples = waypoints;
     std::ofstream file(path);
     if(!file){ problem = "Could not create Kimodo constraints file: " + path.string(); return false; }
     file << "[\n  {\n    \"type\": \"root2d\",\n    \"frame_indices\": [";
-    for(size_t i = 0; i < waypoints.size(); ++i){ if(i) file << ", "; file << waypoints[i].frame; }
+    for(size_t i = 0; i < samples.size(); ++i){ if(i) file << ", "; file << samples[i].frame; }
     file << "],\n    \"smooth_root_2d\": [";
     file << std::fixed << std::setprecision(6);
-    for(size_t i = 0; i < waypoints.size(); ++i){
+    for(size_t i = 0; i < samples.size(); ++i){
         if(i) file << ", ";
-        file << "[" << waypoints[i].x << ", " << waypoints[i].z << "]";
+        file << "[" << samples[i].x << ", " << samples[i].z << "]";
     }
     file << "]";
     if(constrainHeading){
         file << ",\n    \"global_root_heading\": [";
-        for(size_t i = 0; i < waypoints.size(); ++i){
+        for(size_t i = 0; i < samples.size(); ++i){
             if(i) file << ", ";
-            const double cosine = std::cos(waypoints[i].heading);
-            const double sine = std::sin(waypoints[i].heading);
+            const double cosine = std::cos(samples[i].heading);
+            const double sine = std::sin(samples[i].heading);
             file << "[" << (std::fabs(cosine) < 0.0000005 ? 0.0 : cosine) << ", "
                  << (std::fabs(sine) < 0.0000005 ? 0.0 : sine) << "]";
 
@@ -232,6 +582,89 @@ inline bool writeMotionRootConstraints(const std::filesystem::path& path,
         file << "]";
     }
     file << "\n  }\n]\n";
+    file.close();
+    if(!file){ problem = "Could not finish writing Kimodo constraints file: " + path.string(); return false; }
+    return true;
+}
+
+inline bool writeMotionDirectedConstraints(const std::filesystem::path& path,
+                                           const std::vector<MotionRootWaypoint>& waypoints,
+                                           const std::vector<MotionPoseConstraint>& poses,
+                                           bool constrainHeading, int lastFrame,
+                                           std::string& problem, bool smoothPath = false){
+    problem = motionDirectPoseProblem(poses, lastFrame);
+    if(!problem.empty()) return false;
+    if(!waypoints.empty()){
+        problem = motionRootPathProblem(waypoints, lastFrame);
+        if(!problem.empty()) return false;
+    }
+    if(waypoints.empty() && poses.empty()){
+        problem = "Add a route or at least one pose key.";
+        return false;
+    }
+    std::vector<MotionRootWaypoint> samples;
+    if(smoothPath && waypoints.size() > 2){
+        for(size_t i = 0; i + 1 < waypoints.size(); ++i){
+            samples.push_back(waypoints[i]);
+            for(int f = waypoints[i].frame + 3; f < waypoints[i + 1].frame; f += 3)
+                samples.push_back(motionRootPathAt(waypoints, float(f), true));
+        }
+        samples.push_back(waypoints.back());
+    }else samples = waypoints;
+    std::ofstream file(path);
+    if(!file){ problem = "Could not create Kimodo constraints file: " + path.string(); return false; }
+    file << std::fixed << std::setprecision(7) << "[\n";
+    if(!samples.empty()){
+        file << "  {\n    \"type\": \"root2d\",\n    \"frame_indices\": [";
+        for(size_t i = 0; i < samples.size(); ++i){ if(i) file << ", "; file << samples[i].frame; }
+        file << "],\n    \"smooth_root_2d\": [";
+        for(size_t i = 0; i < samples.size(); ++i){
+            if(i) file << ", ";
+            file << '[' << samples[i].x << ", " << samples[i].z << ']';
+        }
+        file << ']';
+        if(constrainHeading){
+            file << ",\n    \"global_root_heading\": [";
+            for(size_t i = 0; i < samples.size(); ++i){
+                if(i) file << ", ";
+                file << '[' << std::cos(samples[i].heading) << ", " << std::sin(samples[i].heading) << ']';
+            }
+            file << ']';
+        }
+        file << "\n  }";
+    }
+    if(!poses.empty()){
+        if(!samples.empty()) file << ",\n";
+        file << "  {\n    \"type\": \"fullbody\",\n    \"frame_indices\": [";
+        for(size_t i = 0; i < poses.size(); ++i){ if(i) file << ", "; file << poses[i].frame; }
+        file << "],\n    \"local_joints_rot\": [\n";
+        for(size_t i = 0; i < poses.size(); ++i){
+            file << "      [";
+            for(size_t j = 0; j < poses[i].rotationDegrees.size(); ++j){
+                if(j) file << ", ";
+                const glm::quat q = glm::normalize(glm::quat(glm::radians(poses[i].rotationDegrees[j])));
+                const double angle = 2.0 * std::acos(std::clamp(double(q.w), -1.0, 1.0));
+                const double divisor = std::sqrt(std::max(0.0, 1.0 - double(q.w) * double(q.w)));
+                const double scale = divisor > 1e-7 ? angle / divisor : 0.0;
+                file << '[' << q.x * scale << ", " << q.y * scale << ", " << q.z * scale << ']';
+            }
+            file << ']' << (i + 1 < poses.size() ? ",\n" : "\n");
+        }
+        file << "    ],\n    \"root_positions\": [";
+        for(size_t i = 0; i < poses.size(); ++i){
+            if(i) file << ", ";
+            const MotionRootWaypoint root = motionRootPathAt(waypoints, float(poses[i].frame), smoothPath);
+            file << '[' << root.x << ", " << poses[i].rootHeight << ", " << root.z << ']';
+        }
+        file << "],\n    \"smooth_root_2d\": [";
+        for(size_t i = 0; i < poses.size(); ++i){
+            if(i) file << ", ";
+            const MotionRootWaypoint root = motionRootPathAt(waypoints, float(poses[i].frame), smoothPath);
+            file << '[' << root.x << ", " << root.z << ']';
+        }
+        file << "]\n  }";
+    }
+    file << "\n]\n";
     file.close();
     if(!file){ problem = "Could not finish writing Kimodo constraints file: " + path.string(); return false; }
     return true;
@@ -298,7 +731,7 @@ inline std::string buildMotionCommand(const std::filesystem::path& executable, c
         else if(request.cfgType == "separated") command += " --cfg_weight " + std::to_string(request.textGuidance) + " " + std::to_string(request.constraintGuidance);
     }
     if(request.seed >= 0) command += " --seed " + std::to_string(request.seed);
-    if(!request.footCleanup) command += " --no-postprocess";
+    if(!request.kimodoPostprocess) command += " --no-postprocess";
     return command;
 }
 
@@ -309,7 +742,36 @@ inline void writeMotionSidecar(const std::filesystem::path& outputStem, const Mo
     file << "# target\t" << request.targetCharacter << '\n';
     file << "# first_heading_angle\t" << request.firstHeadingAngle << '\n';
     file << "# root_margin\t" << request.rootMargin << '\n';
+    file << "# transition_frames\t" << request.transitionFrames << '\n';
+    file << "# movement_preset\t" << motionPresetSettings(request.movementPreset).label << '\n';
+    file << "# contact_settings\t" << (request.automaticContactSettings ? "automatic" : "manual") << '\n';
+    file << "# foot_contact_ik\t" << (request.footContactIK ? "on" : "off") << '\n';
+    file << "# kimodo_postprocess\t" << (request.kimodoPostprocess ? "on" : "off") << '\n';
+    const char* rootPathKind = !request.rootWaypoints.empty() ? "authored"
+                             : !request.constraints.empty() ? "external constraints" : "none";
+    file << "# root_path\t" << rootPathKind << '\n';
+    file << "# workflow\t" << (request.directedFlow ? "path + pose keys" : "recipe + live") << '\n';
+    file << "# pose_keys\t" << request.poseConstraints.size() << '\n';
+    file << "# fast_path_override\t" << (request.allowFastPath ? "on" : "off") << '\n';
     for(const MotionAction& a : filledActions(request.actions)) file << a.prompt << '\t' << a.duration << '\n';
+}
+
+inline std::vector<MotionAction> motionActionsForClip(const std::filesystem::path& bvh){
+    std::filesystem::path sidecarPath = bvh.parent_path() / (bvh.stem().string() + ".txt");
+    if(!std::filesystem::exists(sidecarPath))
+        sidecarPath = bvh.parent_path().parent_path() / (bvh.parent_path().filename().string() + ".txt");
+    std::ifstream sidecar(sidecarPath);
+    std::vector<MotionAction> actions;
+    std::string line;
+    while(std::getline(sidecar, line)){
+        if(line.empty() || line.front() == '#') continue;
+        const size_t tab = line.find('\t');
+        MotionAction action;
+        action.prompt = line.substr(0, tab);
+        if(tab != std::string::npos) action.duration = std::strtof(line.c_str() + tab + 1, nullptr);
+        if(!action.prompt.empty()) actions.push_back(std::move(action));
+    }
+    return filledActions(actions);
 }
 
 inline std::vector<MotionHistoryEntry> motionHistory(const std::filesystem::path& directory, size_t limit = 12){
@@ -350,48 +812,146 @@ inline std::vector<MotionHistoryEntry> motionHistory(const std::filesystem::path
 }
 
 //Gotovi opisi: engleski, jer ga Kimodov enkoder teksta razumije
-struct MotionPreset{ const char* label; const char* prompt; };
-inline const MotionPreset motionPresets[] = {
-    {"Walk", "a person walks forward"},
-    {"Jog", "a person jogs forward"},
-    {"Jump", "a person jumps up in place"},
-    {"Sit", "a person sits down on a chair"},
-    {"Wave", "a person waves with the right hand"},
-    {"Dance", "a person dances happily"},
-    {"Turn", "a person turns around to the left"},
-    {"Fall", "a person stumbles and falls down"},
+struct MotionQuickPrompt{ const char* label; const char* prompt; };
+inline const MotionQuickPrompt motionPresets[] = {
+    {"Walk", "A person walks forward"},
+    {"Jog", "A person jogs forward"},
+    {"Jump", "A person jumps up in place"},
+    {"Sit", "A person sits down on a chair"},
+    {"Wave", "A person waves with the right hand"},
+    {"Dance", "A person dances happily"},
+    {"Turn", "A person turns around to the left"},
+    {"Fall", "A person stumbles and falls down"},
+    {"Peace", "A person shows a peace sign with the right hand"},
+    {"Forward Roll", "A person performs a forward roll on the ground"},
+};
+
+//Advance a clip without reversing: one-shots hold the last frame, loops wrap only when requested.
+inline bool advanceClipPlaybackFrame(double& frame, double deltaFrames,
+                                    double firstFrame, double lastFrame, bool loop){
+    if(!std::isfinite(frame) || !std::isfinite(deltaFrames) || !std::isfinite(firstFrame) ||
+       !std::isfinite(lastFrame) || deltaFrames < 0.0 || lastFrame <= firstFrame){
+        if(std::isfinite(firstFrame)) frame = firstFrame;
+        return false;
+    }
+    const double nextFrame = std::clamp(frame, firstFrame, lastFrame) + deltaFrames;
+    if(nextFrame <= lastFrame){
+        frame = nextFrame;
+        return true;
+    }
+    if(!loop){
+        frame = lastFrame;
+        return false;
+    }
+    const double duration = lastFrame - firstFrame;
+    frame = firstFrame + std::fmod(nextFrame - firstFrame, duration);
+    return true;
+}
+
+struct MotionPathDraft{
+    bool enabled = true;
+    bool autoEnd = true;
+    bool autoDistance = true;
+    bool smooth = true;
+    bool pinHeading = false;
+    int selected = 0;
+    std::vector<MotionRootWaypoint> waypoints;
 };
 
 struct MotionPanelState{
     bool open = false;
-    std::vector<MotionAction> actions{MotionAction{}};
+    int flowMode = 0;              //0: recipe/live, 1: path + sparse pose constraints
+    MotionPathDraft recipePath;
+    MotionPathDraft directedPath;
+    std::vector<MotionPoseConstraint> poseConstraints;
+    int selectedPose = -1;
+    int selectedBone = 0;
+    bool controlRigMode = true;
+    int selectedRigControl = 0;
+    int boneGroup = 0;
+    bool mirrorBone = false;
+    bool draggingPoseLane = false;
+    glm::vec2 lastBoneDragMouse{0.0f};
+    MotionPoseConstraint copiedPose;
+    bool hasCopiedPose = false;
+    int qualityCompareIndex = 0;
+    bool qualityCompareOpen = false;
+    bool helpOpen = false;
+    float helpScroll = 0.0f;
+    bool promptPresetDetection = true;
+    int contactSettingsMode = 0;           //0: derive from recipe/prompt, 1: manual IK switches
+    std::vector<MotionAction> actions{
+        MotionAction{"A person walks forward at a relaxed pace with a natural arm swing", 4.0f}
+    };
+    MotionAction directedAction{"A person walks along the path", 4.0f};
     int activeAction = 0;                   //u koju radnju ide gotovi opis
+    int locomotionPreset = int(MotionPreset::Walk);
+    bool advancedExpanded = false;
     bool fixedSeed = false;
     float seed = 42.0f;
     int modelIndex = 0;
-    float quality = 100.0f;                 //koraci difuzije
-    float samples = 1.0f;
+    float quality = 200.0f;                 //high-quality Kimodo denoising default
+    float samples = 4.0f;
     float transitionFrames = 5.0f;
-    int cfgIndex = 0;
+    int cfgIndex = 3;                       //separate text/constraint guidance
     float textGuidance = 2.0f, constraintGuidance = 2.0f;
     float firstHeadingAngle = 0.0f;
     float rootMargin = 0.04f;
+    float defaultPathSpeed = 0.8f;
     std::string constraintsPath;
-    bool rootPathEnabled = false;
+    bool rootPathEnabled = true;
+    bool rootPathAutoEnd = true;
+    bool rootPathAutoDistance = true;
     bool constrainRootHeading = false;
+    bool smoothRootPath = true;
+    bool allowFastPath = false;
     std::vector<MotionRootWaypoint> rootWaypoints{MotionRootWaypoint{}};
     int selectedRootWaypoint = 0;
     float rootTrackCursorFrame = 0.0f;
     Warp::Id targetCharacter = Warp::None;
-    bool footCleanup = true;
+    bool kimodoPostprocess = true;
+    bool footContactIK = true;
     bool saveExample = false;
+    int motionBricksStyle = 1;
     std::vector<MotionHistoryEntry> history;
     std::filesystem::path historyFrom;
     std::chrono::steady_clock::time_point historyRead{};
 
+    const std::string& activePrompt() const{
+        static const std::string empty;
+        if(flowMode == 1) return directedAction.prompt;
+        if(actions.empty()) return empty;
+        return actions[size_t(std::clamp(activeAction, 0, int(actions.size()) - 1))].prompt;
+    }
+    bool automaticFootContactIK() const{
+        const int mentioned = motionPresetMentionedInPrompt(activePrompt());
+        if(motionPromptRequestsNoIk(activePrompt()) || mentioned == int(MotionPreset::Crawl)) return false;
+        if(flowMode == 1) return true;
+        if(locomotionPreset == int(MotionPreset::Crawl)) return false;
+        return motionPresetSettings(locomotionPreset).footContactIK;
+    }
+    bool automaticKimodoPostprocess() const{
+        // Keep Kimodo's constraint enforcement on for floor poses; Loom rig IK is separate.
+        return flowMode == 1 ? true : motionPresetSettings(locomotionPreset).kimodoPostprocess;
+    }
+    bool effectiveFootContactIK() const{
+        return contactSettingsMode == 0 ? automaticFootContactIK() : footContactIK;
+    }
+    bool effectiveKimodoPostprocess() const{
+        return contactSettingsMode == 0 ? automaticKimodoPostprocess() : kimodoPostprocess;
+    }
+    std::string automaticContactReason() const{
+        if(motionPromptRequestsNoIk(activePrompt())) return "Prompt says no IK";
+        if(motionPresetMentionedInPrompt(activePrompt()) == int(MotionPreset::Crawl) ||
+           (flowMode == 0 && locomotionPreset == int(MotionPreset::Crawl))) return "Crawl floor contacts";
+        return "Preset defaults";
+    }
+
     MotionRequest request() const{
         MotionRequest r;
         r.actions = actions;
+        r.movementPreset = locomotionPreset;
+        r.automaticContactSettings = contactSettingsMode == 0;
         r.model = kimodoModels()[size_t(std::clamp(modelIndex, 0, int(kimodoModels().size()) - 1))];
         r.seed = fixedSeed ? std::max(0, int(std::lround(seed))) : -1;
         r.diffusionSteps = int(std::lround(quality));
@@ -404,23 +964,73 @@ struct MotionPanelState{
         r.constraintGuidance = constraintGuidance;
         r.firstHeadingAngle = firstHeadingAngle;
         r.rootMargin = rootMargin;
-        r.constraints = constraintsPath;
-        if(rootPathEnabled){ r.rootWaypoints = rootWaypoints; r.constrainRootHeading = constrainRootHeading; }
+        r.constraints = flowMode == 1 ? std::filesystem::path{} : std::filesystem::path(constraintsPath);
+        r.directedFlow = flowMode == 1;
+        if(r.directedFlow) r.actions = {directedAction};
+        if(r.directedFlow){ r.model = "Kimodo-SOMA-RP-v1.1"; r.poseConstraints = poseConstraints; }
+        if(rootPathEnabled){ r.rootWaypoints = rootWaypoints; r.constrainRootHeading = constrainRootHeading; r.smoothRootPath = smoothRootPath; }
+        r.allowFastPath = allowFastPath;
         r.targetCharacter = targetCharacter;
-        r.footCleanup = footCleanup;
+        r.kimodoPostprocess = effectiveKimodoPostprocess();
+        r.footContactIK = effectiveFootContactIK();
         return r;
     }
 };
 
+inline void configureMotionPreset(MotionPanelState& state, int presetIndex, bool replacePrompt){
+    presetIndex = std::clamp(presetIndex, 0, int(sizeof(motionPresetInfo) / sizeof(motionPresetInfo[0])) - 1);
+    state.locomotionPreset = presetIndex;
+    const MotionPresetInfo& preset = motionPresetSettings(presetIndex);
+    const int actionIndex = std::clamp(state.activeAction, 0, int(state.actions.size()) - 1);
+    if(replacePrompt){
+        state.actions[size_t(actionIndex)].prompt = preset.prompt;
+        state.actions[size_t(actionIndex)].duration = preset.seconds;
+    }
+    state.motionBricksStyle = motionBricksStyleIndex(preset.motionBricksStyle);
+    state.defaultPathSpeed = preset.defaultPathSpeed;
+    if(state.contactSettingsMode == 0){
+        state.footContactIK = preset.footContactIK;
+        state.kimodoPostprocess = preset.kimodoPostprocess;
+    }
+    state.rootPathEnabled = presetIndex != int(MotionPreset::Idle) && presetIndex != int(MotionPreset::Jump);
+    state.rootPathAutoEnd = state.rootPathEnabled;
+    state.rootPathAutoDistance = state.rootPathEnabled;
+    const int last = std::max(1, kimodoMotionLastFrame(state.actions));
+    state.rootWaypoints.assign(1, MotionRootWaypoint{});
+    if(state.rootPathEnabled)
+        state.rootWaypoints.push_back(motionDefaultRootEnd(last, state.firstHeadingAngle, state.defaultPathSpeed));
+    state.rootWaypoints.front().heading = state.firstHeadingAngle;
+    state.selectedRootWaypoint = int(state.rootWaypoints.size()) - 1;
+    state.rootTrackCursorFrame = float(last);
+}
+
 //Sto je panel trazio u ovom kadru; aplikacija to izvrsi (posao, uvoz)
+enum class MotionCompareMode{ None, SourceSkeleton, RigNoIk, RigWithIk };
 struct MotionPanelAction{
+    MotionCompareMode compareMode = MotionCompareMode::None;
+    std::filesystem::path comparePath;
+    std::filesystem::path copyNativeNpz;
     bool generate = false;
+    bool generateMotionBricks = false;
+    bool startLiveRecording = false;
+    bool stopLiveRecording = false;
+    int jumpPoseFrame = -1;
     std::filesystem::path importPath;
     bool close = false;
 };
 
 struct MotionPanelStatus{
     bool runnerReady = false;
+    bool motionBricksReady = false;
+    bool motionBricksRunning = false;
+    bool liveRecording = false;
+    bool liveReady = false;
+    bool liveStopping = false;
+    size_t liveFrames = 0;
+    std::string liveMessage;
+    double currentFrame = 1.0;
+    double timelineStart = 1.0;
+    double timelineFps = 30.0;
     bool running = false;                   //Kimodo posao tece
     bool otherJob = false;                  //tece neki drugi posao (solve, trening)
     double elapsed = 0.0;
@@ -429,6 +1039,217 @@ struct MotionPanelStatus{
     std::string characterNote;              //sto je s rigged likom (WeaverMascott)
     std::vector<MotionCharacter> characters;
 };
+
+inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelState& state,
+                                                 const Treadle::Rect& area, const MotionPanelStatus& status){
+    MotionPanelAction action;
+    const Treadle::Theme& theme = ui.style();
+    MotionAction& step = state.directedAction;
+    Treadle::Ui::TextFieldConfig promptField;
+    promptField.lines = 2;
+    promptField.maxLength = 600;
+    promptField.placeholder = "A person walks along the path and reaches upward";
+    ui.label("DIRECTED MOTION  /  SOMA 30");
+    ui.textField("directed-motion-prompt", &step.prompt, promptField);
+    const int oldLastFrame = std::max(1, kimodoMotionLastFrame({step}));
+    if(ui.slider("Duration", &step.duration, 1.0f, 12.0f, " s")){
+        const int newLastFrame = std::max(1, kimodoMotionLastFrame({step}));
+        if(state.rootPathAutoEnd && state.rootWaypoints.size() > 1 &&
+           state.rootWaypoints.back().frame == oldLastFrame){
+            state.rootWaypoints.back().frame = newLastFrame;
+            if(state.rootPathAutoDistance)
+                state.rootWaypoints.back() = motionDefaultRootEnd(newLastFrame, state.firstHeadingAngle, state.defaultPathSpeed);
+        }
+    }
+    const int lastFrame = std::max(1, kimodoMotionLastFrame({step}));
+    const int playheadFrame = std::clamp(int(std::lround((status.currentFrame - status.timelineStart) *
+        kimodoMotionFps / std::max(1.0, status.timelineFps))), 0, lastFrame);
+    ui.value("Playhead", std::to_string(playheadFrame) + " / " + std::to_string(lastFrame));
+    ui.separator();
+    ui.label("1  ROOT PATH");
+    ui.checkbox("Use path", &state.rootPathEnabled);
+    if(state.rootPathEnabled){
+        if(state.rootWaypoints.empty()) state.rootWaypoints.push_back(MotionRootWaypoint{});
+        ui.checkbox("Smooth route", &state.smoothRootPath);
+        ui.checkbox("Pin heading", &state.constrainRootHeading);
+        if(ui.button("+ Route point at playhead")){
+            const MotionRootWaypoint point = motionRootPathAt(state.rootWaypoints, float(playheadFrame), state.smoothRootPath);
+            upsertMotionRootWaypoint(state.rootWaypoints, point, lastFrame);
+            const auto it = std::lower_bound(state.rootWaypoints.begin(), state.rootWaypoints.end(), playheadFrame,
+                [](const MotionRootWaypoint& key, int f){ return key.frame < f; });
+            state.selectedRootWaypoint = int(it - state.rootWaypoints.begin());
+        }
+        for(size_t i = 0; i < state.rootWaypoints.size(); ++i){
+            const auto& point = state.rootWaypoints[i];
+            const std::string name = "Frame " + std::to_string(point.frame) + "   X " +
+                std::to_string(int(std::lround(point.x * 100.0f))) + "cm   Z " +
+                std::to_string(int(std::lround(point.z * 100.0f))) + "cm";
+            if(ui.selectable(name, state.selectedRootWaypoint == int(i))) state.selectedRootWaypoint = int(i);
+        }
+        if(state.selectedRootWaypoint >= 0 && size_t(state.selectedRootWaypoint) < state.rootWaypoints.size()){
+            MotionRootWaypoint& point = state.rootWaypoints[size_t(state.selectedRootWaypoint)];
+            if(point.frame == 0) ui.value("Start", "Fixed at origin");
+            else{
+                ui.dragFloat("Route X (m)", &point.x, 0.01f);
+                ui.dragFloat("Route Z (m)", &point.z, 0.01f);
+                if(state.constrainRootHeading) ui.slider("Heading (rad)", &point.heading, -3.14159f, 3.14159f);
+                if(ui.button("Delete selected route point")){
+                    state.rootWaypoints.erase(state.rootWaypoints.begin() + state.selectedRootWaypoint);
+                    state.selectedRootWaypoint = std::max(0, state.selectedRootWaypoint - 1);
+                    state.rootPathAutoEnd = false;
+                }
+            }
+        }
+        const std::string pathProblem = motionRootPathProblem(state.rootWaypoints, lastFrame);
+        if(!pathProblem.empty()) ui.label("Path: " + pathProblem);
+    }
+    ui.separator();
+    ui.label("2  POSE KEYS");
+    ui.label("Add a pose, then edit its rig controls in the viewport.");
+    if(ui.button("+ Pose key at playhead") && state.poseConstraints.size() < 20){
+        const auto found = std::lower_bound(state.poseConstraints.begin(), state.poseConstraints.end(), playheadFrame,
+            [](const MotionPoseConstraint& key, int f){ return key.frame < f; });
+        if(found != state.poseConstraints.end() && found->frame == playheadFrame){
+            state.selectedPose = int(found - state.poseConstraints.begin());
+        }else{
+            MotionPoseConstraint pose;
+            pose.frame = playheadFrame;
+            if(found != state.poseConstraints.begin()){
+                pose = *(found - 1);
+                pose.frame = playheadFrame;
+            }
+            state.selectedPose = int(state.poseConstraints.insert(found, pose) - state.poseConstraints.begin());
+        }
+    }
+    for(size_t i = 0; i < state.poseConstraints.size(); ++i){
+        const MotionPoseConstraint& pose = state.poseConstraints[i];
+        char poseTime[32];
+        std::snprintf(poseTime, sizeof(poseTime), "%.2f s", double(pose.frame) / kimodoMotionFps);
+        const std::string name = "POSE  " + std::to_string(i + 1) + "    Frame " + std::to_string(pose.frame) +
+                                 "  (" + poseTime + ")";
+        if(ui.selectable(name, state.selectedPose == int(i))){
+            state.selectedPose = int(i);
+            action.jumpPoseFrame = pose.frame;
+        }
+    }
+    if(state.selectedPose >= 0 && size_t(state.selectedPose) < state.poseConstraints.size()){
+        MotionPoseConstraint& pose = state.poseConstraints[size_t(state.selectedPose)];
+        const int operation = ui.buttonRow({"Copy pose", "Paste pose", "Delete pose"});
+        if(operation == 0){ state.copiedPose = pose; state.hasCopiedPose = true; }
+        if(operation == 1 && state.hasCopiedPose){
+            const int keepFrame = pose.frame;
+            pose = state.copiedPose;
+            pose.frame = keepFrame;
+        }
+        if(operation == 2){
+            state.poseConstraints.erase(state.poseConstraints.begin() + state.selectedPose);
+            state.selectedPose = state.poseConstraints.empty() ? -1 :
+                std::min(state.selectedPose, int(state.poseConstraints.size()) - 1);
+        }else{
+            ui.slider("Hips height (m)", &pose.rootHeight, 0.25f, 1.8f);
+            const int posePreset = ui.buttonRow({"Neutral", "Hands up", "Reach L", "Reach R"});
+            if(posePreset >= 0){
+                pose.rotationDegrees.fill(glm::vec3(0.0f));
+                if(posePreset == 1){
+                    pose.rotationDegrees[11].z = 75.0f;
+                    pose.rotationDegrees[17].z = -75.0f;
+                }else if(posePreset == 2) pose.rotationDegrees[11].y = -75.0f;
+                else if(posePreset == 3) pose.rotationDegrees[17].y = 75.0f;
+            }
+            ui.choice("Bone group", {"Torso", "Arms", "Legs", "Face + Hands"}, &state.boneGroup);
+            static constexpr int groups[4][9] = {
+                {0,1,2,3,4,5,6,-1,-1},
+                {10,11,12,13,16,17,18,19,-1},
+                {22,23,24,25,26,27,28,29,-1},
+                {7,8,9,14,15,20,21,-1,-1}
+            };
+            static constexpr const char* labels[30] = {
+                "Hips","Spine 1","Spine 2","Chest","Neck 1","Neck 2","Head","Jaw","Eye L","Eye R",
+                "Shoulder L","Arm L","Forearm L","Hand L","Thumb L","Finger L",
+                "Shoulder R","Arm R","Forearm R","Hand R","Thumb R","Finger R",
+                "Leg L","Shin L","Foot L","Toe L","Leg R","Shin R","Foot R","Toe R"
+            };
+            const int group = std::clamp(state.boneGroup, 0, 3);
+            for(int row = 0; row < 3; ++row){
+                std::vector<std::string> names;
+                std::vector<int> indices;
+                for(int column = 0; column < 3; ++column){
+                    const int index = groups[group][row * 3 + column];
+                    if(index < 0) continue;
+                    names.emplace_back(labels[index]);
+                    indices.push_back(index);
+                }
+                if(!names.empty()){
+                    const int clicked = ui.buttonRow(names);
+                    if(clicked >= 0 && clicked < int(indices.size())) state.selectedBone = indices[size_t(clicked)];
+                }
+            }
+            const int bone = std::clamp(state.selectedBone, 0, 29);
+            ui.value("Selected bone", labels[bone]);
+            glm::vec3& angles = pose.rotationDegrees[size_t(bone)];
+            bool changed = false;
+            changed |= ui.slider("Bend X", &angles.x, -180.0f, 180.0f, " deg");
+            changed |= ui.slider("Turn Y", &angles.y, -180.0f, 180.0f, " deg");
+            changed |= ui.slider("Twist Z", &angles.z, -180.0f, 180.0f, " deg");
+            ui.checkbox("Mirror left / right edits", &state.mirrorBone);
+            if(changed && state.mirrorBone){
+                const int other = motionDirectMirrorBone(bone);
+                if(other != bone) pose.rotationDegrees[size_t(other)] = glm::vec3(angles.x, -angles.y, -angles.z);
+            }
+            if(ui.button("Reset selected bone")){
+                angles = glm::vec3(0.0f);
+                if(state.mirrorBone){
+                    const int other = motionDirectMirrorBone(bone);
+                    if(other != bone) pose.rotationDegrees[size_t(other)] = glm::vec3(0.0f);
+                }
+            }
+            if(ui.button("Reset whole pose")) pose.rotationDegrees.fill(glm::vec3(0.0f));
+        }
+    }
+    const std::string poseProblem = motionDirectPoseProblem(state.poseConstraints, lastFrame);
+    if(!poseProblem.empty()) ui.label("Poses: " + poseProblem);
+    const std::string pathSpeedProblem = state.rootPathEnabled
+        ? motionPathSpeedProblem(state.rootWaypoints, state.smoothRootPath, step.prompt) : std::string{};
+    if(state.rootPathEnabled){
+        const MotionPathSpeed speed = motionPathSpeed(state.rootWaypoints, state.smoothRootPath);
+        char speedText[64];
+        std::snprintf(speedText, sizeof(speedText), "%.1f m, peak %.1f m/s", double(speed.distance), double(speed.peakMetersPerSecond));
+        ui.value("Route motion", speedText);
+    }
+    if(!pathSpeedProblem.empty()){
+        ui.label(pathSpeedProblem);
+        ui.checkbox("Allow fast path anyway", &state.allowFastPath);
+    }
+    ui.separator();
+    ui.label("3  GENERATE TRANSITIONS");
+    ui.value("Output", "Animator clip on selected character");
+    ui.value("Model", "Kimodo SOMA RP v1.1");
+    ui.slider("Denoising steps", &state.quality, 100.0f, 300.0f);
+    ui.slider("Samples", &state.samples, 1.0f, 8.0f);
+    const int previousContactMode = state.contactSettingsMode;
+    if(ui.choice("Contact rules", {"Automatic", "Manual"}, &state.contactSettingsMode) &&
+       previousContactMode == 0 && state.contactSettingsMode == 1){
+        state.footContactIK = state.automaticFootContactIK();
+        state.kimodoPostprocess = state.automaticKimodoPostprocess();
+    }
+    if(state.contactSettingsMode == 1){
+        ui.checkbox("Rig foot IK", &state.footContactIK);
+        ui.checkbox("Kimodo postprocess", &state.kimodoPostprocess);
+    }else{
+        ui.value("Loom rig IK", state.effectiveFootContactIK() ? "On" : "Off");
+        ui.value("Kimodo postprocess", state.effectiveKimodoPostprocess() ? "On" : "Off");
+    }
+    const bool ready = status.runnerReady && !status.running && !status.otherJob &&
+        !filledActions({step}).empty() && poseProblem.empty() &&
+        (pathSpeedProblem.empty() || state.allowFastPath) &&
+        (!state.rootPathEnabled || motionRootPathProblem(state.rootWaypoints, lastFrame).empty()) &&
+        (state.rootPathEnabled || !state.poseConstraints.empty());
+    if(status.running) ui.value("Kimodo", Loom::humanTime(status.elapsed));
+    if(!status.runnerReady) ui.label("Install Kimodo via tools/weavermotion/setup.sh");
+    if(ui.button(ready ? "GENERATE PATH + POSES" : "GENERATION UNAVAILABLE")) action.generate = ready;
+    if(ui.button("Close (Esc)")) action.close = true;
+    return action;
+}
 
 inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& state, const Treadle::Rect& area,
                                          const MotionPanelStatus& status, float& scroll){
@@ -443,18 +1264,121 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
         state.historyRead = now;
     }
 
-    ui.dock("TEXT-TO-MOTION  /  NVIDIA KIMODO", area, &scroll);
+    ui.dock("MOTION", area, &scroll);
+    const Treadle::Rect helpButton{area.x + area.width - 34.0f, area.y + 4.0f, 27.0f, 27.0f};
+    const auto helpHit = ui.region("motion-help-button", helpButton);
+    ui.canvas().rect(helpButton, helpHit.hot ? theme.hot : theme.control);
+    ui.canvas().outline(helpButton, 1.0f, state.helpOpen ? theme.accent : theme.panelEdge);
+    ui.canvas().text(helpButton.x + 8.0f, helpButton.y + 3.0f, "?", theme.title, theme.textScale * 0.78f);
+    if(helpHit.pressed) state.helpOpen = !state.helpOpen;
+    if(status.characters.empty()){
+        ui.label("Select/import a rigged humanoid first.");
+    }else{
+        ui.label("TARGET CHARACTER");
+        bool selectedExists = false;
+        for(const MotionCharacter& character : status.characters){
+            const bool selected = state.targetCharacter == character.id;
+            selectedExists = selectedExists || selected;
+            const std::string label = character.name + "  " + character.path;
+            if(ui.selectable(Treadle::fitText(label, area.width - 36.0f, theme.textScale), selected))
+                state.targetCharacter = character.id;
+        }
+        if(!selectedExists) state.targetCharacter = status.characters.front().id;
+    }
+
+    const int previousFlow = state.flowMode;
+    if(ui.choice("Workflow", {"Recipe + Live", "Path + Pose Keys"}, &state.flowMode) &&
+       state.flowMode != previousFlow){
+        auto savePath = [&](MotionPathDraft& draft){
+            draft.enabled = state.rootPathEnabled;
+            draft.autoEnd = state.rootPathAutoEnd;
+            draft.autoDistance = state.rootPathAutoDistance;
+            draft.smooth = state.smoothRootPath;
+            draft.pinHeading = state.constrainRootHeading;
+            draft.selected = state.selectedRootWaypoint;
+            draft.waypoints = state.rootWaypoints;
+        };
+        auto loadPath = [&](const MotionPathDraft& draft){
+            state.rootPathEnabled = draft.enabled;
+            state.rootPathAutoEnd = draft.autoEnd;
+            state.rootPathAutoDistance = draft.autoDistance;
+            state.smoothRootPath = draft.smooth;
+            state.constrainRootHeading = draft.pinHeading;
+            state.rootWaypoints = draft.waypoints;
+            state.selectedRootWaypoint = draft.selected;
+        };
+        if(previousFlow == 0){
+            savePath(state.recipePath);
+            if(state.directedPath.waypoints.empty()){
+                state.directedPath.enabled = true;
+                state.directedPath.waypoints.push_back(MotionRootWaypoint{});
+                const int last = std::max(1, kimodoMotionLastFrame({state.directedAction}));
+                state.directedPath.waypoints.push_back(
+                    motionDefaultRootEnd(last, state.firstHeadingAngle, state.defaultPathSpeed));
+                state.directedPath.selected = 1;
+            }
+            loadPath(state.directedPath);
+        }else{
+            savePath(state.directedPath);
+            loadPath(state.recipePath);
+        }
+    }
+    if(ui.componentHeader("QUALITY COMPARE", theme.accent, &state.qualityCompareOpen, false)){
+        ui.label("Compare one saved take through each import stage.");
+        if(state.history.empty()) ui.label("Generate a take to compare.");
+        else{
+            std::vector<std::string> takeNames;
+            takeNames.reserve(state.history.size());
+            for(const MotionHistoryEntry& item : state.history)
+                takeNames.push_back(Treadle::fitText(item.summary, area.width - 66.0f, theme.textScale));
+            state.qualityCompareIndex = std::clamp(state.qualityCompareIndex, 0, int(state.history.size()) - 1);
+            ui.choice("Saved take", takeNames, &state.qualityCompareIndex);
+            const std::filesystem::path bvh = state.history[size_t(state.qualityCompareIndex)].bvh;
+            std::filesystem::path npz = bvh;
+            npz.replace_extension(".npz");
+            if(std::filesystem::is_regular_file(npz)){
+                ui.label("Run kimodo_demo, then load NPZ in Load/Save > Motion.");
+                if(ui.button("Copy native NPZ path")) action.copyNativeNpz = npz;
+            }else ui.label("Native NPZ unavailable for this BVH.");
+            const int clicked = ui.buttonRow({"Source BVH", "Rig no IK", "Rig with IK"});
+            if(clicked >= 0){
+                action.comparePath = bvh;
+                action.compareMode = clicked == 0 ? MotionCompareMode::SourceSkeleton :
+                    clicked == 1 ? MotionCompareMode::RigNoIk : MotionCompareMode::RigWithIk;
+            }
+            ui.label("Each rig option creates a separate Animator clip.");
+        }
+    }
+    if(state.flowMode == 1){
+        MotionPanelAction directed = drawMotionDirectedFlow(ui, state, area, status);
+        directed.compareMode = action.compareMode;
+        directed.comparePath = action.comparePath;
+        directed.copyNativeNpz = action.copyNativeNpz;
+        return directed;
+    }
+
+    ui.label("MOTION RECIPE");
+    ui.checkbox("Detect movement preset from prompt", &state.promptPresetDetection);
+    ui.label("MOVEMENT PRESETS");
+    for(int row = 0; row < 2; ++row){
+        const int first = row * 3;
+        const int clicked = ui.buttonRow({motionPresetInfo[first].label,
+                                          motionPresetInfo[first + 1].label,
+                                          motionPresetInfo[first + 2].label});
+        if(clicked >= 0){
+            configureMotionPreset(state, first + clicked, true);
+            ui.focusTextField("action" + std::to_string(state.activeAction));
+        }
+    }
     if(!status.runnerReady){
-        ui.label("Kimodo is not installed:");
-        ui.label("./tools/weavermotion/setup.sh");
-        ui.separator();
+        ui.label("Kimodo is not installed: ./tools/weavermotion/setup.sh");
     }
 
     //-- radnje ---------------------------------------------------------------------------------
     Treadle::Ui::TextFieldConfig field;
     field.lines = 3;
     field.maxLength = 600;
-    field.placeholder = "Describe a motion, e.g. a person walks forward and waves";
+    field.placeholder = "A person walks forward and waves";
     float total = 0.0f;
     int removeAt = -1, moveUp = -1;
     for(size_t i = 0; i < state.actions.size(); ++i){
@@ -462,7 +1386,13 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
         const bool active = int(i) == state.activeAction;
         ui.label(state.actions.size() > 1 ? "ACTION " + std::to_string(i + 1) + (active ? "  <" : "") : "MOTION PROMPT");
         const Treadle::Ui::TextFieldResult result = ui.textField("action" + std::to_string(i), &a.prompt, field);
+        const bool selectedNow = result.focused && state.activeAction != int(i);
         if(result.focused) state.activeAction = int(i);
+        if(state.promptPresetDetection && (result.changed || selectedNow)){
+            const int detected = motionPresetMentionedInPrompt(a.prompt);
+            if(detected >= 0 && detected != state.locomotionPreset)
+                configureMotionPreset(state, detected, false);
+        }
         if(result.submitted) action.generate = true;
         ui.slider(std::string("Duration ") + std::to_string(i + 1), &a.duration, 1.0f, 10.0f, " s");
         total += a.duration;
@@ -490,33 +1420,189 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
         state.activeAction = int(state.actions.size()) - 1;
         ui.focusTextField("action" + std::to_string(state.actions.size() - 1));
     }
+    const MotionPresetInfo& activePreset = motionPresetSettings(state.locomotionPreset);
+    ui.value("Preset", activePreset.label);
 
     //-- gotovi opisi: u aktivnu radnju --------------------------------------------------------
-    ui.label("QUICK PROMPTS");
-    for(int row = 0; row < 2; ++row){
+    ui.label("ADD A GESTURE TO THIS ACTION");
+    constexpr int presetCount = int(sizeof(motionPresets) / sizeof(motionPresets[0]));
+    for(int row = 0; row < (presetCount + 3) / 4; ++row){
         std::vector<std::string> labels;
-        for(int k = 0; k < 4; ++k) labels.push_back(motionPresets[row * 4 + k].label);
+        for(int k = 0; k < 4 && row * 4 + k < presetCount; ++k)
+            labels.push_back(motionPresets[row * 4 + k].label);
         const int clicked = ui.buttonRow(labels);
         if(clicked >= 0){
             MotionAction& target = state.actions[size_t(std::clamp(state.activeAction, 0, int(state.actions.size()) - 1))];
             const std::string text = motionPresets[row * 4 + clicked].prompt;
             //U praznu radnju cijeli opis; u zapocetu se nastavi ("..., then jumps up in place")
+            std::string lowerText = text;
+            std::transform(lowerText.begin(), lowerText.end(), lowerText.begin(),
+                           [](unsigned char c){ return char(std::tolower(c)); });
             const std::string subject = "a person ";
-            const std::string tail = text.rfind(subject, 0) == 0 ? text.substr(subject.size()) : text;
+            const std::string tail = lowerText.rfind(subject, 0) == 0 ? text.substr(subject.size()) : text;
             target.prompt = target.prompt.empty() ? text : target.prompt + ", then " + tail;
+            if(state.promptPresetDetection){
+                const int detected = motionPresetMentionedInPrompt(target.prompt);
+                if(detected >= 0 && detected != state.locomotionPreset)
+                    configureMotionPreset(state, detected, false);
+            }
             ui.focusTextField("action" + std::to_string(state.activeAction));
         }
     }
 
-
     ui.separator();
-    ui.label("KIMODO MODEL");
+    ui.label("RECIPE SETTINGS");
+    ui.value("Generator", activePreset.realtime ?
+        (status.motionBricksReady ? "MotionBricks realtime" : "MotionBricks G1 (setup required)") : "Kimodo text generation");
+    ui.value("Travel", state.rootPathEnabled ? "Follow editable route" : "In place");
+    if(filledActions(state.actions).size() > 1)
+        ui.slider("Blend between actions", &state.transitionFrames, 0.0f, 30.0f, " frames");
+    if(activePreset.realtime)
+        ui.choice("MotionBricks style", motionBricksStyles(), &state.motionBricksStyle);
+    const int previousContactMode = state.contactSettingsMode;
+    if(ui.choice("Contact rules", {"Automatic", "Manual"}, &state.contactSettingsMode) &&
+       previousContactMode == 0 && state.contactSettingsMode != 0){
+        state.footContactIK = state.automaticFootContactIK();
+        state.kimodoPostprocess = state.automaticKimodoPostprocess();
+    }
+    if(state.contactSettingsMode == 0){
+        ui.value("Foot-contact IK", state.effectiveFootContactIK() ? "On" : "Off");
+        ui.value("Kimodo postprocess (contacts + constraints)", state.effectiveKimodoPostprocess() ? "On" : "Off");
+        ui.value("Automatic rule", state.automaticContactReason());
+    }else{
+        ui.checkbox("Rig foot-contact IK", &state.footContactIK);
+        ui.checkbox("Kimodo postprocess (contacts + constraints)", &state.kimodoPostprocess);
+    }
+
+    if(ui.checkbox("Animate along a path", &state.rootPathEnabled) && state.rootPathEnabled){
+        state.rootPathAutoEnd = true;
+        state.rootPathAutoDistance = true;
+        const int last = std::max(1, kimodoMotionLastFrame(state.actions));
+        if(state.rootWaypoints.size() < 2){
+            state.rootWaypoints = {MotionRootWaypoint{},
+                motionDefaultRootEnd(last, state.firstHeadingAngle, state.defaultPathSpeed)};
+            state.selectedRootWaypoint = 1;
+        }
+    }
+    if(state.rootPathEnabled){
+        const int lastFrame = kimodoMotionLastFrame(state.actions);
+        if(state.rootPathAutoEnd && lastFrame > 0){
+            if(state.rootWaypoints.empty()) state.rootWaypoints.push_back(MotionRootWaypoint{});
+            if(state.rootWaypoints.front().frame != 0){
+                MotionRootWaypoint origin = motionRootWaypointAt(state.rootWaypoints, 0);
+                origin.frame = 0; origin.x = 0.0f; origin.z = 0.0f;
+                state.rootWaypoints.insert(state.rootWaypoints.begin(), origin);
+            }
+            if(state.rootWaypoints.size() == 1)
+                state.rootWaypoints.push_back(motionDefaultRootEnd(lastFrame, state.firstHeadingAngle, state.defaultPathSpeed));
+            else{
+                // Keep authored points in order when action durations change.
+                while(state.rootWaypoints.size() > size_t(lastFrame + 1))
+                    state.rootWaypoints.erase(state.rootWaypoints.end() - 2);
+                const int oldEnd = std::max(1, state.rootWaypoints.back().frame);
+                if(oldEnd != lastFrame){
+                    int previousFrame = 0;
+                    for(size_t i = 1; i + 1 < state.rootWaypoints.size(); ++i){
+                        const int ideal = int(std::lround(double(state.rootWaypoints[i].frame) *
+                                                          double(lastFrame) / double(oldEnd)));
+                        const int latest = lastFrame - int(state.rootWaypoints.size() - 1 - i);
+                        state.rootWaypoints[i].frame = std::clamp(ideal, previousFrame + 1, latest);
+                        previousFrame = state.rootWaypoints[i].frame;
+                    }
+                }
+                if(state.rootPathAutoDistance)
+                    state.rootWaypoints.back() = motionDefaultRootEnd(lastFrame, state.firstHeadingAngle, state.defaultPathSpeed);
+                else state.rootWaypoints.back().frame = lastFrame;
+            }
+        }
+        state.rootTrackCursorFrame = std::clamp(state.rootTrackCursorFrame, 0.0f, float(lastFrame));
+        ui.checkbox("Smooth path through points", &state.smoothRootPath);
+        if(ui.checkbox("Pin heading at path points", &state.constrainRootHeading)){
+            if(state.constrainRootHeading && !state.rootWaypoints.empty() && state.rootWaypoints.front().frame == 0)
+                state.rootWaypoints.front().heading = state.firstHeadingAngle;
+        }
+        const int keyAction = ui.buttonRow({"+ Add point after selected", "Delete selected"});
+        if(keyAction == 0){
+            const int atFrame = motionRootInsertionFrame(state.rootWaypoints, state.selectedRootWaypoint);
+            if(atFrame >= 0){
+                MotionRootWaypoint key = motionRootPathAt(state.rootWaypoints, float(atFrame), state.smoothRootPath);
+                upsertMotionRootWaypoint(state.rootWaypoints, key, lastFrame);
+                const auto found = std::lower_bound(state.rootWaypoints.begin(), state.rootWaypoints.end(), atFrame,
+                    [](const MotionRootWaypoint& item, int f){ return item.frame < f; });
+                state.selectedRootWaypoint = int(found - state.rootWaypoints.begin());
+                state.rootTrackCursorFrame = float(atFrame);
+            }
+        }else if(keyAction == 1 && state.selectedRootWaypoint >= 0 &&
+                 size_t(state.selectedRootWaypoint) < state.rootWaypoints.size() &&
+                 !(state.rootWaypoints[size_t(state.selectedRootWaypoint)].frame == 0)){
+            if(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1) state.rootPathAutoEnd = false;
+            state.rootWaypoints.erase(state.rootWaypoints.begin() + state.selectedRootWaypoint);
+            state.selectedRootWaypoint = std::clamp(state.selectedRootWaypoint, 0, int(state.rootWaypoints.size()) - 1);
+        }
+        for(size_t i = 0; i < state.rootWaypoints.size(); ++i){
+            const MotionRootWaypoint& key = state.rootWaypoints[i];
+            char label[112];
+            std::snprintf(label, sizeof(label), "Point %zu  |  %.2f s  |  X %.2f  Z %.2f%s", i + 1,
+                          double(key.frame) / kimodoMotionFps, double(key.x), double(key.z),
+                          key.frame == 0 ? "  (start)" : "");
+            if(ui.selectable(label, int(i) == state.selectedRootWaypoint)){
+                state.selectedRootWaypoint = int(i);
+                state.rootTrackCursorFrame = float(key.frame);
+            }
+        }
+        if(state.selectedRootWaypoint >= 0 && size_t(state.selectedRootWaypoint) < state.rootWaypoints.size()){
+            MotionRootWaypoint& key = state.rootWaypoints[size_t(state.selectedRootWaypoint)];
+            if(key.frame == 0){
+                ui.value("Start point", "fixed at X 0, Z 0");
+            }else{
+                if(!(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1)){
+                    float seconds = float(key.frame) / kimodoMotionFps;
+                    if(ui.dragFloat("Point time (s)", &seconds, 0.01f)){
+                        moveMotionRootWaypoint(state.rootWaypoints, size_t(state.selectedRootWaypoint),
+                                               int(std::lround(seconds * kimodoMotionFps)), lastFrame);
+                        state.rootTrackCursorFrame = float(key.frame);
+                    }
+                }
+                float position[3]{key.x, 0.0f, key.z};
+                if(ui.dragVector("Point position X / Z (m)", position, 0.002f)){
+                    key.x = position[0];
+                    key.z = position[2];
+                    if(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1)
+                        state.rootPathAutoDistance = false;
+                }
+            }
+            if(state.constrainRootHeading){
+                float degrees = key.heading * (180.0f / 3.14159265359f);
+                if(ui.dragFloat("Facing angle (degrees)", &degrees, 0.2f))
+                    key.heading = std::clamp(degrees, -180.0f, 180.0f) * (3.14159265359f / 180.0f);
+            }
+        }
+        const std::string pathProblem = motionRootPathProblem(state.rootWaypoints, lastFrame);
+        if(!pathProblem.empty()) ui.label("Root path needs attention: " + pathProblem);
+        if(!state.constraintsPath.empty())
+            ui.label("Use either the authored root path or the external JSON, not both.");
+        ui.value("Path frame rate", "30 fps (Kimodo)");
+    }
+    ui.separator();
+
+    if(ui.componentHeader("QUALITY & EXPERT SETTINGS", theme.accent, &state.advancedExpanded, true)){
+    ui.label("KIMODO TEXT GENERATION");
+    if(ui.button("Use Best Quality Defaults")){
+        state.modelIndex = 0;
+        state.quality = 200.0f;
+        state.samples = 4.0f;
+        state.transitionFrames = 5.0f;
+        state.cfgIndex = 3;
+        state.textGuidance = 2.0f;
+        state.constraintGuidance = 2.0f;
+        state.kimodoPostprocess = true;
+    }
+    ui.slider("Denoising steps", &state.quality, 100.0f, 300.0f);
     ui.choice("Skeleton / dataset", kimodoModels(), &state.modelIndex);
     ui.slider("Samples to compare", &state.samples, 1.0f, 8.0f);
     const std::string& model = kimodoModels()[size_t(std::clamp(state.modelIndex, 0, int(kimodoModels().size()) - 1))];
     if(model.find("G1") != std::string::npos) ui.label("G1 exports native NPZ/CSV; Loom timeline preview currently imports SOMA BVH only.");
     else if(model.find("SMPLX") != std::string::npos) ui.label("SMPL-X exports native NPZ/AMASS; Loom timeline preview currently imports SOMA BVH only.");
-    ui.slider("Transition frames", &state.transitionFrames, 0.0f, 30.0f);
     ui.choice("Classifier-free guidance", {"Model default", "No CFG", "Regular", "Text + constraints"}, &state.cfgIndex);
     if(state.cfgIndex == 2) ui.slider("Text guidance", &state.textGuidance, 0.0f, 10.0f);
     if(state.cfgIndex == 3){
@@ -528,105 +1614,39 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
     pathField.maxLength = 1024;
     pathField.placeholder = "Optional Kimodo constraints.json path";
     ui.textField("kimodo-constraints", &state.constraintsPath, pathField);
-    ui.checkbox("Save reusable Kimodo example bundle", &state.saveExample);
-    ui.checkbox("Constrain Kimodo root path (XZ metres)", &state.rootPathEnabled);
-    if(state.rootPathEnabled){
-        const int lastFrame = kimodoMotionLastFrame(state.actions);
-        state.rootTrackCursorFrame = std::clamp(state.rootTrackCursorFrame, 0.0f, float(lastFrame));
-        float cursor = state.rootTrackCursorFrame;
-        if(ui.dragFloat("Kimodo waypoint frame", &cursor, 0.35f))
-            state.rootTrackCursorFrame = std::clamp(std::round(cursor), 0.0f, float(lastFrame));
-        ui.label("Click the Kimodo track below to add/select a key. Frame 0 is the fixed origin.");
-        if(ui.checkbox("Constrain heading at every root waypoint", &state.constrainRootHeading)){
-            if(state.constrainRootHeading && !state.rootWaypoints.empty() && state.rootWaypoints.front().frame == 0)
-                state.rootWaypoints.front().heading = state.firstHeadingAngle;
-        }
-        const int keyAction = ui.buttonRow({"Add / update at cursor", "Delete selected"});
-        if(keyAction == 0){
-            MotionRootWaypoint key = motionRootWaypointAt(state.rootWaypoints, int(std::lround(state.rootTrackCursorFrame)));
-            upsertMotionRootWaypoint(state.rootWaypoints, key, lastFrame);
-            const auto found = std::lower_bound(state.rootWaypoints.begin(), state.rootWaypoints.end(), key.frame,
-                                                [](const MotionRootWaypoint& item, int f){ return item.frame < f; });
-            state.selectedRootWaypoint = int(found - state.rootWaypoints.begin());
-        }else if(keyAction == 1 && state.selectedRootWaypoint >= 0 &&
-                 size_t(state.selectedRootWaypoint) < state.rootWaypoints.size() &&
-                 !(state.rootWaypoints[size_t(state.selectedRootWaypoint)].frame == 0)){
-            state.rootWaypoints.erase(state.rootWaypoints.begin() + state.selectedRootWaypoint);
-            state.selectedRootWaypoint = std::clamp(state.selectedRootWaypoint, 0, int(state.rootWaypoints.size()) - 1);
-        }
-        for(size_t i = 0; i < state.rootWaypoints.size(); ++i){
-            const MotionRootWaypoint& key = state.rootWaypoints[i];
-            char label[112];
-            std::snprintf(label, sizeof(label), "Frame %d    X %.2f m    Z %.2f m%s", key.frame,
-                          double(key.x), double(key.z), key.frame == 0 ? "    (origin)" : "");
-            if(ui.selectable(label, int(i) == state.selectedRootWaypoint)){
-                state.selectedRootWaypoint = int(i);
-                state.rootTrackCursorFrame = float(key.frame);
-            }
-        }
-        if(state.selectedRootWaypoint >= 0 && size_t(state.selectedRootWaypoint) < state.rootWaypoints.size()){
-            MotionRootWaypoint& key = state.rootWaypoints[size_t(state.selectedRootWaypoint)];
-            if(key.frame == 0){
-                ui.value("Frame 0 root", "fixed at canonical XZ origin");
-            }else{
-                float position[3]{key.x, 0.0f, key.z};
-                if(ui.dragVector("Waypoint X / Z (m)", position, 0.002f)){
-                    key.x = position[0];
-                    key.z = position[2];
-                }
-            }
-            if(state.constrainRootHeading){
-                if(ui.dragFloat("Waypoint heading (rad)", &key.heading, 0.002f))
-                    key.heading = std::clamp(key.heading, -3.14159f, 3.14159f);
-            }
-        }
-        const std::string pathProblem = motionRootPathProblem(state.rootWaypoints, lastFrame);
-        if(!pathProblem.empty()) ui.label("Root path needs attention: " + pathProblem);
-        if(!state.constraintsPath.empty())
-            ui.label("Use either the authored root path or the external JSON, not both.");
-        ui.value("Path frame rate", "30 fps (Kimodo)");
-    }
-
-    ui.separator();
-    ui.label("RIGGED CHARACTERS IN THIS SCENE");
-    if(status.characters.empty()){
-        ui.label("No imported model with both mesh and joint hierarchy.");
-        state.targetCharacter = Warp::None;
-    }else{
-        bool selectedExists = false;
-        for(const MotionCharacter& character : status.characters){
-            const bool selected = state.targetCharacter == character.id;
-            selectedExists = selectedExists || selected;
-            const std::string label = character.name + "  " + character.path;
-            if(ui.selectable(Treadle::fitText(label, area.width - 36.0f, theme.textScale), selected))
-                state.targetCharacter = character.id;
-        }
-        if(!selectedExists) state.targetCharacter = status.characters.front().id;
-        if(!status.characterNote.empty()) ui.label(status.characterNote);
-        ui.label("Target anchors the generated skeleton preview; Loom does not yet skin/retarget the source mesh.");
-    }
-    //-- postavke -------------------------------------------------------------------------------
-    ui.separator();
-    char text[96];
-    std::snprintf(text, sizeof(text), "%.1f s, %zu %s", double(total), filledActions(state.actions).size(),
-                  filledActions(state.actions).size() == 1 ? "action" : "actions");
-    ui.value("Total", text);
-    ui.slider("Quality (steps)", &state.quality, 10.0f, 500.0f);
     ui.checkbox("Same seed = same motion", &state.fixedSeed);
     if(state.fixedSeed) ui.dragFloat("Seed", &state.seed, 0.2f);
-    ui.checkbox("Clean foot sliding", &state.footCleanup);
     if(ui.slider("Initial heading (rad)", &state.firstHeadingAngle, -3.14159f, 3.14159f)){
         if(state.rootPathEnabled && state.constrainRootHeading && !state.rootWaypoints.empty() &&
            state.rootWaypoints.front().frame == 0) state.rootWaypoints.front().heading = state.firstHeadingAngle;
     }
     ui.slider("Root correction margin (m)", &state.rootMargin, 0.0f, 0.25f);
+    ui.checkbox("Save reusable Kimodo example bundle", &state.saveExample);
+    }
+    //-- postavke -------------------------------------------------------------------------------
+    ui.separator();
+    char text[96];
+    const std::vector<MotionAction> generatedActions = filledActions(state.actions);
+    total = 0.0f;
+    for(const MotionAction& step : generatedActions) total += step.duration;
+    std::snprintf(text, sizeof(text), "%.1f s, %zu %s", double(total), generatedActions.size(),
+                  generatedActions.size() == 1 ? "action" : "actions");
+    ui.value("Total", text);
 
     //-- generiranje ----------------------------------------------------------------------------
     ui.separator();
     const std::string rootProblem = state.rootPathEnabled
         ? motionRootPathProblem(state.rootWaypoints, kimodoMotionLastFrame(state.actions)) : std::string{};
     const bool constraintConflict = state.rootPathEnabled && !state.constraintsPath.empty();
-    const bool constraintsReady = rootProblem.empty() && !constraintConflict;
+    const std::string pathSpeedProblem = state.rootPathEnabled
+        ? motionPathSpeedProblem(state.rootWaypoints, state.smoothRootPath,
+            state.actions.empty() ? std::string{} : state.actions.front().prompt) : std::string{};
+    if(!pathSpeedProblem.empty()){
+        ui.label(pathSpeedProblem);
+        ui.checkbox("Allow fast path anyway", &state.allowFastPath);
+    }
+    const bool constraintsReady = rootProblem.empty() && !constraintConflict &&
+                                  (pathSpeedProblem.empty() || state.allowFastPath);
     const bool ready = status.runnerReady && !status.running && !status.otherJob &&
                        !filledActions(state.actions).empty() && constraintsReady;
     if(status.running){
@@ -641,10 +1661,35 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
     }
     if(!ready) action.generate = false;
 
+    ui.separator();
+    ui.label("MOTIONBRICKS  /  REALTIME PATH RECORDING");
+    ui.value("Live style", motionBricksStyles()[size_t(std::clamp(state.motionBricksStyle, 0,
+        int(motionBricksStyles().size()) - 1))]);
+    if(status.liveRecording){
+        ui.value("Session", status.liveStopping ? "SAVING RECORDED ANIMATION..." :
+                              status.liveReady ? "LIVE  ●  RECORDING" : "LOADING MOTIONBRICKS...");
+        ui.value("Recorded frames", std::to_string(status.liveFrames));
+        if(!status.liveMessage.empty()) ui.label(Treadle::fitText(status.liveMessage, area.width - 36.0f, theme.textScale));
+        if(!status.liveStopping && ui.button("STOP & KEEP ANIMATION")) action.stopLiveRecording = true;
+    }else{
+        const bool canRecord = activePreset.realtime && status.motionBricksReady && !status.running && !status.otherJob;
+        if(ui.button(canRecord ? "START LIVE + RECORD" : "LIVE RECORDING UNAVAILABLE"))
+            action.startLiveRecording = canRecord;
+        if(activePreset.realtime){
+            if(!status.motionBricksReady) ui.label("Install MotionBricks once with tools/motionbricks/setup.sh.");
+        }else{
+        }
+    }
+    const bool canGenerateBricks = activePreset.realtime && status.motionBricksReady &&
+                                   !status.liveRecording && !status.running && !status.otherJob;
+    if(ui.button(canGenerateBricks ? "GENERATE MOTIONBRICKS CLIP" : "MotionBricks clip unavailable"))
+        action.generateMotionBricks = canGenerateBricks;
+    if(status.motionBricksRunning)
+        ui.label("MotionBricks is generating a G1 locomotion clip...");
+
     //-- povijest ---------------------------------------------------------------------------------
     ui.separator();
     ui.label("RECENT MOTIONS");
-    ui.label("Click to import; right-click to restore prompt");
     if(state.history.empty()) ui.label("(Nothing here yet: " + status.historyDirectory.filename().string() + ")");
     for(size_t i = 0; i < state.history.size(); ++i){
         const MotionHistoryEntry& item = state.history[i];
@@ -652,15 +1697,59 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
         if(ui.rightClicked() && !item.actions.empty()){
             state.actions = item.actions;
             state.activeAction = 0;
+            if(state.promptPresetDetection){
+                const int detected = motionPresetMentionedInPrompt(state.activePrompt());
+                if(detected >= 0) configureMotionPreset(state, detected, false);
+            }
             ui.focusTextField("action0");
         }
     }
     ui.separator();
     if(!state.rootPathEnabled) ui.label("Load a Kimodo constraints.json above or enable root-path editing here.");
     else if(constraintConflict) ui.label("Clear the external JSON path to generate from this authored root path.");
-    ui.label("SOMA exports importable BVH; the selected source mesh stays static until skinning/retargeting is implemented.");
     if(ui.button("Close (Esc)")) action.close = true;
     return action;
+}
+inline void drawMotionHelp(Treadle::Ui& ui, MotionPanelState& state, const Treadle::Rect& area){
+    ui.dock("MOTION HELP", area, &state.helpScroll);
+    ui.label("QUICK START");
+    ui.label("1. Select or import a rigged humanoid.");
+    ui.label("2. Choose Idle, Walk, Run, Jump, Crawl or Crouch.");
+    ui.label("3. Edit the prompt and movement settings.");
+    ui.label("4. Shape the root path, then generate or record.");
+    ui.separator();
+    ui.label("PATH & TIMELINE");
+    ui.label("Path + Pose Keys is a separate directed flow.");
+    ui.label("Right-click the path to add a pose at that frame.");
+    ui.label("Rig Controls: drag hands/feet for IK; elbows/knees set bend.");
+    ui.label("Alt-drag hands/feet to rotate; switch to Joints for detail.");
+    ui.label("Drag ROOT to shape the path; drag CHEST or HEAD to rotate.");
+    ui.label("TIME on the left opens the timeline.");
+    ui.label("Click a time to add a route point.");
+    ui.label("Drag route points in the viewport.");
+    ui.label("The first point remains at the origin.");
+    ui.label("Auto end follows the clip duration.");
+    ui.label("Smooth path blends between points.");
+    ui.separator();
+    ui.label("MOTIONBRICKS LIVE");
+    ui.label("Idle, walk, crawl and crouch use the G1 live model.");
+    ui.label("Start Live + Record previews motion on the rig.");
+    ui.label("Stop & Keep Animation saves a full Animator clip.");
+    ui.label("Run and jump use Kimodo text generation.");
+    ui.separator();
+    ui.label("IK & QUALITY");
+    ui.label("Auto IK follows the movement preset and prompt.");
+    ui.label("Crawl disables Loom foot IK; Kimodo postprocess stays on.");
+    ui.label("Manual mode lets you override both switches.");
+    ui.label("Kimodo default: SOMA RP, 200 steps, 4 variants.");
+    ui.label("SOMA BVH retargets to the selected humanoid.");
+    ui.label("Without a target, Loom shows a skeleton preview.");
+    ui.separator();
+    ui.label("HISTORY & DIAGNOSTICS");
+    ui.label("Click a recent motion to import it.");
+    ui.label("Right-click one to restore its prompt.");
+    ui.label("TERM on the left shows operations and errors.");
+    if(ui.button("Close help")) state.helpOpen = false;
 }
 
 }

@@ -62,6 +62,26 @@ int main(){
         original.get(camera)->translationKeys.set(f, glm::vec3(std::sin(t) * 3.1f, 0.2f * t, std::cos(t) * 1e-3f));
         original.get(camera)->rotationKeys.set(f, glm::normalize(glm::angleAxis(t, glm::normalize(glm::vec3(0.1f, 1.0f, 0.3f)))));
     }
+    Warp::Animator cameraAnimator;
+    Warp::AnimationClip wave;
+    wave.name = "Arm wave"; wave.startFrame = 20.5; wave.endFrame = 40.5; wave.loop = true; wave.inPlace = true;
+    Warp::AnimatorTrack waveTrack;
+    waveTrack.target = camera; waveTrack.targetPath = original.path(camera);
+    waveTrack.translationKeys.set(20.5, glm::vec3(1.0f, 2.0f, 3.0f));
+    waveTrack.translationKeys.set(40.5, glm::vec3(4.0f, 5.0f, 6.0f));
+    waveTrack.rotationKeys.set(20.5, glm::quat(1,0,0,0));
+    waveTrack.rotationKeys.set(40.5, glm::angleAxis(0.75f, glm::vec3(0,1,0)));
+    wave.tracks.push_back(waveTrack);
+    Warp::AnimationClip walk;
+    walk.name = "Walk"; walk.startFrame = 80.0; walk.endFrame = 120.0;
+    Warp::AnimatorTrack walkTrack;
+    walkTrack.target = camera; walkTrack.targetPath = original.path(camera); walkTrack.rootMotion = true;
+    walkTrack.translationKeys.set(80.0, glm::vec3(-1.0f, 0.0f, 0.0f));
+    walkTrack.translationKeys.set(120.0, glm::vec3(-2.0f, 0.0f, 0.0f));
+    walk.tracks.push_back(walkTrack);
+    cameraAnimator.animations = {wave, walk};
+    cameraAnimator.activeAnimation = 1;
+    original.get(group)->animator = cameraAnimator;
 
     const Warp::Id cloud = original.create("Tocke", group);
     Warp::Points points;
@@ -144,6 +164,23 @@ int main(){
         for(int c = 0; c < 4; ++c) for(int r = 0; r < 4; ++r) drift = std::max(drift, std::fabs(worldA[c][r] - worldB[c][r]));
         report.check("transformacije i kljucevi bit po bit, vidljivost", same && drift == 0.0f,
             fmt("kamera u kadru 123.4 odstupa %.1e", drift));
+        const Warp::Entity* loadedGroup = loaded.get(loaded.find("/C0257"));
+        const Warp::Entity* loadedCamera = loaded.get(loaded.find("/C0257/Kamera"));
+        bool animatorSame = loadedGroup && loadedGroup->animator && loadedGroup->animator->activeAnimation == 1 &&
+                            loadedGroup->animator->animations.size() == 2 && loadedCamera;
+        if(animatorSame){
+            const Warp::Animator& roundTrip = *loadedGroup->animator;
+            const Warp::AnimatorTrack& a = roundTrip.animations[0].tracks[0];
+            const Warp::AnimatorTrack& b = roundTrip.animations[1].tracks[0];
+            animatorSame = roundTrip.animations[0].name == "Arm wave" && roundTrip.animations[0].startFrame == 20.5 &&
+                roundTrip.animations[0].endFrame == 40.5 && roundTrip.animations[0].loop && roundTrip.animations[0].inPlace &&
+                a.target == loadedCamera->id && a.targetPath == loaded.path(loadedCamera->id) &&
+                sameTrack(a.translationKeys, waveTrack.translationKeys) && sameTrack(a.rotationKeys, waveTrack.rotationKeys) &&
+                b.rootMotion && sameTrack(b.translationKeys, walkTrack.translationKeys) &&
+                loaded.localAt(loadedCamera->id, 100.0).translation == glm::vec3(-1.5f, 0.0f, 0.0f);
+        }
+        report.check("Animator, imena, ciljevi, odabrani klip i kljucevi kruzno se spremaju", animatorSame,
+            loadedGroup && loadedGroup->animator ? std::to_string(loadedGroup->animator->animations.size()) + " klipa" : "Animator nije ucitan");
     }
 
     //-- 4. komponente ---------------------------------------------------------------------------

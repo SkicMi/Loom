@@ -124,6 +124,7 @@ inline ModelImportReport importGltf(Warp::Stage& stage, const Spool::GltfScene& 
     const std::string stem = path.stem().string();
 
     //Materijali u biblioteku, s imenom datoteke ispred
+    const size_t materialStart = stage.materials.size();
     std::vector<int> materialIndex(scene.materials.size(), -1);
     for(size_t i = 0; i < scene.materials.size(); ++i){
         const std::string name = stem + "/" + (scene.materials[i].name.empty() ? "material" + std::to_string(i) : scene.materials[i].name);
@@ -141,6 +142,7 @@ inline ModelImportReport importGltf(Warp::Stage& stage, const Spool::GltfScene& 
 
     //Cvorovi, s cuvarom protiv petlje (cvor koji je sam sebi predak u losoj datoteci)
     std::vector<uint8_t> visited(scene.nodes.size(), 0);
+    std::vector<Warp::Id> nodeEntities(scene.nodes.size(), Warp::None);
     std::vector<std::pair<int, Warp::Id>> pending;
     for(auto root = scene.roots.rbegin(); root != scene.roots.rend(); ++root) pending.push_back({*root, report.group});
     std::vector<uint8_t> meshUsed(scene.meshes.size(), 0);
@@ -151,6 +153,7 @@ inline ModelImportReport importGltf(Warp::Stage& stage, const Spool::GltfScene& 
         visited[size_t(index)] = 1;
         const Spool::GltfNode& node = scene.nodes[size_t(index)];
         const Warp::Id id = stage.create(node.name.empty() ? "Node" + std::to_string(index) : node.name, under);
+        nodeEntities[size_t(index)] = id;
         Warp::Entity& entity = *stage.get(id);
         entity.local.translation = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
         entity.local.rotation = glm::normalize(glm::quat(node.rotation[3], node.rotation[0], node.rotation[1], node.rotation[2]));
@@ -160,6 +163,7 @@ inline ModelImportReport importGltf(Warp::Stage& stage, const Spool::GltfScene& 
             Warp::Model model;
             model.path = scene.path;
             model.mesh = node.mesh;
+            model.skin = node.skin;
             for(const Spool::GltfPrimitive& p : scene.meshes[size_t(node.mesh)].primitives){
                 model.materials.push_back(p.material >= 0 ? materialIndex[size_t(p.material)] : -1);
             }
@@ -168,6 +172,26 @@ inline ModelImportReport importGltf(Warp::Stage& stage, const Spool::GltfScene& 
         }
         ++report.nodes;
         for(auto child = node.children.rbegin(); child != node.children.rend(); ++child) pending.push_back({*child, id});
+    }
+    for(size_t nodeIndex = 0; nodeIndex < scene.nodes.size(); ++nodeIndex){
+        const Spool::GltfNode& node = scene.nodes[nodeIndex];
+        if(node.skin < 0 || node.mesh < 0 || size_t(node.skin) >= scene.skins.size()) continue;
+        const Warp::Id entityId = nodeEntities[nodeIndex];
+        Warp::Entity* entity = stage.get(entityId);
+        if(!entity || !entity->model) continue;
+        const Spool::GltfSkin& skin = scene.skins[size_t(node.skin)];
+        for(int jointNode : skin.joints){
+            if(jointNode < 0 || size_t(jointNode) >= nodeEntities.size() || nodeEntities[size_t(jointNode)] == Warp::None){
+                stage.remove(report.group);
+                while(stage.materials.size() > materialStart) stage.removeMaterial(int(stage.materials.size() - 1));
+                report.group = Warp::None;
+                report.problem = "skin joint is outside the active GLTF scene";
+                return report;
+            }
+            const Warp::Id jointId = nodeEntities[size_t(jointNode)];
+            entity->model->skinJoints.push_back(jointId);
+            entity->model->skinJointPaths.push_back(stage.path(jointId));
+        }
     }
     report.meshes = size_t(std::count(meshUsed.begin(), meshUsed.end(), uint8_t(1)));
     return report;

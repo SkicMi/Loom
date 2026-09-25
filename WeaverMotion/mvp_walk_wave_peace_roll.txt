@@ -1,0 +1,4 @@
+# model	Kimodo-SOMA-RP-v1.1
+a person walks forward and waves with the right hand.	3
+a person shows a peace sign with the right hand.	3
+a person performs a forward roll on the ground and returns to standing	3

@@ -10,7 +10,8 @@ class Mesh{
     Mesh(const VulkanDevice& device,
     const VulkanCommand& command,
     const std::vector<Vertex>& vertices,
-    const std::vector<uint16_t>& indices = {});
+    const std::vector<uint16_t>& indices = {},
+    bool dynamic = false);
 
     Mesh(const Mesh&) = delete;
     Mesh& operator = (const Mesh&) = delete;
@@ -23,12 +24,14 @@ class Mesh{
     uint32_t getVertexCount() const {return vertexCount;}
     uint32_t getIndexCount() const {return indexCount;}
     bool hasIndices() const {return indexBuffer.has_value();}
+    void updateVertices(const std::vector<Vertex>& vertices);
 
     private:
     VulkanBuffer vertexBuffer;
     std::optional <VulkanBuffer> indexBuffer;
     uint32_t vertexCount = 0;
     uint32_t indexCount = 0;
+    bool dynamic = false;
 
 
 
