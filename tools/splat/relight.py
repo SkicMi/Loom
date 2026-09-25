@@ -7,10 +7,14 @@ MODEL je izlaz VideoSolvea (cameras.txt, images.txt, images/), SPLAT izlaz train
 
   - po gaussiani ALBEDO (prava boja povrsine, bez svjetla) i ZASJENJENJE (0-1: kut, pukotina,
     sjena koju globalno svjetlo ne moze objasniti)
-  - za cijelu scenu SVJETLO kao sferni harmonici drugog reda: 9 koeficijenata po kanalu. To je
-    standardni model difuznog okolnog svjetla (Ramamoorthi i Hanrahan 2001) - difuzna povrsina
-    vidi svjetlo samo do tog reda, pa vise ni ne treba
+  - za cijelu scenu SVJETLO: sunce (smjer i boja) i nebo s gradijentom gore-dolje - ono sto ide u
+    Blender. Sjencanje ide kroz sferne harmonike drugog reda (Ramamoorthi i Hanrahan 2001): difuzna
+    povrsina vidi svjetlo samo do tog reda
   - ekspozicija po kadru krece od one iz treninga i dotjeruje se
+
+Albedo, svjetlo i sjencanje su u LINEARNOM svjetlu (kao Blender i Loomov PBR); kadrovi i boje
+splata su sRGB i prevode se. Jedinice svjetla: piksel_linearno = albedo * E(n) / pi, pa je sunce
+irradijancija (Blenderova jakost sunca) a okolina radijancija (boja svijeta uz jakost 1).
 
 Sjencanje je ODGODJENO, po pikselu: albedo i zasjenjenje se nacrtaju kao slika, normala dolazi iz
 nacrtane dubine, i piksel = albedo * zasjenjenje * E(normala) / pi. Normala iz dubine je ona koju
@@ -19,7 +23,7 @@ ikakvog poravnanja slaba, pa se ona samo uci prema dubini i zapisuje uz albedo (
 
 Izlaz (PREFIKS zadano <splat>_svjetlo):
   PREFIKS_albedo.ply  splat s albedom umjesto boje i normalama - u editoru scena bez svjetla
-  PREFIKS.json        svjetlo: SH9 po kanalu, glavno (suncano) svjetlo smjer/boja, okolina, gore
+  PREFIKS.json        svjetlo: sunce (smjer, boja), nebo gore/dolje, isto kao SH9, sigurnost smjera
   PREFIKS_okolina.png procijenjeno svjetlo kao panorama (gore je gore)
   PREFIKS_rastav.png  snimka | sjencani model | albedo | sjencanje | normale | novo svjetlo
 
@@ -62,26 +66,6 @@ def sh_basis(d):
                         1.092548 * x * z, 0.546274 * (x * x - y * y)], -1)
 
 
-def sun_and_sky(L):
-    """SH9 -> jedno usmjereno svjetlo + jednolicna okolina. Usmjereno svjetlo boje c iz smjera d
-    daje L1 = c * 0.488603 * d, pa je smjer iz linearnog pojasa (po svjetlini), a boja njegova
-    projekcija na taj smjer. Ostatak nultog pojasa je okolina. Obje su u istim jedinicama kao
-    sjencanje (albedo * E / pi): sunce je irradijancija okomito na njega, okolina radijancija."""
-    lum = torch.tensor([0.2126, 0.7152, 0.0722], device=L.device)
-    linear = torch.stack([L[3], L[1], L[2]], 0)            #(xyz, rgb)
-    direction = linear @ lum
-    direction = direction / direction.norm().clamp_min(1e-9)
-    sun = (direction @ linear / 0.488603).clamp_min(0)     #rgb
-    sky = ((L[0] - sun * 0.282095) * 0.282095).clamp_min(0)
-    return direction, sun, sky
-
-
-def sh_from_sun_and_sky(direction, sun, sky):
-    L = sh_basis(direction)[:, None] * sun[None]
-    L[0] = L[0] + sky / 0.282095
-    return L
-
-
 def depth_normals(depth, K, step=4, sigma=2.0):
     """Normale iz nacrtane dubine (H, W) u sustavu kamere (OpenCV), okrenute prema kameri. Dubina se
     prvo zagladi: bez toga (korak 2, bez zamucenja) je kameni zid na C0257 bio reljef, a stol nije
@@ -104,6 +88,16 @@ def depth_normals(depth, K, step=4, sigma=2.0):
     n = n / n.norm(dim=-1, keepdim=True).clamp_min(1e-12)
     n = torch.nn.functional.pad(n.permute(2, 0, 1)[None], (s, s, s, s), mode="replicate")[0].permute(1, 2, 0)
     return n
+
+
+def to_linear(c):
+    """sRGB (kako su kadrovi i boje splata) -> linearno svjetlo"""
+    return torch.where(c <= 0.04045, c / 12.92, ((c.clamp_min(0) + 0.055) / 1.055) ** 2.4)
+
+
+def to_srgb(c):
+    c = c.clamp_min(1e-8)
+    return torch.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
 
 
 def quat_matrices(q):
@@ -249,15 +243,40 @@ def main():
             rgb = (sh[:, 0] * C0 + 0.5).clamp(0.02, 0.98)
         del g, geometry
 
-    albedoLogit = torch.logit(rgb).clone().requires_grad_(True)
+    #LINEARNO SVJETLO. Albedo, svjetlo i sjencanje su u linearnom prostoru, a u sRGB se prelazi tek
+    #za usporedbu sa snimkom. Prvo je sve bilo u sRGB-u, i tada svjetlo nije znacilo ono sto Blender
+    #misli: siva kugla (0.6) pod procijenjenom okolinom 1.19 izasla je gotovo bijela
+    albedoLogit = torch.logit(to_linear(rgb).clamp(0.005, 0.98)).clone().requires_grad_(True)
     occlusionLogit = torch.full((N, 1), 3.0, device=device, requires_grad=True)
-    L = torch.zeros(9, 3, device=device)
-    L[0] = math.pi / K4           #pocetno svjetlo: jednoliko, E / pi = 1, pa je albedo pocetna boja
-    L.requires_grad_(True)
+    #=====================================================================================
+    # SVJETLO KAKO GA VFX KORISTI: sunce (smjer, boja) i nebo s gradijentom od gore prema dolje
+    # (gore prozor/strop, dolje odbijeno od poda). Prvo se ucio puni SH9 pa se iz njega vadilo sunce
+    # i okolina - i to je gubilo: na C0257 je izvadjeno sunce bilo 0.6 dB losije od najboljeg od 48
+    # smjerova uz isti albedo, jer je albedo naucen uz svjetlo koje se ne isporucuje. Sad se uci
+    # upravo ono sto ide u Blender. Radijancija je nenegativna po gradnji (|gradijent| <= nebo)
+    #=====================================================================================
+    light = dict(dir=up.clone(), sun=torch.full((3,), -3.0, device=device),
+                 sky=torch.full((3,), math.log(math.e - 1), device=device),   #softplus = 1: E / pi = 1
+                 grad=torch.zeros(3, device=device))
+    for v in light.values(): v.requires_grad_(True)
+    upBasis = torch.stack([up[1], up[2], up[0]])       #redoslijed prvog pojasa: y, z, x
+
+    def light_parts():
+        a = torch.nn.functional.softplus(light["sky"])
+        b = torch.tanh(light["grad"]) * a
+        return (torch.nn.functional.normalize(light["dir"], dim=0), torch.nn.functional.softplus(light["sun"]),
+                a + b, a - b)
+
+    def light_sh(direction, sun, top, bottom):
+        """Sunce boje c iz smjera d: L = c Y(d). Nebo R(w) = a + b (w . gore): L00 = a / Y00,
+        L1 = b * 0.488603 * 4pi/3 * gore"""
+        a, b = 0.5 * (top + bottom), 0.5 * (top - bottom)
+        return sh_basis(direction)[:, None] * sun[None] + torch.cat(
+            [(a / 0.282095)[None], 2.046653 * upBasis[:, None] * b[None], torch.zeros(5, 3, device=device)], 0)
     optimiser = torch.optim.Adam([
         dict(params=[albedoLogit], lr=3e-3), dict(params=[occlusionLogit], lr=3e-3),
-        dict(params=[L], lr=2e-2), dict(params=[exposure], lr=1e-3)])
-    startLum = float((rgb @ torch.tensor([0.2126, 0.7152, 0.0722], device=device)).mean())
+        dict(params=list(light.values()), lr=2e-2), dict(params=[exposure], lr=1e-3)])
+    startLum = float((to_linear(rgb) @ torch.tensor([0.2126, 0.7152, 0.0722], device=device)).mean())
     sphere = torch.nn.functional.normalize(torch.randn(1024, 3, device=device), dim=-1)
 
     def render(i, albedo, occlusion):
@@ -277,8 +296,32 @@ def main():
     def shade(albedo, occlusion, normal, light):
         return albedo * occlusion * irradiance(normal, light) / math.pi
 
-    def expose(image, i):
-        return image * (1.0 + exposure[i, 0]) + exposure[i, 1]
+    def expose(linear, i):
+        """Linearno sjencanje -> sRGB -> ekspozicija kadra (ekspozicija je iz treninga, u sRGB-u)"""
+        return to_srgb(linear) * (1.0 + exposure[i, 0]) + exposure[i, 1]
+
+    golden = math.pi * (3 - math.sqrt(5))
+    k = torch.arange(48, device=device, dtype=torch.float32)
+    yk = 1 - 2 * (k + 0.5) / 48
+    sphereDirs = torch.stack([torch.sqrt(1 - yk * yk) * torch.cos(golden * k), yk,
+                              torch.sqrt(1 - yk * yk) * torch.sin(golden * k)], -1)
+
+    def sweep(frameList, sun, top, bottom, albedo, occlusion):
+        """PSNR po 48 smjerova sunca uz isti albedo, zasjenjenje, boju sunca i nebo"""
+        errors = torch.zeros(len(sphereDirs), device=device)
+        for i in frameList:
+            pa, dn, po, _ = render(i, albedo, occlusion)
+            truth = pictures[i].float() / 255
+            for j, d in enumerate(sphereDirs):
+                errors[j] += ((expose(shade(pa, po, dn, light_sh(d, sun, top, bottom)), i).clamp(0, 1) - truth) ** 2).mean()
+        return (-10 * torch.log10(errors / len(frameList))).cpu().numpy()
+
+    def psnr_with(frameList, L, albedo, occlusion):
+        error = 0.0
+        for i in frameList:
+            pa, dn, po, _ = render(i, albedo, occlusion)
+            error += float(((expose(shade(pa, po, dn, L), i).clamp(0, 1) - pictures[i].float() / 255) ** 2).mean())
+        return -10 * math.log10(error / len(frameList))
 
     lum = torch.tensor([0.2126, 0.7152, 0.0722], device=device)
     order = torch.randperm(args.steps * 2, generator=torch.Generator().manual_seed(1)) % len(train)
@@ -288,6 +331,7 @@ def main():
         occlusion = torch.sigmoid(occlusionLogit)
         pa, dn, po, alpha = render(i, albedo, occlusion)
         truth = pictures[i].float() / 255
+        L = light_sh(*light_parts())
         shown = expose(shade(pa, po, dn, L), i)
         loss = 0.8 * (shown - truth).abs().mean() + 0.2 * (1 - ssim_fast(shown, truth, windowLine))
 
@@ -307,16 +351,31 @@ def main():
         mean = (a * solid).sum((0, 1)) / weight
         loss = loss + args.grey * ((mean - mean.mean()) ** 2).sum() + args.grey * (mean @ lum - startLum) ** 2
         loss = loss + args.occlusion * (solid * (1 - po / alpha.clamp_min(1e-3))).sum() / weight
-        loss = loss + 10 * torch.relu(-irradiance(sphere, L)).mean()
         loss = loss + 1e-3 * exposure[i].pow(2).sum()
         optimiser.zero_grad(set_to_none=True)
         loss.backward()
         optimiser.step()
         if step % 500 == 0 or step == args.steps - 1:
-            direction, sun, sky = sun_and_sky(L.detach())
+            direction, sun, top, bottom = (v.detach() for v in light_parts())
             elevation = math.degrees(math.asin(float((direction * up).sum().clamp(-1, 1))))
             print(f"  korak {step:5d}: gubitak {float(loss.detach()):.4f}, sunce {sun.cpu().numpy().round(3)} "
-                  f"visina {elevation:+.0f} st, okolina {sky.cpu().numpy().round(3)}", flush=True)
+                  f"visina {elevation:+.0f} st, nebo gore {top.cpu().numpy().round(3)} dolje {bottom.cpu().numpy().round(3)}",
+                  flush=True)
+        #NA POLA: smjer se ne uci samo gradijentom, koji zapne u lokalnom minimumu (na C0257 je sunce
+        #odozdo bilo naucen smjer). Uz dosadasnji albedo se probaju 48 smjerova na 12 kadrova
+        if step == args.steps // 2:
+            with torch.no_grad():
+                albedo, occlusion = torch.sigmoid(albedoLogit), torch.sigmoid(occlusionLogit)
+                direction, sun, top, bottom = light_parts()
+                probe = train[::max(1, len(train) // 12)]
+                scores = sweep(probe, sun, top, bottom, albedo, occlusion)
+                current = psnr_with(probe, light_sh(direction, sun, top, bottom), albedo, occlusion)
+                best = int(scores.argmax())
+                if scores[best] > current + 0.02:
+                    light["dir"].copy_(sphereDirs[best])
+                    print(f"  pretraga smjera: {scores[best]:.3f} dB prema naucenom {current:.3f} - sunce premjesteno")
+                else:
+                    print(f"  pretraga smjera: nauceni {current:.3f} dB, najbolji od 48 {scores[best]:.3f} - ostaje")
 
     # --------------------------------------------------------------------------------------
     # Ocjena na izdvojenim: koliko difuzni model objasni prema izvornom splatu
@@ -324,6 +383,8 @@ def main():
     with torch.no_grad():
         albedo = torch.sigmoid(albedoLogit)
         occlusion = torch.sigmoid(occlusionLogit)
+        direction, sun, top, bottom = light_parts()
+        L = light_sh(direction, sun, top, bottom)
         scores = []
         for i in sorted(held):
             pa, dn, po, _ = render(i, albedo, occlusion)
@@ -342,28 +403,45 @@ def main():
                 row.append(psnr(drawn.clamp(0, 1)))
             scores.append(row)
         scores = np.array(scores)
-        direction, sun, sky = sun_and_sky(L)
+
+        #=================================================================================
+        # KOLIKO JE SMJER ODREDJEN. Albedo, zasjenjenje, boja sunca i nebo ostanu, a sunce se postavi
+        # u 48 smjerova po sferi; PSNR izdvojenih po smjeru kaze razlikuje li snimka smjer uopce. Na
+        # sobi s bijelim stolom "svijetao stol" i "jako osvijetljen stol" izgledaju isto
+        #=================================================================================
+        heldList = sorted(held)
+        spherePsnr = sweep(heldList, sun, top, bottom, albedo, occlusion)
+        learnedPsnr = psnr_with(heldList, L, albedo, occlusion)
+        bestPsnr, worstPsnr = float(spherePsnr.max()), float(spherePsnr.min())
+        close = sphereDirs[torch.from_numpy(spherePsnr >= max(bestPsnr, learnedPsnr) - 0.05).to(device)]
+        spreadAngle = float(torch.rad2deg(torch.acos((close @ direction).clamp(-1, 1))).max()) if len(close) else 0.0
+        print(f"Smjer sunca: naucen {learnedPsnr:.3f} dB, najbolji od 48 {bestPsnr:.3f}, najgori {worstPsnr:.3f} "
+              f"(raspon {bestPsnr - worstPsnr:.3f} dB); jednako dobri smjerovi (0.05 dB) do {spreadAngle:.0f} st od naucenog")
         elevation = math.degrees(math.asin(float((direction * up).sum().clamp(-1, 1))))
         print(f"{len(scores)} izdvojenih ({width}x{height}): difuzni model PSNR {scores[:, 0].mean():.2f} dB, "
               f"izvorni splat {scores[:, 1].mean():.2f} dB, povrsinski splat {scores[:, 2].mean():.2f} dB")
         print(f"Svjetlo: sunce {sun.cpu().numpy().round(3)} iz smjera {direction.cpu().numpy().round(3)} "
-              f"(visina {elevation:+.0f} st), okolina {sky.cpu().numpy().round(3)}")
+              f"(visina {elevation:+.0f} st), nebo gore {top.cpu().numpy().round(3)}, dolje {bottom.cpu().numpy().round(3)}")
 
         # ----------------------------------------------------------------------------------
         # Zapis: svjetlo, albedo splat s normalama, panorama, pregled
         # ----------------------------------------------------------------------------------
         json.dump(dict(
             opis="Procijenjeno difuzno svjetlo scene (tools/splat/relight.py). Sustav svijeta je kamera.usda/"
-                 "images.txt; jedinice kao sjencanje: piksel = albedo * E(n) / pi, E iz SH9.",
+                 "images.txt, linearno svjetlo: piksel = albedo * E(n) / pi. Sunce je irradijancija okomito na "
+                 "njega (Blender: jakost sunca), nebo radijancija koja ide linearno od 'dolje' do 'gore'.",
             sh9=L.cpu().numpy().tolist(),
             sh9_redoslijed="L00, L1-1(y), L10(z), L11(x), L2-2(xy), L2-1(yz), L20(3z^2-1), L21(xz), L22(x^2-y^2)",
             gore=up.cpu().numpy().tolist(),
             sunce_smjer_prema_svjetlu=direction.cpu().numpy().tolist(),
             sunce_boja=sun.cpu().numpy().tolist(),
             sunce_visina_st=elevation,
-            okolina_boja=sky.cpu().numpy().tolist(),
+            nebo_gore=top.cpu().numpy().tolist(),
+            nebo_dolje=bottom.cpu().numpy().tolist(),
+            okolina_boja=(0.5 * (top + bottom)).cpu().numpy().tolist(),
             izdvojeni_psnr=float(scores[:, 0].mean()), izvorni_psnr=float(scores[:, 1].mean()),
             povrsinski_psnr=float(scores[:, 2].mean()),
+            smjer_psnr_raspon_db=bestPsnr - worstPsnr, smjer_nesigurnost_st=spreadAngle,
         ), open(out + ".json", "w"), indent=1)
 
         #Normale gaussiana okrenute prema najblizoj kameri (soba se snima iznutra)
@@ -398,7 +476,7 @@ def main():
                 f.write(("ply\nformat binary_little_endian 1.0\n" + f"element vertex {N}\n" +
                          "".join(f"property float {n}\n" for n in outNames) + "end_header\n").encode())
                 f.write(np.ascontiguousarray(copy, dtype="<f4").tobytes())
-        write(out + "_albedo.ply", ((albedo - 0.5) / C0).cpu().numpy(), np.zeros((N, len(rest)), np.float32))
+        write(out + "_albedo.ply", ((to_srgb(albedo) - 0.5) / C0).cpu().numpy(), np.zeros((N, len(rest)), np.float32))
         if args.surface_steps > 0:
             write(out + "_povrsina.ply", sh[:, 0].cpu().numpy(),
                   sh[:, 1:].transpose(1, 2).reshape(N, -1).cpu().numpy())
@@ -421,11 +499,11 @@ def main():
         turned = direction - (direction @ up) * up
         turned = torch.linalg.cross(up, turned) + (direction @ up) * up
         turned = turned / turned.norm()
-        relit = shade(pa, po, dn, sh_from_sun_and_sky(turned, sun, sky))
+        relit = shade(pa, po, dn, light_sh(turned, sun, top, bottom))
         #Sjencanje je oko 1 i preko, pa bi u slici bilo bijelo: pokaze se prema svom 99. percentilu
         shading = po * irradiance(dn, L) / math.pi
         shading = shading / torch.quantile(shading[alpha[..., 0] > 0.5].flatten()[::97], 0.99).clamp_min(1e-6)
-        tiles = [pictures[i].float() / 255, expose(shade(pa, po, dn, L), i), pa, shading,
+        tiles = [pictures[i].float() / 255, expose(shade(pa, po, dn, L), i), to_srgb(pa), to_srgb(shading),
                  (dn * 0.5 + 0.5) * alpha, expose(relit, i)]
         tiles = [t.clamp(0, 1).expand(height, width, 3) for t in tiles]
         grid = torch.cat([torch.cat(tiles[:3], 1), torch.cat(tiles[3:], 1)], 0)
@@ -435,7 +513,8 @@ def main():
         upisi(dict(vrsta="ocjena", snimka=snimka_modela(model), opis=args.opis, razlucivost=f"{width}x{height}",
                    psnr=round(float(scores[:, 0].mean()), 3), kadrova=len(scores), splat=Path(args.splat).name,
                    izvorni_psnr=round(float(scores[:, 1].mean()), 3),
-                   povrsinski_psnr=round(float(scores[:, 2].mean()), 3), sunce_visina=round(elevation, 1)))
+                   povrsinski_psnr=round(float(scores[:, 2].mean()), 3), sunce_visina=round(elevation, 1),
+                   smjer_raspon_db=round(bestPsnr - worstPsnr, 3), smjer_nesigurnost_st=round(spreadAngle)))
 
 
 if __name__ == "__main__":

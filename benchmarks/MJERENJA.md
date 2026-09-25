@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (305 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (309 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -155,6 +155,10 @@ Iz `benchmarks/mjerenja.jsonl` (305 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 18:46 | C0255 | C0255 ograde + kamere pa tocke | 1920x1080 | 25.78 | 0.908 | 0.430 | 21 |  |  | psnr_medijan=26.71, splat=scena.ply |
 | 2026-09-25 18:46 | C0255 | C0255 ograde + kamere pa tocke | 3840x2160 | 25.70 | 0.893 | 0.154 | 21 |  |  | psnr_medijan=26.64, splat=scena.ply |
 | 2026-09-25 19:02 | C0257 | C0257: prvo rastavljanje (povrsina 3000 + svjetlo 3000) | 960x540 | 24.07 |  |  | 39 |  |  | splat=cist.ply, izvorni_psnr=25.91, povrsinski_psnr=26.10, sunce_visina=-18.70 |
+| 2026-09-25 19:16 | C0257 | C0257: rastavljanje u linearnom svjetlu | 960x540 | 23.59 |  |  | 39 |  |  | splat=cist.ply, izvorni_psnr=25.91, povrsinski_psnr=26.10, sunce_visina=-43.20 |
+| 2026-09-25 19:21 | C0257 | C0257: rastavljanje linearno + sigurnost smjera | 960x540 | 23.58 |  |  | 39 |  |  | splat=cist.ply, izvorni_psnr=25.91, povrsinski_psnr=26.10, sunce_visina=-42.90, smjer_raspon_db=1.069, smjer_nesigurnost_st=173 |
+| 2026-09-25 19:26 | C0257 | C0257: rastavljanje, sunce + nebo gore/dolje | 960x540 | 23.57 |  |  | 39 |  |  | splat=cist.ply, izvorni_psnr=25.91, povrsinski_psnr=26.10, sunce_visina=4.400, smjer_raspon_db=0.137, smjer_nesigurnost_st=164 |
+| 2026-09-25 19:30 | C0255 | C0255: rastavljanje, sunce + nebo gore/dolje | 960x540 | 21.96 |  |  | 21 |  |  | splat=scena.ply, izvorni_psnr=25.79, povrsinski_psnr=26.12, sunce_visina=27.40, smjer_raspon_db=0.124, smjer_nesigurnost_st=169 |
 
 ## usporedba
 

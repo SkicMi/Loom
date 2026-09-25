@@ -152,6 +152,12 @@ def setup_plate(camera, plate):
 def setup_render(clip):
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
+    #Ubuntuov Blender je izgradjen bez OpenImageDenoisea, a Cycles ga zadano trazi - render tada
+    #padne s "Build without OpenImageDenoiser". Bez njega se renderira bez odsumljivanja
+    import _cycles
+    if not getattr(_cycles, "with_openimagedenoise", True):
+        scene.cycles.use_denoising = False
+        scene.cycles.use_preview_denoising = False
     scene.render.film_transparent = True
     scene.render.resolution_x = clip.size[0] if clip else 3840
     scene.render.resolution_y = clip.size[1] if clip else 2160
@@ -217,11 +223,27 @@ def setup_light(path):
     obj.rotation_quaternion = towards.to_track_quat("Z", "Y")   #svjetlo ide po -Z objekta, od sunca
     bpy.context.scene.collection.objects.link(obj)
 
+    #Nebo s gradijentom gore-dolje (relight.py: radijancija linearno od "dolje" do "gore" po smjeru).
+    #Smjer iz Generated koordinata svijeta; Z je Blenderov gore
     world = bpy.data.worlds.new("Loom_okolina")
     world.use_nodes = True
-    background = world.node_tree.nodes["Background"]
-    sky = light["okolina_boja"]
-    background.inputs["Color"].default_value = (*sky, 1.0)
+    nodes, links = world.node_tree.nodes, world.node_tree.links
+    background = nodes["Background"]
+    top = light.get("nebo_gore", light["okolina_boja"])
+    bottom = light.get("nebo_dolje", light["okolina_boja"])
+    coordinates = nodes.new("ShaderNodeTexCoord")
+    separate = nodes.new("ShaderNodeSeparateXYZ")
+    remap = nodes.new("ShaderNodeMapRange")
+    remap.inputs["From Min"].default_value = -1.0
+    remap.inputs["From Max"].default_value = 1.0
+    mix = nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.inputs[6].default_value = (*bottom, 1.0)      #A
+    mix.inputs[7].default_value = (*top, 1.0)         #B
+    links.new(coordinates.outputs["Generated"], separate.inputs["Vector"])
+    links.new(separate.outputs["Z"], remap.inputs["Value"])
+    links.new(remap.outputs["Result"], mix.inputs["Factor"])
+    links.new(mix.outputs[2], background.inputs["Color"])
     background.inputs["Strength"].default_value = 1.0
     bpy.context.scene.world = world
     #Jedinice relight.py: 1.0 je bijelo na snimci, bez tonske krivulje
