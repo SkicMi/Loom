@@ -1054,16 +1054,140 @@ struct MotionPanelStatus{
     std::vector<MotionCharacter> characters;
 };
 
-inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelState& state,
-                                                 const Treadle::Rect& area, const MotionPanelStatus& status){
-    MotionPanelAction action;
+//=============================================================================================
+// IZGLED PANELA: tri razine vaznosti, ne jedna.
+//
+// Prva verzija je sve crtala istom tezinom - zlatni gumb nacina rada, zlatni klizac trajanja,
+// zlatni gumbi pokreta, deset sekcija istog okvira - pa se nije vidjelo sto je glavno, a gumb
+// GENERATE je bio ispod ruba plohe, dostupan tek pomicanjem. Sada:
+//
+//   1  GLAVNO      nacin rada (kartice), pokret, opis, trajanje - i GENERATE u podnozju koje se
+//                  ne pomice, sa stanjem u jednom retku iznad sebe (zasto se ne moze, sto tece)
+//   2  PODESAVANJE putanja, geste, ponasanje, kvaliteta, snimanje uzivo - tihe sekcije sa
+//                  sazetkom desno, zatvorene dok ih se ne otvori
+//   3  OBJASNJENJA sitan sivi tekst koji se prelama, a ne redak koji se reze na rubu
+//=============================================================================================
+
+inline Treadle::Color motionStatusOk(){ return {0.36f, 0.95f, 0.61f, 0.95f}; }
+
+//Sto podnozje kaze i nudi. Tekst stanja je jedan redak - ono sto korisnik treba prije klika
+struct MotionFooterState{
+    std::string status;
+    Treadle::Color dot;
+    std::string button;
+    bool enabled = false;
+    bool fastPathToggle = false;    //putanja prebrza: izbor "ipak dopusti" stoji uz gumb koji blokira
+};
+
+inline float motionFooterHeight(const Treadle::Theme& theme, bool extraRow){
+    const float status = Treadle::textHeight(theme.textScale * 0.78f) + theme.spacing;
+    const float primary = theme.rowHeight * 1.45f + theme.spacing;
+    const float extra = extraRow ? theme.rowHeight + theme.spacing : 0.0f;
+    return theme.padding * 0.8f + status + extra + primary + theme.padding * 0.7f;
+}
+
+inline bool drawMotionFooter(Treadle::Ui& ui, const Treadle::Rect& box, const MotionFooterState& footer,
+                             bool* allowFastPath){
     const Treadle::Theme& theme = ui.style();
+    ui.footer(box);
+    const float room = box.width - 2.0f * theme.padding - 12.0f;
+    ui.status(Treadle::fitText(footer.status, room, theme.textScale * 0.78f), footer.dot);
+    if(footer.fastPathToggle && allowFastPath) ui.checkbox("Allow fast path anyway", allowFastPath);
+    return ui.primaryButton(footer.button, footer.enabled);
+}
+
+inline std::string motionSecondsText(float seconds){
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.1f s", double(seconds));
+    return text;
+}
+
+inline std::string motionRouteSummary(const MotionPanelState& state){
+    if(!state.rootPathEnabled) return "In place";
+    const MotionPathSpeed speed = motionPathSpeed(state.rootWaypoints, state.smoothRootPath);
+    char text[64];
+    std::snprintf(text, sizeof(text), "%zu points  /  %.1f m", state.rootWaypoints.size(), double(speed.distance));
+    return text;
+}
+
+inline std::string motionContactSummary(const MotionPanelState& state){
+    std::string text = state.contactSettingsMode == 0 ? "Auto" : "Manual";
+    text += state.effectiveFootContactIK() ? "  /  foot IK" : "  /  no foot IK";
+    return text;
+}
+
+//Obrazlozenje zasto je nesto blokirano ima prednost pred "spremno": gumb koji ne radi mora
+//odmah reci zasto, na istom mjestu gdje ga se klikne
+inline void motionBlockedStatus(const Treadle::Theme& defaults, MotionFooterState& footer, const MotionPanelStatus& status,
+                                const std::string& problem, bool hasPrompt){
+    if(status.running){
+        footer.status = "Generating  /  " + Loom::humanTime(status.elapsed) +
+                        (status.lastLine.empty() ? std::string() : "  /  " + status.lastLine);
+        footer.dot = defaults.accent;
+    }else if(status.otherJob){
+        footer.status = "Waiting for the solve or training job to finish";
+        footer.dot = defaults.accent;
+    }else if(!status.runnerReady){
+        footer.status = "Kimodo is not installed  /  tools/weavermotion/setup.sh";
+        footer.dot = defaults.warning;
+    }else if(!problem.empty()){
+        footer.status = problem;
+        footer.dot = defaults.warning;
+    }else if(!hasPrompt){
+        footer.status = "Describe the motion to generate it";
+        footer.dot = defaults.dim;
+    }
+}
+
+//Kad je putanja ukljucena, zadnja tocka prati trajanje klipa; tocke izmedju se razmjerno pomaknu
+inline void keepMotionRouteInClip(MotionPanelState& state){
+    if(!state.rootPathEnabled) return;
+    const int lastFrame = kimodoMotionLastFrame(state.actions);
+    if(state.rootPathAutoEnd && lastFrame > 0){
+        if(state.rootWaypoints.empty()) state.rootWaypoints.push_back(MotionRootWaypoint{});
+        if(state.rootWaypoints.front().frame != 0){
+            MotionRootWaypoint origin = motionRootWaypointAt(state.rootWaypoints, 0);
+            origin.frame = 0; origin.x = 0.0f; origin.z = 0.0f;
+            state.rootWaypoints.insert(state.rootWaypoints.begin(), origin);
+        }
+        if(state.rootWaypoints.size() == 1)
+            state.rootWaypoints.push_back(motionDefaultRootEnd(lastFrame, state.firstHeadingAngle, state.defaultPathSpeed));
+        else{
+            // Keep authored points in order when action durations change.
+            while(state.rootWaypoints.size() > size_t(lastFrame + 1))
+                state.rootWaypoints.erase(state.rootWaypoints.end() - 2);
+            const int oldEnd = std::max(1, state.rootWaypoints.back().frame);
+            if(oldEnd != lastFrame){
+                int previousFrame = 0;
+                for(size_t i = 1; i + 1 < state.rootWaypoints.size(); ++i){
+                    const int ideal = int(std::lround(double(state.rootWaypoints[i].frame) *
+                                                      double(lastFrame) / double(oldEnd)));
+                    const int latest = lastFrame - int(state.rootWaypoints.size() - 1 - i);
+                    state.rootWaypoints[i].frame = std::clamp(ideal, previousFrame + 1, latest);
+                    previousFrame = state.rootWaypoints[i].frame;
+                }
+            }
+            if(state.rootPathAutoDistance)
+                state.rootWaypoints.back() = motionDefaultRootEnd(lastFrame, state.firstHeadingAngle, state.defaultPathSpeed);
+            else state.rootWaypoints.back().frame = lastFrame;
+        }
+    }
+    state.rootTrackCursorFrame = std::clamp(state.rootTrackCursorFrame, 0.0f, float(std::max(0, lastFrame)));
+}
+
+//-- DIRECT: putanja i poze --------------------------------------------------------------------
+
+inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelState& state,
+                                                 const Treadle::Rect& area, const MotionPanelStatus& status,
+                                                 MotionFooterState& footer){
+    MotionPanelAction action;
     MotionAction& step = state.directedAction;
+
+    ui.caption("PROMPT");
     Treadle::Ui::TextFieldConfig promptField;
     promptField.lines = 2;
     promptField.maxLength = 600;
     promptField.placeholder = "Walk along the path, then reach toward the camera";
-    ui.label("PATH + POSES");
     ui.textField("directed-motion-prompt", &step.prompt, promptField);
 
     const int oldLastFrame = std::max(1, kimodoMotionLastFrame({step}));
@@ -1079,82 +1203,51 @@ inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelStat
     const int lastFrame = std::max(1, kimodoMotionLastFrame({step}));
     const int playheadFrame = std::clamp(int(std::lround((status.currentFrame - status.timelineStart) *
         kimodoMotionFps / std::max(1.0, status.timelineFps))), 0, lastFrame);
-    ui.value("Playhead", std::to_string(playheadFrame) + " / " + std::to_string(lastFrame) + " frames");
 
-    if(ui.checkbox("Animate root along path", &state.rootPathEnabled) && state.rootPathEnabled && state.rootWaypoints.size() < 2){
-        state.rootWaypoints = {MotionRootWaypoint{},
-            motionDefaultRootEnd(lastFrame, state.firstHeadingAngle, state.defaultPathSpeed)};
-        state.selectedRootWaypoint = 1;
-    }
-    if(state.rootPathEnabled){
-        if(state.rootWaypoints.empty()) state.rootWaypoints.push_back(MotionRootWaypoint{});
-        const std::string pathTitle = "PATH POINTS  /  " + std::to_string(state.rootWaypoints.size());
-        if(ui.componentHeader(pathTitle, theme.accent, &state.directedRouteOpen, false)){
-            ui.label("Drag the amber ROOT handle in the viewport, or edit a point here.");
-            ui.checkbox("Smooth route", &state.smoothRootPath);
-            ui.checkbox("Pin facing at points", &state.constrainRootHeading);
-            if(ui.button("+ Add point at playhead") && state.rootWaypoints.size() < size_t(lastFrame + 1)){
-                MotionRootWaypoint point = motionRootPathAt(state.rootWaypoints, float(playheadFrame), state.smoothRootPath);
-                upsertMotionRootWaypoint(state.rootWaypoints, point, lastFrame);
-                const auto found = std::lower_bound(state.rootWaypoints.begin(), state.rootWaypoints.end(), playheadFrame,
-                    [](const MotionRootWaypoint& key, int f){ return key.frame < f; });
-                state.selectedRootWaypoint = int(found - state.rootWaypoints.begin());
-            }
-            for(size_t i = 0; i < state.rootWaypoints.size(); ++i){
-                const MotionRootWaypoint& point = state.rootWaypoints[i];
-                const std::string name = "Frame " + std::to_string(point.frame) + "   X " +
-                    std::to_string(int(std::lround(point.x * 100.0f))) + " cm   Z " +
-                    std::to_string(int(std::lround(point.z * 100.0f))) + " cm";
-                if(ui.selectable(name, state.selectedRootWaypoint == int(i))) state.selectedRootWaypoint = int(i);
-            }
-            if(state.selectedRootWaypoint >= 0 && size_t(state.selectedRootWaypoint) < state.rootWaypoints.size()){
-                MotionRootWaypoint& point = state.rootWaypoints[size_t(state.selectedRootWaypoint)];
-                if(point.frame == 0) ui.value("Start", "Locked at origin");
-                else{
-                    ui.dragFloat("X (m)", &point.x, 0.01f);
-                    ui.dragFloat("Z (m)", &point.z, 0.01f);
-                    if(state.constrainRootHeading) ui.slider("Facing (rad)", &point.heading, -3.14159f, 3.14159f);
-                    if(ui.button("Delete route point")){
-                        state.rootWaypoints.erase(state.rootWaypoints.begin() + state.selectedRootWaypoint);
-                        state.selectedRootWaypoint = std::max(0, state.selectedRootWaypoint - 1);
-                        state.rootPathAutoEnd = false;
+    //-- poze: ono zbog cega se ovaj nacin bira, pa ide prvo ------------------------------------
+    ui.caption("POSE KEYS   /   PLAYHEAD " + std::to_string(playheadFrame) + " / " + std::to_string(lastFrame));
+    if(!state.poseConstraints.empty()){
+        std::vector<std::string> keyLabels;
+        const size_t shown = std::min<size_t>(state.poseConstraints.size(), 6);
+        for(size_t i = 0; i < shown; ++i) keyLabels.push_back(std::to_string(state.poseConstraints[i].frame));
+        const int clicked = ui.pills(keyLabels, state.selectedPose < int(shown) ? state.selectedPose : -1);
+        if(clicked >= 0){
+            state.selectedPose = clicked;
+            action.jumpPoseFrame = state.poseConstraints[size_t(clicked)].frame;
+        }
+        if(state.poseConstraints.size() > shown){
+            const std::string more = "All " + std::to_string(state.poseConstraints.size()) + " keys";
+            if(ui.disclosure(more, "", &state.poseKeyListOpen)){
+                for(size_t i = 0; i < state.poseConstraints.size(); ++i){
+                    const std::string name = "Pose " + std::to_string(i + 1) + "   Frame " +
+                                             std::to_string(state.poseConstraints[i].frame);
+                    if(ui.selectable(name, state.selectedPose == int(i))){
+                        state.selectedPose = int(i);
+                        action.jumpPoseFrame = state.poseConstraints[i].frame;
                     }
                 }
             }
         }
     }
-
-    if(ui.button(state.poseConstraints.size() < 20 ? "+ Pose at playhead" : "Pose limit reached")){
-        if(state.poseConstraints.size() < 20){
-            const auto found = std::lower_bound(state.poseConstraints.begin(), state.poseConstraints.end(), playheadFrame,
-                [](const MotionPoseConstraint& key, int f){ return key.frame < f; });
-            if(found != state.poseConstraints.end() && found->frame == playheadFrame){
-                state.selectedPose = int(found - state.poseConstraints.begin());
-            }else{
-                MotionPoseConstraint pose;
+    const bool poseLimit = state.poseConstraints.size() >= 20;
+    if(ui.button(poseLimit ? "Pose limit reached (20)" : "+ Pose at playhead") && !poseLimit){
+        const auto found = std::lower_bound(state.poseConstraints.begin(), state.poseConstraints.end(), playheadFrame,
+            [](const MotionPoseConstraint& key, int f){ return key.frame < f; });
+        if(found != state.poseConstraints.end() && found->frame == playheadFrame){
+            state.selectedPose = int(found - state.poseConstraints.begin());
+        }else{
+            MotionPoseConstraint pose;
+            pose.frame = playheadFrame;
+            if(found != state.poseConstraints.begin()){
+                pose = *(found - 1);
                 pose.frame = playheadFrame;
-                if(found != state.poseConstraints.begin()){
-                    pose = *(found - 1);
-                    pose.frame = playheadFrame;
-                }
-                state.selectedPose = int(state.poseConstraints.insert(found, pose) - state.poseConstraints.begin());
             }
-        }
-    }
-    const std::string posesTitle = "POSE KEYS  /  " + std::to_string(state.poseConstraints.size());
-    if(ui.componentHeader(posesTitle, theme.accent, &state.poseKeyListOpen, false)){
-        for(size_t i = 0; i < state.poseConstraints.size(); ++i){
-            const MotionPoseConstraint& pose = state.poseConstraints[i];
-            const std::string name = "Pose " + std::to_string(i + 1) + "   Frame " + std::to_string(pose.frame);
-            if(ui.selectable(name, state.selectedPose == int(i))){
-                state.selectedPose = int(i);
-                action.jumpPoseFrame = pose.frame;
-            }
+            state.selectedPose = int(state.poseConstraints.insert(found, pose) - state.poseConstraints.begin());
         }
     }
     if(state.selectedPose >= 0 && size_t(state.selectedPose) < state.poseConstraints.size()){
         MotionPoseConstraint& pose = state.poseConstraints[size_t(state.selectedPose)];
-        ui.label("EDITING POSE  /  FRAME " + std::to_string(pose.frame));
+        ui.caption("EDITING POSE " + std::to_string(state.selectedPose + 1) + "   /   FRAME " + std::to_string(pose.frame));
         const int operation = ui.buttonRow({"Copy", "Paste", "Delete"});
         if(operation == 0){ state.copiedPose = pose; state.hasCopiedPose = true; }
         if(operation == 1 && state.hasCopiedPose){
@@ -1167,7 +1260,6 @@ inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelStat
             state.selectedPose = state.poseConstraints.empty() ? -1 :
                 std::min(state.selectedPose, int(state.poseConstraints.size()) - 1);
         }else{
-            ui.slider("Body height (m)", &pose.rootHeight, 0.25f, 1.8f);
             const int posePreset = ui.buttonRow({"Neutral", "Arms up", "Reach L", "Reach R"});
             if(posePreset >= 0){
                 pose.rotationDegrees.fill(glm::vec3(0.0f));
@@ -1175,10 +1267,10 @@ inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelStat
                 else if(posePreset == 2) pose.rotationDegrees[11].y = -75.0f;
                 else if(posePreset == 3) pose.rotationDegrees[17].y = 75.0f;
             }
-            ui.label("Cyan = hand/foot IK · orange = elbow/knee bend · amber = path · violet = chest/head.");
-            ui.label("Drag cyan targets to pose; Alt-drag a target to rotate that hand or foot.");
-            ui.label("RIG CONTROLS is the easy pose mode; JOINTS is for precise rotations.");
-            if(ui.componentHeader("JOINT DETAILS", theme.accent, &state.poseJointDetailsOpen, false)){
+            ui.slider("Body height", &pose.rootHeight, 0.25f, 1.8f, " m");
+            ui.hint("Drag cyan hand/foot targets in the viewport; Alt-drag rotates them. Orange sets "
+                    "elbow/knee bend, violet turns chest and head.");
+            if(ui.disclosure("Joint rotations", "", &state.poseJointDetailsOpen)){
                 ui.choice("Bone group", {"Torso", "Arms", "Legs", "Face + Hands"}, &state.boneGroup);
                 static constexpr int groups[4][9] = {
                     {0,1,2,3,4,5,6,-1,-1}, {10,11,12,13,16,17,18,19,-1},
@@ -1191,63 +1283,98 @@ inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelStat
                     "Leg L","Shin L","Foot L","Toe L","Leg R","Shin R","Foot R","Toe R"
                 };
                 const int group = std::clamp(state.boneGroup, 0, 3);
+                const int bone = std::clamp(state.selectedBone, 0, 29);
                 for(int row = 0; row < 3; ++row){
                     std::vector<std::string> names;
                     std::vector<int> indices;
+                    int chosen = -1;
                     for(int column = 0; column < 3; ++column){
                         const int index = groups[group][row * 3 + column];
                         if(index < 0) continue;
+                        if(index == bone) chosen = int(names.size());
                         names.emplace_back(labels[index]);
                         indices.push_back(index);
                     }
                     if(!names.empty()){
-                        const int clicked = ui.buttonRow(names);
+                        const int clicked = ui.pills(names, chosen);
                         if(clicked >= 0 && clicked < int(indices.size())) state.selectedBone = indices[size_t(clicked)];
                     }
                 }
-                const int bone = std::clamp(state.selectedBone, 0, 29);
-                ui.value("Selected", labels[bone]);
-                glm::vec3& angles = pose.rotationDegrees[size_t(bone)];
+                glm::vec3& angles = pose.rotationDegrees[size_t(std::clamp(state.selectedBone, 0, 29))];
                 bool changed = false;
                 changed |= ui.slider("Bend X", &angles.x, -180.0f, 180.0f, " deg");
                 changed |= ui.slider("Turn Y", &angles.y, -180.0f, 180.0f, " deg");
                 changed |= ui.slider("Twist Z", &angles.z, -180.0f, 180.0f, " deg");
                 ui.checkbox("Mirror left / right", &state.mirrorBone);
+                const int selectedBone = std::clamp(state.selectedBone, 0, 29);
                 if(changed && state.mirrorBone){
-                    const int other = motionDirectMirrorBone(bone);
-                    if(other != bone) pose.rotationDegrees[size_t(other)] = glm::vec3(angles.x, -angles.y, -angles.z);
+                    const int other = motionDirectMirrorBone(selectedBone);
+                    if(other != selectedBone) pose.rotationDegrees[size_t(other)] = glm::vec3(angles.x, -angles.y, -angles.z);
                 }
-                if(ui.button("Reset selected joint")){
+                const int reset = ui.buttonRow({"Reset joint", "Reset pose"});
+                if(reset == 0){
                     angles = glm::vec3(0.0f);
                     if(state.mirrorBone){
-                        const int other = motionDirectMirrorBone(bone);
-                        if(other != bone) pose.rotationDegrees[size_t(other)] = glm::vec3(0.0f);
+                        const int other = motionDirectMirrorBone(selectedBone);
+                        if(other != selectedBone) pose.rotationDegrees[size_t(other)] = glm::vec3(0.0f);
                     }
                 }
-                if(ui.button("Reset entire pose")) pose.rotationDegrees.fill(glm::vec3(0.0f));
+                if(reset == 1) pose.rotationDegrees.fill(glm::vec3(0.0f));
             }
         }
-    }else{
-        ui.label("Add a pose key, then drag the on-screen rig controls to shape it.");
+    }else if(state.poseConstraints.empty()){
+        ui.hint("Move the playhead, add a pose, then shape it with the rig controls in the viewport.");
     }
 
-    const std::string poseProblem = motionDirectPoseProblem(state.poseConstraints, lastFrame);
-    if(!poseProblem.empty()) ui.label("Poses: " + poseProblem);
-    const std::string pathSpeedProblem = state.rootPathEnabled
-        ? motionPathSpeedProblem(state.rootWaypoints, state.smoothRootPath, step.prompt) : std::string{};
-    if(state.rootPathEnabled){
-        const MotionPathSpeed speed = motionPathSpeed(state.rootWaypoints, state.smoothRootPath);
-        char speedText[64];
-        std::snprintf(speedText, sizeof(speedText), "%.1f m, peak %.1f m/s", double(speed.distance), double(speed.peakMetersPerSecond));
-        ui.value("Path", speedText);
+    //-- podesavanje ----------------------------------------------------------------------------
+    ui.caption("OPTIONS");
+    if(ui.disclosure("Path", motionRouteSummary(state), &state.directedRouteOpen)){
+        if(ui.checkbox("Move the root along a path", &state.rootPathEnabled) && state.rootPathEnabled &&
+           state.rootWaypoints.size() < 2){
+            state.rootWaypoints = {MotionRootWaypoint{},
+                motionDefaultRootEnd(lastFrame, state.firstHeadingAngle, state.defaultPathSpeed)};
+            state.selectedRootWaypoint = 1;
+        }
+        if(state.rootPathEnabled){
+            if(state.rootWaypoints.empty()) state.rootWaypoints.push_back(MotionRootWaypoint{});
+            ui.hint("Drag the amber ROOT handle in the viewport, or pick a point below.");
+            ui.checkbox("Smooth route", &state.smoothRootPath);
+            ui.checkbox("Pin facing at points", &state.constrainRootHeading);
+            if(ui.button("+ Point at playhead") && state.rootWaypoints.size() < size_t(lastFrame + 1)){
+                MotionRootWaypoint point = motionRootPathAt(state.rootWaypoints, float(playheadFrame), state.smoothRootPath);
+                upsertMotionRootWaypoint(state.rootWaypoints, point, lastFrame);
+                const auto found = std::lower_bound(state.rootWaypoints.begin(), state.rootWaypoints.end(), playheadFrame,
+                    [](const MotionRootWaypoint& key, int f){ return key.frame < f; });
+                state.selectedRootWaypoint = int(found - state.rootWaypoints.begin());
+            }
+            for(size_t i = 0; i < state.rootWaypoints.size(); ++i){
+                const MotionRootWaypoint& point = state.rootWaypoints[i];
+                char name[96];
+                std::snprintf(name, sizeof(name), "Frame %d   X %.2f   Z %.2f m", point.frame,
+                              double(point.x), double(point.z));
+                if(ui.selectable(name, state.selectedRootWaypoint == int(i))) state.selectedRootWaypoint = int(i);
+            }
+            if(state.selectedRootWaypoint >= 0 && size_t(state.selectedRootWaypoint) < state.rootWaypoints.size()){
+                MotionRootWaypoint& point = state.rootWaypoints[size_t(state.selectedRootWaypoint)];
+                if(point.frame == 0) ui.hint("The start point stays at the origin.");
+                else{
+                    ui.dragFloat("X (m)", &point.x, 0.01f);
+                    ui.dragFloat("Z (m)", &point.z, 0.01f);
+                    if(state.constrainRootHeading) ui.slider("Facing (rad)", &point.heading, -3.14159f, 3.14159f);
+                    if(ui.button("Delete point")){
+                        state.rootWaypoints.erase(state.rootWaypoints.begin() + state.selectedRootWaypoint);
+                        state.selectedRootWaypoint = std::max(0, state.selectedRootWaypoint - 1);
+                        state.rootPathAutoEnd = false;
+                    }
+                }
+            }
+        }
     }
-    if(!pathSpeedProblem.empty()){
-        ui.label(pathSpeedProblem);
-        ui.checkbox("Allow fast path anyway", &state.allowFastPath);
-    }
-    if(ui.componentHeader("QUALITY & CONTACT", theme.accent, &state.directedQualityOpen, false)){
+    const std::string qualitySummary = std::to_string(int(std::lround(state.quality))) + " steps  /  " +
+                                       std::to_string(int(std::lround(state.samples))) + " variants";
+    if(ui.disclosure("Quality & contact", qualitySummary, &state.directedQualityOpen)){
         ui.slider("Denoising steps", &state.quality, 100.0f, 300.0f);
-        ui.slider("Samples", &state.samples, 1.0f, 8.0f);
+        ui.slider("Variants", &state.samples, 1.0f, 8.0f);
         const int previousContactMode = state.contactSettingsMode;
         if(ui.choice("Contact rules", {"Automatic", "Manual"}, &state.contactSettingsMode) &&
            previousContactMode == 0 && state.contactSettingsMode == 1){
@@ -1262,17 +1389,398 @@ inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelStat
             ui.value("Kimodo cleanup", state.effectiveKimodoPostprocess() ? "On" : "Off");
         }
     }
-    const bool ready = status.runnerReady && !status.running && !status.otherJob &&
-        !filledActions({step}).empty() && poseProblem.empty() &&
-        (pathSpeedProblem.empty() || state.allowFastPath) &&
-        (!state.rootPathEnabled || motionRootPathProblem(state.rootWaypoints, lastFrame).empty()) &&
-        (state.rootPathEnabled || !state.poseConstraints.empty());
-    if(status.running) ui.value("Kimodo", Loom::humanTime(status.elapsed));
-    if(!status.runnerReady) ui.label("Kimodo setup required · tools/weavermotion/setup.sh");
-    ui.value("Output", "Animation clip on selected character");
-    if(ui.button(ready ? "GENERATE PATH + POSES" : "GENERATION UNAVAILABLE")) action.generate = ready;
+
+    //-- podnozje -------------------------------------------------------------------------------
+    const std::string poseProblem = motionDirectPoseProblem(state.poseConstraints, lastFrame);
+    const std::string pathSpeedProblem = state.rootPathEnabled
+        ? motionPathSpeedProblem(state.rootWaypoints, state.smoothRootPath, step.prompt) : std::string{};
+    const std::string routeProblem = state.rootPathEnabled
+        ? motionRootPathProblem(state.rootWaypoints, lastFrame) : std::string{};
+    std::string problem = !poseProblem.empty() ? poseProblem : routeProblem;
+    if(problem.empty() && !state.rootPathEnabled && state.poseConstraints.empty())
+        problem = "Add a pose key or turn on the path";
+    if(problem.empty() && !pathSpeedProblem.empty() && !state.allowFastPath) problem = pathSpeedProblem;
+    const bool hasPrompt = !filledActions({step}).empty();
+    const bool ready = status.runnerReady && !status.running && !status.otherJob && hasPrompt && problem.empty();
+
+    footer.fastPathToggle = !pathSpeedProblem.empty();
+    footer.button = status.running ? "GENERATING..." : "GENERATE PATH + POSES";
+    footer.enabled = ready;
+    footer.status = std::to_string(state.poseConstraints.size()) + " pose keys  /  " + motionRouteSummary(state) +
+                    "  /  " + motionSecondsText(step.duration);
+    footer.dot = motionStatusOk();
+    motionBlockedStatus(ui.style(), footer, status, problem, hasPrompt);
     (void)area;
     return action;
+}
+
+//-- REVIEW: spremljeni pokreti ----------------------------------------------------------------
+
+inline void drawMotionReview(Treadle::Ui& ui, MotionPanelState& state, const Treadle::Rect& area,
+                             MotionPanelAction& action){
+    const Treadle::Theme& theme = ui.style();
+    ui.caption("SAVED TAKES   /   " + std::to_string(state.history.size()));
+    if(state.history.empty()){
+        ui.hint("Nothing generated yet. Takes from Create and Direct appear here.");
+    }else{
+        ui.hint("Click a take to load it on the character; the numbers are its variants. "
+                "Right-click to reuse its prompt in Create.");
+        //Jedno generiranje daje vise varijanti istog opisa (mapa s _00, _01 ...). Kao zasebni redovi
+        //bile su cetiri jednaka retka jedan ispod drugog; ovdje su jedan opis i brojevi varijanti
+        size_t i = 0;
+        while(i < state.history.size()){
+            const MotionHistoryEntry& first = state.history[i];
+            const std::filesystem::path group = first.bvh.parent_path();
+            const bool grouped = group != state.historyFrom;
+            size_t end = i + 1;
+            while(grouped && end < state.history.size() && state.history[end].bvh.parent_path() == group) ++end;
+            std::vector<const MotionHistoryEntry*> variants;
+            for(size_t k = i; k < end; ++k) variants.push_back(&state.history[k]);
+            std::sort(variants.begin(), variants.end(), [](const MotionHistoryEntry* a, const MotionHistoryEntry* b){
+                return a->bvh.filename() < b->bvh.filename();
+            });
+            std::string title = first.actions.empty() ? first.bvh.stem().string() : first.actions.front().prompt;
+            if(first.actions.size() > 1) title += "  (+" + std::to_string(first.actions.size() - 1) + ")";
+            if(ui.selectable(Treadle::fitText(title, area.width - 40.0f, theme.textScale), false))
+                action.importPath = variants.front()->bvh;
+            if(ui.rightClicked() && !first.actions.empty()){
+                state.actions = first.actions;
+                state.activeAction = 0;
+                state.flowMode = 0;
+                if(state.promptPresetDetection){
+                    const int detected = motionPresetMentionedInPrompt(state.activePrompt());
+                    if(detected >= 0) configureMotionPreset(state, detected, false);
+                }
+                ui.focusTextField("action0");
+            }
+            if(variants.size() > 1){
+                std::vector<std::string> labels;
+                for(size_t k = 0; k < variants.size() && k < 8; ++k) labels.push_back(std::to_string(k + 1));
+                const int clicked = ui.pills(labels, -1);
+                if(clicked >= 0) action.importPath = variants[size_t(clicked)]->bvh;
+            }
+            i = end;
+        }
+    }
+
+    ui.caption("DIAGNOSTICS");
+    if(ui.disclosure("Compare import stages", "", &state.qualityCompareOpen)){
+        if(state.history.empty()) ui.hint("Generate a take to compare.");
+        else{
+            std::vector<std::string> takeNames;
+            takeNames.reserve(state.history.size());
+            for(const MotionHistoryEntry& item : state.history)
+                takeNames.push_back(Treadle::fitText(item.summary, area.width - 66.0f, theme.textScale));
+            state.qualityCompareIndex = std::clamp(state.qualityCompareIndex, 0, int(state.history.size()) - 1);
+            ui.choice("Take", takeNames, &state.qualityCompareIndex);
+            const std::filesystem::path bvh = state.history[size_t(state.qualityCompareIndex)].bvh;
+            ui.hint("Each rig option creates a separate Animator clip, so the stages can be scrubbed side by side.");
+            const int clicked = ui.buttonRow({"Source BVH", "Rig no IK", "Rig with IK"});
+            if(clicked >= 0){
+                action.comparePath = bvh;
+                action.compareMode = clicked == 0 ? MotionCompareMode::SourceSkeleton :
+                    clicked == 1 ? MotionCompareMode::RigNoIk : MotionCompareMode::RigWithIk;
+            }
+            std::filesystem::path npz = bvh;
+            npz.replace_extension(".npz");
+            if(std::filesystem::is_regular_file(npz)){
+                if(ui.button("Copy native NPZ path")) action.copyNativeNpz = npz;
+                ui.hint("Open it in kimodo_demo under Load/Save > Motion.");
+            }
+        }
+    }
+}
+
+//-- CREATE: pokret iz opisa -------------------------------------------------------------------
+
+inline void drawMotionCreate(Treadle::Ui& ui, MotionPanelState& state, const Treadle::Rect& area,
+                             const MotionPanelStatus& status, MotionPanelAction& action,
+                             MotionFooterState& footer){
+    const Treadle::Theme& theme = ui.style();
+    if(state.actions.empty()) state.actions.push_back(MotionAction{"", 3.0f});
+    state.activeAction = std::clamp(state.activeAction, 0, int(state.actions.size()) - 1);
+
+    //-- 1 pokret: odabrani se vidi, ne pise se jos jednom ispod kao "Movement: Walk" --------------
+    ui.caption("MOVEMENT");
+    for(int row = 0; row < 2; ++row){
+        const int first = row * 3;
+        const int selected = state.locomotionPreset >= first && state.locomotionPreset < first + 3
+                           ? state.locomotionPreset - first : -1;
+        const int clicked = ui.pills({motionPresetInfo[first].label, motionPresetInfo[first + 1].label,
+                                      motionPresetInfo[first + 2].label}, selected);
+        if(clicked >= 0){
+            configureMotionPreset(state, first + clicked, true);
+            ui.focusTextField("action" + std::to_string(state.activeAction));
+        }
+    }
+
+    //-- 2 opis i trajanje ------------------------------------------------------------------------
+    const bool multiStep = state.actions.size() > 1;
+    ui.caption(multiStep ? "PROMPT   /   STEP " + std::to_string(state.activeAction + 1) + " OF " +
+                           std::to_string(state.actions.size()) : "PROMPT");
+    if(multiStep){
+        std::vector<std::string> stepLabels;
+        for(size_t i = 0; i < state.actions.size(); ++i) stepLabels.push_back(std::to_string(i + 1));
+        const int clicked = ui.pills(stepLabels, state.activeAction);
+        if(clicked >= 0) state.activeAction = clicked;
+    }
+    MotionAction& activeAction = state.actions[size_t(state.activeAction)];
+    Treadle::Ui::TextFieldConfig field;
+    field.lines = 3;
+    field.maxLength = 600;
+    field.placeholder = "A person walks forward with a relaxed arm swing";
+    const Treadle::Ui::TextFieldResult promptResult = ui.textField(
+        "action" + std::to_string(state.activeAction), &activeAction.prompt, field);
+    if(state.promptPresetDetection && promptResult.changed){
+        const int detected = motionPresetMentionedInPrompt(activeAction.prompt);
+        if(detected >= 0 && detected != state.locomotionPreset) configureMotionPreset(state, detected, false);
+    }
+    if(promptResult.submitted) action.generate = true;
+    ui.slider("Duration", &activeAction.duration, 1.0f, 10.0f, " s");
+
+    //Koraci: dodavanje je cesto, preslagivanje rijetko - pa preslagivanje postoji tek kad ima sto
+    int stepAction = -1;
+    const bool canAdd = state.actions.size() < 6;
+    if(multiStep) stepAction = ui.buttonRow(canAdd ? std::vector<std::string>{"+ Step", "Earlier", "Later", "Remove"}
+                                                   : std::vector<std::string>{"Earlier", "Later", "Remove"});
+    else stepAction = ui.buttonRow({"+ Add a step after this"});
+    if(canAdd && stepAction == 0){
+        state.actions.push_back(MotionAction{"", 3.0f});
+        state.activeAction = int(state.actions.size()) - 1;
+        ui.focusTextField("action" + std::to_string(state.activeAction));
+    }else if(multiStep && stepAction >= 0){
+        const int op = stepAction - (canAdd ? 1 : 0);
+        if(op == 0 && state.activeAction > 0){
+            std::swap(state.actions[size_t(state.activeAction)], state.actions[size_t(state.activeAction - 1)]);
+            --state.activeAction;
+        }else if(op == 1 && state.activeAction + 1 < int(state.actions.size())){
+            std::swap(state.actions[size_t(state.activeAction)], state.actions[size_t(state.activeAction + 1)]);
+            ++state.activeAction;
+        }else if(op == 2){
+            state.actions.erase(state.actions.begin() + state.activeAction);
+            state.activeAction = std::clamp(state.activeAction, 0, int(state.actions.size()) - 1);
+        }
+    }
+    keepMotionRouteInClip(state);
+
+    //-- 3 podesavanje: zatvoreno, sa sazetkom da se ne mora otvarati da bi se znalo ------------
+    const MotionPresetInfo& activePreset = motionPresetSettings(state.locomotionPreset);
+    ui.caption("OPTIONS");
+    const int lastFrame = kimodoMotionLastFrame(state.actions);
+    if(ui.disclosure("Path", motionRouteSummary(state), &state.recipeRouteOpen)){
+        if(ui.checkbox("Travel along a route", &state.rootPathEnabled) && state.rootPathEnabled){
+            state.rootPathAutoEnd = true;
+            state.rootPathAutoDistance = true;
+            if(state.rootWaypoints.size() < 2){
+                state.rootWaypoints = {MotionRootWaypoint{},
+                    motionDefaultRootEnd(std::max(1, lastFrame), state.firstHeadingAngle, state.defaultPathSpeed)};
+                state.selectedRootWaypoint = 1;
+            }
+            keepMotionRouteInClip(state);
+        }
+        if(state.rootPathEnabled){
+            ui.hint("Shift-click in the viewport adds a point; drag points to shape the route.");
+            ui.checkbox("Smooth path through points", &state.smoothRootPath);
+            if(ui.checkbox("Pin heading at points", &state.constrainRootHeading)){
+                if(state.constrainRootHeading && !state.rootWaypoints.empty() && state.rootWaypoints.front().frame == 0)
+                    state.rootWaypoints.front().heading = state.firstHeadingAngle;
+            }
+            const int keyAction = ui.buttonRow({"+ Point after selected", "Delete"});
+            if(keyAction == 0){
+                const int atFrame = motionRootInsertionFrame(state.rootWaypoints, state.selectedRootWaypoint);
+                if(atFrame >= 0){
+                    MotionRootWaypoint key = motionRootPathAt(state.rootWaypoints, float(atFrame), state.smoothRootPath);
+                    upsertMotionRootWaypoint(state.rootWaypoints, key, lastFrame);
+                    const auto found = std::lower_bound(state.rootWaypoints.begin(), state.rootWaypoints.end(), atFrame,
+                        [](const MotionRootWaypoint& item, int f){ return item.frame < f; });
+                    state.selectedRootWaypoint = int(found - state.rootWaypoints.begin());
+                    state.rootTrackCursorFrame = float(atFrame);
+                }
+            }else if(keyAction == 1 && state.selectedRootWaypoint >= 0 &&
+                     size_t(state.selectedRootWaypoint) < state.rootWaypoints.size() &&
+                     state.rootWaypoints[size_t(state.selectedRootWaypoint)].frame != 0){
+                if(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1)
+                    state.rootPathAutoEnd = false;
+                state.rootWaypoints.erase(state.rootWaypoints.begin() + state.selectedRootWaypoint);
+                state.selectedRootWaypoint = std::clamp(state.selectedRootWaypoint, 0, int(state.rootWaypoints.size()) - 1);
+            }
+            for(size_t i = 0; i < state.rootWaypoints.size(); ++i){
+                const MotionRootWaypoint& key = state.rootWaypoints[i];
+                char label[112];
+                std::snprintf(label, sizeof(label), "%zu   %.2f s   X %.2f  Z %.2f%s", i + 1,
+                              double(key.frame) / kimodoMotionFps, double(key.x), double(key.z),
+                              key.frame == 0 ? "  start" : "");
+                if(ui.selectable(label, int(i) == state.selectedRootWaypoint)){
+                    state.selectedRootWaypoint = int(i);
+                    state.rootTrackCursorFrame = float(key.frame);
+                }
+            }
+            if(state.selectedRootWaypoint >= 0 && size_t(state.selectedRootWaypoint) < state.rootWaypoints.size()){
+                MotionRootWaypoint& key = state.rootWaypoints[size_t(state.selectedRootWaypoint)];
+                if(key.frame != 0){
+                    if(!(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1)){
+                        float seconds = float(key.frame) / kimodoMotionFps;
+                        if(ui.dragFloat("Time (s)", &seconds, 0.01f)){
+                            moveMotionRootWaypoint(state.rootWaypoints, size_t(state.selectedRootWaypoint),
+                                                   int(std::lround(seconds * kimodoMotionFps)), lastFrame);
+                            state.rootTrackCursorFrame = float(key.frame);
+                        }
+                    }
+                    float position[3]{key.x, 0.0f, key.z};
+                    if(ui.dragVector("Position X / Z (m)", position, 0.002f)){
+                        key.x = position[0];
+                        key.z = position[2];
+                        if(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1)
+                            state.rootPathAutoDistance = false;
+                    }
+                }
+                if(state.constrainRootHeading){
+                    float degrees = key.heading * (180.0f / 3.14159265359f);
+                    if(ui.dragFloat("Facing (deg)", &degrees, 0.2f))
+                        key.heading = std::clamp(degrees, -180.0f, 180.0f) * (3.14159265359f / 180.0f);
+                }
+            }
+        }
+    }
+
+    constexpr int presetCount = int(sizeof(motionPresets) / sizeof(motionPresets[0]));
+    if(ui.disclosure("Gestures", "append to prompt", &state.gesturesOpen)){
+        for(int row = 0; row < (presetCount + 3) / 4; ++row){
+            std::vector<std::string> labels;
+            for(int k = 0; k < 4 && row * 4 + k < presetCount; ++k)
+                labels.push_back(motionPresets[row * 4 + k].label);
+            const int clicked = ui.chipRow(labels, theme.accent);
+            if(clicked >= 0){
+                MotionAction& target = state.actions[size_t(state.activeAction)];
+                const std::string text = motionPresets[row * 4 + clicked].prompt;
+                std::string lowerText = text;
+                std::transform(lowerText.begin(), lowerText.end(), lowerText.begin(),
+                               [](unsigned char c){ return char(std::tolower(c)); });
+                const std::string subject = "a person ";
+                const std::string tail = lowerText.rfind(subject, 0) == 0 ? text.substr(subject.size()) : text;
+                target.prompt = target.prompt.empty() ? text : target.prompt + ", then " + tail;
+                if(state.promptPresetDetection){
+                    const int detected = motionPresetMentionedInPrompt(target.prompt);
+                    if(detected >= 0 && detected != state.locomotionPreset) configureMotionPreset(state, detected, false);
+                }
+                ui.focusTextField("action" + std::to_string(state.activeAction));
+            }
+        }
+    }
+
+    if(ui.disclosure("Contacts & blending", motionContactSummary(state), &state.recipeOptionsOpen)){
+        if(filledActions(state.actions).size() > 1)
+            ui.slider("Blend between steps", &state.transitionFrames, 0.0f, 30.0f, " fr");
+        ui.checkbox("Pick movement from prompt words", &state.promptPresetDetection);
+        const int previousContactMode = state.contactSettingsMode;
+        if(ui.choice("Contact rules", {"Automatic", "Manual"}, &state.contactSettingsMode) &&
+           previousContactMode == 0 && state.contactSettingsMode != 0){
+            state.footContactIK = state.automaticFootContactIK();
+            state.kimodoPostprocess = state.automaticKimodoPostprocess();
+        }
+        if(state.contactSettingsMode == 0){
+            ui.value("Foot-contact IK", state.effectiveFootContactIK() ? "On" : "Off");
+            ui.value("Kimodo cleanup", state.effectiveKimodoPostprocess() ? "On" : "Off");
+            ui.hint("Why: " + state.automaticContactReason() + ".");
+        }else{
+            ui.checkbox("Rig foot-contact IK", &state.footContactIK);
+            ui.checkbox("Kimodo postprocess", &state.kimodoPostprocess);
+        }
+    }
+
+    const std::string qualitySummary = std::to_string(int(std::lround(state.quality))) + " steps  /  " +
+                                       std::to_string(int(std::lround(state.samples))) + " variants";
+    if(ui.disclosure("Quality", qualitySummary, &state.advancedExpanded)){
+        ui.slider("Variants to compare", &state.samples, 1.0f, 8.0f);
+        ui.slider("Denoising steps", &state.quality, 100.0f, 300.0f);
+        ui.checkbox("Same seed = same motion", &state.fixedSeed);
+        if(state.fixedSeed) ui.dragFloat("Seed", &state.seed, 0.2f);
+        if(ui.button("Restore best-quality defaults")){
+            state.modelIndex = 0;
+            state.quality = 200.0f;
+            state.samples = 4.0f;
+            state.transitionFrames = 5.0f;
+            state.cfgIndex = 3;
+            state.textGuidance = 2.0f;
+            state.constraintGuidance = 2.0f;
+            state.kimodoPostprocess = true;
+        }
+        ui.caption("EXPERT");
+        ui.choice("Model", kimodoModels(), &state.modelIndex);
+        const std::string& model = kimodoModels()[size_t(std::clamp(state.modelIndex, 0, int(kimodoModels().size()) - 1))];
+        if(model.find("G1") != std::string::npos || model.find("SMPLX") != std::string::npos)
+            ui.hint("This model writes native NPZ, not SOMA BVH - the Animator cannot preview it yet.");
+        ui.choice("Guidance", {"Default", "None", "Regular", "Text + path"}, &state.cfgIndex);
+        if(state.cfgIndex == 2 || state.cfgIndex == 3) ui.slider("Text guidance", &state.textGuidance, 0.0f, 10.0f);
+        if(state.cfgIndex == 3) ui.slider("Constraint guidance", &state.constraintGuidance, 0.0f, 10.0f);
+        if(ui.slider("Initial heading", &state.firstHeadingAngle, -3.14159f, 3.14159f, " rad")){
+            if(state.rootPathEnabled && state.constrainRootHeading && !state.rootWaypoints.empty() &&
+               state.rootWaypoints.front().frame == 0) state.rootWaypoints.front().heading = state.firstHeadingAngle;
+        }
+        ui.slider("Root correction margin", &state.rootMargin, 0.0f, 0.25f, " m");
+        Treadle::Ui::TextFieldConfig pathField;
+        pathField.lines = 1;
+        pathField.maxLength = 1024;
+        pathField.placeholder = "External constraints.json (optional)";
+        ui.textField("kimodo-constraints", &state.constraintsPath, pathField);
+        ui.checkbox("Save reusable Kimodo example", &state.saveExample);
+    }
+
+    if(activePreset.realtime || status.liveRecording){
+        if(status.liveRecording) state.liveToolsOpen = true;
+        const std::string liveSummary = status.liveRecording ? "recording" :
+            status.motionBricksReady ? motionBricksStyles()[size_t(std::clamp(state.motionBricksStyle, 0,
+                int(motionBricksStyles().size()) - 1))] : "setup required";
+        if(ui.disclosure("Live recording", liveSummary, &state.liveToolsOpen)){
+            if(!status.motionBricksReady){
+                ui.hint("Install MotionBricks once: tools/motionbricks/setup.sh");
+            }else if(status.liveRecording){
+                ui.value("Session", status.liveStopping ? "Saving..." : status.liveReady ? "Recording" : "Loading...");
+                ui.value("Recorded frames", std::to_string(status.liveFrames));
+                if(!status.liveMessage.empty()) ui.hint(status.liveMessage);
+            }else{
+                ui.choice("Style", motionBricksStyles(), &state.motionBricksStyle);
+                ui.hint("Streams MotionBricks onto the rig along the route; stopping keeps the whole take.");
+                const bool idle = !status.running && !status.otherJob;
+                const int live = ui.buttonRow({"Start live + record", "Render clip"});
+                if(live == 0 && idle) action.startLiveRecording = true;
+                if(live == 1 && idle) action.generateMotionBricks = true;
+                if(status.motionBricksRunning) ui.hint("MotionBricks is rendering a clip...");
+            }
+        }
+    }
+
+    //-- podnozje -------------------------------------------------------------------------------
+    const std::string rootProblem = state.rootPathEnabled ? motionRootPathProblem(state.rootWaypoints, lastFrame) : std::string{};
+    const bool constraintConflict = state.rootPathEnabled && !state.constraintsPath.empty();
+    const std::string pathSpeedProblem = state.rootPathEnabled
+        ? motionPathSpeedProblem(state.rootWaypoints, state.smoothRootPath,
+            state.actions.empty() ? std::string{} : state.actions.front().prompt) : std::string{};
+    std::string problem = !rootProblem.empty() ? "Path: " + rootProblem
+                        : constraintConflict ? "Clear the external constraints.json or turn off the path"
+                        : std::string{};
+    if(problem.empty() && !pathSpeedProblem.empty() && !state.allowFastPath) problem = pathSpeedProblem;
+    const std::vector<MotionAction> generatedActions = filledActions(state.actions);
+    const bool hasPrompt = !generatedActions.empty();
+    const bool ready = status.runnerReady && !status.running && !status.otherJob && hasPrompt && problem.empty();
+    if(!ready) action.generate = false;
+
+    float total = 0.0f;
+    for(const MotionAction& step : generatedActions) total += step.duration;
+    footer.fastPathToggle = !pathSpeedProblem.empty();
+    footer.enabled = ready;
+    footer.button = status.running ? "GENERATING..." : "GENERATE";
+    footer.status = std::string(activePreset.label) + "  /  " + motionRouteSummary(state) + "  /  " +
+                    motionSecondsText(total) + (generatedActions.size() > 1
+                        ? " in " + std::to_string(generatedActions.size()) + " steps" : std::string());
+    footer.dot = motionStatusOk();
+    motionBlockedStatus(ui.style(), footer, status, problem, hasPrompt);
+    if(status.liveRecording){
+        footer.status = "Recording live  /  " + std::to_string(status.liveFrames) + " frames";
+        footer.dot = theme.warning;
+        footer.button = status.liveStopping ? "SAVING..." : "STOP & KEEP ANIMATION";
+        footer.enabled = !status.liveStopping;
+    }
 }
 
 inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& state, const Treadle::Rect& area,
@@ -1288,7 +1796,15 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
         state.historyRead = now;
     }
 
-    ui.dock("ANIMATOR", area, &scroll);
+    //Review nema glavnu radnju, pa ni podnozje: aplikacija ispod njega dopisuje svoje sekcije
+    //(obrada pokreta) u istu plohu
+    const bool hasFooter = state.flowMode != 2;
+    const bool extraRow = hasFooter && state.rootPathEnabled && !state.rootWaypoints.empty() &&
+        !motionPathSpeedProblem(state.rootWaypoints, state.smoothRootPath, state.activePrompt()).empty();
+    const float footerHeight = hasFooter ? motionFooterHeight(theme, extraRow) : 0.0f;
+    const Treadle::Rect body{area.x, area.y, area.width, area.height - footerHeight};
+    ui.dock("ANIMATOR", body, &scroll);
+
     const Treadle::Rect closeButton{area.x + area.width - 65.0f, area.y + 4.0f, 25.0f, 25.0f};
     const auto closeHit = ui.region("motion-window-close", closeButton);
     ui.canvas().rect(closeButton, closeHit.hot ? theme.hot : theme.control);
@@ -1301,8 +1817,10 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
     ui.canvas().outline(helpButton, 1.0f, state.helpOpen ? theme.accent : theme.panelEdge);
     ui.canvas().text(helpButton.x + 8.0f, helpButton.y + 3.0f, "?", theme.title, theme.textScale * 0.78f);
     if(helpHit.pressed) state.helpOpen = !state.helpOpen;
+
+    //-- lik: jedan je gotovo uvijek, pa popis postoji tek kad ima izbora -------------------------
     if(status.characters.empty()){
-        ui.label("Select or import a rigged character to preview the result.");
+        ui.status("No rigged character in the scene - import one to preview motion.", theme.warning);
     }else{
         bool selectedExists = false;
         for(const MotionCharacter& character : status.characters)
@@ -1311,19 +1829,19 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
         const MotionCharacter* selectedCharacter = &status.characters.front();
         for(const MotionCharacter& character : status.characters)
             if(character.id == state.targetCharacter){ selectedCharacter = &character; break; }
-        const std::string targetTitle = "CHARACTER  /  " + selectedCharacter->name;
-        if(ui.componentHeader(targetTitle, theme.accent, &state.targetListOpen, true)){
+        if(status.characters.size() == 1) ui.value("Character", selectedCharacter->name);
+        else if(ui.disclosure("Character", selectedCharacter->name, &state.targetListOpen)){
             for(const MotionCharacter& character : status.characters){
-                const std::string label = character.name + "  ·  " + character.path;
+                const std::string label = character.name + "   /   " + character.path;
                 if(ui.selectable(Treadle::fitText(label, area.width - 36.0f, theme.textScale),
                                  state.targetCharacter == character.id)) state.targetCharacter = character.id;
             }
         }
     }
 
+    //-- nacin rada -------------------------------------------------------------------------------
     const int previousFlow = state.flowMode;
-    if(ui.choice("WORKFLOW", {"Create", "Direct", "Review"}, &state.flowMode) &&
-       state.flowMode != previousFlow){
+    if(ui.tabs({"Create", "Direct", "Review"}, &state.flowMode) && state.flowMode != previousFlow){
         auto savePath = [&](MotionPathDraft& draft){
             draft.enabled = state.rootPathEnabled;
             draft.autoEnd = state.rootPathAutoEnd;
@@ -1357,452 +1875,51 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
             savePath(state.directedPath);
             loadPath(state.recipePath);
         }
-        if(state.flowMode == 2){
-            state.qualityCompareOpen = true;
-            state.historyOpen = true;
-        }
     }
-    if(state.flowMode == 2 &&
-       ui.componentHeader("QUALITY COMPARE", theme.accent, &state.qualityCompareOpen, false)){
-        ui.label("Compare one saved take through each import stage.");
-        if(state.history.empty()) ui.label("Generate a take to compare.");
-        else{
-            std::vector<std::string> takeNames;
-            takeNames.reserve(state.history.size());
-            for(const MotionHistoryEntry& item : state.history)
-                takeNames.push_back(Treadle::fitText(item.summary, area.width - 66.0f, theme.textScale));
-            state.qualityCompareIndex = std::clamp(state.qualityCompareIndex, 0, int(state.history.size()) - 1);
-            ui.choice("Saved take", takeNames, &state.qualityCompareIndex);
-            const std::filesystem::path bvh = state.history[size_t(state.qualityCompareIndex)].bvh;
-            std::filesystem::path npz = bvh;
-            npz.replace_extension(".npz");
-            if(std::filesystem::is_regular_file(npz)){
-                ui.label("Run kimodo_demo, then load NPZ in Load/Save > Motion.");
-                if(ui.button("Copy native NPZ path")) action.copyNativeNpz = npz;
-            }else ui.label("Native NPZ unavailable for this BVH.");
-            const int clicked = ui.buttonRow({"Source BVH", "Rig no IK", "Rig with IK"});
-            if(clicked >= 0){
-                action.comparePath = bvh;
-                action.compareMode = clicked == 0 ? MotionCompareMode::SourceSkeleton :
-                    clicked == 1 ? MotionCompareMode::RigNoIk : MotionCompareMode::RigWithIk;
-            }
-            ui.label("Each rig option creates a separate Animator clip.");
-        }
+
+    MotionFooterState footer;
+    if(state.flowMode == 2){
+        drawMotionReview(ui, state, area, action);
+        return action;
     }
     if(state.flowMode == 1){
-        MotionPanelAction directed = drawMotionDirectedFlow(ui, state, area, status);
+        MotionPanelAction directed = drawMotionDirectedFlow(ui, state, area, status, footer);
         directed.compareMode = action.compareMode;
         directed.comparePath = action.comparePath;
         directed.copyNativeNpz = action.copyNativeNpz;
-        return directed;
-    }
-    if(state.flowMode == 2){
-        ui.label("REVIEW SAVED TAKES");
-        ui.label("Select a take below to load it on the target rig. Use Quality Compare to inspect each retargeting stage.");
-        if(ui.componentHeader("RECENT TAKES  /  " + std::to_string(state.history.size()),
-                              theme.accent, &state.historyOpen, false)){
-            if(state.history.empty()) ui.label("Create a motion first. Saved takes will appear here.");
-            for(const MotionHistoryEntry& item : state.history){
-                if(ui.selectable(Treadle::fitText(item.summary, area.width - 40.0f, theme.textScale), false))
-                    action.importPath = item.bvh;
-            }
-        }
-        return action;
+        directed.close = action.close;
+        action = directed;
+    }else{
+        drawMotionCreate(ui, state, area, status, action, footer);
     }
 
-    if(state.actions.empty()) state.actions.push_back(MotionAction{"", 3.0f});
-    state.activeAction = std::clamp(state.activeAction, 0, int(state.actions.size()) - 1);
-    ui.label("START WITH A MOVEMENT");
-    for(int row = 0; row < 2; ++row){
-        const int first = row * 3;
-        const int clicked = ui.buttonRow({motionPresetInfo[first].label,
-                                          motionPresetInfo[first + 1].label,
-                                          motionPresetInfo[first + 2].label});
-        if(clicked >= 0){
-            configureMotionPreset(state, first + clicked, true);
-            if(motionPresetSettings(first + clicked).realtime) state.liveToolsOpen = true;
-            ui.focusTextField("action" + std::to_string(state.activeAction));
-        }
+    const Treadle::Rect footerBox{area.x, area.y + area.height - footerHeight, area.width, footerHeight};
+    if(drawMotionFooter(ui, footerBox, footer, &state.allowFastPath)){
+        if(status.liveRecording) action.stopLiveRecording = true;
+        else if(footer.enabled) action.generate = true;
     }
-    if(!status.runnerReady) ui.label("Kimodo setup required · tools/weavermotion/setup.sh");
-
-    if(state.actions.size() > 1){
-        std::vector<std::string> stepLabels;
-        for(size_t i = 0; i < state.actions.size(); ++i) stepLabels.push_back("STEP " + std::to_string(i + 1));
-        const int selected = ui.buttonRow(stepLabels);
-        if(selected >= 0) state.activeAction = selected;
-    }
-    MotionAction& activeAction = state.actions[size_t(state.activeAction)];
-    ui.label(state.actions.size() > 1 ? "STEP " + std::to_string(state.activeAction + 1) + " OF " +
-             std::to_string(state.actions.size()) : "MOTION PROMPT");
-    Treadle::Ui::TextFieldConfig field;
-    field.lines = 3;
-    field.maxLength = 600;
-    field.placeholder = "A person walks forward with a relaxed arm swing";
-    const Treadle::Ui::TextFieldResult promptResult = ui.textField(
-        "action" + std::to_string(state.activeAction), &activeAction.prompt, field);
-    if(state.promptPresetDetection && promptResult.changed){
-        const int detected = motionPresetMentionedInPrompt(activeAction.prompt);
-        if(detected >= 0 && detected != state.locomotionPreset) configureMotionPreset(state, detected, false);
-    }
-    if(promptResult.submitted) action.generate = true;
-    ui.slider("Duration", &activeAction.duration, 1.0f, 10.0f, " s");
-    int stepAction = -1;
-    if(state.actions.size() < 6 && state.actions.size() > 1)
-        stepAction = ui.buttonRow({"+ Add step", "Move up", "Move down", "Remove"});
-    else if(state.actions.size() < 6)
-        stepAction = ui.buttonRow({"+ Add next step"});
-    else
-        stepAction = ui.buttonRow({"Move up", "Move down", "Remove"});
-    if(state.actions.size() < 6 && stepAction == 0){
-        state.actions.push_back(MotionAction{"", 3.0f});
-        state.activeAction = int(state.actions.size()) - 1;
-        ui.focusTextField("action" + std::to_string(state.activeAction));
-    }else if(state.actions.size() > 1){
-        const bool hasAdd = state.actions.size() < 6;
-        if(stepAction == (hasAdd ? 1 : 0) && state.activeAction > 0){
-            std::swap(state.actions[size_t(state.activeAction)], state.actions[size_t(state.activeAction - 1)]);
-            --state.activeAction;
-        }else if(stepAction == (hasAdd ? 2 : 1) && state.activeAction + 1 < int(state.actions.size())){
-            std::swap(state.actions[size_t(state.activeAction)], state.actions[size_t(state.activeAction + 1)]);
-            ++state.activeAction;
-        }else if(stepAction == (hasAdd ? 3 : 2)){
-            state.actions.erase(state.actions.begin() + state.activeAction);
-            state.activeAction = std::clamp(state.activeAction, 0, int(state.actions.size()) - 1);
-        }
-    }
-    const MotionPresetInfo& activePreset = motionPresetSettings(state.locomotionPreset);
-    ui.value("Movement", activePreset.label);
-
-    constexpr int presetCount = int(sizeof(motionPresets) / sizeof(motionPresets[0]));
-    if(ui.componentHeader("ADD A GESTURE", theme.accent, &state.gesturesOpen, false)){
-        for(int row = 0; row < (presetCount + 3) / 4; ++row){
-            std::vector<std::string> labels;
-            for(int k = 0; k < 4 && row * 4 + k < presetCount; ++k)
-                labels.push_back(motionPresets[row * 4 + k].label);
-            const int clicked = ui.buttonRow(labels);
-            if(clicked >= 0){
-                MotionAction& target = state.actions[size_t(std::clamp(state.activeAction, 0, int(state.actions.size()) - 1))];
-                const std::string text = motionPresets[row * 4 + clicked].prompt;
-                std::string lowerText = text;
-                std::transform(lowerText.begin(), lowerText.end(), lowerText.begin(),
-                               [](unsigned char c){ return char(std::tolower(c)); });
-                const std::string subject = "a person ";
-                const std::string tail = lowerText.rfind(subject, 0) == 0 ? text.substr(subject.size()) : text;
-                target.prompt = target.prompt.empty() ? text : target.prompt + ", then " + tail;
-                if(state.promptPresetDetection){
-                    const int detected = motionPresetMentionedInPrompt(target.prompt);
-                    if(detected >= 0 && detected != state.locomotionPreset) configureMotionPreset(state, detected, false);
-                }
-                ui.focusTextField("action" + std::to_string(state.activeAction));
-            }
-        }
-    }
-    if(ui.componentHeader("MOTION BEHAVIOR", theme.accent, &state.recipeOptionsOpen, false)){
-        ui.value("Generator", activePreset.realtime ?
-            (status.motionBricksReady ? "MotionBricks realtime" : "MotionBricks G1 · setup required") : "Kimodo text generation");
-        ui.value("Travel", state.rootPathEnabled ? "Follow route" : "In place");
-        if(filledActions(state.actions).size() > 1)
-            ui.slider("Blend between steps", &state.transitionFrames, 0.0f, 30.0f, " frames");
-        if(activePreset.realtime) ui.choice("Live style", motionBricksStyles(), &state.motionBricksStyle);
-        ui.checkbox("Detect movement from prompt", &state.promptPresetDetection);
-        const int previousContactMode = state.contactSettingsMode;
-        if(ui.choice("Contact rules", {"Automatic", "Manual"}, &state.contactSettingsMode) &&
-           previousContactMode == 0 && state.contactSettingsMode != 0){
-            state.footContactIK = state.automaticFootContactIK();
-            state.kimodoPostprocess = state.automaticKimodoPostprocess();
-        }
-        if(state.contactSettingsMode == 0){
-            ui.value("Foot-contact IK", state.effectiveFootContactIK() ? "On" : "Off");
-            ui.value("Kimodo cleanup", state.effectiveKimodoPostprocess() ? "On" : "Off");
-            ui.value("Automatic rule", state.automaticContactReason());
-        }else{
-            ui.checkbox("Rig foot-contact IK", &state.footContactIK);
-            ui.checkbox("Kimodo postprocess", &state.kimodoPostprocess);
-        }
-    }
-
-    if(ui.checkbox("Animate along a path", &state.rootPathEnabled) && state.rootPathEnabled){
-        state.rootPathAutoEnd = true;
-        state.rootPathAutoDistance = true;
-        const int last = std::max(1, kimodoMotionLastFrame(state.actions));
-        if(state.rootWaypoints.size() < 2){
-            state.rootWaypoints = {MotionRootWaypoint{},
-                motionDefaultRootEnd(last, state.firstHeadingAngle, state.defaultPathSpeed)};
-            state.selectedRootWaypoint = 1;
-        }
-    }
-    if(state.rootPathEnabled){
-        const int lastFrame = kimodoMotionLastFrame(state.actions);
-        if(state.rootPathAutoEnd && lastFrame > 0){
-            if(state.rootWaypoints.empty()) state.rootWaypoints.push_back(MotionRootWaypoint{});
-            if(state.rootWaypoints.front().frame != 0){
-                MotionRootWaypoint origin = motionRootWaypointAt(state.rootWaypoints, 0);
-                origin.frame = 0; origin.x = 0.0f; origin.z = 0.0f;
-                state.rootWaypoints.insert(state.rootWaypoints.begin(), origin);
-            }
-            if(state.rootWaypoints.size() == 1)
-                state.rootWaypoints.push_back(motionDefaultRootEnd(lastFrame, state.firstHeadingAngle, state.defaultPathSpeed));
-            else{
-                // Keep authored points in order when action durations change.
-                while(state.rootWaypoints.size() > size_t(lastFrame + 1))
-                    state.rootWaypoints.erase(state.rootWaypoints.end() - 2);
-                const int oldEnd = std::max(1, state.rootWaypoints.back().frame);
-                if(oldEnd != lastFrame){
-                    int previousFrame = 0;
-                    for(size_t i = 1; i + 1 < state.rootWaypoints.size(); ++i){
-                        const int ideal = int(std::lround(double(state.rootWaypoints[i].frame) *
-                                                          double(lastFrame) / double(oldEnd)));
-                        const int latest = lastFrame - int(state.rootWaypoints.size() - 1 - i);
-                        state.rootWaypoints[i].frame = std::clamp(ideal, previousFrame + 1, latest);
-                        previousFrame = state.rootWaypoints[i].frame;
-                    }
-                }
-                if(state.rootPathAutoDistance)
-                    state.rootWaypoints.back() = motionDefaultRootEnd(lastFrame, state.firstHeadingAngle, state.defaultPathSpeed);
-                else state.rootWaypoints.back().frame = lastFrame;
-            }
-        }
-        state.rootTrackCursorFrame = std::clamp(state.rootTrackCursorFrame, 0.0f, float(lastFrame));
-        const std::string routeTitle = "EDIT ROUTE  /  " + std::to_string(state.rootWaypoints.size()) + " POINTS";
-        if(ui.componentHeader(routeTitle, theme.accent, &state.recipeRouteOpen, false)){
-        ui.checkbox("Smooth path through points", &state.smoothRootPath);
-        if(ui.checkbox("Pin heading at path points", &state.constrainRootHeading)){
-            if(state.constrainRootHeading && !state.rootWaypoints.empty() && state.rootWaypoints.front().frame == 0)
-                state.rootWaypoints.front().heading = state.firstHeadingAngle;
-        }
-        const int keyAction = ui.buttonRow({"+ Add point after selected", "Delete selected"});
-        if(keyAction == 0){
-            const int atFrame = motionRootInsertionFrame(state.rootWaypoints, state.selectedRootWaypoint);
-            if(atFrame >= 0){
-                MotionRootWaypoint key = motionRootPathAt(state.rootWaypoints, float(atFrame), state.smoothRootPath);
-                upsertMotionRootWaypoint(state.rootWaypoints, key, lastFrame);
-                const auto found = std::lower_bound(state.rootWaypoints.begin(), state.rootWaypoints.end(), atFrame,
-                    [](const MotionRootWaypoint& item, int f){ return item.frame < f; });
-                state.selectedRootWaypoint = int(found - state.rootWaypoints.begin());
-                state.rootTrackCursorFrame = float(atFrame);
-            }
-        }else if(keyAction == 1 && state.selectedRootWaypoint >= 0 &&
-                 size_t(state.selectedRootWaypoint) < state.rootWaypoints.size() &&
-                 !(state.rootWaypoints[size_t(state.selectedRootWaypoint)].frame == 0)){
-            if(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1) state.rootPathAutoEnd = false;
-            state.rootWaypoints.erase(state.rootWaypoints.begin() + state.selectedRootWaypoint);
-            state.selectedRootWaypoint = std::clamp(state.selectedRootWaypoint, 0, int(state.rootWaypoints.size()) - 1);
-        }
-        for(size_t i = 0; i < state.rootWaypoints.size(); ++i){
-            const MotionRootWaypoint& key = state.rootWaypoints[i];
-            char label[112];
-            std::snprintf(label, sizeof(label), "Point %zu  |  %.2f s  |  X %.2f  Z %.2f%s", i + 1,
-                          double(key.frame) / kimodoMotionFps, double(key.x), double(key.z),
-                          key.frame == 0 ? "  (start)" : "");
-            if(ui.selectable(label, int(i) == state.selectedRootWaypoint)){
-                state.selectedRootWaypoint = int(i);
-                state.rootTrackCursorFrame = float(key.frame);
-            }
-        }
-        if(state.selectedRootWaypoint >= 0 && size_t(state.selectedRootWaypoint) < state.rootWaypoints.size()){
-            MotionRootWaypoint& key = state.rootWaypoints[size_t(state.selectedRootWaypoint)];
-            if(key.frame == 0){
-                ui.value("Start point", "fixed at X 0, Z 0");
-            }else{
-                if(!(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1)){
-                    float seconds = float(key.frame) / kimodoMotionFps;
-                    if(ui.dragFloat("Point time (s)", &seconds, 0.01f)){
-                        moveMotionRootWaypoint(state.rootWaypoints, size_t(state.selectedRootWaypoint),
-                                               int(std::lround(seconds * kimodoMotionFps)), lastFrame);
-                        state.rootTrackCursorFrame = float(key.frame);
-                    }
-                }
-                float position[3]{key.x, 0.0f, key.z};
-                if(ui.dragVector("Point position X / Z (m)", position, 0.002f)){
-                    key.x = position[0];
-                    key.z = position[2];
-                    if(state.rootPathAutoEnd && state.selectedRootWaypoint == int(state.rootWaypoints.size()) - 1)
-                        state.rootPathAutoDistance = false;
-                }
-            }
-            if(state.constrainRootHeading){
-                float degrees = key.heading * (180.0f / 3.14159265359f);
-                if(ui.dragFloat("Facing angle (degrees)", &degrees, 0.2f))
-                    key.heading = std::clamp(degrees, -180.0f, 180.0f) * (3.14159265359f / 180.0f);
-            }
-        }
-        const std::string pathProblem = motionRootPathProblem(state.rootWaypoints, lastFrame);
-        if(!pathProblem.empty()) ui.label("Root path needs attention: " + pathProblem);
-        if(!state.constraintsPath.empty())
-            ui.label("Use either the authored root path or the external JSON, not both.");
-        ui.value("Path frame rate", "30 fps (Kimodo)");
-        }
-    }
-    ui.separator();
-
-    if(ui.componentHeader("QUALITY & EXPERT", theme.accent, &state.advancedExpanded, false)){
-    ui.label("KIMODO TEXT GENERATION");
-    if(ui.button("Use Best Quality Defaults")){
-        state.modelIndex = 0;
-        state.quality = 200.0f;
-        state.samples = 4.0f;
-        state.transitionFrames = 5.0f;
-        state.cfgIndex = 3;
-        state.textGuidance = 2.0f;
-        state.constraintGuidance = 2.0f;
-        state.kimodoPostprocess = true;
-    }
-    ui.slider("Denoising steps", &state.quality, 100.0f, 300.0f);
-    ui.choice("Skeleton / dataset", kimodoModels(), &state.modelIndex);
-    ui.slider("Samples to compare", &state.samples, 1.0f, 8.0f);
-    const std::string& model = kimodoModels()[size_t(std::clamp(state.modelIndex, 0, int(kimodoModels().size()) - 1))];
-    if(model.find("G1") != std::string::npos) ui.label("G1 exports native NPZ/CSV; Loom timeline preview currently imports SOMA BVH only.");
-    else if(model.find("SMPLX") != std::string::npos) ui.label("SMPL-X exports native NPZ/AMASS; Loom timeline preview currently imports SOMA BVH only.");
-    ui.choice("Classifier-free guidance", {"Model default", "No CFG", "Regular", "Text + constraints"}, &state.cfgIndex);
-    if(state.cfgIndex == 2) ui.slider("Text guidance", &state.textGuidance, 0.0f, 10.0f);
-    if(state.cfgIndex == 3){
-        ui.slider("Text guidance", &state.textGuidance, 0.0f, 10.0f);
-        ui.slider("Constraint guidance", &state.constraintGuidance, 0.0f, 10.0f);
-    }
-    Treadle::Ui::TextFieldConfig pathField;
-    pathField.lines = 1;
-    pathField.maxLength = 1024;
-    pathField.placeholder = "Optional Kimodo constraints.json path";
-    ui.textField("kimodo-constraints", &state.constraintsPath, pathField);
-    ui.checkbox("Same seed = same motion", &state.fixedSeed);
-    if(state.fixedSeed) ui.dragFloat("Seed", &state.seed, 0.2f);
-    if(ui.slider("Initial heading (rad)", &state.firstHeadingAngle, -3.14159f, 3.14159f)){
-        if(state.rootPathEnabled && state.constrainRootHeading && !state.rootWaypoints.empty() &&
-           state.rootWaypoints.front().frame == 0) state.rootWaypoints.front().heading = state.firstHeadingAngle;
-    }
-    ui.slider("Root correction margin (m)", &state.rootMargin, 0.0f, 0.25f);
-    ui.checkbox("Save reusable Kimodo example bundle", &state.saveExample);
-    }
-    //-- postavke -------------------------------------------------------------------------------
-    ui.separator();
-    char text[96];
-    float total = 0.0f;
-    const std::vector<MotionAction> generatedActions = filledActions(state.actions);
-    total = 0.0f;
-    for(const MotionAction& step : generatedActions) total += step.duration;
-    std::snprintf(text, sizeof(text), "%.1f s, %zu %s", double(total), generatedActions.size(),
-                  generatedActions.size() == 1 ? "action" : "actions");
-    ui.value("Total", text);
-
-    //-- generiranje ----------------------------------------------------------------------------
-    ui.separator();
-    const std::string rootProblem = state.rootPathEnabled
-        ? motionRootPathProblem(state.rootWaypoints, kimodoMotionLastFrame(state.actions)) : std::string{};
-    const bool constraintConflict = state.rootPathEnabled && !state.constraintsPath.empty();
-    const std::string pathSpeedProblem = state.rootPathEnabled
-        ? motionPathSpeedProblem(state.rootWaypoints, state.smoothRootPath,
-            state.actions.empty() ? std::string{} : state.actions.front().prompt) : std::string{};
-    if(!pathSpeedProblem.empty()){
-        ui.label(pathSpeedProblem);
-        ui.checkbox("Allow fast path anyway", &state.allowFastPath);
-    }
-    const bool constraintsReady = rootProblem.empty() && !constraintConflict &&
-                                  (pathSpeedProblem.empty() || state.allowFastPath);
-    const bool ready = status.runnerReady && !status.running && !status.otherJob &&
-                       !filledActions(state.actions).empty() && constraintsReady;
-    if(status.running){
-        ui.value("Kimodo running", Loom::humanTime(status.elapsed));
-        ui.label(Treadle::fitText(status.lastLine.empty() ? "Starting..." : status.lastLine, area.width - 30.0f, theme.textScale));
-        ui.label("(First launch downloads the model, ~17 GB)");
-    }else if(status.otherJob){
-        ui.label("Waiting: another solve or training job is running.");
-    }
-    if(ui.button(ready ? "GENERATE  (Enter)" : status.running ? "Generating..." : "GENERATE  (enter a prompt)")){
-        if(ready) action.generate = true;
-    }
-    if(!ready) action.generate = false;
-
-    if(status.liveRecording) state.liveToolsOpen = true;
-    const std::string liveTitle = status.liveRecording ? "LIVE RECORDING  /  ACTIVE" : "LIVE & EXPORT";
-    if(ui.componentHeader(liveTitle, theme.accent, &state.liveToolsOpen, status.liveRecording)){
-        ui.value("Live style", motionBricksStyles()[size_t(std::clamp(state.motionBricksStyle, 0,
-            int(motionBricksStyles().size()) - 1))]);
-        if(status.liveRecording){
-            ui.value("Session", status.liveStopping ? "Saving animation..." :
-                                  status.liveReady ? "Recording" : "Loading MotionBricks...");
-            ui.value("Recorded frames", std::to_string(status.liveFrames));
-            if(!status.liveMessage.empty()) ui.label(Treadle::fitText(status.liveMessage, area.width - 36.0f, theme.textScale));
-            if(!status.liveStopping && ui.button("STOP & KEEP ANIMATION")) action.stopLiveRecording = true;
-        }else{
-            const bool canRecord = activePreset.realtime && status.motionBricksReady && !status.running && !status.otherJob;
-            if(ui.button(canRecord ? "START LIVE + RECORD" : "LIVE RECORDING UNAVAILABLE"))
-                action.startLiveRecording = canRecord;
-            if(activePreset.realtime && !status.motionBricksReady)
-                ui.label("Install MotionBricks once · tools/motionbricks/setup.sh");
-        }
-        const bool canGenerateBricks = activePreset.realtime && status.motionBricksReady &&
-                                       !status.liveRecording && !status.running && !status.otherJob;
-        if(ui.button(canGenerateBricks ? "GENERATE MOTIONBRICKS CLIP" : "MotionBricks clip unavailable"))
-            action.generateMotionBricks = canGenerateBricks;
-        if(status.motionBricksRunning) ui.label("MotionBricks is generating a G1 locomotion clip...");
-    }
-
-    //-- history and diagnostics -----------------------------------------------------------------
-    const std::string historyTitle = "RECENT TAKES  /  " + std::to_string(state.history.size());
-    if(ui.componentHeader(historyTitle, theme.accent, &state.historyOpen, false)){
-        if(state.history.empty()) ui.label("Generated clips will appear here.");
-        for(size_t i = 0; i < state.history.size(); ++i){
-            const MotionHistoryEntry& item = state.history[i];
-            if(ui.selectable(Treadle::fitText(item.summary, area.width - 40.0f, theme.textScale), false)) action.importPath = item.bvh;
-            if(ui.rightClicked() && !item.actions.empty()){
-                state.actions = item.actions;
-                state.activeAction = 0;
-                if(state.promptPresetDetection){
-                    const int detected = motionPresetMentionedInPrompt(state.activePrompt());
-                    if(detected >= 0) configureMotionPreset(state, detected, false);
-                }
-                ui.focusTextField("action0");
-            }
-        }
-    }
-    ui.separator();
-    if(!state.rootPathEnabled) ui.label("Load a Kimodo constraints.json above or enable root-path editing here.");
-    else if(constraintConflict) ui.label("Clear the external JSON path to use this route.");
-    if(!rootProblem.empty()) ui.label("Path needs attention: " + rootProblem);
     return action;
 }
+
 inline void drawMotionHelp(Treadle::Ui& ui, MotionPanelState& state, const Treadle::Rect& area){
     ui.dock("MOTION HELP", area, &state.helpScroll);
-    ui.label("QUICK START");
-    ui.label("Motion opens the dedicated Animator workspace.");
-    ui.label("1. Select a rigged humanoid and movement preset.");
-    ui.label("2. Edit the prompt, steps and duration.");
-    ui.label("3. Switch to Path + poses for hands-on rig control.");
-    ui.label("4. Generate a clip or record realtime motion.");
-    ui.label("Close with X, Back to Scene, or Escape.");
-    ui.separator();
-    ui.label("PATH & TIMELINE");
-    ui.label("Path + Pose Keys is a separate directed flow.");
-    ui.label("Right-click the path to add a pose at that frame.");
-    ui.label("Rig Controls: drag hands/feet for IK; elbows/knees set bend.");
-    ui.label("Alt-drag hands/feet to rotate; switch to Joints for detail.");
-    ui.label("Drag ROOT to shape the path; drag CHEST or HEAD to rotate.");
-    ui.label("TIME on the left opens the timeline.");
-    ui.label("Click a time to add a route point.");
-    ui.label("Drag route points in the viewport.");
-    ui.label("The first point remains at the origin.");
-    ui.label("Auto end follows the clip duration.");
-    ui.label("Smooth path blends between points.");
-    ui.separator();
-    ui.label("MOTIONBRICKS LIVE");
-    ui.label("Idle, walk, crawl and crouch use the G1 live model.");
-    ui.label("Start Live + Record previews motion on the rig.");
-    ui.label("Stop & Keep Animation saves a full Animator clip.");
-    ui.label("Run and jump use Kimodo text generation.");
-    ui.separator();
-    ui.label("IK & QUALITY");
-    ui.label("Auto IK follows the movement preset and prompt.");
-    ui.label("Crawl disables Loom foot IK; Kimodo postprocess stays on.");
-    ui.label("Manual mode lets you override both switches.");
-    ui.label("Kimodo default: SOMA RP, 200 steps, 4 variants.");
-    ui.label("SOMA BVH retargets to the selected humanoid.");
-    ui.label("Without a target, Loom shows a skeleton preview.");
-    ui.separator();
-    ui.label("HISTORY & DIAGNOSTICS");
-    ui.label("Click a recent motion to import it.");
-    ui.label("Right-click one to restore its prompt.");
-    ui.label("TERM on the left shows operations and errors.");
+    ui.caption("CREATE");
+    ui.hint("Pick a movement, edit the prompt and duration, then Generate (or Enter). Add steps for "
+            "a sequence - Kimodo blends them. Idle, walk, crawl and crouch can also be recorded live "
+            "with MotionBricks under Options.");
+    ui.caption("DIRECT");
+    ui.hint("Move the playhead, add a pose key and shape it with the rig in the viewport: drag cyan "
+            "hand/foot targets (Alt-drag rotates), orange sets elbow/knee bend, violet turns chest and "
+            "head. Drag ROOT to shape the path. Kimodo fills in the motion between keys.");
+    ui.caption("REVIEW");
+    ui.hint("Click a saved take to load it on the character; right-click to reuse its prompt. "
+            "Compare import stages shows where quality is lost: source BVH, rig without IK, rig with IK.");
+    ui.caption("CONTACTS");
+    ui.hint("Automatic rules follow the movement and prompt: crawl turns off rig foot IK, Kimodo "
+            "cleanup stays on. Manual lets you set both.");
+    ui.caption("DIAGNOSTICS");
+    ui.hint("TERM on the left rail shows the running job and its errors.");
+    ui.space(ui.style().spacing);
     if(ui.button("Close help")) state.helpOpen = false;
 }
 

@@ -28,6 +28,8 @@
 #include <Treadle/Ui.h>
 
 #include <cmath>
+#include <functional>
+#include <string>
 
 namespace{
 
@@ -728,6 +730,70 @@ int main(){
         //Nacrtani redci: svaki tekstni poziv je jedan redak; vise od jednog znaci da je prelomljeno
         report.check("klik postavi kursor, dug tekst se prelomi po rijecima", text.rfind("Xone", 0) == 0,
             text.substr(0, 12));
+    }
+
+    //-- hijerarhija: glavni gumb, pilule, sekcija, napomena, podnozje ----------------------------
+    {
+        Treadle::Ui ui;
+        const Treadle::Theme& theme = ui.style();
+        const float firstRow = theme.padding + Treadle::textHeight(theme.textScale) + theme.spacing + 1.0f + theme.spacing;
+        Treadle::Input press;
+        press.down[uint32_t(Treadle::MouseButton::Left)] = true;
+        Treadle::Input release;
+        auto clickAt = [&](float x, float y, const std::function<void()>& widgets){
+            release.mouseX = press.mouseX = x;
+            release.mouseY = press.mouseY = y;
+            ui.begin(release, 1000.0f, 800.0f); ui.dock("P", {0.0f, 0.0f, 220.0f, 400.0f}); widgets(); ui.end();
+            ui.begin(press, 1000.0f, 800.0f); ui.dock("P", {0.0f, 0.0f, 220.0f, 400.0f}); widgets(); ui.end();
+        };
+
+        //Iskljucen glavni gumb se vidi, ali klik ne prolazi - inace bi GENERATE bez opisa pokrenuo posao
+        bool disabledClick = false, enabledClick = false;
+        clickAt(100.0f, firstRow + 10.0f, [&]{ disabledClick |= ui.primaryButton("GENERATE", false); });
+        clickAt(100.0f, firstRow + 10.0f, [&]{ enabledClick |= ui.primaryButton("GENERATE", true); });
+        report.check("glavni gumb: iskljucen ne okida, ukljucen okida", !disabledClick && enabledClick,
+            disabledClick ? "iskljucen okinuo" : "ukljucen nije okinuo");
+
+        //Pilule: treca od tri u redu sirine 198 px
+        int pill = -1;
+        clickAt(180.0f, firstRow + 10.0f, [&]{ const int c = ui.pills({"Idle", "Walk", "Run"}, 1); if(c >= 0) pill = c; });
+        report.check("pilula javlja indeks kliknute", pill == 2, std::to_string(pill));
+
+        //Sekcija se otvara pritiskom na cijeli redak, ne samo na strelicu
+        bool open = false;
+        clickAt(150.0f, firstRow + 10.0f, [&]{ ui.disclosure("Path", "2 points", &open); });
+        report.check("sekcija se otvori klikom na redak", open, open ? "otvorena" : "zatvorena");
+
+        //Napomena dulja od retka zauzme vise redaka: gumb iza nje pada nize nego iza kratke
+        auto rowAfterHint = [&](const std::string& text){
+            ui.begin(release, 1000.0f, 800.0f);
+            ui.dock("P", {0.0f, 0.0f, 220.0f, 400.0f});
+            ui.hint(text);
+            ui.button("iza");
+            const float y = ui.lastRowRect().y;
+            ui.end();
+            return y;
+        };
+        const float shortY = rowAfterHint("kratko");
+        const float longY = rowAfterHint("ovo je dugo objasnjenje koje nikako ne stane u jedan redak uske plohe");
+        report.check("napomena se prelama u vise redaka", longY > shortY + Treadle::textHeight(theme.textScale * 0.78f),
+            fmt("%.1f -> %.1f", double(shortY), double(longY)));
+
+        //Podnozje ne ovisi o pomaku sadrzaja iznad: gumb je na istom mjestu i kad je ploha odscrollana
+        auto footerButtonY = [&](float scrolled){
+            float scroll = scrolled;
+            ui.begin(release, 1000.0f, 800.0f);
+            ui.dock("P", {0.0f, 0.0f, 220.0f, 300.0f}, &scroll);
+            for(int i = 0; i < 40; ++i) ui.label("redak");
+            ui.footer({0.0f, 300.0f, 220.0f, 80.0f});
+            ui.primaryButton("GENERATE");
+            const float y = ui.lastRowRect().y;
+            ui.end();
+            return y;
+        };
+        const float atTop = footerButtonY(0.0f), scrolled = footerButtonY(400.0f);
+        report.check("gumb u podnozju ne ide s pomakom sadrzaja", atTop == scrolled && atTop > 300.0f,
+            fmt("%.1f / %.1f", double(atTop), double(scrolled)));
     }
 
     return report.result();

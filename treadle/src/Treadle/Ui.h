@@ -85,6 +85,40 @@ class Ui{
     //Kompaktni naglaseni chipovi za povratak na nedavne odabire; vraca kliknuti indeks ili -1
     int chipRow(const std::vector<std::string>& labels, const Color& accent);
 
+    //-- hijerarhija -------------------------------------------------------------------------
+    //
+    //Plocha u kojoj je sve gumb iste boje i tekst iste velicine ne kaze sto je glavno. Ovi
+    //widgeti postoje da bi se razina vidjela: jedan glavni gumb, kartice za nacin rada, tihe
+    //sekcije za ono sto se rijetko dira, i sitan sivi tekst za objasnjenja
+
+    //Mali sivi naslov odjeljka s razmakom iznad - dijeli skupine bez okvira
+    void caption(const std::string& text);
+
+    //Objasnjenje: sitnije, sivo, prelama se po rijecima u koliko god redaka treba
+    void hint(const std::string& text);
+
+    //Stanje u jednom retku: obojena tocka pa tekst (prelama se kao hint)
+    void status(const std::string& text, const Color& dot);
+
+    //Glavna radnja plohe: visi, pun zlatni. Iskljucen se vidi, ali ne okida
+    bool primaryButton(const std::string& text, bool enabled = true);
+
+    //Kartice za nacin rada: tekst s podvlakom ispod odabrane. true kad se izbor promijenio
+    bool tabs(const std::vector<std::string>& options, int* index);
+
+    //Pilule od kojih je jedna odabrana (ili nijedna, -1); vraca kliknuti indeks ili -1
+    int pills(const std::vector<std::string>& labels, int selected);
+
+    //Tiha sekcija koja se otvara: strelica, naslov i sivi sazetak desno, bez punog okvira
+    bool disclosure(const std::string& title, const std::string& summary, bool* expanded);
+
+    //Prazan razmak zadane visine
+    void space(float height);
+
+    //Podnozje usidrene plohe: bez naslova i bez pomicanja, za ono sto mora ostati vidljivo
+    //i kad se sadrzaj iznad odscrolla (glavni gumb). Zatvara prethodnu plohu
+    void footer(const Rect& box);
+
     //Vraca true kad se vrijednost promijenila. Vrijednost se odsijeca na raspon
     bool slider(const std::string& name, float* target, float low, float high,
                 const std::string& unit = std::string());

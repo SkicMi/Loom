@@ -330,6 +330,205 @@ int Ui::chipRow(const std::vector<std::string>& labels, const Color& accent){
     return clicked;
 }
 
+//-- hijerarhija ---------------------------------------------------------------------------------
+
+namespace{
+
+//Rijeci u retke sirine najvise width. Rijec dulja od retka ostaje sama u svom retku i skrati se
+//- bolje tri tockice nego tekst koji izlazi preko ruba plohe
+std::vector<std::string> wrapWords(const std::string& text, float width, float scale){
+    std::vector<std::string> lines;
+    std::string line, word;
+    auto flushWord = [&]{
+        if(word.empty()) return;
+        const std::string joined = line.empty() ? word : line + " " + word;
+        if(line.empty() || textWidth(joined, scale) <= width) line = joined;
+        else{
+            lines.push_back(fitText(line, width, scale));
+            line = word;
+        }
+        word.clear();
+    };
+    for(char c : text){
+        if(c == ' ' || c == '\n'){
+            flushWord();
+            if(c == '\n'){ lines.push_back(fitText(line, width, scale)); line.clear(); }
+        }else word += c;
+    }
+    flushWord();
+    if(!line.empty() || lines.empty()) lines.push_back(fitText(line, width, scale));
+    return lines;
+}
+
+}
+
+void Ui::caption(const std::string& text){
+    //Razmak IZNAD, ne ispod: naslov pripada onome sto slijedi, pa mora biti blize tome
+    space(theme.spacing * 0.8f);
+    const float scale = theme.textScale * 0.72f;
+    const Row row = nextRow(textHeight(scale));
+    if(!row.visible) return;
+    list.text(row.box.x, row.box.y, fitText(text, row.box.width, scale), theme.dim, scale);
+}
+
+void Ui::hint(const std::string& text){
+    const float scale = theme.textScale * 0.78f;
+    const float width = panelBox.width - 2.0f * theme.padding;
+    for(const std::string& line : wrapWords(text, width, scale)){
+        //Redovi napomene su zbijeniji od redova widgeta - to je jedan odlomak, ne popis
+        const Row row = nextRow(textHeight(scale));
+        cursorY -= theme.spacing * 0.55f;
+        if(!row.visible) continue;
+        list.text(row.box.x, row.box.y, line, theme.dim, scale);
+    }
+    cursorY += theme.spacing * 0.55f;
+}
+
+void Ui::status(const std::string& text, const Color& dot){
+    const float scale = theme.textScale * 0.78f;
+    const float indent = 12.0f;
+    const float width = panelBox.width - 2.0f * theme.padding - indent;
+    bool first = true;
+    for(const std::string& line : wrapWords(text, width, scale)){
+        const Row row = nextRow(textHeight(scale));
+        cursorY -= theme.spacing * 0.55f;
+        if(!row.visible){ first = false; continue; }
+        if(first) list.rect(row.box.x + 1.0f, row.box.y + textHeight(scale) * 0.5f - 3.0f, 6.0f, 6.0f, dot);
+        list.text(row.box.x + indent, row.box.y, line, first ? theme.text : theme.dim, scale);
+        first = false;
+    }
+    cursorY += theme.spacing * 0.55f;
+}
+
+bool Ui::primaryButton(const std::string& text, bool enabled){
+    const Row row = nextRow(theme.rowHeight * 1.45f);
+    if(!row.visible) return false;
+    const uint64_t id = idFor("primary:" + text);
+    const bool clickedNow = enabled && row.hot && pressed[uint32_t(MouseButton::Left)];
+    if(clickedNow) activeId = id;
+    const bool held = enabled && activeId == id;
+
+    if(enabled){
+        const Color fill = held ? theme.accent : (row.hot ? theme.active : theme.accent);
+        list.rect(row.box, fill);
+        if(row.hot) list.outline(row.box, 1.5f, theme.title);
+    }else{
+        list.rect(row.box, theme.control);
+        list.outline(row.box, 1.0f, Color{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, 0.6f});
+    }
+    const std::string fitted = fitText(text, row.box.width - theme.padding * 2.0f, theme.textScale);
+    list.text(row.box.x + (row.box.width - textWidth(fitted, theme.textScale)) * 0.5f,
+              row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f,
+              fitted, enabled ? theme.textOnAccent : theme.dim, theme.textScale);
+    return clickedNow;
+}
+
+bool Ui::tabs(const std::vector<std::string>& options, int* index){
+    if(!index || options.empty()) return false;
+    const Row row = nextRow(theme.rowHeight + 4.0f);
+    if(!row.visible) return false;
+    const float width = row.box.width / float(options.size());
+    //Tanka crta cijelom sirinom, a odabrana kartica je podvuce debelo: izbor se cita kao mjesto,
+    //ne kao jos jedan zlatni gumb medju zlatnim klizacima
+    list.rect(row.box.x, row.box.y + row.box.height - 1.0f, row.box.width, 1.0f, theme.panelEdge);
+    bool changed = false;
+    for(size_t option = 0; option < options.size(); ++option){
+        const Rect box{row.box.x + float(option) * width, row.box.y, width, row.box.height};
+        const bool hot = box.contains(input.mouseX, input.mouseY);
+        const bool chosen = int(option) == *index;
+        if(hot && !chosen) list.rect(box, Color{theme.hot.r, theme.hot.g, theme.hot.b, 0.55f});
+        if(chosen) list.rect(box.x + 4.0f, box.y + box.height - 3.0f, box.width - 8.0f, 3.0f, theme.accent);
+        const std::string fitted = fitText(options[option], box.width - 8.0f, theme.textScale);
+        list.text(box.x + (box.width - textWidth(fitted, theme.textScale)) * 0.5f,
+                  box.y + (box.height - 3.0f - textHeight(theme.textScale)) * 0.5f,
+                  fitted, chosen ? theme.title : (hot ? theme.text : theme.dim), theme.textScale);
+        if(hot && pressed[uint32_t(MouseButton::Left)] && !chosen){
+            *index = int(option);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+int Ui::pills(const std::vector<std::string>& labels, int selected){
+    if(labels.empty()) return -1;
+    const Row row = nextRow(theme.rowHeight);
+    if(!row.visible) return -1;
+    const float gap = std::max(4.0f, theme.spacing * 0.7f);
+    const float width = (row.box.width - gap * float(labels.size() - 1)) / float(labels.size());
+    const float scale = theme.textScale * 0.86f;
+    int clicked = -1;
+    for(size_t index = 0; index < labels.size(); ++index){
+        const Rect box{row.box.x + float(index) * (width + gap), row.box.y, width, row.box.height};
+        const bool hot = box.contains(input.mouseX, input.mouseY);
+        const bool chosen = int(index) == selected;
+        if(chosen) list.rect(box, theme.accent);
+        else{
+            list.rect(box, hot ? theme.hot : Color{theme.control.r, theme.control.g, theme.control.b, 0.55f});
+            list.outline(box, 1.0f, Color{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, hot ? 0.9f : 0.5f});
+        }
+        const std::string fitted = fitText(labels[index], box.width - 8.0f, scale);
+        list.text(box.x + (box.width - textWidth(fitted, scale)) * 0.5f,
+                  box.y + (box.height - textHeight(scale)) * 0.5f,
+                  fitted, chosen ? theme.textOnAccent : (hot ? theme.title : theme.text), scale);
+        if(hot && pressed[uint32_t(MouseButton::Left)]) clicked = int(index);
+    }
+    return clicked;
+}
+
+bool Ui::disclosure(const std::string& title, const std::string& summary, bool* expanded){
+    if(!expanded) return false;
+    const Row row = nextRow(theme.rowHeight);
+    if(!row.visible) return *expanded;
+    if(row.hot && pressed[uint32_t(MouseButton::Left)]) *expanded = !*expanded;
+    if(row.hot) list.rect(row.box, Color{theme.hot.r, theme.hot.g, theme.hot.b, 0.6f});
+    list.rect(row.box.x, row.box.y + row.box.height - 1.0f, row.box.width, 1.0f,
+              Color{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, 0.45f});
+
+    //Strelica kao trokut, ne kao slovo: 'v' i '>' u fontu imaju razlicitu sirinu i skacu
+    const float cx = row.box.x + 7.0f, cy = row.box.y + row.box.height * 0.5f;
+    const Color arrow = *expanded ? theme.accent : theme.dim;
+    if(*expanded) list.triangle(cx - 4.0f, cy - 2.5f, cx + 4.0f, cy - 2.5f, cx, cy + 3.0f, arrow);
+    else list.triangle(cx - 2.5f, cy - 4.0f, cx - 2.5f, cy + 4.0f, cx + 3.0f, cy, arrow);
+
+    const float labelY = row.box.y + (row.box.height - textHeight(theme.textScale)) * 0.5f;
+    const float titleX = row.box.x + 19.0f;
+    const std::string shownTitle = fitText(title, row.box.width * 0.55f, theme.textScale);
+    list.text(titleX, labelY, shownTitle, *expanded || row.hot ? theme.title : theme.text, theme.textScale);
+    if(!summary.empty()){
+        const float scale = theme.textScale * 0.78f;
+        const float left = titleX + textWidth(shownTitle, theme.textScale) + theme.spacing * 2.0f;
+        const float room = row.box.x + row.box.width - 4.0f - left;
+        if(room > 20.0f){
+            const std::string shown = fitText(summary, room, scale);
+            list.text(row.box.x + row.box.width - 4.0f - textWidth(shown, scale),
+                      row.box.y + (row.box.height - textHeight(scale)) * 0.5f, shown, theme.dim, scale);
+        }
+    }
+    return *expanded;
+}
+
+void Ui::space(float height){
+    cursorY += std::max(0.0f, height);
+}
+
+void Ui::footer(const Rect& box){
+    closePanel();
+    panelOpen = true;
+    panelDocked = true;
+    ++panelIndex;
+    panelBox = box;
+    if(box.contains(input.mouseX, input.mouseY)) pointerOverUi = true;
+    panelVertexBase = list.vertices.size();
+    list.rect(panelBox, Color{theme.panel.r, theme.panel.g, theme.panel.b, 0.99f});
+    //Crta na vrhu odvaja podnozje od sadrzaja koji iza njega odlazi pri pomicanju
+    list.rect(box.x, box.y, box.width, 1.0f, theme.panelEdge);
+    cursorY = box.y + theme.padding * 0.8f;
+    contentTop = cursorY;
+    scrollTarget = nullptr;
+    scrollOffset = 0.0f;
+}
+
 bool Ui::slider(const std::string& name, float* target, float low, float high,
                 const std::string& unit){
     if(!target || high <= low) return false;
