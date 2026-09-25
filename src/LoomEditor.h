@@ -1,16 +1,17 @@
 #pragma once
 //=============================================================================================
-// EDITOR: Scene Atlas, centralni viewport, Instrument Deck i vremenska traka.
+// EDITOR: Scene workspace ili Animator workspace s viewportom, alatima i vremenskom trakom.
 //
 //   +--------------------------------------------------------------+
 //   | alatna traka                                                 |
 //   +-----+--------------------------------------------------------+
 //   | rail | Scene Atlas |             viewport | Instrument Deck |
+//   | rail | Animator controls | rig viewport | clip inspector      |
 //   +-----+--------------------------------------------------------+
 //   | timeline                                                     |
 //   +--------------------------------------------------------------+
 //
-// RASPORED JE CISTI RACUN: dva side panela ostaju uz viewport, neovisno jedan o drugome.
+// RASPORED: dva radna prostora koriste isti viewport; Animator dodaje motion i clip kontrole.
 //=============================================================================================
 #include <Treadle/Draw.h>
 
@@ -30,18 +31,22 @@ struct EditorLayout{
     Treadle::Rect viewport;
     Treadle::Rect hierarchy;    //Scene Atlas dock
     Treadle::Rect properties;   //Instrument Deck dock
+    Treadle::Rect motion;       //Animator workspace controls
     Treadle::Rect timeline;
     Treadle::Rect terminal;
 };
 
 inline EditorLayout layoutEditor(float width, float height, bool outlineVisible = true, bool componentsVisible = true,
-                                 bool timelineVisible = true, bool terminalVisible = false){
+                                 bool timelineVisible = true, bool terminalVisible = false, bool animatorWorkspace = false,
+                                 float railReveal = 1.0f){
     EditorLayout layout;
     const float toolbarHeight = 40.0f;
     const float timelineHeight = timelineVisible ? std::clamp(height * 0.2f, 110.0f, 190.0f) : 0.0f;
     const float terminalHeight = terminalVisible ? std::min(std::clamp(height * 0.23f, 150.0f, 250.0f),
                                                         std::max(0.0f, height - toolbarHeight - timelineHeight - 170.0f)) : 0.0f;
-    const float railWidth = std::min(56.0f, std::max(46.0f, width * 0.045f));
+    const float fullRailWidth = std::min(56.0f, std::max(46.0f, width * 0.045f));
+    const float railMinWidth = std::min(12.0f, fullRailWidth);
+    const float railWidth = railMinWidth + (fullRailWidth - railMinWidth) * std::clamp(railReveal, 0.0f, 1.0f);
     const float middleHeight = std::max(0.0f, height - toolbarHeight - timelineHeight - terminalHeight);
     const float desiredOutline = std::clamp(width * 0.16f, 214.0f, 264.0f);
     const float desiredComponents = std::clamp(width * 0.205f, 288.0f, 336.0f);
@@ -57,6 +62,26 @@ inline EditorLayout layoutEditor(float width, float height, bool outlineVisible 
     layout.toolbar = Treadle::Rect{0.0f, 0.0f, width, toolbarHeight};
     layout.rail = Treadle::Rect{0.0f, toolbarHeight, railWidth, middleHeight};
     layout.media = layout.rail;
+    if(animatorWorkspace){
+        const float gap = 8.0f;
+        const float viewportMinimum = 380.0f;
+        const float panelBudget = std::max(0.0f, width - railWidth - viewportMinimum - gap * 3.0f);
+        const float propertyWidth = std::min(std::clamp(width * 0.19f, 230.0f, 340.0f), panelBudget * 0.42f);
+        const float motionWidth = std::min(std::clamp(width * 0.26f, 300.0f, 410.0f),
+                                           std::max(220.0f, panelBudget - propertyWidth));
+        layout.hierarchy = Treadle::Rect{railWidth, toolbarHeight, 0.0f, middleHeight};
+        layout.properties = Treadle::Rect{width - propertyWidth, toolbarHeight, propertyWidth, middleHeight};
+        layout.motion = Treadle::Rect{railWidth + gap, toolbarHeight + 6.0f,
+                                      motionWidth, std::max(0.0f, middleHeight - 12.0f)};
+        const float viewportX = railWidth + motionWidth + gap * 2.0f;
+        const float viewportRight = layout.properties.x - gap;
+        layout.viewport = Treadle::Rect{viewportX, toolbarHeight + 6.0f,
+                                        std::max(0.0f, viewportRight - viewportX),
+                                        std::max(0.0f, middleHeight - 12.0f)};
+        layout.terminal = Treadle::Rect{0.0f, toolbarHeight + middleHeight, width, terminalHeight};
+        layout.timeline = Treadle::Rect{0.0f, toolbarHeight + middleHeight + terminalHeight, width, timelineHeight};
+        return layout;
+    }
     layout.hierarchy = Treadle::Rect{railWidth, toolbarHeight, outlineWidth, middleHeight};
     layout.properties = Treadle::Rect{width - componentsWidth, toolbarHeight, componentsWidth, middleHeight};
     const float viewportX = railWidth + outlineWidth + (outlineVisible ? panelGap : 0.0f);

@@ -1,0 +1,16 @@
+# model	Kimodo-SOMA-RP-v1.1
+# target	2
+# first_heading_angle	0
+# root_margin	0.04
+# transition_frames	5
+# movement_preset	Run
+# contact_settings	automatic
+# foot_contact_ik	on
+# kimodo_postprocess	on
+# root_path	authored
+# workflow	recipe + live
+# pose_keys	0
+# fast_path_override	off
+A person runs forward with an athletic stride and coordinated arm swing	3
+A person pulls out weapon from holster	3
+A person throws itself on floor holding weapon pointed forward	3

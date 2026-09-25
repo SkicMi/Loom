@@ -28,9 +28,8 @@ enum class MouseButton : uint32_t{
 //POLOZAJ JE U PIKSELIMA, ishodiste gore lijevo - isto kako ga daju i GLFW i Vulkanov
 //viewport, pa nema pretvorbe koja se moze zaboraviti.
 //
-//GUMB JE STANJE, NE DOGADJAJ: ovdje stoji je li pritisnut sada. Treadle sam pamti kako je
-//bilo prosli kadar i iz razlike izvodi pritisak i otpustanje. Da aplikacija salje dogadjaje,
-//morala bi ih ona skupljati i redati - a onda bi red dogadjaja bio dio ugovora
+//Stanje gumba vrijedi dok se drzi, a rubni dogadjaji cuvaju kratak klik izmedju kadrova.
+//Aplikacija ih skuplja u svojoj petlji i predaje kao press/release oznake za ovaj kadar.
 //Tipke koje polje za tekst razumije. Aplikacija ih salje kao DOGADJAJE, s ponavljanjem kad se
 //tipka drzi - bas zato Backspace koji se drzi brise dalje, a ne samo jedno slovo
 enum class Key : uint8_t{
@@ -53,6 +52,11 @@ struct Input{
     float mouseY = 0.0f;
 
     bool down[uint32_t(MouseButton::Count)] = {false, false, false};
+    bool pressedEvent[uint32_t(MouseButton::Count)] = {false, false, false};
+    bool releasedEvent[uint32_t(MouseButton::Count)] = {false, false, false};
+    float pressX[uint32_t(MouseButton::Count)] = {0.0f, 0.0f, 0.0f};
+    float pressY[uint32_t(MouseButton::Count)] = {0.0f, 0.0f, 0.0f};
+    float timeSeconds = 0.0f;
 
     //Koliko se kotacic okrenuo OD PROSLOG KADRA. Aplikacija ga skuplja i nulira sama, jer
     //GLFW ga javlja dogadjajem a ne stanjem

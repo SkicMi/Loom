@@ -1,2519 +1,2405 @@
-// Loom kao editor: `loom` u terminalu otvori prozor u kojem se snimka pretvara u scenu.
-//
-//   media (lijevo)        snimke projekta i datoteke na disku; desni klik na snimku solva
-//   pogled (sredina)      scena: oblak, kamere, kocke - slobodno ili kroz rijesenu kameru
-//   hijerarhija (desno)   stablo scene (Warp), ispod njega svojstva odabranog
-//   timeline (dolje)      kadar snimke; rijesena kamera se po njemu krece
-//
-// ZASTO EDITOR. Solve je dosad zavrsavao datotekom, a je li dobar vidjelo se tek u Nukeu ili
-// Blenderu. Matchmove se provjerava tako da se kocka postavi u scenu i gleda kroz rijesenu kameru
-// preko cijelog kadra - to je sada ovdje, jedan desni klik od snimke.
-//
-// Solve i trening se i dalje pokrecu kao zasebni procesi (vidi LoomJob.h); editor cita njihov
-// ispis i zivi snimak, a kad zavrse, rezultat ulazi u scenu sam.
-//
-// SNIMKA PROZORA IZ SAMOG EDITORA. Prozor se na ovom sustavu ne da snimiti izvana, pa editor zna
-// sam odraditi ono sto bi korisnik kliknuo i spremiti kadar:
-//
-//   loom <mapa> --snimi slika.png --rezultat C0256_loom [--kadar 120] [--kroz] [--kocka | --kocka-u 90] [--pokret hod.bvh]
-//
-// uveze rezultat, po zelji doda kocku (postavljenu u kadru 90) i gleda kroz rijesenu kameru, pa
-// spremi kadar i izadje.
-// Tako se editor provjerava okom, a ne samo testom racuna
-//
-// SNIMKA IZA SCENE (V). Kroz rijesenu kameru se iza scene crta pravi kadar snimke - ploca. Tu se
-// matchmove presudjuje: kocka na podu mora stajati na istom mjestu snimke kroz cijeli kadar
-#include "Core/LoomConfig.h"
-#include "Core/LoomInitializer.h"
-
-#include "LoomEditor.h"
-#include "LoomJob.h"
-#include "LoomOpenCode.h"
-#include "LoomTerminal.h"
-#include "LoomPlate.h"
-#include "LoomScene.h"
-#include "LoomSplat.h"
-#include "LoomSplatCut.h"
-#include "LoomUndo.h"
-#include "LoomAutosave.h"
-#include "LoomEditorTools.h"
-#include "LoomImporter.h"
-#include "LoomPbr.h"
-#include "LoomViewport.h"
-#include "LoomWeaverMotion.h"
-#include "LoomMotionPanel.h"
-#include "LoomMotionLive.h"
-#include "LoomMoodboard.h"
-#include "LoomAutoRig.h"
-
-#include "Vulkan/ImageData.h"
-#include "Vulkan/Material.h"
-#include "Vulkan/StreamingTexture.h"
-#include "Vulkan/Texture.h"
-
-#include <Spool/ImageFile.h>
-#include <Warp/Project.h>
-#include <Spool/VideoFile.h>
-#include <Treadle/Ui.h>
-#include <TreadlePaint/UiPainter.h>
-
-#include <GLFW/glfw3.h>
-
-#include <algorithm>
-#include <chrono>
-#include <ctime>
-#include <fstream>
-#include <cmath>
-#include <cctype>
-#include <cstdint>
-#include <cstdio>
-#include <initializer_list>
-#include <cstdlib>
-#include <filesystem>
-#include <limits>
-#include <mutex>
-#include <set>
-#include <string>
-#include <thread>
-#include <unordered_map>
-#include <vector>
-
-namespace{
-
-namespace fs = std::filesystem;
-
-bool hasMotionBricksCheckpoints(const fs::path& motionBricksRoot){
-    const auto isModelFile = [](const fs::path& path, std::uintmax_t minimumBytes){
-        std::error_code error;
-        return fs::is_regular_file(path, error) && fs::file_size(path, error) >= minimumBytes;
-    };
-    return isModelFile(motionBricksRoot / "out/G1-clip.ckpt", 1024u * 1024u) &&
-        isModelFile(motionBricksRoot / "out/motionbricks_vqvae/version_1/checkpoints/model-step=2000000.ckpt", 100u * 1024u * 1024u) &&
-        isModelFile(motionBricksRoot / "out/motionbricks_pose/version_1/checkpoints/model-step=2000000.ckpt", 100u * 1024u * 1024u) &&
-        isModelFile(motionBricksRoot / "out/motionbricks_root/version_1/checkpoints/model-step=2000000.ckpt", 100u * 1024u * 1024u);
-}
-
-//Sto je u mapi koju media prozor pregledava. Osvjezava se kad se mapa promijeni i povremeno,
-//jer solve u pozadini stvara nove mape rezultata
-struct Browser{
-    fs::path at;
-    std::vector<fs::path> folders, videos, results, projects, motions, models, images, splats;
-
-    void refresh(){
-        folders.clear();
-        projects.clear();
-        splats.clear();
-        results = Loom::resultsIn(at);
-        videos = Loom::videosIn(at);
-        motions = Loom::weaverMotionFilesIn(at);
-        models = Loom::modelFilesIn(at);
-        images = Loom::imageFilesIn(at);
-        std::error_code error;
-        for(const auto& entry : fs::directory_iterator(at, error)){
-            if(error) break;
-            const std::string name = entry.path().filename().string();
-            if(entry.is_regular_file(error) && entry.path().extension() == ".usda" &&
-               Warp::isProjectFile(entry.path().string())){
-                projects.push_back(entry.path());
-                continue;
-            }
-            if(entry.is_regular_file(error) && entry.path().extension() == ".ply" && Loom::isGaussianPly(entry.path().string())){
-                splats.push_back(entry.path());
-                continue;
-            }
-            if(!entry.is_directory(error) || name.empty() || name[0] == '.') continue;
-            if(Loom::isResultDirectory(entry.path())) continue;
-            folders.push_back(entry.path());
-        }
-        std::sort(folders.begin(), folders.end());
-        std::sort(projects.begin(), projects.end());
-        std::sort(splats.begin(), splats.end());
-    }
-};
-
-//Tipka kao dogadjaj: true samo u kadru u kojem je pritisnuta
-struct Keys{
-    bool was[GLFW_KEY_LAST + 1] = {false};
-    bool pressed(GLFWwindow* window, int key){
-        const bool down = glfwGetKey(window, key) == GLFW_PRESS;
-        const bool result = down && !was[key];
-        was[key] = down;
-        return result;
-    }
-};
-
-//Podaci o snimci za projekt. Snimka koja se ne da otvoriti ulazi svejedno, s nulama - solve ce
-//reci zasto, glasnije nego sto bi to ovdje moglo
-Warp::Media probeMedia(const fs::path& path){
-    Warp::Media media;
-    media.path = path.string();
-    try{
-        Spool::VideoReader reader(path.string());
-        const Spool::VideoInfo& info = reader.info();
-        media.width = info.width;
-        media.height = info.height;
-        media.frames = uint32_t(std::max<int64_t>(0, info.frameCount));
-        media.framesPerSecond = info.frameRate() > 0.0 ? info.frameRate() : 25.0;
-    }catch(const std::exception&){}
-    const fs::path result = Loom::resultFolderFor(path);
-    if(Loom::isResultDirectory(result)) media.result = result.string();
-    return media;
-}
-
-std::string tail(const std::string& text, size_t length){
-    return text.size() > length ? ".." + text.substr(text.size() - length + 2) : text;
-}
-
-std::string number(float value){
-    char text[32];
-    std::snprintf(text, sizeof(text), std::fabs(value) < 100.0f ? "%.3f" : "%.1f", double(value));
-    return text;
-}
-
-std::string vectorText(const glm::vec3& v){
-    return number(v.x) + " " + number(v.y) + " " + number(v.z);
-}
-
-//Sto entitet jest, za svojstva
-std::string kindOf(const Warp::Entity& entity){
-    if(entity.camera) return "Camera";
-    if(entity.points) return "Point Cloud";
-    if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "Cube" : "Plane";
-    if(entity.splat) return "Gaussian Splat";
-    if(entity.joint) return "Joint";
-    if(entity.model) return "Model (glTF)";
-    return entity.children.empty() ? "Null" : "Group";
-}
-
-Treadle::Color sceneAccent(const Warp::Entity& entity){
-    if(entity.camera) return {0.18f, 0.88f, 1.0f, 1.0f};
-    if(entity.splat) return {0.94f, 0.42f, 0.96f, 1.0f};
-    if(entity.joint) return {1.0f, 0.55f, 0.23f, 1.0f};
-    if(entity.points) return {0.40f, 0.94f, 0.56f, 1.0f};
-    if(entity.mesh || entity.model) return {0.31f, 0.61f, 1.0f, 1.0f};
-    if(entity.animator) return {0.38f, 0.94f, 0.60f, 1.0f};
-    return {0.88f, 0.72f, 0.35f, 1.0f};
-}
-
-std::string sceneTag(const Warp::Entity& entity){
-    if(entity.camera) return "CAM";
-    if(entity.splat) return "SPLAT";
-    if(entity.joint) return "BONE";
-    if(entity.points) return "POINTS";
-    if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "CUBE" : "PLANE";
-    if(entity.model) return "MODEL";
-    if(entity.animator) return "RIG";
-    return entity.children.empty() ? "NODE" : "GROUP";
-}
-
-
-struct AssetStyle{ std::string badge; Treadle::Color colour; };
-
-AssetStyle assetStyle(const fs::path& path, const std::string& kind){
-    std::string extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c){ return char(std::toupper(c)); });
-    if(!extension.empty() && extension.front() == '.') extension.erase(extension.begin());
-    if(kind == "video"){
-        if(extension == "MOV") return {extension, {0.28f, 0.55f, 1.0f, 1.0f}};
-        if(extension == "MKV") return {extension, {0.72f, 0.43f, 1.0f, 1.0f}};
-        if(extension == "AVI") return {extension, {1.0f, 0.32f, 0.47f, 1.0f}};
-        return {extension.empty() ? "VID" : extension, {0.16f, 0.87f, 1.0f, 1.0f}};
-    }
-    if(kind == "image") return {extension == "JPEG" ? "JPG" : (extension.empty() ? "IMG" : extension), {1.0f, 0.30f, 0.73f, 1.0f}};
-    if(kind == "project") return {"USD", {0.42f, 1.0f, 0.42f, 1.0f}};
-    if(kind == "motion") return {"BVH", {1.0f, 0.52f, 0.19f, 1.0f}};
-    if(kind == "model") return {extension == "GLTF" ? "GLTF" : (extension.empty() ? "3D" : extension), {0.34f, 0.58f, 1.0f, 1.0f}};
-    return {"SOLV", {1.0f, 0.78f, 0.20f, 1.0f}};
-}
-
-//Rotacija iz matrice koja moze nositi i mjerilo: stupci se normiraju prije pretvorbe
-glm::quat rotationOf(const glm::mat4& m){
-    return glm::normalize(glm::quat_cast(glm::mat3(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])),
-                                                   glm::normalize(glm::vec3(m[2])))));
-}
-
-enum class Focus{ Entity, Media };
-enum class RailPane{ None, Media, Scene, Components, Motion, Timeline, Terminal, AiChat };
-enum class After{ Nothing, Import, ImportAndTrain, AddSplat };
-
-}
-
-int main(int argc, char** argv){
-    Loom::warnIfUnoptimised();
-    LoomConfig config;
-    config.width = 1600;
-    config.height = 940;
-    config.appName = "Loom";
-    config.engineName = "Loom";
-    config.enableDepth = false;
-    //Splat rasterizator trazi 21 set i 71 storage buffer; zadanih 64 po tipu strog driver odbije
-    //PBR materijali (LoomPbr.h) trebaju po materijalu set s pet mapa, u svakom kadru u letu
-    config.maxDescriptorSets = 1024;
-    LoomInitializer loom(config);
-
-    GLFWwindow* window = loom.window->getWindow();
-    Treadle::Ui ui;
-    UiPainter painter(loom.device, loom.command, loom.getDescriptorPool(),
-                      loom.getColorFormat(), vk::Format::eUndefined, 1u << 18);
-
-    //Scena ima svoj slikar: oblak od sto tisuca tocaka ne stane u kapacitet suicelja
-    UiPainter scenePainter(loom.device, loom.command, loom.getDescriptorPool(),
-                           loom.getColorFormat(), vk::Format::eUndefined, 1u << 20);
-    //Sloj IZNAD meseva: strelice, krugovi i alat plohe. Tocke i mreza su ispod njih - crte nemaju
-    //dubinu, pa bi gusti zid tocaka iza kocke inace prekrio cijelu kocku
-    //Kapacitet: odabir plohe istakne do 12000 tocaka (po 4 vrha), plus strelice i disk plohe
-    UiPainter overlayPainter(loom.device, loom.command, loom.getDescriptorPool(),
-                             loom.getColorFormat(), vk::Format::eUndefined, 1u << 17);
-
-    //Argumenti: prva mapa, pa zastavice za snimku (vidi zaglavlje)
-    fs::path startAt = fs::current_path();
-    std::string startProject;             //loom projekt.usda otvara projekt
-    std::string shotPath, shotResult, shotSave, shotMotion;
-    std::string shotModel;                //--model: glTF na mjestu pogleda
-    std::vector<std::string> shotMotionText;  //--tekst: panel pokreta otvoren, jedna radnja po zastavici
-    float shotSurface[4] = {0, 0, 0, 0};  //--ploha x y sirina visina: pravokutnik u pogledu, pa kocka na plohu
-    bool shotSurfaceWanted = false;
-    double shotFrame = -1.0;
-    bool shotThrough = false, shotCube = false, shotNoSplat = false, shotRotate = false;
-    double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
-    for(int i = 1; i < argc; ++i){
-        const std::string argument = argv[i];
-        if(argument == "--snimi" && i + 1 < argc) shotPath = argv[++i];
-        else if(argument == "--rezultat" && i + 1 < argc) shotResult = argv[++i];
-        else if(argument == "--kadar" && i + 1 < argc) shotFrame = std::atof(argv[++i]);
-        else if(argument == "--kroz") shotThrough = true;
-        else if(argument == "--bez-splata") shotNoSplat = true;
-        else if(argument == "--rotacija") shotRotate = true;
-        else if(argument == "--pokret" && i + 1 < argc) shotMotion = argv[++i];
-        else if(argument == "--model" && i + 1 < argc) shotModel = argv[++i];
-        else if(argument == "--tekst" && i + 1 < argc) shotMotionText.push_back(argv[++i]);
-        else if(argument == "--ploha" && i + 4 < argc){
-            for(int k = 0; k < 4; ++k) shotSurface[k] = float(std::atof(argv[++i]));
-            shotSurfaceWanted = true;
-        }
-        else if(argument == "--spremi" && i + 1 < argc) shotSave = argv[++i];
-        else if(argument == "--kocka") shotCube = true;
-        else if(argument == "--kocka-u" && i + 1 < argc){ shotCube = true; shotCubeFrame = std::atof(argv[++i]); }
-        else if(argument.size() > 5 && argument.substr(argument.size() - 5) == ".usda") startProject = argument;
-        else if(argument.rfind("--", 0) != 0) startAt = argument;
-    }
-
-    Browser browser;
-    browser.at = startAt;
-    browser.refresh();
-    auto lastBrowse = std::chrono::steady_clock::now();
-
-    //-- scena i odabir -------------------------------------------------------------------------
-    Warp::Stage stage;
-    Warp::Id selected = Warp::None;
-    Warp::Id lastTrailSelection = Warp::None;
-    std::vector<Warp::Id> selectionTrail;
-    std::set<Warp::Id> collapsed;
-    int selectedMedia = -1;
-    Focus focus = Focus::Entity;
-    Warp::Id menuEntity = Warp::None;
-    std::vector<bool> entityOrbitFavorites{false, true, false, false};
-    std::vector<bool> viewOrbitFavorites{true, false, false, true, false, false, false};
-    glm::vec2 menuPixel(0.0f);            //gdje je desni klik otvorio izbornik pogleda
-    int motionPathMenuFrame = -1;         //poza se dodaje na kadar putanje koji je otvorio izbornik
-    int menuMedia = -1;
-    fs::path menuModelAsset;
-
-    double frame = 1.0;
-    bool playing = false;
-    bool showSplat = !shotNoSplat;
-    bool followAnimatorPreview = false;
-
-    Loom::ViewportState view;
-    Loom::SceneExtent extent;
-    bool extentDirty = true;
-
-    float mediaScroll = 0.0f, hierarchyScroll = 0.0f, propertiesScroll = 0.0f;
-    bool outlineVisible = true, componentsVisible = true, timelineVisible = true;
-    bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true;
-    bool pointsExpanded = true, splatExpanded = true, splatCutExpanded = true, materialExpanded = false;
-    RailPane activeRailPane = RailPane::None;
-    std::string message;                  //zadnja poruka korisniku, u alatnoj traci
-    //Pokret iz teksta (LoomMotionPanel.h): panel u pogledu s radnjama, postavkama i povijescu
-    Loom::MotionPanelState motionPanel;
-    struct MotionRigDragState{
-        int control = -1;
-        int pose = -1;
-        glm::vec2 startMouse{0.0f};
-        glm::vec3 startWorld{0.0f};
-        glm::vec3 planeNormal{0.0f, 0.0f, 1.0f};
-        glm::vec3 planeStartHit{0.0f};
-        Loom::MotionPoseConstraint startPose;
-    } motionRigDrag;
-    float motionPanelScroll = 0.0f;
-    struct MotionPlaybackCheckpoint{ std::string label; double first = 1.0, last = 1.0; };
-    std::unordered_map<Warp::Id, std::unordered_map<size_t, std::vector<MotionPlaybackCheckpoint>>> motionPlaybackCheckpoints;
-    Warp::Id motionPathAnchor = Warp::None;
-    auto motionRootAnchor = [&](Warp::Id rigRoot){
-        const Loom::MotionRigRestPose pose = Loom::motionRigRestPose(stage, rigRoot);
-        std::array<Warp::Id, 52> ids;
-        if(Loom::motionFindVerifiedUniRig52(pose, ids)) return ids[0];
-        for(const Loom::MotionRigJointRest& joint : pose.joints){
-            const std::string key = Loom::motionJointKey(joint.name);
-            if(key == "hips" || key == "hip" || key == "pelvis") return joint.id;
-        }
-        return rigRoot;
-    };
-    auto togglePlayback = [&]{
-        if(!playing){
-            const Warp::Id rigId = Loom::motionCharacterForEntity(stage, selected);
-            const Warp::Entity* rig = stage.get(rigId);
-            if(rig && rig->animator && rig->animator->enabled &&
-               rig->animator->activeAnimation < rig->animator->animations.size()){
-                const Warp::AnimationClip& clip = rig->animator->animations[rig->animator->activeAnimation];
-                if(!clip.loop && frame >= clip.endFrame - 1e-9) frame = clip.startFrame;
-            }else if(frame >= stage.endFrame - 1e-9){
-                frame = stage.startFrame;
-            }
-        }
-        playing = !playing;
-    };
-    fs::path generatedMotionPath;
-    Warp::Id generatedMotionTarget = Warp::None;
-    std::vector<Loom::MotionCharacter> sceneMotionCharacters;
-    std::chrono::steady_clock::time_point sceneMotionCharactersRead{};
-    Loom::AutoRigState autoRig;
-    float autoRigScroll = 0.0f;
-
-    //-- poslovi ----------------------------------------------------------------------------------
-    Loom::Job job;
-    std::thread worker;
-    const int steps[] = {1, 5, 10, 20};
-    int stepIndex = 2;
-    float frameCount = 231.0f;
-    float trainSteps = 15000.0f;
-    After afterJob = After::Nothing;
-    std::string jobVideo;                 //snimka koja se solva, za kameru u sceni
-    bool wasRunning = false;
-    Loom::TerminalState terminal;
-    terminal.add("Loom ready. Operations, debug output and errors appear here.");
-    struct AiChatMessage{
-        bool fromUser = false;
-        std::string text;
-        std::vector<Loom::OpenCodeActionRequest> actions;
-        bool actionBatchResolved = false;
-        std::string actionBatchResult;
-    };
-    const fs::path aiChatExecutable = Loom::findOpenCodeExecutable();
-    const fs::path aiChatSkillPath = fs::path(LOOM_ROOT_DIR) / "docs/LOOM_AI_ENGINE_SKILL.md";
-    std::string aiChatSkill, aiChatSkillError;
-    Loom::loadOpenCodeSkillDocument(aiChatSkillPath, aiChatSkill, aiChatSkillError);
-    fs::path aiChatWorkingDirectory;
-    std::string aiChatSetupError;
-    if(!aiChatExecutable.empty()){
-        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        aiChatWorkingDirectory = fs::temp_directory_path() / ("loom-opencode-" + std::to_string(stamp));
-        std::error_code error;
-        const bool created = fs::create_directory(aiChatWorkingDirectory, error);
-        if(error || !created){
-            aiChatSetupError = error ? "Could not create a private temporary chat folder: " + error.message()
-                                     : "The temporary chat folder already exists.";
-            aiChatWorkingDirectory.clear();
-        }else{
-            fs::permissions(aiChatWorkingDirectory, fs::perms::owner_all, fs::perm_options::replace, error);
-            if(error){
-                aiChatSetupError = "Could not secure the temporary chat folder: " + error.message();
-                fs::remove_all(aiChatWorkingDirectory, error);
-                aiChatWorkingDirectory.clear();
-            }
-        }
-    }
-    std::mutex aiChatLock;
-    std::vector<AiChatMessage> aiChatMessages;
-    std::string aiChatInput, aiChatSession, aiChatStatus;
-    bool aiChatBusy = false;
-    float aiChatScroll = 0.0f;
-    std::thread aiChatWorker;
-    auto sendAiChatPrompt = [&](const std::string& prompt){
-        if(prompt.empty()) return;
-        if(!aiChatSkillError.empty() || aiChatSkill.empty()){
-            std::lock_guard<std::mutex> guard(aiChatLock);
-            aiChatStatus = aiChatSkillError.empty() ? "Loom AI skill document is empty." : aiChatSkillError;
-            return;
-        }
-        if(aiChatExecutable.empty()){
-            std::lock_guard<std::mutex> guard(aiChatLock);
-            aiChatStatus = "OpenCode was not found on PATH.";
-            return;
-        }
-        if(!aiChatSetupError.empty()){
-            std::lock_guard<std::mutex> guard(aiChatLock);
-            aiChatStatus = aiChatSetupError;
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> guard(aiChatLock);
-            if(aiChatBusy) return;
-        }
-        if(aiChatWorker.joinable()) aiChatWorker.join();
-
-        size_t assistantIndex = 0;
-        std::string previousSession;
-        {
-            std::lock_guard<std::mutex> guard(aiChatLock);
-            if(aiChatBusy) return;
-            if(aiChatMessages.size() >= 80) aiChatMessages.erase(aiChatMessages.begin(), aiChatMessages.begin() + 2);
-            aiChatMessages.push_back({true, prompt});
-            aiChatMessages.push_back({false, "Thinking..."});
-            assistantIndex = aiChatMessages.size() - 1;
-            previousSession = aiChatSession;
-            aiChatBusy = true;
-            aiChatStatus = "OpenCode is responding...";
-            aiChatScroll = 1000000.0f;
-        }
-        aiChatWorker = std::thread([&, prompt, assistantIndex,
-                                    session = std::move(previousSession)]() mutable{
-            std::string error;
-            Loom::OpenCodeChatResponse response;
-            const bool succeeded = Loom::runOpenCodeChatMessage(aiChatExecutable, aiChatWorkingDirectory,
-                aiChatSkill, prompt, session, response, error);
-            std::lock_guard<std::mutex> guard(aiChatLock);
-            aiChatSession = std::move(session);
-            if(assistantIndex < aiChatMessages.size()){
-                if(succeeded){
-                    aiChatMessages[assistantIndex].text = response.answer;
-                    if(!response.protocolWarning.empty())
-                        aiChatMessages[assistantIndex].text += "\n" + response.protocolWarning;
-                    aiChatMessages[assistantIndex].actions = std::move(response.actions);
-                }else aiChatMessages[assistantIndex].text = "OpenCode error: " + error;
-            }
-            aiChatBusy = false;
-            aiChatStatus = succeeded ? "OpenCode ready" : "OpenCode could not complete the request.";
-            aiChatScroll = 1000000.0f;
-        });
-    };
-
-    //Zivi snimak dok solve tece: zasebna scena, da se ne mijesa s onim sto je umjetnik slozio
-    Warp::Stage live;
-    auto lastRead = std::chrono::steady_clock::now();
-    auto lastFrame = std::chrono::steady_clock::now();
-    float smoothedFps = 0.0f;
-
-    static float scrollAccumulated = 0.0f;
-    glfwSetScrollCallback(window, [](GLFWwindow*, double, double y){ scrollAccumulated += float(y); });
-    //Tipke za polje za tekst, s PONAVLJANJEM (GLFW_REPEAT) - drzani Backspace brise dalje
-    static std::vector<Treadle::KeyEvent> typedKeys;
-    glfwSetKeyCallback(window, [](GLFWwindow*, int key, int, int action, int mods){
-        if(action != GLFW_PRESS && action != GLFW_REPEAT) return;
-        Treadle::KeyEvent event;
-        event.shift = (mods & GLFW_MOD_SHIFT) != 0;
-        event.ctrl = (mods & GLFW_MOD_CONTROL) != 0;
-        switch(key){
-            case GLFW_KEY_LEFT: event.key = Treadle::Key::Left; break;
-            case GLFW_KEY_RIGHT: event.key = Treadle::Key::Right; break;
-            case GLFW_KEY_UP: event.key = Treadle::Key::Up; break;
-            case GLFW_KEY_DOWN: event.key = Treadle::Key::Down; break;
-            case GLFW_KEY_HOME: event.key = Treadle::Key::Home; break;
-            case GLFW_KEY_END: event.key = Treadle::Key::End; break;
-            case GLFW_KEY_BACKSPACE: event.key = Treadle::Key::Backspace; break;
-            case GLFW_KEY_DELETE: event.key = Treadle::Key::Delete; break;
-            case GLFW_KEY_ENTER: case GLFW_KEY_KP_ENTER: event.key = Treadle::Key::Enter; break;
-            case GLFW_KEY_ESCAPE: event.key = Treadle::Key::Escape; break;
-            case GLFW_KEY_TAB: event.key = Treadle::Key::Tab; break;
-            case GLFW_KEY_A: event.key = Treadle::Key::A; break;
-            case GLFW_KEY_C: event.key = Treadle::Key::C; break;
-            case GLFW_KEY_X: event.key = Treadle::Key::X; break;
-            case GLFW_KEY_V: event.key = Treadle::Key::V; break;
-            default: return;
-        }
-        typedKeys.push_back(event);
-    });
-    ui.getClipboard = [window](){ const char* text = glfwGetClipboardString(window); return std::string(text ? text : ""); };
-    ui.setClipboard = [window](const std::string& text){ glfwSetClipboardString(window, text.c_str()); };
-    static std::string typedCharacters;
-    glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint){
-        if(codepoint < 32 || codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return;
-        if(codepoint <= 0x7f){
-            typedCharacters.push_back(static_cast<char>(codepoint));
-        }else if(codepoint <= 0x7ff){
-            typedCharacters.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
-            typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
-        }else if(codepoint <= 0xffff){
-            typedCharacters.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
-            typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
-            typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
-        }else{
-            typedCharacters.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
-            typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
-            typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
-            typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
-        }
-    });
-
-    //Strelice za pomicanje i rotacija u stupnjevima. Kutovi se pamte dok se uredjuju: kvaternion
-    //natrag u Eulerove kutove nije jednoznacan, pa bi polje koje se vuce preko 90 st skocilo
-    int gizmoAxisHeld = -1, gizmoAxisHot = -1;
-    glm::mat4 transformGhostStart{1.0f};
-    Warp::Id transformGhostId = Warp::None;
-    bool transformGhostActive = false;
-    int pathDragIndex = -1;
-    //W pomice, E okrece - kao u Mayi i Houdiniju
-    enum class Tool{ Move, Rotate };
-    Tool tool = shotRotate ? Tool::Rotate : Tool::Move;
-    glm::vec3 eulerCache(0.0f);
-    Warp::Id eulerFor = Warp::None;
-    double eulerFrame = -1.0;
-
-    Keys keys;
-    bool leftWasDown = false, middleWasDown = false, rightWasDown = false;
-    bool leftInViewport = false, dragging = false, middleDragging = false;
-    double pressX = 0.0, pressY = 0.0, lastX = 0.0, lastY = 0.0;
-
-    auto startJob = [&](const std::string& command, const std::string& output, Loom::Task task, int total){
-        if(worker.joinable()) worker.join();
-        {
-            std::lock_guard<std::mutex> guard(job.lock);
-            job.lines.clear();
-            job.firstLineIndex = 0;
-            job.nextLineIndex = 0;
-            terminal.jobNextLineIndex = 0;
-        }
-        terminal.add("Starting operation: " + command, Loom::TerminalLevel::Running);
-        worker = std::thread(Loom::runSolve, std::ref(job), command, output, task, total);
-    };
-
-    auto startSolve = [&](int mediaIndex, bool thenSplat){
-        if(job.running || mediaIndex < 0 || mediaIndex >= int(stage.media.size())) return;
-        const fs::path video = stage.media[size_t(mediaIndex)].path;
-        const fs::path out = Loom::resultFolderFor(video);
-        std::error_code ignored;
-        fs::create_directories(out, ignored);
-        //STARI SNIMAK SE BRISE prije novog posla. Bez toga bi se prvih sekundi crtala scena iz
-        //proslog prolaza iste snimke - uredna, uvjerljiva i kriva
-        fs::remove(out / "napredak.bin", ignored);
-        //Za matchmove bez slika kadrova (vidi --samo-kamera u VideoSolveu); splat ih treba.
-        //SPLAT UZ PUNE SLICICE (--then): VideoSolve pokrene trening cim zapise COLMAP, pa kartica
-        //trenira dok procesor lokalizira medjukadrove - 5.5 minuta manje na cijeloj C0257
-        char command[3000];
-        std::string then;
-        if(thenSplat){
-            const std::string o = out.string();
-            then = " --then 'cd \"" + std::string(LOOM_ROOT_DIR) + "\" && PATH=\"" + std::string(LOOM_ROOT_DIR) +
-                   "/.venv/bin:$PATH\" ./.venv/bin/python tools/splat/train_splats.py \"" + o + "\" \"" + o +
-                   "/images\" \"" + o + "/scena.ply\" --steps " + std::to_string(int(trainSteps)) + "'";
-        }
-        std::snprintf(command, sizeof(command), "./VideoSolve \"%s\" %d %d 0 \"%s\"%s%s",
-                      video.string().c_str(), steps[stepIndex], int(frameCount), out.string().c_str(),
-                      thenSplat ? "" : " --samo-kamera", then.c_str());
-        jobVideo = video.string();
-        afterJob = thenSplat ? After::ImportAndTrain : After::Import;
-        live = Warp::Stage{};
-        startJob(command, out.string(), Loom::Task::Solve, 0);
-        message = "Solve started: " + video.filename().string();
-    };
-
-    auto startTrain = [&](const std::string& directory){
-        if(job.running) return;
-        const std::string splat = directory + "/scena.ply";
-        char command[1600];
-        std::snprintf(command, sizeof(command),
-                      //VENV SE AKTIVIRA, ne zaobilazi: torch trazi `ninja` u PATH-u da prevede
-                      //gsplatovu CUDA ekstenziju, a izravno pozvan python ne stavi .venv/bin u PATH
-                      "cd \"%s\" && PATH=\"%s/.venv/bin:$PATH\" "
-                      "./.venv/bin/python tools/splat/train_splats.py "
-                      "\"%s\" \"%s/images\" \"%s\" --steps %d",
-                      LOOM_ROOT_DIR, LOOM_ROOT_DIR, directory.c_str(), directory.c_str(), splat.c_str(),
-                      int(trainSteps));
-        afterJob = After::AddSplat;
-        startJob(command, directory, Loom::Task::Train, int(trainSteps));
-        message = "Training started";
-    };
-
-    auto importFolder = [&](const fs::path& directory, const std::string& givenPlate){
-        //Snimka uz rezultat postaje ploca kamere i kad ju pozivatelj nije znao
-        const std::string plate = givenPlate.empty() ? Loom::plateFor(directory) : givenPlate;
-        const Loom::ImportReport report = Loom::importResult(stage, directory, plate);
-        if(!report.problem.empty()){ message = report.problem; return; }
-        selected = report.camera;
-        focus = Focus::Entity;
-        frame = stage.startFrame;
-        extent = Loom::sceneExtent(stage, frame);
-        extentDirty = false;
-        view.lookThrough = Warp::None;
-        Loom::frameAll(stage, frame, view.orbit);
-        char text[160];
-        std::snprintf(text, sizeof(text), "Imported %s: %zu camera keys%s", directory.filename().string().c_str(),
-                      report.cameraKeys, report.upright ? ", upright" : "");
-        message = text;
-    };
-
-
-
-    //NOVO TIJELO SJEDI NA POVRSINI SNIMKE ondje kamo se gleda: na tockama oblaka pod sredinom
-    //pogleda (ili pod misem, kad je dodano desnim klikom u pogled). Kroz rijesenu kameru to je
-    //stvarni zid ili stol u kadru - bas ondje gdje se provjerava drzi li se kocka snimke. Kad pod
-    //pikselom nema tocaka, zraka se spusti na pod (y = 0), a kad ni to ne ide, sredina scene.
-    //Velicina je iz udaljenosti (solve nema metre): desetina puta do mjesta
-    auto addMeshAt = [&](Warp::Shape shape, Warp::Id parent, glm::vec2 pixel, bool usePixel){
-        const char* name = shape == Warp::Shape::Cube ? "Cube" : "Plane";
-        const Warp::Id id = stage.create(name, parent);
-        Warp::Entity& entity = *stage.get(id);
-        entity.mesh = Warp::Mesh{shape};
-
-        int w = 0, h = 0;
-        glfwGetWindowSize(window, &w, &h);
-        const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible).viewport, view);
-        if(!usePixel) pixel = glm::vec2(camera.frame.x + camera.frame.width * 0.5f, camera.frame.y + camera.frame.height * 0.5f);
-        const glm::mat4 inverse = glm::inverse(camera.view);
-        const glm::vec3 eye = glm::vec3(inverse[3]);
-        const glm::vec3 ray = glm::normalize(glm::vec3(inverse * glm::vec4((pixel.x - camera.centre.x) / camera.focal,
-                                                                            -(pixel.y - camera.centre.y) / camera.focal, -1.0f, 0.0f)));
-        glm::vec3 place(extent.centre.x, 0.0f, extent.centre.z);
-        bool onSurface = Loom::surfaceAt(stage, frame, camera, pixel, place);
-        if(!onSurface && ray.y < -1e-3f && eye.y > 0.0f && -eye.y / ray.y < extent.radius * 20.0f){
-            place = eye + ray * (-eye.y / ray.y);
-        }
-        const float distance = std::max(1e-4f, glm::length(place - eye));
-        const float size = distance * (shape == Warp::Shape::Cube ? 0.1f : 0.4f);
-        //Na podu kocka stoji NA njemu; na zidu ili stolu joj je sredina na plohi
-        const glm::vec3 worldPosition = onSurface ? place
-                                                  : glm::vec3(place.x, shape == Warp::Shape::Cube ? size * 0.5f : 0.0f, place.z);
-        const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
-        entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(worldPosition, 1.0f));
-        entity.local.scale = glm::vec3(size);
-        selected = id;
-        focus = Focus::Entity;
-    };
-    auto addMesh = [&](Warp::Shape shape, Warp::Id parent){ addMeshAt(shape, parent, glm::vec2(0.0f), false); };
-
-    //POKRET LIKA (WeaverMotion, NVIDIA Kimodo): BVH postaje kostur u sceni (vidi LoomWeaverMotion.h).
-    //U praznoj sceni klip preuzme timeline. U sceni iz matchmovea pocinje na kadru glave, u vremenu
-    //scene, i STOJI NA PODU ispod mjesta u koje pogled gleda:
+    // Loom kao editor: `loom` u terminalu otvori prozor u kojem se snimka pretvara u scenu.
     //
-    //  mjesto    gdje sredisnja zraka pogleda presijece pod (y = 0); kad gleda vodoravno ili gore -
-    //            snimka iz ruke gotovo uvijek - pod ispod tocke na koju gleda (povrsina snimke, ili
-    //            tocka na udaljenosti scene)
-    //  mjerilo   solve nema metre, ali kamera iz ruke je na visini oka, oko 1.5 m iznad poda. Visina
-    //            kamere nad podom je zato najbolja procjena metra koju scena daje; Kimodo pise metre.
-    //            Kamera na stativu, dronu ili niskom kutu to krsi - dotjeruje se na grupi
-    auto newestMotionInBrowser = [&]() -> fs::path{
-        fs::path newest;
-        std::filesystem::file_time_type newestTime{};
-        for(const fs::path& motion : browser.motions){
+    //   media (lijevo)        snimke projekta i datoteke na disku; desni klik na snimku solva
+    //   pogled (sredina)      scena: oblak, kamere, kocke - slobodno ili kroz rijesenu kameru
+    //   hijerarhija (desno)   stablo scene (Warp), ispod njega svojstva odabranog
+    //   timeline (dolje)      kadar snimke; rijesena kamera se po njemu krece
+    //
+    // ZASTO EDITOR. Solve je dosad zavrsavao datotekom, a je li dobar vidjelo se tek u Nukeu ili
+    // Blenderu. Matchmove se provjerava tako da se kocka postavi u scenu i gleda kroz rijesenu kameru
+    // preko cijelog kadra - to je sada ovdje, jedan desni klik od snimke.
+    //
+    // Solve i trening se i dalje pokrecu kao zasebni procesi (vidi LoomJob.h); editor cita njihov
+    // ispis i zivi snimak, a kad zavrse, rezultat ulazi u scenu sam.
+    //
+    // SNIMKA PROZORA IZ SAMOG EDITORA. Prozor se na ovom sustavu ne da snimiti izvana, pa editor zna
+    // sam odraditi ono sto bi korisnik kliknuo i spremiti kadar:
+    //
+    //   loom <mapa> --snimi slika.png --rezultat C0256_loom [--kadar 120] [--kroz] [--kocka | --kocka-u 90] [--pokret hod.bvh]
+    //
+    // uveze rezultat, po zelji doda kocku (postavljenu u kadru 90) i gleda kroz rijesenu kameru, pa
+    // spremi kadar i izadje.
+    // Tako se editor provjerava okom, a ne samo testom racuna
+    //
+    // SNIMKA IZA SCENE (V). Kroz rijesenu kameru se iza scene crta pravi kadar snimke - ploca. Tu se
+    // matchmove presudjuje: kocka na podu mora stajati na istom mjestu snimke kroz cijeli kadar
+    #include "Core/LoomConfig.h"
+    #include "Core/LoomInitializer.h"
+    
+    #include "LoomEditor.h"
+    #include "LoomJob.h"
+    #include "LoomTerminal.h"
+    #include "LoomPlate.h"
+    #include "LoomCompositor.h"
+    #include "LoomScene.h"
+    #include "LoomSplat.h"
+    #include "LoomSplatCut.h"
+    #include "LoomUndo.h"
+    #include "LoomAutosave.h"
+    #include "LoomEditorTools.h"
+    #include "LoomImporter.h"
+    #include "LoomPbr.h"
+    #include "LoomViewport.h"
+    #include "LoomWeaverMotion.h"
+    #include "LoomMotionPanel.h"
+    #include "LoomProcedura.h"
+    #include "LoomMotionLive.h"
+    #include "LoomMoodboard.h"
+    #include "LoomAutoRig.h"
+    
+    #include "Vulkan/ImageData.h"
+    #include "Vulkan/Material.h"
+    #include "Vulkan/StreamingTexture.h"
+    #include "Vulkan/Texture.h"
+    
+    #include <Spool/ImageFile.h>
+    #include <Warp/Project.h>
+    #include <Spool/VideoFile.h>
+    #include <Treadle/Ui.h>
+    #include <TreadlePaint/UiPainter.h>
+    
+    #include <GLFW/glfw3.h>
+    
+    #include <algorithm>
+    #include <chrono>
+    #include <ctime>
+    #include <fstream>
+    #include <cmath>
+    #include <cctype>
+    #include <cstdint>
+    #include <cstdio>
+    #include <initializer_list>
+    #include <cstdlib>
+    #include <filesystem>
+    #include <limits>
+    #include <mutex>
+    #include <set>
+    #include <string>
+    #include <thread>
+    #include <unordered_map>
+    #include <vector>
+    
+    namespace{
+    
+    namespace fs = std::filesystem;
+    
+    bool hasMotionBricksCheckpoints(const fs::path& motionBricksRoot){
+        const auto isModelFile = [](const fs::path& path, std::uintmax_t minimumBytes){
             std::error_code error;
-            const auto modified = fs::last_write_time(motion, error);
-            if(error) continue;
-            if(newest.empty() || modified > newestTime){
-                newest = motion;
-                newestTime = modified;
+            return fs::is_regular_file(path, error) && fs::file_size(path, error) >= minimumBytes;
+        };
+        return isModelFile(motionBricksRoot / "out/G1-clip.ckpt", 1024u * 1024u) &&
+            isModelFile(motionBricksRoot / "out/motionbricks_vqvae/version_1/checkpoints/model-step=2000000.ckpt", 100u * 1024u * 1024u) &&
+            isModelFile(motionBricksRoot / "out/motionbricks_pose/version_1/checkpoints/model-step=2000000.ckpt", 100u * 1024u * 1024u) &&
+            isModelFile(motionBricksRoot / "out/motionbricks_root/version_1/checkpoints/model-step=2000000.ckpt", 100u * 1024u * 1024u);
+    }
+    
+    //Sto je u mapi koju media prozor pregledava. Osvjezava se kad se mapa promijeni i povremeno,
+    //jer solve u pozadini stvara nove mape rezultata
+    struct Browser{
+        fs::path at;
+        std::vector<fs::path> folders, videos, results, projects, motions, models, images, splats;
+    
+        void refresh(){
+            folders.clear();
+            projects.clear();
+            splats.clear();
+            results = Loom::resultsIn(at);
+            videos = Loom::videosIn(at);
+            motions = Loom::weaverMotionFilesIn(at);
+            models = Loom::modelFilesIn(at);
+            images = Loom::imageFilesIn(at);
+            std::error_code error;
+            for(const auto& entry : fs::directory_iterator(at, error)){
+                if(error) break;
+                const std::string name = entry.path().filename().string();
+                if(entry.is_regular_file(error) && entry.path().extension() == ".usda" &&
+                   Warp::isProjectFile(entry.path().string())){
+                    projects.push_back(entry.path());
+                    continue;
+                }
+                if(entry.is_regular_file(error) && entry.path().extension() == ".ply" && Loom::isGaussianPly(entry.path().string())){
+                    splats.push_back(entry.path());
+                    continue;
+                }
+                if(!entry.is_directory(error) || name.empty() || name[0] == '.') continue;
+                if(Loom::isResultDirectory(entry.path())) continue;
+                folders.push_back(entry.path());
             }
+            std::sort(folders.begin(), folders.end());
+            std::sort(projects.begin(), projects.end());
+            std::sort(splats.begin(), splats.end());
         }
-        return newest;
     };
-
-    auto importMotion = [&](const fs::path& path, Warp::Id targetCharacter,
-                            Loom::MotionCompareMode compare = Loom::MotionCompareMode::None){
-        Loom::MotionPlacement placement;
-        if(stage.size() > 0){
-            int w = 0, h = 0;
-            glfwGetWindowSize(window, &w, &h);
-            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible).viewport, view);
-            const glm::vec2 centre(camera.frame.x + camera.frame.width * 0.5f, camera.frame.y + camera.frame.height * 0.5f);
-            const Loom::Ray ray = Loom::rayThrough(camera, centre);
-            glm::vec3 place;
-            const bool hitsFloor = ray.direction.y < -1e-3f && ray.origin.y > 0.0f &&
-                                   -ray.origin.y / ray.direction.y < extent.radius * 20.0f;
-            if(hitsFloor){
-                place = ray.origin + ray.direction * (-ray.origin.y / ray.direction.y);
-            }else{
-                glm::vec3 looked;
-                if(!Loom::surfaceAt(stage, frame, camera, centre, looked)){
-                    looked = ray.origin + ray.direction * glm::length(extent.centre - ray.origin);
-                }
-                place = glm::vec3(looked.x, 0.0f, looked.z);
+    
+    //Tipka kao dogadjaj: true samo u kadru u kojem je pritisnuta
+    struct Keys{
+        bool was[GLFW_KEY_LAST + 1] = {false};
+        bool pressed(GLFWwindow* window, int key){
+            const bool down = glfwGetKey(window, key) == GLFW_PRESS;
+            const bool result = down && !was[key];
+            was[key] = down;
+            return result;
+        }
+    };
+    
+    //Podaci o snimci za projekt. Snimka koja se ne da otvoriti ulazi svejedno, s nulama - solve ce
+    //reci zasto, glasnije nego sto bi to ovdje moglo
+    Warp::Media probeMedia(const fs::path& path){
+        Warp::Media media;
+        media.path = path.string();
+        try{
+            Spool::VideoReader reader(path.string());
+            const Spool::VideoInfo& info = reader.info();
+            media.width = info.width;
+            media.height = info.height;
+            media.frames = uint32_t(std::max<int64_t>(0, info.frameCount));
+            media.framesPerSecond = info.frameRate() > 0.0 ? info.frameRate() : 25.0;
+        }catch(const std::exception&){}
+        const fs::path result = Loom::resultFolderFor(path);
+        if(Loom::isResultDirectory(result)) media.result = result.string();
+        return media;
+    }
+    
+    std::string tail(const std::string& text, size_t length){
+        return text.size() > length ? ".." + text.substr(text.size() - length + 2) : text;
+    }
+    
+    std::string number(float value){
+        char text[32];
+        std::snprintf(text, sizeof(text), std::fabs(value) < 100.0f ? "%.3f" : "%.1f", double(value));
+        return text;
+    }
+    
+    std::string vectorText(const glm::vec3& v){
+        return number(v.x) + " " + number(v.y) + " " + number(v.z);
+    }
+    
+    //Sto entitet jest, za svojstva
+    std::string kindOf(const Warp::Entity& entity){
+        if(entity.camera) return "Camera";
+        if(entity.points) return "Point Cloud";
+        if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "Cube" : "Plane";
+        if(entity.splat) return "Gaussian Splat";
+        if(entity.joint) return "Joint";
+        if(entity.model) return "Model (glTF)";
+        return entity.children.empty() ? "Null" : "Group";
+    }
+    
+    Treadle::Color sceneAccent(const Warp::Entity& entity){
+        if(entity.camera) return {0.18f, 0.88f, 1.0f, 1.0f};
+        if(entity.splat) return {0.94f, 0.42f, 0.96f, 1.0f};
+        if(entity.joint) return {1.0f, 0.55f, 0.23f, 1.0f};
+        if(entity.points) return {0.40f, 0.94f, 0.56f, 1.0f};
+        if(entity.mesh || entity.model) return {0.31f, 0.61f, 1.0f, 1.0f};
+        if(entity.animator) return {0.38f, 0.94f, 0.60f, 1.0f};
+        return {0.88f, 0.72f, 0.35f, 1.0f};
+    }
+    
+    std::string sceneTag(const Warp::Entity& entity){
+        if(entity.camera) return "CAM";
+        if(entity.splat) return "SPLAT";
+        if(entity.joint) return "BONE";
+        if(entity.points) return "POINTS";
+        if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "CUBE" : "PLANE";
+        if(entity.model) return "MODEL";
+        if(entity.animator) return "RIG";
+        return entity.children.empty() ? "NODE" : "GROUP";
+    }
+    
+    
+    struct AssetStyle{ std::string badge; Treadle::Color colour; };
+    
+    AssetStyle assetStyle(const fs::path& path, const std::string& kind){
+        std::string extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char c){ return char(std::toupper(c)); });
+        if(!extension.empty() && extension.front() == '.') extension.erase(extension.begin());
+        if(kind == "video"){
+            if(extension == "MOV") return {extension, {0.28f, 0.55f, 1.0f, 1.0f}};
+            if(extension == "MKV") return {extension, {0.72f, 0.43f, 1.0f, 1.0f}};
+            if(extension == "AVI") return {extension, {1.0f, 0.32f, 0.47f, 1.0f}};
+            return {extension.empty() ? "VID" : extension, {0.16f, 0.87f, 1.0f, 1.0f}};
+        }
+        if(kind == "image") return {extension == "JPEG" ? "JPG" : (extension.empty() ? "IMG" : extension), {1.0f, 0.30f, 0.73f, 1.0f}};
+        if(kind == "project") return {"USD", {0.42f, 1.0f, 0.42f, 1.0f}};
+        if(kind == "motion") return {"BVH", {1.0f, 0.52f, 0.19f, 1.0f}};
+        if(kind == "model") return {extension == "GLTF" ? "GLTF" : (extension.empty() ? "3D" : extension), {0.34f, 0.58f, 1.0f, 1.0f}};
+        return {"SOLV", {1.0f, 0.78f, 0.20f, 1.0f}};
+    }
+    
+    //Rotacija iz matrice koja moze nositi i mjerilo: stupci se normiraju prije pretvorbe
+    glm::quat rotationOf(const glm::mat4& m){
+        return glm::normalize(glm::quat_cast(glm::mat3(glm::normalize(glm::vec3(m[0])), glm::normalize(glm::vec3(m[1])),
+                                                       glm::normalize(glm::vec3(m[2])))));
+    }
+    
+    enum class Focus{ Entity, Media };
+    enum class RailPane{ None, Media, Scene, Components, Motion, Procedura, Timeline, Terminal, AiChat, Compositor };
+    enum class After{ Nothing, Import, ImportAndTrain, AddSplat };
+    
+    }
+    
+    int main(int argc, char** argv){
+        Loom::warnIfUnoptimised();
+        LoomConfig config;
+        config.width = 1600;
+        config.height = 940;
+        config.appName = "Loom";
+        config.engineName = "Loom";
+        config.enableDepth = false;
+        //Splat rasterizator trazi 21 set i 71 storage buffer; zadanih 64 po tipu strog driver odbije
+        //PBR materijali (LoomPbr.h) trebaju po materijalu set s pet mapa, u svakom kadru u letu
+        config.maxDescriptorSets = 1024;
+        LoomInitializer loom(config);
+    
+        GLFWwindow* window = loom.window->getWindow();
+        Treadle::Ui ui;
+        UiPainter painter(loom.device, loom.command, loom.getDescriptorPool(),
+                          loom.getColorFormat(), vk::Format::eUndefined, 1u << 18);
+    
+        //Scena ima svoj slikar: oblak od sto tisuca tocaka ne stane u kapacitet suicelja
+        UiPainter scenePainter(loom.device, loom.command, loom.getDescriptorPool(),
+                               loom.getColorFormat(), vk::Format::eUndefined, 1u << 20);
+        //Sloj IZNAD meseva: strelice, krugovi i alat plohe. Tocke i mreza su ispod njih - crte nemaju
+        //dubinu, pa bi gusti zid tocaka iza kocke inace prekrio cijelu kocku
+        //Kapacitet: odabir plohe istakne do 12000 tocaka (po 4 vrha), plus strelice i disk plohe
+        UiPainter overlayPainter(loom.device, loom.command, loom.getDescriptorPool(),
+                                 loom.getColorFormat(), vk::Format::eUndefined, 1u << 17);
+    
+        //Argumenti: prva mapa, pa zastavice za snimku (vidi zaglavlje)
+        fs::path startAt = fs::current_path();
+        std::string startProject;             //loom projekt.usda otvara projekt
+        std::string shotPath, shotResult, shotSave, shotMotion;
+        std::string shotModel;                //--model: glTF na mjestu pogleda
+        std::vector<std::string> shotMotionText;  //--tekst: panel pokreta otvoren, jedna radnja po zastavici
+        float shotSurface[4] = {0, 0, 0, 0};  //--ploha x y sirina visina: pravokutnik u pogledu, pa kocka na plohu
+        bool shotSurfaceWanted = false;
+        double shotFrame = -1.0;
+        bool shotThrough = false, shotCube = false, shotNoSplat = false, shotRotate = false;
+        double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
+        for(int i = 1; i < argc; ++i){
+            const std::string argument = argv[i];
+            if(argument == "--snimi" && i + 1 < argc) shotPath = argv[++i];
+            else if(argument == "--rezultat" && i + 1 < argc) shotResult = argv[++i];
+            else if(argument == "--kadar" && i + 1 < argc) shotFrame = std::atof(argv[++i]);
+            else if(argument == "--kroz") shotThrough = true;
+            else if(argument == "--bez-splata") shotNoSplat = true;
+            else if(argument == "--rotacija") shotRotate = true;
+            else if(argument == "--pokret" && i + 1 < argc) shotMotion = argv[++i];
+            else if(argument == "--model" && i + 1 < argc) shotModel = argv[++i];
+            else if(argument == "--tekst" && i + 1 < argc) shotMotionText.push_back(argv[++i]);
+            else if(argument == "--ploha" && i + 4 < argc){
+                for(int k = 0; k < 4; ++k) shotSurface[k] = float(std::atof(argv[++i]));
+                shotSurfaceWanted = true;
             }
-            placement.position = place;
-            placement.startFrame = std::round(frame);
-            placement.sceneFps = stage.framesPerSecond;
-            placement.animationName = Loom::motionClipName(path);
-            Engine::WeaverMotion::Clip clip;
-            std::string error;
-            if(!Engine::WeaverMotion::readKimodoBvh(path.string(), clip, error)){ message = "Could not read motion: " + error; return; }
-            const float eyeHeight = ray.origin.y;
-            placement.scale = eyeHeight > 1e-4f ? eyeHeight / 1.5f
-                                                : 0.35f * std::max(1e-4f, glm::length(place - ray.origin)) /
-                                                  std::max(1e-4f, Loom::motionRestHeight(clip));
-            Warp::Id resolvedTarget = compare == Loom::MotionCompareMode::SourceSkeleton
-                ? Warp::None : Loom::motionCharacterForEntity(stage, targetCharacter);
-            if(compare == Loom::MotionCompareMode::SourceSkeleton){
-                const Warp::Id previewTarget = Loom::motionCharacterForEntity(stage, targetCharacter);
-                if(previewTarget != Warp::None){
-                    const Loom::MotionRigRestPose targetRest = Loom::motionRigRestPose(stage, previewTarget);
-                    const float sourceHeight = Loom::motionRestHeight(clip);
-                    if(targetRest.bounds.valid && sourceHeight > 1e-5f)
-                        placement.scale = targetRest.bounds.height() / sourceHeight;
-                    placement.position = glm::vec3(stage.worldMatrix(previewTarget, frame)[3]);
-                    placement.position.x += 1.5f;
-                    placement.position.y = 0.0f;
-                }
-                placement.animationName += " [source BVH]";
+            else if(argument == "--spremi" && i + 1 < argc) shotSave = argv[++i];
+            else if(argument == "--kocka") shotCube = true;
+            else if(argument == "--kocka-u" && i + 1 < argc){ shotCube = true; shotCubeFrame = std::atof(argv[++i]); }
+            else if(argument.size() > 5 && argument.substr(argument.size() - 5) == ".usda") startProject = argument;
+            else if(argument.rfind("--", 0) != 0) startAt = argument;
+        }
+    
+        Browser browser;
+        browser.at = startAt;
+        browser.refresh();
+        auto lastBrowse = std::chrono::steady_clock::now();
+    
+        //-- scena i odabir -------------------------------------------------------------------------
+        Warp::Stage stage;
+        Warp::Id selected = Warp::None;
+        Warp::Id lastTrailSelection = Warp::None;
+        std::vector<Warp::Id> selectionTrail;
+        std::set<Warp::Id> collapsed;
+        int selectedMedia = -1;
+        Focus focus = Focus::Entity;
+        Warp::Id menuEntity = Warp::None;
+        std::vector<bool> entityOrbitFavorites{false, true, false, false};
+        std::vector<bool> viewOrbitFavorites{true, false, false, true, false, false, false};
+        glm::vec2 menuPixel(0.0f);            //gdje je desni klik otvorio izbornik pogleda
+        int motionPathMenuFrame = -1;         //poza se dodaje na kadar putanje koji je otvorio izbornik
+        int menuMedia = -1;
+        fs::path menuModelAsset;
+    
+        double frame = 1.0;
+        bool playing = false;
+        bool showSplat = !shotNoSplat;
+        bool followAnimatorPreview = false;
+    
+        Loom::ViewportState view;
+        Loom::SceneExtent extent;
+        bool extentDirty = true;
+    
+        float mediaScroll = 0.0f, hierarchyScroll = 0.0f, propertiesScroll = 0.0f;
+        bool outlineVisible = true, componentsVisible = true, timelineVisible = true;
+        bool railHoverOpen = false;
+        float railReveal = 0.0f;
+        static bool compassMinimized = false;
+        bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true;
+        bool pointsExpanded = true, splatExpanded = true, splatCutExpanded = true, materialExpanded = false;
+        RailPane activeRailPane = RailPane::None;
+        std::string message;                  //zadnja poruka korisniku, u alatnoj traci
+        //Pokret iz teksta (LoomMotionPanel.h): panel u pogledu s radnjama, postavkama i povijescu
+        Loom::MotionPanelState motionPanel;
+        Loom::WeaverProceduraPanelState proceduraPanel;
+        struct PoseEditSession{
+            bool active = false;
+            Warp::Id rig = Warp::None;
+            size_t animation = 0;
+            double frame = 0.0;
+            Warp::AnimationClip original;
+            std::vector<std::pair<Warp::Id, Warp::Transform>> basePose;
+        } poseEdit;
+        float poseBlendInFrames = 8.0f;
+        float poseBlendHoldFrames = 24.0f;
+        float poseBlendOutFrames = 12.0f;
+        struct MotionRigDragState{
+            int control = -1;
+            int pose = -1;
+            glm::vec2 startMouse{0.0f};
+            glm::vec3 startWorld{0.0f};
+            glm::vec3 planeNormal{0.0f, 0.0f, 1.0f};
+            glm::vec3 planeStartHit{0.0f};
+            Loom::MotionPoseConstraint startPose;
+        } motionRigDrag;
+        struct AnimatorRigDragState{
+            int control = -1;
+            Warp::Id rig = Warp::None;
+            double frame = 0.0;
+            glm::vec2 startMouse{0.0f};
+            glm::vec3 startWorld{0.0f};
+            glm::vec3 planeNormal{0.0f, 0.0f, 1.0f};
+            glm::vec3 planeStartHit{0.0f};
+            std::array<int, 3> jointIndices{{-1, -1, -1}};
+            std::array<Warp::Transform, 3> startLocal{};
+            size_t jointCount = 0;
+        } animatorRigDrag;
+        float motionPanelScroll = 0.0f;
+        struct MotionPlaybackCheckpoint{ std::string label; double first = 1.0, last = 1.0; };
+        std::unordered_map<Warp::Id, std::unordered_map<size_t, std::vector<MotionPlaybackCheckpoint>>> motionPlaybackCheckpoints;
+        Warp::Id motionPathAnchor = Warp::None;
+        auto motionRootAnchor = [&](Warp::Id rigRoot){
+            const Loom::MotionRigRestPose pose = Loom::motionRigRestPose(stage, rigRoot);
+            std::array<Warp::Id, 52> ids;
+            if(Loom::motionFindVerifiedUniRig52(pose, ids)) return ids[0];
+            for(const Loom::MotionRigJointRest& joint : pose.joints){
+                const std::string key = Loom::motionJointKey(joint.name);
+                if(key == "hips" || key == "hip" || key == "pelvis") return joint.id;
             }
-            if(compare != Loom::MotionCompareMode::SourceSkeleton && resolvedTarget == Warp::None){
-                const std::vector<Loom::MotionCharacter> characters = Loom::motionCharactersIn(stage);
-                if(characters.size() == 1) resolvedTarget = characters.front().id;
-                else if(characters.size() > 1){
-                    message = "Choose the character that should receive this animation.";
-                    motionPanel.open = true;
-                    return;
-                }
+            return rigRoot;
+        };
+        auto motionDirectRigJointIds = [&](Warp::Id rigRoot){
+            std::array<Warp::Id, 30> ids;
+            ids.fill(Warp::None);
+            const Loom::MotionRigRestPose rest = Loom::motionRigRestPose(stage, rigRoot);
+            std::array<Warp::Id, 52> uniRig;
+            if(Loom::motionFindVerifiedUniRig52(rest, uniRig)){
+                static constexpr int directToUniRig[30] = {
+                    0, 1, 2, 3, -1, -1, 5, -1, -1, -1,
+                    6, 7, 8, 9, 12, 18, 25, 26, 27, 28,
+                    31, 37, 44, 45, 46, 47, 48, 49, 50, 51
+                };
+                for(size_t i = 0; i < ids.size(); ++i)
+                    if(directToUniRig[i] >= 0) ids[i] = uniRig[size_t(directToUniRig[i])];
+                return ids;
             }
-            if((compare == Loom::MotionCompareMode::RigNoIk ||
-                compare == Loom::MotionCompareMode::RigWithIk) && resolvedTarget == Warp::None){
-                message = "Select a rigged character for the quality comparison.";
-                return;
-            }
-            bool relaxedTargetPose = false;
-            if(resolvedTarget != Warp::None){
-                const Loom::MotionRigRestPose targetRest = Loom::motionRigRestPose(stage, resolvedTarget);
-                std::array<Warp::Id, 52> uniRigIds;
-                if(compare == Loom::MotionCompareMode::None &&
-                   Loom::motionFindVerifiedUniRig52(targetRest, uniRigIds))
-                    relaxedTargetPose = Loom::applyUniRigRelaxedRestPose(stage, resolvedTarget);
-                placement.parent = resolvedTarget;
-                placement.position = glm::vec3(0.0f);
-                placement.scale = 1.0f;
-                placement.fitToParentRig = true;
-                placement.footContactIK = compare == Loom::MotionCompareMode::RigNoIk ? false :
-                    compare == Loom::MotionCompareMode::RigWithIk ? true : motionPanel.effectiveFootContactIK();
-                if(compare == Loom::MotionCompareMode::RigNoIk) placement.animationName += " [rig, no IK]";
-                if(compare == Loom::MotionCompareMode::RigWithIk) placement.animationName += " [rig, IK]";
-            }
-            const std::string importName = path.stem().string() +
-                (compare == Loom::MotionCompareMode::SourceSkeleton ? " [source BVH]" : "");
-            const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionClip(stage, clip, importName, placement);
-            if(!report.problem.empty()){ message = "Motion: " + report.problem; return; }
-            size_t authoredDetails = 0;
-            if(placement.fitToParentRig){
-                std::vector<Loom::MotionActionInterval> intervals;
-                size_t firstSourceFrame = 0;
-                for(const Loom::MotionAction& action : Loom::motionActionsForClip(path)){
-                    const size_t count = size_t(std::max(1, Loom::kimodoMotionFrameCount({action})));
-                    if(firstSourceFrame >= clip.frames.size()) break;
-                    intervals.push_back({action.prompt, firstSourceFrame,
-                                         std::min(clip.frames.size() - 1, firstSourceFrame + count - 1)});
-                    firstSourceFrame += count;
-                }
-                if(compare == Loom::MotionCompareMode::None)
-                    authoredDetails = Loom::applyUniRigActionDetails(
-                        stage, placement.parent, clip, intervals, report.firstFrame,
-                        placement.sceneFps / std::max(1e-6, clip.framesPerSecond));
-                Warp::Entity* checkRig = stage.get(placement.parent);
-                if(checkRig && checkRig->animator){
-                    auto& checkpoints = motionPlaybackCheckpoints[placement.parent][checkRig->animator->activeAnimation];
-                    checkpoints.clear();
-                    const double sceneStep = placement.sceneFps / std::max(1e-6, clip.framesPerSecond);
-                    for(const Loom::MotionActionInterval& interval : intervals){
-                        std::string label = interval.prompt;
-                        std::string lower = label;
-                        std::transform(lower.begin(), lower.end(), lower.begin(),
-                            [](unsigned char c){ return char(std::tolower(c)); });
-                        if(lower.find("peace") != std::string::npos || lower.find("victory sign") != std::string::npos)
-                            label = "Peace sign";
-                        else if(lower.find("forward") != std::string::npos && lower.find("roll") != std::string::npos)
-                            label = "Forward roll";
-                        else if(lower.find("walk") != std::string::npos && lower.find("wave") != std::string::npos)
-                            label = "Walk + wave";
-                        else if(lower.find("wave") != std::string::npos) label = "Wave";
-                        else if(lower.find("walk") != std::string::npos) label = "Walk";
-                        checkpoints.push_back({label,
-                            report.firstFrame + double(interval.first) * sceneStep,
-                            report.firstFrame + double(interval.last) * sceneStep});
+            std::unordered_set<Warp::Id> used;
+            const auto& bones = Loom::motionDirectBones();
+            for(size_t i = 0; i < bones.size(); ++i){
+                const std::string key = Loom::motionJointKey(bones[i].name);
+                for(const std::string& alias : Loom::motionTargetAliases(key)){
+                    Warp::Id candidate = Warp::None;
+                    bool ambiguous = false;
+                    for(const Loom::MotionRigJointRest& joint : rest.joints){
+                        if(Loom::motionJointKey(joint.name) != alias || used.count(joint.id)) continue;
+                        if(candidate != Warp::None){ ambiguous = true; break; }
+                        candidate = joint.id;
+                    }
+                    if(candidate != Warp::None && !ambiguous){
+                        ids[i] = candidate;
+                        used.insert(candidate);
+                        break;
                     }
                 }
             }
-            selected = report.group;
-            collapsed.insert(report.root);
-            if(placement.fitToParentRig){ frame = report.firstFrame; playing = false; followAnimatorPreview = true; }
-            else if(compare == Loom::MotionCompareMode::SourceSkeleton){ frame = report.firstFrame; playing = false; }
-            char text[384];
-            if(placement.fitToParentRig){
-                std::snprintf(text, sizeof(text),
-                              "Kimodo: %zu source joints; frames %.0f-%.0f; mapped %zu bones (%s); scale %.3f; floor %s",
-                              report.joints, report.firstFrame, report.lastFrame, report.mappedJoints,
-                              report.rigProfile.c_str(), report.importedScale, report.floorSource.c_str());
-            }else{
-                std::snprintf(text, sizeof(text), "Motion (NVIDIA Kimodo): %zu joints, frames %.0f-%.0f, scale %.3f",
-                              report.joints, report.firstFrame, report.lastFrame, report.importedScale);
+            return ids;
+        };
+        auto togglePlayback = [&]{
+            if(!playing){
+                const Warp::Id rigId = Loom::motionCharacterForEntity(stage, selected);
+                const Warp::Entity* rig = stage.get(rigId);
+                if(rig && rig->animator && rig->animator->enabled &&
+                   rig->animator->activeAnimation < rig->animator->animations.size()){
+                    const Warp::AnimationClip& clip = rig->animator->animations[rig->animator->activeAnimation];
+                    if(!clip.loop && frame >= clip.endFrame - 1e-9) frame = clip.startFrame;
+                }else if(frame >= stage.endFrame - 1e-9){
+                    frame = stage.startFrame;
+                }
             }
-            message = text;
-            if(relaxedTargetPose) message += "; natural arm and finger pose enabled";
-            if(authoredDetails > 0)
-                message += "; " + std::to_string(authoredDetails) + " authored gesture/roll details applied";
-            if(report.footContactFrames > 0)
-                message += "; automatic foot IK on " + std::to_string(report.footContactFrames) + " contact frames";
-        }else{
-            const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionBvh(stage, path, placement);
-            if(!report.problem.empty()){ message = "Could not read motion: " + report.problem; return; }
-            selected = report.group;
-            collapsed.insert(report.root);
+            playing = !playing;
+        };
+        fs::path generatedMotionPath;
+        Warp::Id generatedMotionTarget = Warp::None;
+        std::vector<Loom::MotionCharacter> sceneMotionCharacters;
+        std::chrono::steady_clock::time_point sceneMotionCharactersRead{};
+        Loom::AutoRigState autoRig;
+        float autoRigScroll = 0.0f;
+    
+        //-- poslovi ----------------------------------------------------------------------------------
+        Loom::Job job;
+        std::thread worker;
+        const int steps[] = {1, 5, 10, 20};
+        int stepIndex = 2;
+        float frameCount = 231.0f;
+        float trainSteps = 15000.0f;
+        After afterJob = After::Nothing;
+        std::string jobVideo;                 //snimka koja se solva, za kameru u sceni
+        bool wasRunning = false;
+        Loom::TerminalState terminal;
+        terminal.add("Loom ready. Operations, debug output and errors appear here.");
+        //Zivi snimak dok solve tece: zasebna scena, da se ne mijesa s onim sto je umjetnik slozio
+        Warp::Stage live;
+        auto lastRead = std::chrono::steady_clock::now();
+        auto lastFrame = std::chrono::steady_clock::now();
+        float smoothedFps = 0.0f;
+    
+        static float scrollAccumulated = 0.0f;
+        glfwSetScrollCallback(window, [](GLFWwindow*, double, double y){ scrollAccumulated += float(y); });
+        static bool mousePressedEvents[uint32_t(Treadle::MouseButton::Count)]{};
+        static bool mouseReleasedEvents[uint32_t(Treadle::MouseButton::Count)]{};
+        static float mousePressX[uint32_t(Treadle::MouseButton::Count)]{};
+        static float mousePressY[uint32_t(Treadle::MouseButton::Count)]{};
+        glfwSetMouseButtonCallback(window, [](GLFWwindow* source, int button, int action, int){
+            if(button < 0 || button >= int(Treadle::MouseButton::Count)) return;
+            if(action == GLFW_PRESS){
+                mousePressedEvents[button] = true;
+                double x = 0.0, y = 0.0;
+                glfwGetCursorPos(source, &x, &y);
+                mousePressX[button] = float(x);
+                mousePressY[button] = float(y);
+            }else if(action == GLFW_RELEASE){
+                mouseReleasedEvents[button] = true;
+            }
+        });
+        //Tipke za polje za tekst, s PONAVLJANJEM (GLFW_REPEAT) - drzani Backspace brise dalje
+        static std::vector<Treadle::KeyEvent> typedKeys;
+        glfwSetKeyCallback(window, [](GLFWwindow*, int key, int, int action, int mods){
+            if(action != GLFW_PRESS && action != GLFW_REPEAT) return;
+            Treadle::KeyEvent event;
+            event.shift = (mods & GLFW_MOD_SHIFT) != 0;
+            event.ctrl = (mods & GLFW_MOD_CONTROL) != 0;
+            switch(key){
+                case GLFW_KEY_LEFT: event.key = Treadle::Key::Left; break;
+                case GLFW_KEY_RIGHT: event.key = Treadle::Key::Right; break;
+                case GLFW_KEY_UP: event.key = Treadle::Key::Up; break;
+                case GLFW_KEY_DOWN: event.key = Treadle::Key::Down; break;
+                case GLFW_KEY_HOME: event.key = Treadle::Key::Home; break;
+                case GLFW_KEY_END: event.key = Treadle::Key::End; break;
+                case GLFW_KEY_BACKSPACE: event.key = Treadle::Key::Backspace; break;
+                case GLFW_KEY_DELETE: event.key = Treadle::Key::Delete; break;
+                case GLFW_KEY_ENTER: case GLFW_KEY_KP_ENTER: event.key = Treadle::Key::Enter; break;
+                case GLFW_KEY_ESCAPE: event.key = Treadle::Key::Escape; break;
+                case GLFW_KEY_TAB: event.key = Treadle::Key::Tab; break;
+                case GLFW_KEY_A: event.key = Treadle::Key::A; break;
+                case GLFW_KEY_C: event.key = Treadle::Key::C; break;
+                case GLFW_KEY_X: event.key = Treadle::Key::X; break;
+                case GLFW_KEY_V: event.key = Treadle::Key::V; break;
+                default: return;
+            }
+            typedKeys.push_back(event);
+        });
+        ui.getClipboard = [window](){ const char* text = glfwGetClipboardString(window); return std::string(text ? text : ""); };
+        ui.setClipboard = [window](const std::string& text){ glfwSetClipboardString(window, text.c_str()); };
+        static std::string typedCharacters;
+        glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint){
+            if(codepoint < 32 || codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return;
+            if(codepoint <= 0x7f){
+                typedCharacters.push_back(static_cast<char>(codepoint));
+            }else if(codepoint <= 0x7ff){
+                typedCharacters.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
+                typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+            }else if(codepoint <= 0xffff){
+                typedCharacters.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+                typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+                typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+            }else{
+                typedCharacters.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
+                typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
+                typedCharacters.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+                typedCharacters.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+            }
+        });
+    
+        //Strelice za pomicanje i rotacija u stupnjevima. Kutovi se pamte dok se uredjuju: kvaternion
+        //natrag u Eulerove kutove nije jednoznacan, pa bi polje koje se vuce preko 90 st skocilo
+        int gizmoAxisHeld = -1, gizmoAxisHot = -1;
+        glm::mat4 transformGhostStart{1.0f};
+        Warp::Id transformGhostId = Warp::None;
+        bool transformGhostActive = false;
+        int pathDragIndex = -1;
+        //W pomice, E okrece - kao u Mayi i Houdiniju
+        enum class Tool{ Move, Rotate };
+        Tool tool = shotRotate ? Tool::Rotate : Tool::Move;
+        glm::vec3 eulerCache(0.0f);
+        Warp::Id eulerFor = Warp::None;
+        double eulerFrame = -1.0;
+    
+        Keys keys;
+        bool leftWasDown = false, middleWasDown = false, rightWasDown = false;
+        bool leftInViewport = false, dragging = false, middleDragging = false;
+        double pressX = 0.0, pressY = 0.0, lastX = 0.0, lastY = 0.0;
+    
+        auto startJob = [&](const std::string& command, const std::string& output, Loom::Task task, int total){
+            if(worker.joinable()) worker.join();
+            {
+                std::lock_guard<std::mutex> guard(job.lock);
+                job.lines.clear();
+                job.firstLineIndex = 0;
+                job.nextLineIndex = 0;
+                terminal.jobNextLineIndex = 0;
+            }
+            terminal.add("Starting operation: " + command, Loom::TerminalLevel::Running);
+            worker = std::thread(Loom::runSolve, std::ref(job), command, output, task, total);
+        };
+    
+        auto startSolve = [&](int mediaIndex, bool thenSplat){
+            if(job.running || mediaIndex < 0 || mediaIndex >= int(stage.media.size())) return;
+            const fs::path video = stage.media[size_t(mediaIndex)].path;
+            const fs::path out = Loom::resultFolderFor(video);
+            std::error_code ignored;
+            fs::create_directories(out, ignored);
+            //STARI SNIMAK SE BRISE prije novog posla. Bez toga bi se prvih sekundi crtala scena iz
+            //proslog prolaza iste snimke - uredna, uvjerljiva i kriva
+            fs::remove(out / "napredak.bin", ignored);
+            //Za matchmove bez slika kadrova (vidi --samo-kamera u VideoSolveu); splat ih treba.
+            //SPLAT UZ PUNE SLICICE (--then): VideoSolve pokrene trening cim zapise COLMAP, pa kartica
+            //trenira dok procesor lokalizira medjukadrove - 5.5 minuta manje na cijeloj C0257
+            char command[3000];
+            std::string then;
+            if(thenSplat){
+                const std::string o = out.string();
+                then = " --then 'cd \"" + std::string(LOOM_ROOT_DIR) + "\" && PATH=\"" + std::string(LOOM_ROOT_DIR) +
+                       "/.venv/bin:$PATH\" ./.venv/bin/python tools/splat/train_splats.py \"" + o + "\" \"" + o +
+                       "/images\" \"" + o + "/scena.ply\" --steps " + std::to_string(int(trainSteps)) + "'";
+            }
+            std::snprintf(command, sizeof(command), "./VideoSolve \"%s\" %d %d 0 \"%s\"%s%s",
+                          video.string().c_str(), steps[stepIndex], int(frameCount), out.string().c_str(),
+                          thenSplat ? "" : " --samo-kamera", then.c_str());
+            jobVideo = video.string();
+            afterJob = thenSplat ? After::ImportAndTrain : After::Import;
+            live = Warp::Stage{};
+            startJob(command, out.string(), Loom::Task::Solve, 0);
+            message = "Solve started: " + video.filename().string();
+        };
+    
+        auto startTrain = [&](const std::string& directory){
+            if(job.running) return;
+            const std::string splat = directory + "/scena.ply";
+            char command[1600];
+            std::snprintf(command, sizeof(command),
+                          //VENV SE AKTIVIRA, ne zaobilazi: torch trazi `ninja` u PATH-u da prevede
+                          //gsplatovu CUDA ekstenziju, a izravno pozvan python ne stavi .venv/bin u PATH
+                          "cd \"%s\" && PATH=\"%s/.venv/bin:$PATH\" "
+                          "./.venv/bin/python tools/splat/train_splats.py "
+                          "\"%s\" \"%s/images\" \"%s\" --steps %d",
+                          LOOM_ROOT_DIR, LOOM_ROOT_DIR, directory.c_str(), directory.c_str(), splat.c_str(),
+                          int(trainSteps));
+            afterJob = After::AddSplat;
+            startJob(command, directory, Loom::Task::Train, int(trainSteps));
+            message = "Training started";
+        };
+    
+        auto importFolder = [&](const fs::path& directory, const std::string& givenPlate){
+            //Snimka uz rezultat postaje ploca kamere i kad ju pozivatelj nije znao
+            const std::string plate = givenPlate.empty() ? Loom::plateFor(directory) : givenPlate;
+            const Loom::ImportReport report = Loom::importResult(stage, directory, plate);
+            if(!report.problem.empty()){ message = report.problem; return; }
+            selected = report.camera;
+            focus = Focus::Entity;
             frame = stage.startFrame;
-            extentDirty = true;
+            extent = Loom::sceneExtent(stage, frame);
+            extentDirty = false;
             view.lookThrough = Warp::None;
-            view.orbit.target = glm::vec3(0.0f, report.height * 0.5f, 0.0f);
-            view.orbit.distance = std::max(1.0f, report.height * 2.5f);
-            char text[256];
-            std::snprintf(text, sizeof(text), "Motion (NVIDIA Kimodo): %zu joints, %zu frames @ %.0f fps",
-                          report.joints, report.frames, stage.framesPerSecond);
+            Loom::frameAll(stage, frame, view.orbit);
+            char text[160];
+            std::snprintf(text, sizeof(text), "Imported %s: %zu camera keys%s", directory.filename().string().c_str(),
+                          report.cameraKeys, report.upright ? ", upright" : "");
             message = text;
-        }
-        focus = Focus::Entity;
-    };
-
-    auto importNewestMotion = [&](){
-        const fs::path motion = newestMotionInBrowser();
-        if(motion.empty()){
-            message = "No BVH files to import in the current folder.";
-            return;
-        }
-        importMotion(motion, motionPanel.targetCharacter);
-        if(!message.empty()) message = "WeaverMotion: " + message;
-    };
-
-    //Mapa u koju Kimodo pise: "WeaverMotion" uz mapu koju media prozor pregledava (ili ta mapa sama)
-    auto motionDirectory = [&](){
-        return browser.at.filename() == "WeaverMotion" ? browser.at : browser.at / "WeaverMotion";
-    };
-
-    bool generatedMotionIsBricks = false;
-    Loom::MotionBricksLiveSession motionLive;
-    auto startMotionGeneration = [&](){
-        if(job.running){
-            message = "Another Loom job is still running.";
-            return;
-        }
-        Loom::MotionRequest request = motionPanel.request();
-        if(!request.allowFastPath && !request.rootWaypoints.empty()){
-            const std::string prompt = request.actions.empty() ? std::string{} : request.actions.front().prompt;
-            const std::string speedProblem = Loom::motionPathSpeedProblem(request.rootWaypoints, request.smoothRootPath, prompt);
-            if(!speedProblem.empty()){ message = speedProblem; return; }
-        }
-        if(!request.directedFlow && !request.rootWaypoints.empty() && !request.constraints.empty()){
-            message = "Choose either the authored root path or an external constraints JSON, not both.";
-            return;
-        }
-        if(request.directedFlow){
-            const int last = Loom::kimodoMotionLastFrame(request.actions);
-            const std::string poseProblem = Loom::motionDirectPoseProblem(request.poseConstraints, last);
-            if(!poseProblem.empty()){ message = poseProblem; return; }
-            if(request.rootWaypoints.empty() && request.poseConstraints.empty()){
-                message = "Add a route or pose key before generating.";
+        };
+    
+    
+    
+        //NOVO TIJELO SJEDI NA POVRSINI SNIMKE ondje kamo se gleda: na tockama oblaka pod sredinom
+        //pogleda (ili pod misem, kad je dodano desnim klikom u pogled). Kroz rijesenu kameru to je
+        //stvarni zid ili stol u kadru - bas ondje gdje se provjerava drzi li se kocka snimke. Kad pod
+        //pikselom nema tocaka, zraka se spusti na pod (y = 0), a kad ni to ne ide, sredina scene.
+        //Velicina je iz udaljenosti (solve nema metre): desetina puta do mjesta
+        auto addMeshAt = [&](Warp::Shape shape, Warp::Id parent, glm::vec2 pixel, bool usePixel){
+            const char* name = shape == Warp::Shape::Cube ? "Cube" : "Plane";
+            const Warp::Id id = stage.create(name, parent);
+            Warp::Entity& entity = *stage.get(id);
+            entity.mesh = Warp::Mesh{shape};
+    
+            int w = 0, h = 0;
+            glfwGetWindowSize(window, &w, &h);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+            if(!usePixel) pixel = glm::vec2(camera.frame.x + camera.frame.width * 0.5f, camera.frame.y + camera.frame.height * 0.5f);
+            const glm::mat4 inverse = glm::inverse(camera.view);
+            const glm::vec3 eye = glm::vec3(inverse[3]);
+            const glm::vec3 ray = glm::normalize(glm::vec3(inverse * glm::vec4((pixel.x - camera.centre.x) / camera.focal,
+                                                                                -(pixel.y - camera.centre.y) / camera.focal, -1.0f, 0.0f)));
+            glm::vec3 place(extent.centre.x, 0.0f, extent.centre.z);
+            bool onSurface = Loom::surfaceAt(stage, frame, camera, pixel, place);
+            if(!onSurface && ray.y < -1e-3f && eye.y > 0.0f && -eye.y / ray.y < extent.radius * 20.0f){
+                place = eye + ray * (-eye.y / ray.y);
+            }
+            const float distance = std::max(1e-4f, glm::length(place - eye));
+            const float size = distance * (shape == Warp::Shape::Cube ? 0.1f : 0.4f);
+            //Na podu kocka stoji NA njemu; na zidu ili stolu joj je sredina na plohi
+            const glm::vec3 worldPosition = onSurface ? place
+                                                      : glm::vec3(place.x, shape == Warp::Shape::Cube ? size * 0.5f : 0.0f, place.z);
+            const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
+            entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(worldPosition, 1.0f));
+            entity.local.scale = glm::vec3(size);
+            selected = id;
+            focus = Focus::Entity;
+        };
+        auto addMesh = [&](Warp::Shape shape, Warp::Id parent){ addMeshAt(shape, parent, glm::vec2(0.0f), false); };
+    
+        //POKRET LIKA (WeaverMotion, NVIDIA Kimodo): BVH postaje kostur u sceni (vidi LoomWeaverMotion.h).
+        //U praznoj sceni klip preuzme timeline. U sceni iz matchmovea pocinje na kadru glave, u vremenu
+        //scene, i STOJI NA PODU ispod mjesta u koje pogled gleda:
+        //
+        //  mjesto    gdje sredisnja zraka pogleda presijece pod (y = 0); kad gleda vodoravno ili gore -
+        //            snimka iz ruke gotovo uvijek - pod ispod tocke na koju gleda (povrsina snimke, ili
+        //            tocka na udaljenosti scene)
+        //  mjerilo   solve nema metre, ali kamera iz ruke je na visini oka, oko 1.5 m iznad poda. Visina
+        //            kamere nad podom je zato najbolja procjena metra koju scena daje; Kimodo pise metre.
+        //            Kamera na stativu, dronu ili niskom kutu to krsi - dotjeruje se na grupi
+        auto newestMotionInBrowser = [&]() -> fs::path{
+            fs::path newest;
+            std::filesystem::file_time_type newestTime{};
+            for(const fs::path& motion : browser.motions){
+                std::error_code error;
+                const auto modified = fs::last_write_time(motion, error);
+                if(error) continue;
+                if(newest.empty() || modified > newestTime){
+                    newest = motion;
+                    newestTime = modified;
+                }
+            }
+            return newest;
+        };
+    
+        auto importMotion = [&](const fs::path& path, Warp::Id targetCharacter,
+                                Loom::MotionCompareMode compare = Loom::MotionCompareMode::None){
+            Loom::MotionPlacement placement;
+            if(stage.size() > 0){
+                int w = 0, h = 0;
+                glfwGetWindowSize(window, &w, &h);
+                const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+                const glm::vec2 centre(camera.frame.x + camera.frame.width * 0.5f, camera.frame.y + camera.frame.height * 0.5f);
+                const Loom::Ray ray = Loom::rayThrough(camera, centre);
+                glm::vec3 place;
+                const bool hitsFloor = ray.direction.y < -1e-3f && ray.origin.y > 0.0f &&
+                                       -ray.origin.y / ray.direction.y < extent.radius * 20.0f;
+                if(hitsFloor){
+                    place = ray.origin + ray.direction * (-ray.origin.y / ray.direction.y);
+                }else{
+                    glm::vec3 looked;
+                    if(!Loom::surfaceAt(stage, frame, camera, centre, looked)){
+                        looked = ray.origin + ray.direction * glm::length(extent.centre - ray.origin);
+                    }
+                    place = glm::vec3(looked.x, 0.0f, looked.z);
+                }
+                placement.position = place;
+                placement.startFrame = std::round(frame);
+                placement.sceneFps = stage.framesPerSecond;
+                placement.animationName = Loom::motionClipName(path);
+                Engine::WeaverMotion::Clip clip;
+                std::string error;
+                if(!Engine::WeaverMotion::readKimodoBvh(path.string(), clip, error)){ message = "Could not read motion: " + error; return; }
+                const float eyeHeight = ray.origin.y;
+                placement.scale = eyeHeight > 1e-4f ? eyeHeight / 1.5f
+                                                    : 0.35f * std::max(1e-4f, glm::length(place - ray.origin)) /
+                                                      std::max(1e-4f, Loom::motionRestHeight(clip));
+                Warp::Id resolvedTarget = compare == Loom::MotionCompareMode::SourceSkeleton
+                    ? Warp::None : Loom::motionCharacterForEntity(stage, targetCharacter);
+                if(compare == Loom::MotionCompareMode::SourceSkeleton){
+                    const Warp::Id previewTarget = Loom::motionCharacterForEntity(stage, targetCharacter);
+                    if(previewTarget != Warp::None){
+                        const Loom::MotionRigRestPose targetRest = Loom::motionRigRestPose(stage, previewTarget);
+                        const float sourceHeight = Loom::motionRestHeight(clip);
+                        if(targetRest.bounds.valid && sourceHeight > 1e-5f)
+                            placement.scale = targetRest.bounds.height() / sourceHeight;
+                        placement.position = glm::vec3(stage.worldMatrix(previewTarget, frame)[3]);
+                        placement.position.x += 1.5f;
+                        placement.position.y = 0.0f;
+                    }
+                    placement.animationName += " [source BVH]";
+                }
+                if(compare != Loom::MotionCompareMode::SourceSkeleton && resolvedTarget == Warp::None){
+                    const std::vector<Loom::MotionCharacter> characters = Loom::motionCharactersIn(stage);
+                    if(characters.size() == 1) resolvedTarget = characters.front().id;
+                    else if(characters.size() > 1){
+                        message = "Choose the character that should receive this animation.";
+                        motionPanel.open = true;
+                        return;
+                    }
+                }
+                if((compare == Loom::MotionCompareMode::RigNoIk ||
+                    compare == Loom::MotionCompareMode::RigWithIk) && resolvedTarget == Warp::None){
+                    message = "Select a rigged character for the quality comparison.";
+                    return;
+                }
+                bool relaxedTargetPose = false;
+                if(resolvedTarget != Warp::None){
+                    const Loom::MotionRigRestPose targetRest = Loom::motionRigRestPose(stage, resolvedTarget);
+                    std::array<Warp::Id, 52> uniRigIds;
+                    if(compare == Loom::MotionCompareMode::None &&
+                       Loom::motionFindVerifiedUniRig52(targetRest, uniRigIds))
+                        relaxedTargetPose = Loom::applyUniRigRelaxedRestPose(stage, resolvedTarget);
+                    placement.parent = resolvedTarget;
+                    placement.position = glm::vec3(0.0f);
+                    placement.scale = 1.0f;
+                    placement.fitToParentRig = true;
+                    placement.footContactIK = compare == Loom::MotionCompareMode::RigNoIk ? false :
+                        compare == Loom::MotionCompareMode::RigWithIk ? true : motionPanel.effectiveFootContactIK();
+                    if(compare == Loom::MotionCompareMode::RigNoIk) placement.animationName += " [rig, no IK]";
+                    if(compare == Loom::MotionCompareMode::RigWithIk) placement.animationName += " [rig, IK]";
+                }
+                const std::string importName = path.stem().string() +
+                    (compare == Loom::MotionCompareMode::SourceSkeleton ? " [source BVH]" : "");
+                const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionClip(stage, clip, importName, placement);
+                if(!report.problem.empty()){ message = "Motion: " + report.problem; return; }
+                size_t authoredDetails = 0;
+                if(placement.fitToParentRig){
+                    std::vector<Loom::MotionActionInterval> intervals;
+                    size_t firstSourceFrame = 0;
+                    for(const Loom::MotionAction& action : Loom::motionActionsForClip(path)){
+                        const size_t count = size_t(std::max(1, Loom::kimodoMotionFrameCount({action})));
+                        if(firstSourceFrame >= clip.frames.size()) break;
+                        intervals.push_back({action.prompt, firstSourceFrame,
+                                             std::min(clip.frames.size() - 1, firstSourceFrame + count - 1)});
+                        firstSourceFrame += count;
+                    }
+                    if(compare == Loom::MotionCompareMode::None)
+                        authoredDetails = Loom::applyUniRigActionDetails(
+                            stage, placement.parent, clip, intervals, report.firstFrame,
+                            placement.sceneFps / std::max(1e-6, clip.framesPerSecond));
+                    Warp::Entity* checkRig = stage.get(placement.parent);
+                    if(checkRig && checkRig->animator){
+                        auto& checkpoints = motionPlaybackCheckpoints[placement.parent][checkRig->animator->activeAnimation];
+                        checkpoints.clear();
+                        const double sceneStep = placement.sceneFps / std::max(1e-6, clip.framesPerSecond);
+                        for(const Loom::MotionActionInterval& interval : intervals){
+                            std::string label = interval.prompt;
+                            std::string lower = label;
+                            std::transform(lower.begin(), lower.end(), lower.begin(),
+                                [](unsigned char c){ return char(std::tolower(c)); });
+                            if(lower.find("peace") != std::string::npos || lower.find("victory sign") != std::string::npos)
+                                label = "Peace sign";
+                            else if(lower.find("forward") != std::string::npos && lower.find("roll") != std::string::npos)
+                                label = "Forward roll";
+                            else if(lower.find("walk") != std::string::npos && lower.find("wave") != std::string::npos)
+                                label = "Walk + wave";
+                            else if(lower.find("wave") != std::string::npos) label = "Wave";
+                            else if(lower.find("walk") != std::string::npos) label = "Walk";
+                            checkpoints.push_back({label,
+                                report.firstFrame + double(interval.first) * sceneStep,
+                                report.firstFrame + double(interval.last) * sceneStep});
+                        }
+                    }
+                }
+                selected = report.group;
+                collapsed.insert(report.root);
+                if(placement.fitToParentRig){ frame = report.firstFrame; playing = false; followAnimatorPreview = true; }
+                else if(compare == Loom::MotionCompareMode::SourceSkeleton){ frame = report.firstFrame; playing = false; }
+                char text[384];
+                if(placement.fitToParentRig){
+                    std::snprintf(text, sizeof(text),
+                                  "Kimodo: %zu source joints; frames %.0f-%.0f; mapped %zu bones (%s); scale %.3f; floor %s",
+                                  report.joints, report.firstFrame, report.lastFrame, report.mappedJoints,
+                                  report.rigProfile.c_str(), report.importedScale, report.floorSource.c_str());
+                }else{
+                    std::snprintf(text, sizeof(text), "Motion (NVIDIA Kimodo): %zu joints, frames %.0f-%.0f, scale %.3f",
+                                  report.joints, report.firstFrame, report.lastFrame, report.importedScale);
+                }
+                message = text;
+                if(relaxedTargetPose) message += "; natural arm and finger pose enabled";
+                if(authoredDetails > 0)
+                    message += "; " + std::to_string(authoredDetails) + " authored gesture/roll details applied";
+                if(report.footContactFrames > 0)
+                    message += "; automatic foot IK on " + std::to_string(report.footContactFrames) + " contact frames";
+            }else{
+                const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionBvh(stage, path, placement);
+                if(!report.problem.empty()){ message = "Could not read motion: " + report.problem; return; }
+                selected = report.group;
+                collapsed.insert(report.root);
+                frame = stage.startFrame;
+                extentDirty = true;
+                view.lookThrough = Warp::None;
+                view.orbit.target = glm::vec3(0.0f, report.height * 0.5f, 0.0f);
+                view.orbit.distance = std::max(1.0f, report.height * 2.5f);
+                char text[256];
+                std::snprintf(text, sizeof(text), "Motion (NVIDIA Kimodo): %zu joints, %zu frames @ %.0f fps",
+                              report.joints, report.frames, stage.framesPerSecond);
+                message = text;
+            }
+            focus = Focus::Entity;
+        };
+    
+        auto importNewestMotion = [&](){
+            const fs::path motion = newestMotionInBrowser();
+            if(motion.empty()){
+                message = "No BVH files to import in the current folder.";
                 return;
             }
-        }
-        if(Loom::filledActions(request.actions).empty()){
-            message = "Enter a motion prompt before generating.";
-            ui.focusTextField(request.directedFlow ? "directed-motion-prompt" : "action0");
-            return;
-        }
-        if(!request.constraints.empty() && !fs::is_regular_file(request.constraints)){
-            message = "Kimodo constraints file does not exist: " + request.constraints.string();
-            return;
-        }
-        const fs::path runner = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/python";
-        const fs::path adapter = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_cli.py";
-        const fs::path installedKimodo = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen";
-        if(!fs::is_regular_file(runner) || !fs::is_regular_file(adapter) || !fs::is_regular_file(installedKimodo)){
-            message = "Kimodo runner is not installed; see tools/weavermotion/README.md.";
-            return;
-        }
-        const fs::path outputDirectory = motionDirectory();
-        std::error_code error;
-        fs::create_directories(outputDirectory, error);
-        if(error){
-            message = "Could not create WeaverMotion output folder: " + error.message();
-            return;
-        }
-        const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        const fs::path outputStem = outputDirectory / ("motion_" + std::to_string(stamp));
-        if(request.directedFlow || !request.rootWaypoints.empty()){
-            std::string problem;
-            request.constraints = outputStem.string() + ".constraints.json";
-            const bool saved = request.directedFlow
-                ? Loom::writeMotionDirectedConstraints(request.constraints, request.rootWaypoints,
-                    request.poseConstraints, request.constrainRootHeading,
-                    Loom::kimodoMotionLastFrame(request.actions), problem, request.smoothRootPath)
-                : Loom::writeMotionRootConstraints(request.constraints, request.rootWaypoints,
-                    request.constrainRootHeading, Loom::kimodoMotionLastFrame(request.actions),
-                    problem, request.smoothRootPath);
-            if(!saved){ message = problem; return; }
-        }
-        generatedMotionPath = outputStem;
-        generatedMotionTarget = request.targetCharacter;
-        generatedMotionIsBricks = false;
-        //Opis uz BVH, za povijest u panelu
-        Loom::writeMotionSidecar(outputStem, request);
-        motionPanel.allowFastPath = false; // Override applies to this generation only.
-        afterJob = After::Nothing;
-        startJob(Loom::buildMotionCommand(runner, request, outputStem, adapter), outputDirectory.string(), Loom::Task::WeaverMotion, 0);
-        message = "Kimodo runs on the GPU; the LLM2Vec encoder runs on the CPU.";
-    };
-
-    auto startMotionBricksGeneration = [&](){
-        if(job.running){ message = "Another Loom job is still running."; return; }
-        const fs::path root(LOOM_ROOT_DIR);
-        const fs::path adapter = root / "tools/motionbricks/generate.py";
-        const fs::path python = root / "tools/motionbricks/.venv/bin/python";
-        const fs::path upstream = root / "tools/motionbricks/vendor/GR00T-WholeBodyControl/motionbricks";
-        if(!fs::is_regular_file(python) || !fs::is_regular_file(adapter) ||
-           !hasMotionBricksCheckpoints(upstream)){
-            message = "MotionBricks needs its official G1 checkpoints. Run tools/motionbricks/setup.sh.";
-            return;
-        }
-        if(motionPanel.rootPathEnabled && !motionPanel.constraintsPath.empty()){
-            message = "Choose either the authored path or an external constraints JSON.";
-            return;
-        }
-        const fs::path outputDirectory = motionDirectory();
-        std::error_code error;
-        fs::create_directories(outputDirectory, error);
-        if(error){ message = "Could not create motion output folder: " + error.message(); return; }
-        const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        const fs::path outputStem = outputDirectory / ("bricks_" + std::to_string(stamp));
-        fs::path constraints = motionPanel.constraintsPath;
-        if(motionPanel.rootPathEnabled){
-            constraints = outputStem.string() + ".constraints.json";
-            std::string problem;
-            if(!Loom::writeMotionRootConstraints(constraints, motionPanel.rootWaypoints,
-                motionPanel.constrainRootHeading, Loom::kimodoMotionLastFrame(motionPanel.actions),
-                problem, motionPanel.smoothRootPath)){
-                message = problem; return;
+            importMotion(motion, motionPanel.targetCharacter);
+            if(!message.empty()) message = "WeaverMotion: " + message;
+        };
+    
+        //Mapa u koju Kimodo pise: "WeaverMotion" uz mapu koju media prozor pregledava (ili ta mapa sama)
+        auto motionDirectory = [&](){
+            return browser.at.filename() == "WeaverMotion" ? browser.at : browser.at / "WeaverMotion";
+        };
+    
+        bool generatedMotionIsBricks = false;
+        Loom::MotionBricksLiveSession motionLive;
+        auto startMotionGeneration = [&](){
+            if(job.running){
+                message = "Another Loom job is still running.";
+                return;
             }
-        }
-        const std::vector<std::string>& styles = Loom::motionBricksStyleIds();
-        const int style = std::clamp(motionPanel.motionBricksStyle, 0, int(styles.size()) - 1);
-        float duration = 0.0f;
-        for(const Loom::MotionAction& step : motionPanel.actions)
-            duration += std::clamp(step.duration, 1.0f, 10.0f);
-        duration = std::clamp(duration, 1.0f, 30.0f);
-        const fs::path outputBvh = outputStem.string() + ".bvh";
-        std::string command = Loom::shellQuoteArgument(python.string()) + " -u " +
-            Loom::shellQuoteArgument(adapter.string()) + " --upstream " +
-            Loom::shellQuoteArgument(upstream.string()) + " --output " +
-            Loom::shellQuoteArgument(outputBvh.string()) + " --style " +
-            Loom::shellQuoteArgument(styles[size_t(style)]) + " --duration " + std::to_string(duration);
-        if(!constraints.empty())
-            command += " --constraints " + Loom::shellQuoteArgument(constraints.string());
-        if(motionPanel.fixedSeed)
-            command += " --seed " + std::to_string(std::max(0, int(std::lround(motionPanel.seed))));
-        std::ofstream sidecar(outputStem.string() + ".txt");
-        sidecar << "MotionBricks " << styles[size_t(style)] << "\t" << duration << "\n";
-        generatedMotionPath = outputStem;
-        generatedMotionTarget = motionPanel.targetCharacter;
-        generatedMotionIsBricks = true;
-        afterJob = After::Nothing;
-        startJob(command, outputDirectory.string(), Loom::Task::WeaverMotion, 0);
-        message = "MotionBricks is generating a G1 locomotion clip.";
-    };
-
-    auto livePathControl = [&](int pathFrame){
-        float dx = 0.0f, dz = 0.0f, speed = 0.0f, heading = motionPanel.firstHeadingAngle;
-        if(motionPanel.rootPathEnabled && motionPanel.rootWaypoints.size() >= 2){
-            const Loom::MotionRootWaypoint here = Loom::motionRootPathAt(
-                motionPanel.rootWaypoints, float(pathFrame), motionPanel.smoothRootPath);
-            const Loom::MotionRootWaypoint ahead = Loom::motionRootPathAt(
-                motionPanel.rootWaypoints, float(pathFrame + 15), motionPanel.smoothRootPath);
-            dx = ahead.x - here.x;
-            dz = ahead.z - here.z;
-            const float distance = std::hypot(dx, dz);
-            speed = distance * 2.0f;
-            if(motionPanel.constrainRootHeading) heading = here.heading;
-            else if(distance > 1e-4f) heading = std::atan2(dx, dz);
-            else heading = here.heading;
-            if(!motionPanel.constrainRootHeading && distance <= 1e-4f && pathFrame > 0){
-                const Loom::MotionRootWaypoint before = Loom::motionRootPathAt(
-                    motionPanel.rootWaypoints, float(std::max(0, pathFrame - 15)), motionPanel.smoothRootPath);
-                dx = here.x - before.x;
-                dz = here.z - before.z;
-                const float priorDistance = std::hypot(dx, dz);
-                if(priorDistance > 1e-4f && !motionPanel.constrainRootHeading) heading = std::atan2(dx, dz);
+            Loom::MotionRequest request = motionPanel.request();
+            if(!request.allowFastPath && !request.rootWaypoints.empty()){
+                const std::string prompt = request.actions.empty() ? std::string{} : request.actions.front().prompt;
+                const std::string speedProblem = Loom::motionPathSpeedProblem(request.rootWaypoints, request.smoothRootPath, prompt);
+                if(!speedProblem.empty()){ message = speedProblem; return; }
             }
-        }
-        return std::array<float, 4>{dx, dz, std::clamp(speed, 0.0f, 4.0f), heading};
-    };
-
-    auto recordMotionBricksPathThrough = [&](size_t sampleCount){
-        while(motionLive.pathSamples.size() < sampleCount){
-            const size_t index = motionLive.pathSamples.size();
-            const bool active = motionPanel.rootPathEnabled && motionPanel.rootWaypoints.size() >= 2;
-            motionLive.pathSampleValid.push_back(active);
-            if(active){
-                const Loom::MotionRootWaypoint point = Loom::motionRootPathAt(
-                    motionPanel.rootWaypoints, float(index), motionPanel.smoothRootPath);
-                motionLive.pathSamples.emplace_back(point.x, 0.0f, point.z);
-                motionLive.pathDriven = true;
-            }else motionLive.pathSamples.emplace_back(0.0f);
-        }
-    };
-
-    auto motionBricksPathRootTranslation = [&](const glm::vec3& pathOffset, float fitScale){
-        const Warp::Entity* rig = stage.get(motionLive.character);
-        if(!rig) return glm::vec3(0.0f);
-        const glm::quat rigWorldRotation = Loom::motionRotationOf(
-            stage.worldMatrix(motionLive.character, motionLive.startFrame));
-        const glm::mat4 parentWorld = rig->parent != Warp::None
-            ? stage.worldMatrix(rig->parent, motionLive.startFrame) : glm::mat4(1.0f);
-        const glm::mat4 parentWorldInverse = glm::inverse(parentWorld);
-        const glm::vec3 sourceDelta(pathOffset.x, 0.0f, pathOffset.z);
-        const glm::vec3 worldDelta = rigWorldRotation * sourceDelta * fitScale;
-        const glm::vec3 parentDelta = glm::vec3(parentWorldInverse * glm::vec4(worldDelta, 0.0f));
-        return rig->local.translation + parentDelta;
-    };
-
-    auto sendMotionBricksLiveControl = [&](bool stop){
-        if(motionLive.directory.empty()) return false;
-        const std::vector<std::string>& styles = Loom::motionBricksStyleIds();
-        const size_t styleIndex = size_t(std::clamp(motionPanel.motionBricksStyle, 0, int(styles.size()) - 1));
-        const int pathFrame = int(motionLive.recordedFrames);
-        const std::array<float, 4> path = livePathControl(pathFrame);
-        return Loom::writeMotionBricksLiveControl(motionLive, stop, pathFrame, styles[styleIndex],
-            path[0], path[1], path[2], path[3], motionLive.seed);
-    };
-
-    auto startMotionBricksLive = [&](){
-        if(motionLive.active){ message = "A MotionBricks recording is already active."; return; }
-        if(job.running){ message = "Wait for the current Loom job before starting live motion."; return; }
-        const fs::path root(LOOM_ROOT_DIR);
-        const fs::path python = root / "tools/motionbricks/.venv/bin/python";
-        const fs::path script = root / "tools/motionbricks/realtime.py";
-        const fs::path upstream = root / "tools/motionbricks/vendor/GR00T-WholeBodyControl/motionbricks";
-        if(!fs::is_regular_file(python) || !fs::is_regular_file(script) || !hasMotionBricksCheckpoints(upstream)){
-            message = "MotionBricks realtime requires its Python environment and G1 checkpoints; see tools/motionbricks/setup.sh.";
-            return;
-        }
-        if(!Loom::motionPresetSettings(motionPanel.locomotionPreset).realtime){
-            message = "This preset uses Kimodo text generation; choose Idle, Walk, Crawl, or Crouch for MotionBricks live.";
-            return;
-        }
-        Warp::Id character = Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter);
-        if(character == Warp::None){
-            const std::vector<Loom::MotionCharacter> characters = Loom::motionCharactersIn(stage);
-            if(characters.size() == 1) character = characters.front().id;
-        }
-        if(character == Warp::None){ message = "Choose one rigged humanoid before recording live motion."; return; }
-        if(motionPanel.rootPathEnabled){
-            const std::string pathProblem = Loom::motionRootPathProblem(
-                motionPanel.rootWaypoints, Loom::kimodoMotionLastFrame(motionPanel.actions));
-            if(!pathProblem.empty()){ message = "Live route: " + pathProblem; return; }
-        }
-        if(!Loom::ensureRigAnimator(stage, character)){
-            message = "Could not add an Animator to the selected character.";
-            return;
-        }
-        const fs::path outputDirectory = motionDirectory();
-        std::error_code error;
-        fs::create_directories(outputDirectory, error);
-        if(error){ message = "Could not create WeaverMotion folder: " + error.message(); return; }
-        const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        const fs::path sessionDirectory = fs::temp_directory_path() /
-            ("loom-motionbricks-live-" + std::to_string(stamp));
-        motionLive = Loom::MotionBricksLiveSession{};
-        motionLive.directory = sessionDirectory;
-        motionLive.controlFile = sessionDirectory / "control.json";
-        motionLive.poseFile = sessionDirectory / "pose.bvh";
-        motionLive.sequenceFile = sessionDirectory / "pose.seq";
-        motionLive.statusFile = sessionDirectory / "status.txt";
-        motionLive.logFile = sessionDirectory / "motionbricks.log";
-        motionLive.character = character;
-        motionLive.startFrame = std::round(frame);
-        motionLive.footContactIK = motionPanel.effectiveFootContactIK();
-        motionLive.seed = motionPanel.fixedSeed ? std::max(0, int(std::lround(motionPanel.seed)))
-                                                : int(stamp % 2147483647);
-        motionLive.outputFile = outputDirectory / ("motionbricks_live_" + std::to_string(stamp) + ".bvh");
-        recordMotionBricksPathThrough(1);
-        Warp::Entity* rig = stage.get(character);
-        if(!rig || !rig->animator){ message = "The selected Animator disappeared."; return; }
-        Warp::AnimationClip clip;
-        const Loom::MotionPresetInfo& preset = Loom::motionPresetSettings(motionPanel.locomotionPreset);
-        clip.name = std::string("MotionBricks - ") + preset.label;
-        clip.startFrame = motionLive.startFrame;
-        clip.endFrame = motionLive.startFrame;
-        clip.loop = false;
-        clip.inPlace = false;
-        rig->animator->animations.push_back(std::move(clip));
-        motionLive.animationIndex = rig->animator->animations.size() - 1;
-        rig->animator->activeAnimation = motionLive.animationIndex;
-        motionLive.active = true;
-        motionLive.ready = false;
-        selected = character;
-        motionPanel.targetCharacter = character;
-        playing = false;
-        followAnimatorPreview = true;
-        frame = motionLive.startFrame;
-        if(!sendMotionBricksLiveControl(false)){
-            motionLive.active = false;
-            rig->animator->animations.pop_back();
-            message = "Could not write MotionBricks live control file.";
-            return;
-        }
-        const std::string command = "nohup " + Loom::shellQuoteArgument(python.string()) + " -u " +
-            Loom::shellQuoteArgument(script.string()) + " --upstream " + Loom::shellQuoteArgument(upstream.string()) +
-            " --session " + Loom::shellQuoteArgument(sessionDirectory.string()) + " --output " +
-            Loom::shellQuoteArgument(motionLive.outputFile.string()) + " --seed " + std::to_string(motionLive.seed) +
-            " > " + Loom::shellQuoteArgument(motionLive.logFile.string()) + " 2>&1 < /dev/null &";
-        if(std::system(command.c_str()) != 0){
-            motionLive.active = false;
-            rig->animator->animations.pop_back();
-            message = "Could not start the MotionBricks realtime process.";
-            return;
-        }
-        std::ofstream sidecar(motionLive.outputFile.string() + ".txt");
-        const std::vector<std::string>& recipeStyles = Loom::motionBricksStyleIds();
-        sidecar << "# movement_preset\t" << preset.label << "\n";
-        sidecar << "# motionbricks_style\t" << recipeStyles[size_t(std::clamp(motionPanel.motionBricksStyle, 0, int(recipeStyles.size()) - 1))] << "\n";
-        sidecar << "# contact_settings\t" << (motionPanel.contactSettingsMode == 0 ? "automatic" : "manual") << "\n";
-        sidecar << "# foot_contact_ik\t" << (motionLive.footContactIK ? "on" : "off") << "\n";
-        sidecar << "# kimodo_postprocess\tnot_applicable\n";
-        sidecar << "# root_path\t" << (motionPanel.rootPathEnabled ? "authored"
-            : !motionPanel.constraintsPath.empty() ? "external constraints" : "none") << "\n";
-        sidecar << "MotionBricks live " << preset.label << "\t"
-                << motionPanel.actions[size_t(std::clamp(motionPanel.activeAction, 0, int(motionPanel.actions.size()) - 1))].duration << "\n";
-        message = "MotionBricks is initializing; the character will animate and record as soon as G1 is ready.";
-    };
-
-    auto stopMotionBricksLive = [&](){
-        if(!motionLive.active || motionLive.stopRequested) return;
-        motionLive.stopRequested = true;
-        sendMotionBricksLiveControl(true);
-        motionLive.message = "Saving recorded BVH...";
-    };
-
-    auto tickMotionBricksLive = [&](){
-        if(!motionLive.active) return;
-        if(!motionLive.stopRequested) motionLive.footContactIK = motionPanel.effectiveFootContactIK();
-        Loom::refreshMotionBricksLiveStatus(motionLive);
-        if(motionLive.failed){
-            motionLive.active = false;
-            message = "MotionBricks live failed: " + motionLive.message + "; log: " + motionLive.logFile.string();
-            terminal.visible = true;
-            return;
-        }
-        Warp::Entity* rig = stage.get(motionLive.character);
-        if(!rig || !rig->animator || motionLive.animationIndex >= rig->animator->animations.size()){
-            stopMotionBricksLive();
-            message = "The live MotionBricks character or Animator was removed; saving the take.";
-            return;
-        }
-        if(motionLive.complete){
-            const fs::path finalBvh = motionLive.outputFile;
-            if(!fs::is_regular_file(finalBvh)){
+            if(!request.directedFlow && !request.rootWaypoints.empty() && !request.constraints.empty()){
+                message = "Choose either the authored root path or an external constraints JSON, not both.";
+                return;
+            }
+            if(request.directedFlow){
+                const int last = Loom::kimodoMotionLastFrame(request.actions);
+                const std::string poseProblem = Loom::motionDirectPoseProblem(request.poseConstraints, last);
+                if(!poseProblem.empty()){ message = poseProblem; return; }
+                if(request.rootWaypoints.empty() && request.poseConstraints.empty()){
+                    message = "Add a route or pose key before generating.";
+                    return;
+                }
+            }
+            if(Loom::filledActions(request.actions).empty()){
+                message = "Enter a motion prompt before generating.";
+                ui.focusTextField(request.directedFlow ? "directed-motion-prompt" : "action0");
+                return;
+            }
+            if(!request.constraints.empty() && !fs::is_regular_file(request.constraints)){
+                message = "Kimodo constraints file does not exist: " + request.constraints.string();
+                return;
+            }
+            const fs::path runner = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/python";
+            const fs::path adapter = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_cli.py";
+            const fs::path installedKimodo = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen";
+            if(!fs::is_regular_file(runner) || !fs::is_regular_file(adapter) || !fs::is_regular_file(installedKimodo)){
+                message = "Kimodo runner is not installed; see tools/weavermotion/README.md.";
+                return;
+            }
+            const fs::path outputDirectory = motionDirectory();
+            std::error_code error;
+            fs::create_directories(outputDirectory, error);
+            if(error){
+                message = "Could not create WeaverMotion output folder: " + error.message();
+                return;
+            }
+            const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const fs::path outputStem = outputDirectory / ("motion_" + std::to_string(stamp));
+            if(request.directedFlow || !request.rootWaypoints.empty()){
+                std::string problem;
+                request.constraints = outputStem.string() + ".constraints.json";
+                const bool saved = request.directedFlow
+                    ? Loom::writeMotionDirectedConstraints(request.constraints, request.rootWaypoints,
+                        request.poseConstraints, request.constrainRootHeading,
+                        Loom::kimodoMotionLastFrame(request.actions), problem, request.smoothRootPath)
+                    : Loom::writeMotionRootConstraints(request.constraints, request.rootWaypoints,
+                        request.constrainRootHeading, Loom::kimodoMotionLastFrame(request.actions),
+                        problem, request.smoothRootPath);
+                if(!saved){ message = problem; return; }
+            }
+            generatedMotionPath = outputStem;
+            generatedMotionTarget = request.targetCharacter;
+            generatedMotionIsBricks = false;
+            //Opis uz BVH, za povijest u panelu
+            Loom::writeMotionSidecar(outputStem, request);
+            motionPanel.allowFastPath = false; // Override applies to this generation only.
+            afterJob = After::Nothing;
+            startJob(Loom::buildMotionCommand(runner, request, outputStem, adapter), outputDirectory.string(), Loom::Task::WeaverMotion, 0);
+            message = "Kimodo runs on the GPU; the LLM2Vec encoder runs on the CPU.";
+        };
+    
+        auto startMotionBricksGeneration = [&](){
+            if(job.running){ message = "Another Loom job is still running."; return; }
+            const fs::path root(LOOM_ROOT_DIR);
+            const fs::path adapter = root / "tools/motionbricks/generate.py";
+            const fs::path python = root / "tools/motionbricks/.venv/bin/python";
+            const fs::path upstream = root / "tools/motionbricks/vendor/GR00T-WholeBodyControl/motionbricks";
+            if(!fs::is_regular_file(python) || !fs::is_regular_file(adapter) ||
+               !hasMotionBricksCheckpoints(upstream)){
+                message = "MotionBricks needs its official G1 checkpoints. Run tools/motionbricks/setup.sh.";
+                return;
+            }
+            if(motionPanel.rootPathEnabled && !motionPanel.constraintsPath.empty()){
+                message = "Choose either the authored path or an external constraints JSON.";
+                return;
+            }
+            const fs::path outputDirectory = motionDirectory();
+            std::error_code error;
+            fs::create_directories(outputDirectory, error);
+            if(error){ message = "Could not create motion output folder: " + error.message(); return; }
+            const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const fs::path outputStem = outputDirectory / ("bricks_" + std::to_string(stamp));
+            fs::path constraints = motionPanel.constraintsPath;
+            if(motionPanel.rootPathEnabled){
+                constraints = outputStem.string() + ".constraints.json";
+                std::string problem;
+                if(!Loom::writeMotionRootConstraints(constraints, motionPanel.rootWaypoints,
+                    motionPanel.constrainRootHeading, Loom::kimodoMotionLastFrame(motionPanel.actions),
+                    problem, motionPanel.smoothRootPath)){
+                    message = problem; return;
+                }
+            }
+            const std::vector<std::string>& styles = Loom::motionBricksStyleIds();
+            const int style = std::clamp(motionPanel.motionBricksStyle, 0, int(styles.size()) - 1);
+            float duration = 0.0f;
+            for(const Loom::MotionAction& step : motionPanel.actions)
+                duration += std::clamp(step.duration, 1.0f, 10.0f);
+            duration = std::clamp(duration, 1.0f, 30.0f);
+            const fs::path outputBvh = outputStem.string() + ".bvh";
+            std::string command = Loom::shellQuoteArgument(python.string()) + " -u " +
+                Loom::shellQuoteArgument(adapter.string()) + " --upstream " +
+                Loom::shellQuoteArgument(upstream.string()) + " --output " +
+                Loom::shellQuoteArgument(outputBvh.string()) + " --style " +
+                Loom::shellQuoteArgument(styles[size_t(style)]) + " --duration " + std::to_string(duration);
+            if(!constraints.empty())
+                command += " --constraints " + Loom::shellQuoteArgument(constraints.string());
+            if(motionPanel.fixedSeed)
+                command += " --seed " + std::to_string(std::max(0, int(std::lround(motionPanel.seed))));
+            std::ofstream sidecar(outputStem.string() + ".txt");
+            sidecar << "MotionBricks " << styles[size_t(style)] << "\t" << duration << "\n";
+            generatedMotionPath = outputStem;
+            generatedMotionTarget = motionPanel.targetCharacter;
+            generatedMotionIsBricks = true;
+            afterJob = After::Nothing;
+            startJob(command, outputDirectory.string(), Loom::Task::WeaverMotion, 0);
+            message = "MotionBricks is generating a G1 locomotion clip.";
+        };
+    
+        auto livePathControl = [&](int pathFrame){
+            float dx = 0.0f, dz = 0.0f, speed = 0.0f, heading = motionPanel.firstHeadingAngle;
+            if(motionPanel.rootPathEnabled && motionPanel.rootWaypoints.size() >= 2){
+                const Loom::MotionRootWaypoint here = Loom::motionRootPathAt(
+                    motionPanel.rootWaypoints, float(pathFrame), motionPanel.smoothRootPath);
+                const Loom::MotionRootWaypoint ahead = Loom::motionRootPathAt(
+                    motionPanel.rootWaypoints, float(pathFrame + 15), motionPanel.smoothRootPath);
+                dx = ahead.x - here.x;
+                dz = ahead.z - here.z;
+                const float distance = std::hypot(dx, dz);
+                speed = distance * 2.0f;
+                if(motionPanel.constrainRootHeading) heading = here.heading;
+                else if(distance > 1e-4f) heading = std::atan2(dx, dz);
+                else heading = here.heading;
+                if(!motionPanel.constrainRootHeading && distance <= 1e-4f && pathFrame > 0){
+                    const Loom::MotionRootWaypoint before = Loom::motionRootPathAt(
+                        motionPanel.rootWaypoints, float(std::max(0, pathFrame - 15)), motionPanel.smoothRootPath);
+                    dx = here.x - before.x;
+                    dz = here.z - before.z;
+                    const float priorDistance = std::hypot(dx, dz);
+                    if(priorDistance > 1e-4f && !motionPanel.constrainRootHeading) heading = std::atan2(dx, dz);
+                }
+            }
+            return std::array<float, 4>{dx, dz, std::clamp(speed, 0.0f, 4.0f), heading};
+        };
+    
+        auto recordMotionBricksPathThrough = [&](size_t sampleCount){
+            while(motionLive.pathSamples.size() < sampleCount){
+                const size_t index = motionLive.pathSamples.size();
+                const bool active = motionPanel.rootPathEnabled && motionPanel.rootWaypoints.size() >= 2;
+                motionLive.pathSampleValid.push_back(active);
+                if(active){
+                    const Loom::MotionRootWaypoint point = Loom::motionRootPathAt(
+                        motionPanel.rootWaypoints, float(index), motionPanel.smoothRootPath);
+                    motionLive.pathSamples.emplace_back(point.x, 0.0f, point.z);
+                    motionLive.pathDriven = true;
+                }else motionLive.pathSamples.emplace_back(0.0f);
+            }
+        };
+    
+        auto motionBricksPathRootTranslation = [&](const glm::vec3& pathOffset, float fitScale){
+            const Warp::Entity* rig = stage.get(motionLive.character);
+            if(!rig) return glm::vec3(0.0f);
+            const glm::quat rigWorldRotation = Loom::motionRotationOf(
+                stage.worldMatrix(motionLive.character, motionLive.startFrame));
+            const glm::mat4 parentWorld = rig->parent != Warp::None
+                ? stage.worldMatrix(rig->parent, motionLive.startFrame) : glm::mat4(1.0f);
+            const glm::mat4 parentWorldInverse = glm::inverse(parentWorld);
+            const glm::vec3 sourceDelta(pathOffset.x, 0.0f, pathOffset.z);
+            const glm::vec3 worldDelta = rigWorldRotation * sourceDelta * fitScale;
+            const glm::vec3 parentDelta = glm::vec3(parentWorldInverse * glm::vec4(worldDelta, 0.0f));
+            return rig->local.translation + parentDelta;
+        };
+    
+        auto sendMotionBricksLiveControl = [&](bool stop){
+            if(motionLive.directory.empty()) return false;
+            const std::vector<std::string>& styles = Loom::motionBricksStyleIds();
+            const size_t styleIndex = size_t(std::clamp(motionPanel.motionBricksStyle, 0, int(styles.size()) - 1));
+            const int pathFrame = int(motionLive.recordedFrames);
+            const std::array<float, 4> path = livePathControl(pathFrame);
+            return Loom::writeMotionBricksLiveControl(motionLive, stop, pathFrame, styles[styleIndex],
+                path[0], path[1], path[2], path[3], motionLive.seed);
+        };
+    
+        auto startMotionBricksLive = [&](){
+            if(motionLive.active){ message = "A MotionBricks recording is already active."; return; }
+            if(job.running){ message = "Wait for the current Loom job before starting live motion."; return; }
+            const fs::path root(LOOM_ROOT_DIR);
+            const fs::path python = root / "tools/motionbricks/.venv/bin/python";
+            const fs::path script = root / "tools/motionbricks/realtime.py";
+            const fs::path upstream = root / "tools/motionbricks/vendor/GR00T-WholeBodyControl/motionbricks";
+            if(!fs::is_regular_file(python) || !fs::is_regular_file(script) || !hasMotionBricksCheckpoints(upstream)){
+                message = "MotionBricks realtime requires its Python environment and G1 checkpoints; see tools/motionbricks/setup.sh.";
+                return;
+            }
+            if(!Loom::motionPresetSettings(motionPanel.locomotionPreset).realtime){
+                message = "This preset uses Kimodo text generation; choose Idle, Walk, Crawl, or Crouch for MotionBricks live.";
+                return;
+            }
+            Warp::Id character = Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter);
+            if(character == Warp::None){
+                const std::vector<Loom::MotionCharacter> characters = Loom::motionCharactersIn(stage);
+                if(characters.size() == 1) character = characters.front().id;
+            }
+            if(character == Warp::None){ message = "Choose one rigged humanoid before recording live motion."; return; }
+            if(motionPanel.rootPathEnabled){
+                const std::string pathProblem = Loom::motionRootPathProblem(
+                    motionPanel.rootWaypoints, Loom::kimodoMotionLastFrame(motionPanel.actions));
+                if(!pathProblem.empty()){ message = "Live route: " + pathProblem; return; }
+            }
+            if(!Loom::ensureRigAnimator(stage, character)){
+                message = "Could not add an Animator to the selected character.";
+                return;
+            }
+            const fs::path outputDirectory = motionDirectory();
+            std::error_code error;
+            fs::create_directories(outputDirectory, error);
+            if(error){ message = "Could not create WeaverMotion folder: " + error.message(); return; }
+            const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const fs::path sessionDirectory = fs::temp_directory_path() /
+                ("loom-motionbricks-live-" + std::to_string(stamp));
+            motionLive = Loom::MotionBricksLiveSession{};
+            motionLive.directory = sessionDirectory;
+            motionLive.controlFile = sessionDirectory / "control.json";
+            motionLive.poseFile = sessionDirectory / "pose.bvh";
+            motionLive.sequenceFile = sessionDirectory / "pose.seq";
+            motionLive.statusFile = sessionDirectory / "status.txt";
+            motionLive.logFile = sessionDirectory / "motionbricks.log";
+            motionLive.character = character;
+            motionLive.startFrame = std::round(frame);
+            motionLive.footContactIK = motionPanel.effectiveFootContactIK();
+            motionLive.seed = motionPanel.fixedSeed ? std::max(0, int(std::lround(motionPanel.seed)))
+                                                    : int(stamp % 2147483647);
+            motionLive.outputFile = outputDirectory / ("motionbricks_live_" + std::to_string(stamp) + ".bvh");
+            recordMotionBricksPathThrough(1);
+            Warp::Entity* rig = stage.get(character);
+            if(!rig || !rig->animator){ message = "The selected Animator disappeared."; return; }
+            Warp::AnimationClip clip;
+            const Loom::MotionPresetInfo& preset = Loom::motionPresetSettings(motionPanel.locomotionPreset);
+            clip.name = std::string("MotionBricks - ") + preset.label;
+            clip.startFrame = motionLive.startFrame;
+            clip.endFrame = motionLive.startFrame;
+            clip.loop = false;
+            clip.inPlace = false;
+            rig->animator->animations.push_back(std::move(clip));
+            motionLive.animationIndex = rig->animator->animations.size() - 1;
+            rig->animator->activeAnimation = motionLive.animationIndex;
+            motionLive.active = true;
+            motionLive.ready = false;
+            selected = character;
+            motionPanel.targetCharacter = character;
+            playing = false;
+            followAnimatorPreview = true;
+            frame = motionLive.startFrame;
+            if(!sendMotionBricksLiveControl(false)){
                 motionLive.active = false;
-                message = "MotionBricks stopped without a final BVH; log: " + motionLive.logFile.string();
+                rig->animator->animations.pop_back();
+                message = "Could not write MotionBricks live control file.";
+                return;
+            }
+            const std::string command = "nohup " + Loom::shellQuoteArgument(python.string()) + " -u " +
+                Loom::shellQuoteArgument(script.string()) + " --upstream " + Loom::shellQuoteArgument(upstream.string()) +
+                " --session " + Loom::shellQuoteArgument(sessionDirectory.string()) + " --output " +
+                Loom::shellQuoteArgument(motionLive.outputFile.string()) + " --seed " + std::to_string(motionLive.seed) +
+                " > " + Loom::shellQuoteArgument(motionLive.logFile.string()) + " 2>&1 < /dev/null &";
+            if(std::system(command.c_str()) != 0){
+                motionLive.active = false;
+                rig->animator->animations.pop_back();
+                message = "Could not start the MotionBricks realtime process.";
+                return;
+            }
+            std::ofstream sidecar(motionLive.outputFile.string() + ".txt");
+            const std::vector<std::string>& recipeStyles = Loom::motionBricksStyleIds();
+            sidecar << "# movement_preset\t" << preset.label << "\n";
+            sidecar << "# motionbricks_style\t" << recipeStyles[size_t(std::clamp(motionPanel.motionBricksStyle, 0, int(recipeStyles.size()) - 1))] << "\n";
+            sidecar << "# contact_settings\t" << (motionPanel.contactSettingsMode == 0 ? "automatic" : "manual") << "\n";
+            sidecar << "# foot_contact_ik\t" << (motionLive.footContactIK ? "on" : "off") << "\n";
+            sidecar << "# kimodo_postprocess\tnot_applicable\n";
+            sidecar << "# root_path\t" << (motionPanel.rootPathEnabled ? "authored"
+                : !motionPanel.constraintsPath.empty() ? "external constraints" : "none") << "\n";
+            sidecar << "MotionBricks live " << preset.label << "\t"
+                    << motionPanel.actions[size_t(std::clamp(motionPanel.activeAction, 0, int(motionPanel.actions.size()) - 1))].duration << "\n";
+            message = "MotionBricks is initializing; the character will animate and record as soon as G1 is ready.";
+        };
+    
+        auto stopMotionBricksLive = [&](){
+            if(!motionLive.active || motionLive.stopRequested) return;
+            motionLive.stopRequested = true;
+            sendMotionBricksLiveControl(true);
+            motionLive.message = "Saving recorded BVH...";
+        };
+    
+        auto tickMotionBricksLive = [&](){
+            if(!motionLive.active) return;
+            if(!motionLive.stopRequested) motionLive.footContactIK = motionPanel.effectiveFootContactIK();
+            Loom::refreshMotionBricksLiveStatus(motionLive);
+            if(motionLive.failed){
+                motionLive.active = false;
+                message = "MotionBricks live failed: " + motionLive.message + "; log: " + motionLive.logFile.string();
                 terminal.visible = true;
                 return;
             }
-            recordMotionBricksPathThrough(motionLive.recordedFrames);
-            const size_t partialIndex = motionLive.animationIndex;
-            const size_t previousCount = rig->animator->animations.size();
-            motionPanel.targetCharacter = motionLive.character;
-            if(motionPanel.contactSettingsMode != 0) motionPanel.footContactIK = motionLive.footContactIK;
-            frame = motionLive.startFrame;
-            importMotion(finalBvh, motionLive.character);
-            rig = stage.get(motionLive.character);
-            const bool imported = rig && rig->animator && rig->animator->animations.size() > previousCount;
-            if(imported){
-                Warp::Animator& animator = *rig->animator;
-                const size_t activeBeforeErase = animator.activeAnimation;
-                if(partialIndex < animator.animations.size()){
-                    animator.animations.erase(animator.animations.begin() + partialIndex);
-                    if(activeBeforeErase > partialIndex) animator.activeAnimation = activeBeforeErase - 1;
-                    else if(activeBeforeErase == partialIndex && !animator.animations.empty())
-                        animator.activeAnimation = std::min(partialIndex, animator.animations.size() - 1);
+            Warp::Entity* rig = stage.get(motionLive.character);
+            if(!rig || !rig->animator || motionLive.animationIndex >= rig->animator->animations.size()){
+                stopMotionBricksLive();
+                message = "The live MotionBricks character or Animator was removed; saving the take.";
+                return;
+            }
+            if(motionLive.complete){
+                const fs::path finalBvh = motionLive.outputFile;
+                if(!fs::is_regular_file(finalBvh)){
+                    motionLive.active = false;
+                    message = "MotionBricks stopped without a final BVH; log: " + motionLive.logFile.string();
+                    terminal.visible = true;
+                    return;
                 }
-                auto& checkpointMap = motionPlaybackCheckpoints[motionLive.character];
-                std::unordered_map<size_t, std::vector<MotionPlaybackCheckpoint>> remappedCheckpoints;
-                for(auto& [index, checkpoints] : checkpointMap){
-                    if(index == partialIndex) continue;
-                    remappedCheckpoints[index > partialIndex ? index - 1 : index] = std::move(checkpoints);
-                }
-                checkpointMap = std::move(remappedCheckpoints);
-                if(animator.activeAnimation < animator.animations.size()){
-                    Warp::AnimationClip& finalClip = animator.animations[animator.activeAnimation];
-                    frame = finalClip.startFrame;
-                    stage.endFrame = std::max(stage.endFrame, finalClip.endFrame);
-                    if(motionLive.pathDriven){
-                        auto rootTrack = std::find_if(finalClip.tracks.begin(), finalClip.tracks.end(), [&](const Warp::AnimatorTrack& track){
-                            return track.target == motionLive.character && track.rootMotion;
-                        });
-                        if(rootTrack != finalClip.tracks.end()){
-                            Engine::WeaverMotion::Clip fullSource;
-                            std::string bvhProblem;
-                            if(Engine::WeaverMotion::readKimodoBvh(finalBvh.string(), fullSource, bvhProblem)){
-                                const double stepFrames = stage.framesPerSecond / std::max(1e-6, fullSource.framesPerSecond);
-                                const size_t count = std::min(fullSource.frames.size(), motionLive.pathSamples.size());
-                                for(size_t sample = 0; sample < count; ++sample){
-                                    if(!motionLive.pathSampleValid[sample]) continue;
-                                    const double keyFrame = finalClip.startFrame + double(sample) * stepFrames;
-                                    rootTrack->translationKeys.set(keyFrame, motionBricksPathRootTranslation(
-                                        motionLive.pathSamples[sample], motionLive.rigFitScale));
+                recordMotionBricksPathThrough(motionLive.recordedFrames);
+                const size_t partialIndex = motionLive.animationIndex;
+                const size_t previousCount = rig->animator->animations.size();
+                motionPanel.targetCharacter = motionLive.character;
+                if(motionPanel.contactSettingsMode != 0) motionPanel.footContactIK = motionLive.footContactIK;
+                frame = motionLive.startFrame;
+                importMotion(finalBvh, motionLive.character);
+                rig = stage.get(motionLive.character);
+                const bool imported = rig && rig->animator && rig->animator->animations.size() > previousCount;
+                if(imported){
+                    Warp::Animator& animator = *rig->animator;
+                    const size_t activeBeforeErase = animator.activeAnimation;
+                    if(partialIndex < animator.animations.size()){
+                        animator.animations.erase(animator.animations.begin() + partialIndex);
+                        if(activeBeforeErase > partialIndex) animator.activeAnimation = activeBeforeErase - 1;
+                        else if(activeBeforeErase == partialIndex && !animator.animations.empty())
+                            animator.activeAnimation = std::min(partialIndex, animator.animations.size() - 1);
+                    }
+                    auto& checkpointMap = motionPlaybackCheckpoints[motionLive.character];
+                    std::unordered_map<size_t, std::vector<MotionPlaybackCheckpoint>> remappedCheckpoints;
+                    for(auto& [index, checkpoints] : checkpointMap){
+                        if(index == partialIndex) continue;
+                        remappedCheckpoints[index > partialIndex ? index - 1 : index] = std::move(checkpoints);
+                    }
+                    checkpointMap = std::move(remappedCheckpoints);
+                    if(animator.activeAnimation < animator.animations.size()){
+                        Warp::AnimationClip& finalClip = animator.animations[animator.activeAnimation];
+                        frame = finalClip.startFrame;
+                        stage.endFrame = std::max(stage.endFrame, finalClip.endFrame);
+                        if(motionLive.pathDriven){
+                            auto rootTrack = std::find_if(finalClip.tracks.begin(), finalClip.tracks.end(), [&](const Warp::AnimatorTrack& track){
+                                return track.target == motionLive.character && track.rootMotion;
+                            });
+                            if(rootTrack != finalClip.tracks.end()){
+                                Engine::WeaverMotion::Clip fullSource;
+                                std::string bvhProblem;
+                                if(Engine::WeaverMotion::readKimodoBvh(finalBvh.string(), fullSource, bvhProblem)){
+                                    const double stepFrames = stage.framesPerSecond / std::max(1e-6, fullSource.framesPerSecond);
+                                    const size_t count = std::min(fullSource.frames.size(), motionLive.pathSamples.size());
+                                    for(size_t sample = 0; sample < count; ++sample){
+                                        if(!motionLive.pathSampleValid[sample]) continue;
+                                        const double keyFrame = finalClip.startFrame + double(sample) * stepFrames;
+                                        rootTrack->translationKeys.set(keyFrame, motionBricksPathRootTranslation(
+                                            motionLive.pathSamples[sample], motionLive.rigFitScale));
+                                    }
                                 }
                             }
                         }
                     }
+                    selected = motionLive.character;
+                    followAnimatorPreview = true;
+                    motionPanel.open = true;
+                    browser.refresh();
+                    message = "MotionBricks take saved to the Animator and full BVH: " + finalBvh.filename().string();
+                }else{
+                    motionLive.active = false;
+                    message = "MotionBricks BVH was saved, but Loom could not finalize the Animator clip: " + finalBvh.string();
+                    terminal.visible = true;
                 }
-                selected = motionLive.character;
-                followAnimatorPreview = true;
-                motionPanel.open = true;
-                browser.refresh();
-                message = "MotionBricks take saved to the Animator and full BVH: " + finalBvh.filename().string();
-            }else{
                 motionLive.active = false;
-                message = "MotionBricks BVH was saved, but Loom could not finalize the Animator clip: " + finalBvh.string();
-                terminal.visible = true;
+                return;
             }
-            motionLive.active = false;
-            return;
-        }
-        if(!motionLive.stopRequested) sendMotionBricksLiveControl(false);
-        Engine::WeaverMotion::Clip source;
-        long sequence = -1;
-        std::string problem;
-        if(!Loom::readMotionBricksLivePose(motionLive, source, sequence, problem)){
-            if(!problem.empty() && problem != "could not open BVH file") motionLive.message = problem;
-            return;
-        }
-        if(sequence <= 0 || source.frames.size() < 2) return;
-        recordMotionBricksPathThrough(size_t(sequence) + 1);
-        const Loom::MotionRigRestPose rest = Loom::motionRigRestPose(stage, motionLive.character);
-        struct SavedJointTracks{
-            Warp::Id id;
-            Warp::Track<glm::vec3> translation, scale;
-            Warp::Track<glm::quat> rotation;
-        };
-        std::vector<SavedJointTracks> saved;
-        saved.reserve(rest.joints.size());
-        for(const Loom::MotionRigJointRest& joint : rest.joints){
-            Warp::Entity* entity = stage.get(joint.id);
-            if(!entity) continue;
-            saved.push_back({joint.id, entity->translationKeys, entity->scaleKeys, entity->rotationKeys});
-            entity->translationKeys = {};
-            entity->scaleKeys = {};
-            entity->rotationKeys = {};
-        }
-        const double step = double(stage.framesPerSecond) / Loom::kimodoMotionFps;
-        const double first = motionLive.startFrame + double(sequence - 1) * step;
-        const double second = motionLive.startFrame + double(sequence) * step;
-        Loom::MotionRigFit fit;
-        Loom::MotionRigMapping mapping;
-        Warp::Track<glm::vec3> rootMotionKeys;
-        const bool retargeted = Loom::retargetMotionToRig(stage, source, motionLive.character, first, step,
-            fit, mapping, problem, rootMotionKeys, motionLive.footContactIK);
-        if(retargeted){
-            motionLive.rigFitScale = fit.scale;
-            Warp::AnimationClip& clip = rig->animator->animations[motionLive.animationIndex];
-            auto findTrack = [&](Warp::Id target, bool rootMotion) -> Warp::AnimatorTrack*{
-                auto found = std::find_if(clip.tracks.begin(), clip.tracks.end(), [&](const Warp::AnimatorTrack& track){
-                    return track.target == target && track.rootMotion == rootMotion;
-                });
-                if(found != clip.tracks.end()) return &*found;
-                Warp::AnimatorTrack track;
-                track.target = target;
-                track.targetPath = stage.path(target);
-                track.rootMotion = rootMotion;
-                clip.tracks.push_back(std::move(track));
-                return &clip.tracks.back();
+            if(!motionLive.stopRequested) sendMotionBricksLiveControl(false);
+            Engine::WeaverMotion::Clip source;
+            long sequence = -1;
+            std::string problem;
+            if(!Loom::readMotionBricksLivePose(motionLive, source, sequence, problem)){
+                if(!problem.empty() && problem != "could not open BVH file") motionLive.message = problem;
+                return;
+            }
+            if(sequence <= 0 || source.frames.size() < 2) return;
+            recordMotionBricksPathThrough(size_t(sequence) + 1);
+            const Loom::MotionRigRestPose rest = Loom::motionRigRestPose(stage, motionLive.character);
+            struct SavedJointTracks{
+                Warp::Id id;
+                Warp::Track<glm::vec3> translation, scale;
+                Warp::Track<glm::quat> rotation;
             };
-            if(!rootMotionKeys.empty()){
-                Warp::AnimatorTrack* track = findTrack(motionLive.character, true);
-                if(sequence == 1) track->translationKeys.set(first, rootMotionKeys.at(first));
-                const size_t pathIndex = size_t(sequence);
-                const glm::vec3 currentRoot = motionLive.pathDriven && pathIndex < motionLive.pathSamples.size() &&
-                    motionLive.pathSampleValid[pathIndex]
-                    ? motionBricksPathRootTranslation(motionLive.pathSamples[pathIndex], fit.scale)
-                    : rootMotionKeys.at(second);
-                track->translationKeys.set(second, currentRoot);
-                if(sequence == 1 && motionLive.pathDriven && !motionLive.pathSamples.empty() &&
-                   motionLive.pathSampleValid[0])
-                    track->translationKeys.set(first,
-                        motionBricksPathRootTranslation(motionLive.pathSamples[0], fit.scale));
-            }
+            std::vector<SavedJointTracks> saved;
+            saved.reserve(rest.joints.size());
             for(const Loom::MotionRigJointRest& joint : rest.joints){
                 Warp::Entity* entity = stage.get(joint.id);
                 if(!entity) continue;
-                Warp::AnimatorTrack* track = nullptr;
-                if(!entity->translationKeys.empty() || !entity->rotationKeys.empty() || !entity->scaleKeys.empty())
-                    track = findTrack(entity->id, false);
-                if(!track) continue;
-                if(!entity->translationKeys.empty()){
-                    if(sequence == 1) track->translationKeys.set(first, entity->translationKeys.at(first));
-                    track->translationKeys.set(second, entity->translationKeys.at(second));
-                }
-                if(!entity->rotationKeys.empty()){
-                    if(sequence == 1) track->rotationKeys.set(first, entity->rotationKeys.at(first));
-                    track->rotationKeys.set(second, entity->rotationKeys.at(second));
-                }
-                if(!entity->scaleKeys.empty()){
-                    if(sequence == 1) track->scaleKeys.set(first, entity->scaleKeys.at(first));
-                    track->scaleKeys.set(second, entity->scaleKeys.at(second));
-                }
+                saved.push_back({joint.id, entity->translationKeys, entity->scaleKeys, entity->rotationKeys});
+                entity->translationKeys = {};
+                entity->scaleKeys = {};
+                entity->rotationKeys = {};
             }
-            clip.endFrame = std::max(clip.endFrame, second);
-            stage.endFrame = std::max(stage.endFrame, second);
-            frame = second;
-            selected = motionLive.character;
-            followAnimatorPreview = true;
-        }else if(!problem.empty()){
-            motionLive.message = "Retarget warning: " + problem;
-        }
-        for(const SavedJointTracks& old : saved) if(Warp::Entity* entity = stage.get(old.id)){
-            entity->translationKeys = old.translation;
-            entity->scaleKeys = old.scale;
-            entity->rotationKeys = old.rotation;
-        }
-    };
-
-    auto openAutoRig = [&](const fs::path& source = fs::path()){
-        activeRailPane = RailPane::None;
-        autoRig.open = true;
-        motionPanel.open = false;
-        if(!source.empty()) autoRig.source = source.string();
-        else if(const Warp::Entity* e = stage.get(selected); e && e->model) autoRig.source = e->model->path;
-        ui.focusTextField("autorig-source");
-    };
-
-    auto openMotionWorkflow = [&](){
-        activeRailPane = RailPane::None;
-        autoRig.open = false;
-        motionPanel.open = true;
-        ui.focusTextField("action" + std::to_string(motionPanel.activeAction));
-    };
-
-    //-- projekt ----------------------------------------------------------------------------------
-    //Projekt je .usda (vidi Warp/Project.h). Prvo spremanje ga stavi u mapu koju media prozor
-    //pregledava, pod imenom koje jos ne postoji - nikad preko tudjeg projekta
-    fs::path projectPath;
-    fs::path pendingProject;              //ceka potvrdu, jer otvaranje zamjenjuje scenu
-    Loom::MoodboardState moodboard;
-    fs::path moodboardHome = startAt;
-    bool moodboardRestoreOutline = outlineVisible;
-    bool moodboardRestoreComponents = componentsVisible;
-    auto setMoodboardOpen = [&](bool open){
-        if(moodboard.open == open) return;
-        if(open){
-            moodboardRestoreOutline = outlineVisible;
-            moodboardRestoreComponents = componentsVisible;
-            outlineVisible = false;
-            componentsVisible = false;
+            const double step = double(stage.framesPerSecond) / Loom::kimodoMotionFps;
+            const double first = motionLive.startFrame + double(sequence - 1) * step;
+            const double second = motionLive.startFrame + double(sequence) * step;
+            Loom::MotionRigFit fit;
+            Loom::MotionRigMapping mapping;
+            Warp::Track<glm::vec3> rootMotionKeys;
+            const bool retargeted = Loom::retargetMotionToRig(stage, source, motionLive.character, first, step,
+                fit, mapping, problem, rootMotionKeys, motionLive.footContactIK);
+            if(retargeted){
+                motionLive.rigFitScale = fit.scale;
+                Warp::AnimationClip& clip = rig->animator->animations[motionLive.animationIndex];
+                auto findTrack = [&](Warp::Id target, bool rootMotion) -> Warp::AnimatorTrack*{
+                    auto found = std::find_if(clip.tracks.begin(), clip.tracks.end(), [&](const Warp::AnimatorTrack& track){
+                        return track.target == target && track.rootMotion == rootMotion;
+                    });
+                    if(found != clip.tracks.end()) return &*found;
+                    Warp::AnimatorTrack track;
+                    track.target = target;
+                    track.targetPath = stage.path(target);
+                    track.rootMotion = rootMotion;
+                    clip.tracks.push_back(std::move(track));
+                    return &clip.tracks.back();
+                };
+                if(!rootMotionKeys.empty()){
+                    Warp::AnimatorTrack* track = findTrack(motionLive.character, true);
+                    if(sequence == 1) track->translationKeys.set(first, rootMotionKeys.at(first));
+                    const size_t pathIndex = size_t(sequence);
+                    const glm::vec3 currentRoot = motionLive.pathDriven && pathIndex < motionLive.pathSamples.size() &&
+                        motionLive.pathSampleValid[pathIndex]
+                        ? motionBricksPathRootTranslation(motionLive.pathSamples[pathIndex], fit.scale)
+                        : rootMotionKeys.at(second);
+                    track->translationKeys.set(second, currentRoot);
+                    if(sequence == 1 && motionLive.pathDriven && !motionLive.pathSamples.empty() &&
+                       motionLive.pathSampleValid[0])
+                        track->translationKeys.set(first,
+                            motionBricksPathRootTranslation(motionLive.pathSamples[0], fit.scale));
+                }
+                for(const Loom::MotionRigJointRest& joint : rest.joints){
+                    Warp::Entity* entity = stage.get(joint.id);
+                    if(!entity) continue;
+                    Warp::AnimatorTrack* track = nullptr;
+                    if(!entity->translationKeys.empty() || !entity->rotationKeys.empty() || !entity->scaleKeys.empty())
+                        track = findTrack(entity->id, false);
+                    if(!track) continue;
+                    if(!entity->translationKeys.empty()){
+                        if(sequence == 1) track->translationKeys.set(first, entity->translationKeys.at(first));
+                        track->translationKeys.set(second, entity->translationKeys.at(second));
+                    }
+                    if(!entity->rotationKeys.empty()){
+                        if(sequence == 1) track->rotationKeys.set(first, entity->rotationKeys.at(first));
+                        track->rotationKeys.set(second, entity->rotationKeys.at(second));
+                    }
+                    if(!entity->scaleKeys.empty()){
+                        if(sequence == 1) track->scaleKeys.set(first, entity->scaleKeys.at(first));
+                        track->scaleKeys.set(second, entity->scaleKeys.at(second));
+                    }
+                }
+                clip.endFrame = std::max(clip.endFrame, second);
+                stage.endFrame = std::max(stage.endFrame, second);
+                frame = second;
+                selected = motionLive.character;
+                followAnimatorPreview = true;
+            }else if(!problem.empty()){
+                motionLive.message = "Retarget warning: " + problem;
+            }
+            for(const SavedJointTracks& old : saved) if(Warp::Entity* entity = stage.get(old.id)){
+                entity->translationKeys = old.translation;
+                entity->scaleKeys = old.scale;
+                entity->rotationKeys = old.rotation;
+            }
+        };
+    
+        auto openAutoRig = [&](const fs::path& source = fs::path()){
             activeRailPane = RailPane::None;
+            autoRig.open = true;
             motionPanel.open = false;
+            if(!source.empty()) autoRig.source = source.string();
+            else if(const Warp::Entity* e = stage.get(selected); e && e->model) autoRig.source = e->model->path;
+            ui.focusTextField("autorig-source");
+        };
+    
+        auto openMotionWorkflow = [&](){
+            activeRailPane = RailPane::None;
             autoRig.open = false;
-        }else{
-            outlineVisible = moodboardRestoreOutline;
-            componentsVisible = moodboardRestoreComponents;
-        }
-        moodboard.open = open;
-    };
-
-    //NESPREMLJENO: otisak scene u trenutku zadnjeg spremanja ili otvaranja (vidi
-    //Stage::fingerprint). Prazna scena na pocetku nije nespremljena
-    uint64_t savedFingerprint = stage.fingerprint();
-    bool quitting = false;
-    //Undo/redo of the whole scene (LoomUndo.h) and autosave beside the project (LoomAutosave.h)
-    Loom::UndoHistory history;
-    bool historyStarted = false;
-    Loom::Autosave autosave;
-    fs::path offeredAutosave;             //newer autosave waiting for the user's answer
-    bool autosaveAsked = false;           //its question is on screen
-
-    auto saveProjectNow = [&]() -> bool{
-        if(projectPath.empty()){
-            projectPath = browser.at / "loom_project.usda";
-            for(int n = 2; fs::exists(projectPath); ++n) projectPath = browser.at / ("loom_project_" + std::to_string(n) + ".usda");
-        }
-        const auto started = std::chrono::steady_clock::now();
-        std::string error;
-        const bool wasUntitled = autosave.lastPath() == Loom::autosavePathFor({});
-        if(Warp::saveProject(stage, projectPath.string(), error)){
-            moodboardHome = projectPath.parent_path();
-            Loom::saveMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
-            autosave.discard(projectPath);
-            if(wasUntitled) autosave.discard({});
-            char text[256];
-            std::snprintf(text, sizeof(text), "Saved %s (%.1f s)", projectPath.filename().string().c_str(),
-                          std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
-            message = text;
-            browser.refresh();
-            savedFingerprint = stage.fingerprint();
-            return true;
-        }
-        message = "Save failed: " + error;
-        return false;
-    };
-
-    auto openProject = [&](const fs::path& path){
-        std::string error;
-        Warp::Stage opened;
-        if(!Warp::loadProject(path.string(), opened, error)){ message = "Could not open: " + error; return; }
-        stage = std::move(opened);
-        projectPath = path;
-        moodboardHome = path.parent_path();
-        Loom::loadMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
-        selected = Warp::None;
-        selectedMedia = -1;
-        collapsed.clear();
-        view = Loom::ViewportState{};
-        frame = stage.startFrame;
-        extent = Loom::sceneExtent(stage, frame);
-        extentDirty = false;
-        Loom::frameAll(stage, frame, view.orbit);
-        message = "Opened project " + path.filename().string();
-        savedFingerprint = stage.fingerprint();
-        history.reset(stage);
-        fs::path newer;
-        if(Loom::newerAutosave(path, newer)) offeredAutosave = newer;
-    };
-
-    auto newScene = [&](){
-        stage = Warp::Stage{};
-        if(!projectPath.empty()) moodboardHome = projectPath.parent_path();
-        projectPath.clear();
-        Loom::loadMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
-        selected = Warp::None;
-        selectedMedia = -1;
-        view = Loom::ViewportState{};
-        frame = 1.0;
-        extentDirty = true;
-        message = "New scene";
-        savedFingerprint = stage.fingerprint();
-        history.reset(stage);
-    };
-
-    auto firstCamera = [&](){
-        Warp::Id found = Warp::None;
-        stage.walk([&](const Warp::Entity& e, int){ if(found == Warp::None && e.camera) found = e.id; });
-        return found;
-    };
-
-    auto removeSelected = [&](Warp::Id id){
-        stage.remove(id);
-        if(view.lookThrough != Warp::None && !stage.contains(view.lookThrough)) view.lookThrough = Warp::None;
-        selected = Warp::None;
-        extentDirty = true;
-    };
-
-    //-- ploca iza kamere ----------------------------------------------------------------------
-    //Cjevovod je Loomov fullscreen prolaz; crta se u pravokutnik kadra suzenjem viewporta, a
-    //material.baseColor mnozi snimku - to je svjetlina ploce
-    PipelineConfig plateConfig;
-    plateConfig.vertexBindings.clear();
-    plateConfig.vertexAttributes.clear();
-    plateConfig.descriptorBindings = {Texture::getLayoutBinding(), Material::getDataLayoutBinding()};
-    plateConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.vert.spv";
-    plateConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.frag.spv";
-    plateConfig.cullMode = vk::CullModeFlagBits::eNone;
-    VulkanGraphicsPipeline platePipeline = loom.createPipeline(plateConfig);
-    std::unique_ptr<StreamingTexture> plateTexture;
-    std::unique_ptr<Material> plateMaterial;
-    Loom::PlateStream plateStream;
-    bool showPlate = true;
-    float plateBrightness = 1.0f;
-    bool plateReady = false;
-    int64_t plateShown = -1;
-    std::vector<uint8_t> platePixels;
-
-    //-- splat u pogledu -----------------------------------------------------------------------------
-    Loom::ViewportSplat viewportSplat(loom);
-    //Rezanje i ciscenje splata (LoomSplatCut.h). Koliko je u kocki se broji samo kad se kocka,
-    //rezanje ili splat promijene - prolaz kroz cijeli oblak
-    Warp::Id splatShownId = Warp::None;          //splat koji pogled crta (iz proslog kadra)
-    Warp::Id splatCleanTarget = Warp::None;      //ciji splat posao ciscenja zamijeni
-    Warp::Id splatFrameWhenLoaded = Warp::None;  //splat otvoren iz preglednika: pogled na njega kad stigne
-    std::string splatCleanOutput;
-    Warp::Id proxyTarget = Warp::None;           //splat ciji je proxy mesh u izradi; proxy postaje njegovo dijete
-    std::string proxyOutput;
-    glm::mat4 cutBoxSeen(0.0f);
-    size_t cutCountSeen = 0, cutInside = 0;
-    std::string cutPathSeen;
-
-    //-- PBR meshevi, materijali, ploha iz odabira (LoomPbr.h, LoomEditorTools.h) -------------------
-    Loom::ViewportMeshes viewportMeshes(loom);
-    Loom::MaterialPanelState materialState;
-    Loom::SurfaceTool surfaceTool;
-    view.gpuMeshes = true;
-
-    //Poslije uvoza modela: odabran cvor s mrezom (pa se vide njegovi materijali), a u sceni koja je
-    //bila prazna pogled se uokviri na model - "Uokviri" gleda oblak tocaka, a modela bez oblaka nema
-    auto afterModelImport = [&](const Loom::ModelImportReport& report, bool wasEmpty){
-        Warp::Id meshNode = report.group;
-        std::vector<Warp::Id> pending{report.group};
-        while(!pending.empty()){
-            const Warp::Id id = pending.back();
-            pending.pop_back();
-            const Warp::Entity* e = stage.get(id);
-            if(!e) continue;
-            if(e->model){ meshNode = id; break; }
-            pending.insert(pending.end(), e->children.rbegin(), e->children.rend());
-        }
-        selected = meshNode;
-        focus = Focus::Entity;
-        extentDirty = true;
-        if(wasEmpty && stage.get(report.group)){
-            const Warp::Entity& group = *stage.get(report.group);
-            const float height = std::max(1e-3f, (report.high.y - report.low.y) * group.local.scale.y);
-            view.lookThrough = Warp::None;
-            view.orbit.target = group.local.translation + glm::vec3(0.0f, 0.5f * height + report.low.y * group.local.scale.y, 0.0f);
-            view.orbit.distance = height * 2.2f;
-        }
-    };
-    auto importAutoRigModel = [&](const fs::path& path){
-        int width = 0, height = 0;
-        glfwGetWindowSize(window, &width, &height);
-        const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(width), float(height), outlineVisible, componentsVisible, timelineVisible, terminal.visible).viewport, view);
-        const bool wasEmpty = stage.size() == 0;
-        const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
-        if(!report.problem.empty()){ message = "Auto Rig import: " + report.problem; return; }
-        afterModelImport(report, wasEmpty);
-        const Warp::Id rigRoot = Loom::motionCharacterForEntity(stage, report.group);
-        const Loom::MotionRigRestPose rest = Loom::motionRigRestPose(stage, rigRoot);
-        const bool hasRig = !rest.joints.empty();
-        const bool animatorReady = hasRig && Loom::ensureRigAnimator(stage, rigRoot);
-        bool naturalPose = false;
-        if(animatorReady && path.filename() != "bend_preview.glb"){
-            std::array<Warp::Id, 52> ids;
-            if(Loom::motionFindVerifiedUniRig52(rest, ids))
-                naturalPose = Loom::applyUniRigRelaxedRestPose(stage, rigRoot);
-        }
-        if(naturalPose) message = "Humanoid imported with Animator and natural arm and finger pose.";
-        else if(animatorReady) message = "Humanoid imported with Animator ready.";
-        else message = "Imported " + path.filename().string() + "; no skeleton was found.";
-    };
-    auto startAutoRig = [&](){
-        if(job.running) return;
-        const fs::path source(autoRig.source);
-        std::error_code error;
-        std::string sourceExtension = source.extension().string();
-        std::transform(sourceExtension.begin(), sourceExtension.end(), sourceExtension.begin(), [](unsigned char c){ return char(std::tolower(c)); });
-        if(!fs::is_regular_file(source, error) || (sourceExtension != ".glb" && sourceExtension != ".gltf")){
-            message = "Auto Rig: select an unrigged .glb or .gltf file first."; return;
-        }
-        const fs::path root(LOOM_ROOT_DIR);
-        const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
-        autoRig.output = root / "tools/autorig/outputs" / ("rig_" + std::to_string(stamp));
-        afterJob = After::Nothing;
-        terminal.visible = true;
-        startJob(Loom::autoRigCommand(root, fs::absolute(source), autoRig.output),
-                 autoRig.output.string(), Loom::Task::AutoRig, 0);
-        message = "Auto Rig: generating a new skeleton and skin weights.";
-    };
-    auto autoRigBackendReady = [&](){
-        const fs::path root(LOOM_ROOT_DIR);
-        return fs::is_regular_file(root / "tools/autorig/.venv/bin/python") &&
-               fs::is_regular_file(root / "tools/autorig/vendor/UniRig/run.py");
-    };
-    auto importModelAsset = [&](const fs::path& path, const Treadle::Rect& viewport){
-        const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewport, view);
-        const bool wasEmpty = stage.size() == 0;
-        const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
-        if(!report.problem.empty()) message = "Model: " + report.problem;
-        else{
-            afterModelImport(report, wasEmpty);
-            char text[192];
-            std::snprintf(text, sizeof(text), "Model %s: %zu nodes, %zu meshes, %zu materials",
-                          path.filename().string().c_str(), report.nodes, report.meshes, report.materials);
-            message = text;
-        }
-    };
-    auto importHumanoidAsset = [&](const fs::path& path){
-        if(job.running){ message = "Wait for the current job to finish before importing a humanoid."; return; }
-        Spool::GltfScene sourceScene;
-        std::string error;
-        if(!Spool::loadGltf(path.string(), sourceScene, error, Spool::GltfLoadConfig{false})){
-            message = "Humanoid import: " + error;
-            return;
-        }
-        motionPanel.open = false;
-        if(!sourceScene.skins.empty()){
-            autoRig.open = false;
-            importAutoRigModel(path);
-            return;
-        }
-        if(!autoRigBackendReady()){
-            message = "Auto Rig is not installed. Run tools/autorig/setup.sh first.";
-            return;
-        }
-        autoRig.source = path.string();
-        autoRig.open = true;
-        startAutoRig();
-    };
-    auto addHumanoidMascott = [&](){
-        const fs::path root(LOOM_ROOT_DIR);
-        fs::path mascot = root / "tools/autorig/outputs/mascot-03/rigged.glb";
-        std::error_code error;
-        if(!fs::is_regular_file(mascot, error)){
-            mascot.clear();
-            const fs::path outputs = root / "tools/autorig/outputs";
-            for(const auto& entry : fs::directory_iterator(outputs, error)){
-                if(error) break;
-                if(!entry.is_directory(error) || entry.path().filename().string().rfind("mascot-", 0) != 0) continue;
-                const fs::path candidate = entry.path() / "rigged.glb";
-                if(fs::is_regular_file(candidate, error) && fs::is_regular_file(entry.path() / "complete.json", error))
-                    mascot = candidate;
+            motionPanel.open = true;
+            timelineVisible = true;
+            Warp::Id rigRoot = stage.contains(motionPanel.targetCharacter)
+                ? Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter)
+                : Loom::motionCharacterForEntity(stage, selected);
+            if(rigRoot != Warp::None){
+                motionPanel.targetCharacter = rigRoot;
+                selected = rigRoot;
+                focus = Focus::Entity;
+                const Loom::MotionRigRestPose rest = Loom::motionRigRestPose(stage, rigRoot);
+                if(rest.bounds.valid){
+                    const glm::vec3 centre = (rest.bounds.low + rest.bounds.high) * 0.5f;
+                    view.orbit.target = glm::vec3(stage.worldMatrix(rigRoot, frame) * glm::vec4(centre, 1.0f));
+                    view.orbit.distance = std::clamp(rest.bounds.height() * 3.6f, 2.6f, 40.0f);
+                }
             }
-        }
-        if(mascot.empty()){
-            message = "HumanoidMascott is missing; run Auto Rig on the mascot model first.";
-            return;
-        }
-        const size_t before = stage.size();
-        autoRig.open = false;
-        motionPanel.open = false;
-        importAutoRigModel(mascot);
-        if(stage.size() > before) message = "HumanoidMascott added with its Animator ready.";
-    };
-    //== IMPORTER (LoomImporter.h): jedan prozor za sve sto editor zna uvesti ==================
-    Loom::ImporterState importer;
-    auto openImporter = [&](){
-        importer.show(importer.at.empty() ? browser.at : importer.at);
-        importer.status.clear();
-    };
-    //Splat sam za sebe; pogled crta prvi vidljivi, pa se ostali sakriju
-    auto importSplatFile = [&](const fs::path& splatFile){
-        stage.walk([&](const Warp::Entity& e, int){ if(e.splat) stage.get(e.id)->visible = false; });
-        const Warp::Id id = stage.create(splatFile.stem().string());
-        stage.get(id)->splat = Warp::Splat{splatFile.string()};
-        selected = id;
-        focus = Focus::Entity;
-        showSplat = true;
-        splatFrameWhenLoaded = id;
-        message = "Splat: " + splatFile.filename().string();
-    };
-    //Snimka u medije projekta (jednom); vraca njezin indeks
-    auto addVideoToProject = [&](const fs::path& video){
-        for(size_t i = 0; i < stage.media.size(); ++i){
-            if(stage.media[i].path == video.string()){ selectedMedia = int(i); focus = Focus::Media; return int(i); }
-        }
-        stage.media.push_back(probeMedia(video));
-        selectedMedia = int(stage.media.size()) - 1;
-        focus = Focus::Media;
-        message = "Media: " + video.filename().string();
-        return selectedMedia;
-    };
-    //Nova kamera tocno iz trenutnog pogleda (polozaj, smjer, vidno polje)
-    auto addCameraHere = [&](Warp::Id parent){
-        int w = 0, h = 0;
-        glfwGetWindowSize(window, &w, &h);
-        const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible).viewport, view);
-        const Warp::Id id = Loom::addCameraFromView(stage, glm::inverse(camera.view), camera.focal, camera.frame.height, frame, parent);
-        selected = id;
-        focus = Focus::Entity;
-        extentDirty = true;
-        message = "Added " + stage.get(id)->name + " (from view; 0 looks through it)";
-    };
-    auto addEmpty = [&](Warp::Id parent){
-        const Warp::Id id = stage.create("Empty", parent);
-        selected = id;
-        focus = Focus::Entity;
-    };
-    auto applyAiEngineAction = [&](const Loom::OpenCodeActionRequest& action, std::string& result){
-        const auto& args = action.arguments;
-        auto onlyKeys = [&](std::initializer_list<const char*> allowed){
-            for(const auto& item : args.object){
-                bool found = false;
-                for(const char* key : allowed) if(item.first == key){ found = true; break; }
-                if(!found) return false;
-            }
-            return true;
+            ui.focusTextField("action" + std::to_string(motionPanel.activeAction));
         };
-        auto readId = [&](const Loom::OpenCodeJsonValue* value, Warp::Id& id, bool allowNone){
-            if(!value || value->kind != Loom::OpenCodeJsonValue::Kind::String || value->string.empty()) return false;
-            uint64_t parsed = 0;
-            for(char c : value->string){
-                if(c < '0' || c > '9') return false;
-                parsed = parsed * 10u + uint64_t(c - '0');
-                if(parsed > std::numeric_limits<Warp::Id>::max()) return false;
+    
+        //-- projekt ----------------------------------------------------------------------------------
+        //Projekt je .usda (vidi Warp/Project.h). Prvo spremanje ga stavi u mapu koju media prozor
+        //pregledava, pod imenom koje jos ne postoji - nikad preko tudjeg projekta
+        fs::path projectPath;
+        fs::path pendingProject;              //ceka potvrdu, jer otvaranje zamjenjuje scenu
+        Loom::MoodboardState moodboard;
+        fs::path moodboardHome = startAt;
+        bool moodboardRestoreOutline = outlineVisible;
+        bool moodboardRestoreComponents = componentsVisible;
+        auto setMoodboardOpen = [&](bool open){
+            if(moodboard.open == open) return;
+            if(open){
+                moodboardRestoreOutline = outlineVisible;
+                moodboardRestoreComponents = componentsVisible;
+                outlineVisible = false;
+                componentsVisible = false;
+                activeRailPane = RailPane::None;
+                motionPanel.open = false;
+                autoRig.open = false;
+            }else{
+                outlineVisible = moodboardRestoreOutline;
+                componentsVisible = moodboardRestoreComponents;
             }
-            if(!allowNone && parsed == Warp::None) return false;
-            id = static_cast<Warp::Id>(parsed);
-            return true;
+            moodboard.open = open;
         };
-        auto readNumber = [&](const Loom::OpenCodeJsonValue* value, double& number){
-            if(!value || value->kind != Loom::OpenCodeJsonValue::Kind::Number ||
-               !std::isfinite(value->number) || std::abs(value->number) > 1000000.0) return false;
-            number = value->number;
-            return true;
+    
+        //NESPREMLJENO: otisak scene u trenutku zadnjeg spremanja ili otvaranja (vidi
+        //Stage::fingerprint). Prazna scena na pocetku nije nespremljena
+        uint64_t savedFingerprint = stage.fingerprint();
+        bool quitting = false;
+        //Undo/redo of the whole scene (LoomUndo.h) and autosave beside the project (LoomAutosave.h)
+        Loom::UndoHistory history;
+        bool historyStarted = false;
+        Loom::Autosave autosave;
+        fs::path offeredAutosave;             //newer autosave waiting for the user's answer
+        bool autosaveAsked = false;           //its question is on screen
+    
+        auto saveProjectNow = [&]() -> bool{
+            if(projectPath.empty()){
+                projectPath = browser.at / "loom_project.usda";
+                for(int n = 2; fs::exists(projectPath); ++n) projectPath = browser.at / ("loom_project_" + std::to_string(n) + ".usda");
+            }
+            const auto started = std::chrono::steady_clock::now();
+            std::string error;
+            const bool wasUntitled = autosave.lastPath() == Loom::autosavePathFor({});
+            if(Warp::saveProject(stage, projectPath.string(), error)){
+                moodboardHome = projectPath.parent_path();
+                Loom::saveMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
+                autosave.discard(projectPath);
+                if(wasUntitled) autosave.discard({});
+                char text[256];
+                std::snprintf(text, sizeof(text), "Saved %s (%.1f s)", projectPath.filename().string().c_str(),
+                              std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+                message = text;
+                browser.refresh();
+                savedFingerprint = stage.fingerprint();
+                return true;
+            }
+            message = "Save failed: " + error;
+            return false;
         };
-        auto readVector = [&](const Loom::OpenCodeJsonValue* value, glm::vec3& vector){
-            if(!value || value->kind != Loom::OpenCodeJsonValue::Kind::Array || value->array.size() != 3) return false;
-            double components[3]{};
-            for(size_t i = 0; i < 3; ++i) if(!readNumber(&value->array[i], components[i])) return false;
-            vector = glm::vec3(float(components[0]), float(components[1]), float(components[2]));
-            return true;
-        };
-        auto idField = [&](const char* key, Warp::Id& id, bool allowNone = false){
-            return readId(args.get(key), id, allowNone);
-        };
-
-        if(args.kind != Loom::OpenCodeJsonValue::Kind::Object){ result = "arguments must be an object"; return false; }
-        if(action.name == "scene.create"){
-            if(!onlyKeys({"kind", "name", "parent_id"})){ result = "unknown argument"; return false; }
-            const auto* kind = args.get("kind");
-            if(!kind || kind->kind != Loom::OpenCodeJsonValue::Kind::String){ result = "kind must be a string"; return false; }
-            Warp::Id parent = Warp::None;
-            if(const auto* parentValue = args.get("parent_id")){
-                if(!readId(parentValue, parent, true) || (parent != Warp::None && !stage.get(parent))){
-                    result = "parent_id must refer to an existing entity or be 0"; return false;
-                }
-            }
-            std::string name;
-            if(const auto* nameValue = args.get("name")){
-                if(nameValue->kind != Loom::OpenCodeJsonValue::Kind::String || nameValue->string.empty() ||
-                   nameValue->string.size() > 128 ||
-                   std::any_of(nameValue->string.begin(), nameValue->string.end(), [](unsigned char c){ return std::iscntrl(c); })){
-                    result = "name must be 1–128 printable characters"; return false;
-                }
-                name = nameValue->string;
-            }
-            if(kind->string == "cube") addMesh(Warp::Shape::Cube, parent);
-            else if(kind->string == "plane") addMesh(Warp::Shape::Plane, parent);
-            else if(kind->string == "empty") addEmpty(parent);
-            else if(kind->string == "camera") addCameraHere(parent);
-            else{ result = "kind must be cube, plane, empty, or camera"; return false; }
-            if(!stage.get(selected)){ result = "Loom could not create the entity"; return false; }
-            if(!name.empty()) stage.rename(selected, name);
-            extentDirty = true;
-            result = "created " + stage.get(selected)->name + " (ID " + std::to_string(selected) + ")";
-            return true;
-        }
-        if(action.name == "scene.select"){
-            if(!onlyKeys({"entity_id"})){ result = "unknown argument"; return false; }
-            Warp::Id id = Warp::None;
-            if(!idField("entity_id", id) || !stage.get(id)){ result = "entity_id is not in the current scene"; return false; }
-            selected = id;
-            focus = Focus::Entity;
-            result = "selected " + stage.get(id)->name;
-            return true;
-        }
-        if(action.name == "scene.transform"){
-            if(!onlyKeys({"entity_id", "position", "rotation_deg", "scale"})){ result = "unknown argument"; return false; }
-            Warp::Id id = Warp::None;
-            if(!idField("entity_id", id) || !stage.get(id)){ result = "entity_id is not in the current scene"; return false; }
-            if(!args.get("position") && !args.get("rotation_deg") && !args.get("scale")){
-                result = "provide position, rotation_deg, or scale"; return false;
-            }
-            Warp::Transform local = stage.localAt(id, frame);
-            glm::vec3 vector;
-            if(const auto* position = args.get("position")){
-                if(!readVector(position, vector)){ result = "position must be three finite numbers"; return false; }
-                local.translation = vector;
-            }
-            if(const auto* rotation = args.get("rotation_deg")){
-                if(!readVector(rotation, vector)){ result = "rotation_deg must be three finite numbers"; return false; }
-                local.rotation = glm::normalize(glm::quat(glm::radians(vector)));
-            }
-            if(const auto* scale = args.get("scale")){
-                if(!readVector(scale, vector) || std::abs(vector.x) < 1e-5f ||
-                   std::abs(vector.y) < 1e-5f || std::abs(vector.z) < 1e-5f ||
-                   std::abs(vector.x) > 10000.0f || std::abs(vector.y) > 10000.0f || std::abs(vector.z) > 10000.0f){
-                    result = "scale must contain three nonzero values within ±10000"; return false;
-                }
-                local.scale = vector;
-            }
-            stage.setLocalAt(id, frame, local);
-            extentDirty = true;
-            result = "updated local transform for " + stage.get(id)->name;
-            return true;
-        }
-        if(action.name == "scene.set_visibility"){
-            if(!onlyKeys({"entity_id", "visible"})){ result = "unknown argument"; return false; }
-            Warp::Id id = Warp::None;
-            const auto* visible = args.get("visible");
-            if(!idField("entity_id", id) || !stage.get(id) || !visible ||
-               visible->kind != Loom::OpenCodeJsonValue::Kind::Boolean){
-                result = "entity_id must exist and visible must be boolean"; return false;
-            }
-            stage.get(id)->visible = visible->boolean;
-            extentDirty = true;
-            result = std::string(visible->boolean ? "shown " : "hidden ") + stage.get(id)->name;
-            return true;
-        }
-        if(action.name == "scene.delete"){
-            if(!onlyKeys({"entity_id"})){ result = "unknown argument"; return false; }
-            Warp::Id id = Warp::None;
-            const Warp::Entity* entity = idField("entity_id", id) ? stage.get(id) : nullptr;
-            if(!entity){ result = "entity_id is not in the current scene"; return false; }
-            const std::string name = entity->name;
-            stage.remove(id);
-            if(view.lookThrough != Warp::None && !stage.get(view.lookThrough)) view.lookThrough = Warp::None;
-            if(!stage.get(selected)) selected = Warp::None;
-            extentDirty = true;
-            result = "deleted " + name + " and its descendants";
-            return true;
-        }
-        if(action.name == "scene.reparent"){
-            if(!onlyKeys({"entity_id", "parent_id"})){ result = "unknown argument"; return false; }
-            Warp::Id id = Warp::None, parent = Warp::None;
-            const auto* parentValue = args.get("parent_id");
-            if(!idField("entity_id", id) || !stage.get(id) || !parentValue){
-                result = "entity_id must exist and parent_id must be supplied"; return false;
-            }
-            if(parentValue->kind == Loom::OpenCodeJsonValue::Kind::Null) parent = Warp::None;
-            else if(!readId(parentValue, parent, false) || !stage.get(parent)){
-                result = "parent_id must be null or an existing entity"; return false;
-            }
-            if(!stage.reparent(id, parent)){ result = "Loom rejected this parent relationship"; return false; }
-            extentDirty = true;
-            result = "reparented " + stage.get(id)->name;
-            return true;
-        }
-        if(action.name == "timeline.seek"){
-            if(!onlyKeys({"frame"})){ result = "unknown argument"; return false; }
-            double target = 0.0;
-            if(!readNumber(args.get("frame"), target)){ result = "frame must be a finite number"; return false; }
-            frame = std::clamp(target, stage.startFrame, stage.endFrame);
-            playing = false;
-            result = "moved timeline to frame " + std::to_string(frame);
-            return true;
-        }
-        if(action.name == "timeline.keyframe"){
-            if(!onlyKeys({"entity_id"})){ result = "unknown argument"; return false; }
-            Warp::Id id = Warp::None;
-            if(!idField("entity_id", id) || !stage.get(id)){ result = "entity_id is not in the current scene"; return false; }
-            stage.keyAll(id, std::round(frame));
-            result = "set transform keys for " + stage.get(id)->name + " at frame " + std::to_string(std::round(frame));
-            return true;
-        }
-        if(action.name == "camera.look_through"){
-            if(!onlyKeys({"entity_id"})){ result = "unknown argument"; return false; }
-            const auto* value = args.get("entity_id");
-            if(!value){ result = "entity_id must be supplied (use null to exit camera view)"; return false; }
-            if(value->kind == Loom::OpenCodeJsonValue::Kind::Null) view.lookThrough = Warp::None;
-            else{
-                Warp::Id id = Warp::None;
-                const Warp::Entity* entity = readId(value, id, false) ? stage.get(id) : nullptr;
-                if(!entity || !entity->camera){ result = "entity_id must refer to an existing camera"; return false; }
-                view.lookThrough = id;
-            }
-            result = view.lookThrough == Warp::None ? "exited camera view" : "entered camera view";
-            return true;
-        }
-        if(action.name == "project.save"){
-            if(!onlyKeys({})){ result = "this action takes no arguments"; return false; }
-            const bool saved = saveProjectNow();
-            result = saved ? message : message;
-            return saved;
-        }
-        if(action.name == "scene.undo" || action.name == "scene.redo"){
-            if(!onlyKeys({})){ result = "this action takes no arguments"; return false; }
-            const bool redo = action.name == "scene.redo";
-            const bool changed = redo ? history.redo(stage) : history.undo(stage);
-            if(!stage.get(selected)) selected = Warp::None;
-            if(view.lookThrough != Warp::None && !stage.get(view.lookThrough)) view.lookThrough = Warp::None;
-            extentDirty = true;
-            result = changed ? (redo ? "redone" : "undone") : (redo ? "nothing to redo" : "nothing to undo");
-            return changed;
-        }
-        result = "action is not supported by Loom";
-        return false;
-    };
-    auto applyAiActionBatch = [&](size_t messageIndex){
-        std::vector<Loom::OpenCodeActionRequest> actions;
-        {
-            std::lock_guard<std::mutex> guard(aiChatLock);
-            if(aiChatBusy || messageIndex >= aiChatMessages.size() ||
-               aiChatMessages[messageIndex].actionBatchResolved) return;
-            actions = aiChatMessages[messageIndex].actions;
-            if(actions.empty()) return;
-            aiChatMessages[messageIndex].actionBatchResolved = true;
-            aiChatMessages[messageIndex].actionBatchResult = "Applying...";
-        }
-        std::string report;
-        size_t applied = 0;
-        for(size_t i = 0; i < actions.size(); ++i){
-            std::string result;
-            const bool succeeded = applyAiEngineAction(actions[i], result);
-            if(succeeded) ++applied;
-            if(!report.empty()) report += "\n";
-            report += std::to_string(i + 1) + ". " + actions[i].name + ": " + result;
-        }
-        report = "Applied " + std::to_string(applied) + " of " + std::to_string(actions.size()) + " actions.\n" + report;
-        {
-            std::lock_guard<std::mutex> guard(aiChatLock);
-            if(messageIndex < aiChatMessages.size()) aiChatMessages[messageIndex].actionBatchResult = std::move(report);
-        }
-        aiChatScroll = 1000000.0f;
-    };
-    auto discardAiActionBatch = [&](size_t messageIndex){
-        std::lock_guard<std::mutex> guard(aiChatLock);
-        if(messageIndex < aiChatMessages.size() && !aiChatMessages[messageIndex].actionBatchResolved){
-            aiChatMessages[messageIndex].actionBatchResolved = true;
-            aiChatMessages[messageIndex].actionBatchResult = "Discarded. No Loom actions were run.";
-        }
-    };
-    bool splatWasLoading = false;
-    int splatSettledFrames = 0;
-    int meshSettledFrames = 0;
-
-    uint32_t framesDrawn = 0;
-    if(!startProject.empty()){
-        openProject(startProject);
-        if(shotFrame >= 0.0) frame = shotFrame;
-        if(shotThrough) view.lookThrough = firstCamera();
-        browser.at = fs::absolute(startProject).parent_path();
-        browser.refresh();
-    }
-    if(!shotResult.empty()){
-        importFolder(shotResult, "");
-        if(shotFrame >= 0.0) frame = shotFrame;
-        if(shotThrough) view.lookThrough = firstCamera();
-        if(shotCube){
-            //Kocka se postavi u jednom kadru a snima u drugom - to je provjera drzi li se snimke
-            const double shown = frame;
-            if(shotCubeFrame >= 0.0) frame = shotCubeFrame;
-            addMesh(Warp::Shape::Cube, Warp::None);
-            frame = shown;
-        }
-    }
-    if(!shotMotionText.empty()){
-        motionPanel.actions.clear();
-        for(const std::string& text : shotMotionText) motionPanel.actions.push_back(Loom::MotionAction{text, 3.0f});
-        openMotionWorkflow();
-    }
-    if(!shotModel.empty() || shotSurfaceWanted){
-        int w = 0, h = 0;
-        glfwGetWindowSize(window, &w, &h);
-        const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible).viewport, view);
-        extent = Loom::sceneExtent(stage, frame);
-        if(!shotModel.empty()){
-            const bool wasEmpty = stage.size() == 0;
-            const Loom::ModelImportReport report = Loom::importModelAtView(stage, shotModel, frame, camera, extent);
-            std::printf("model: %s%zu nodes, %zu meshes, %zu materials\n", report.problem.c_str(), report.nodes, report.meshes, report.materials);
-            afterModelImport(report, wasEmpty);
-        }
-        if(shotSurfaceWanted){
-            //Pravokutnik je zadan u pikselima POGLEDA (od njegovog gornjeg lijevog kuta)
-            const Treadle::Rect r{camera.rect.x + shotSurface[0], camera.rect.y + shotSurface[1], shotSurface[2], shotSurface[3]};
-            surfaceTool.active = true;
-            surfaceTool.selected = Loom::selectFrontPoints(stage, frame, camera, r);
-            surfaceTool.fit = Loom::fitSurface(surfaceTool.selected, camera.eye);
-            selected = Loom::placeOnSurface(stage, surfaceTool, Warp::Shape::Cube);
-            surfaceTool.active = false;         //snimka pokazuje kocku, ne odabir preko nje
-            std::printf("surface: %zu points, %zu on the plane, normal %.3f %.3f %.3f\n", surfaceTool.fit.total, surfaceTool.fit.used,
-                        surfaceTool.fit.normal.x, surfaceTool.fit.normal.y, surfaceTool.fit.normal.z);
-        }
-        focus = Focus::Entity;
-    }
-    if(!shotMotion.empty()){
-        // For command-line previews, --kadar selects the displayed frame. Place the clip at
-        // the scene start first, then scrub to the requested sample after import.
-        if(shotFrame >= 0.0) frame = stage.startFrame;
-        importMotion(shotMotion, motionPanel.targetCharacter);
-        if(shotFrame >= 0.0) frame = std::clamp(shotFrame, stage.startFrame, stage.endFrame);
-        std::printf("%s\n", message.c_str());
-    }
-    if(!shotSave.empty()){
-        projectPath = shotSave;
-        saveProjectNow();
-        std::printf("%s\n", message.c_str());
-    }
-
-    std::string windowTitle;
-    while(!quitting){
-        glfwPollEvents();
-        Loom::loadMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
-
-        //Otisak svaki kadar: prolaz kroz stablo i kljuceve, desetinka milisekunde i na 2301 kljucu
-        const bool dirty = stage.fingerprint() != savedFingerprint;
-        if(!historyStarted){
-            //Whatever the command line opened is the starting point, not an undo step. A newer
-            //autosave of an untitled scene is offered once at start
-            history.reset(stage);
-            historyStarted = true;
-            fs::path newer;
-            if(projectPath.empty() && stage.size() == 0 && Loom::newerAutosave({}, newer)) offeredAutosave = newer;
-        }
-        if(autosave.tick(stage, projectPath, dirty)) message = "Autosaved";
-        const std::string title = std::string("Loom - ") + (projectPath.empty() ? "untitled" : projectPath.filename().string()) +
-                                  (dirty ? " *" : "");
-        if(title != windowTitle){ glfwSetWindowTitle(window, title.c_str()); windowTitle = title; }
-
-        //ZATVARANJE PROZORA S NESPREMLJENIM se zaustavi i pita. Bez nespremljenog - izlaz
-        if(glfwWindowShouldClose(window)){
-            if(!dirty && !viewportSplat.hasCuts()) break;
-            glfwSetWindowShouldClose(window, GLFW_FALSE);
-            int w = 0, h = 0;
-            glfwGetWindowSize(window, &w, &h);
-            ui.openMenuAt("Exit", float(w) * 0.5f - 200.0f, float(h) * 0.4f);
-        }
-
-        int windowWidth = 0, windowHeight = 0;
-        glfwGetWindowSize(window, &windowWidth, &windowHeight);
-        double cursorX = 0.0, cursorY = 0.0;
-        glfwGetCursorPos(window, &cursorX, &cursorY);
-        const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-                           glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
-
-        Treadle::Input input;
-        input.mouseX = float(cursorX);
-        input.mouseY = float(cursorY);
-        const bool leftDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        const bool rightDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-        const bool middleDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
-        input.down[uint32_t(Treadle::MouseButton::Left)] = leftDown;
-        input.down[uint32_t(Treadle::MouseButton::Right)] = rightDown;
-        input.down[uint32_t(Treadle::MouseButton::Middle)] = middleDown;
-        input.wheel = scrollAccumulated;
-        input.shift = shift;
-        //Utipkano i pritisnute tipke od proslog kadra; Treadle ih da polju u fokusu
-        input.text.swap(typedCharacters);
-        typedCharacters.clear();
-        input.keys.swap(typedKeys);
-        typedKeys.clear();
-
-        if(selected != lastTrailSelection){
-            if(stage.contains(lastTrailSelection) && lastTrailSelection != selected){
-                selectionTrail.erase(std::remove(selectionTrail.begin(), selectionTrail.end(), lastTrailSelection),
-                                     selectionTrail.end());
-                selectionTrail.insert(selectionTrail.begin(), lastTrailSelection);
-                if(selectionTrail.size() > 6) selectionTrail.resize(6);
-            }
-            lastTrailSelection = selected;
-        }
-        selectionTrail.erase(std::remove_if(selectionTrail.begin(), selectionTrail.end(), [&](Warp::Id id){
-            return !stage.contains(id) || id == selected;
-        }), selectionTrail.end());
-
-        const Loom::EditorLayout layout = Loom::layoutEditor(float(windowWidth), float(windowHeight), outlineVisible, componentsVisible,
-                                                              timelineVisible, terminal.visible);
-
-        const auto now = std::chrono::steady_clock::now();
-        const float rawFrameSeconds = float(std::chrono::duration<double>(now - lastFrame).count());
-        const float frameSeconds = std::min(0.1f, rawFrameSeconds);
-        if(rawFrameSeconds > 1e-6f){
-            const float instantaneousFps = 1.0f / rawFrameSeconds;
-            smoothedFps = smoothedFps > 0.0f ? smoothedFps + 0.15f * (instantaneousFps - smoothedFps)
-                                               : instantaneousFps;
-        }
-        lastFrame = now;
-
-        if(playing){
-            double playbackStart = stage.startFrame, playbackEnd = stage.endFrame;
-            bool loopPlayback = false;
-            const Warp::Id playingRig = Loom::motionCharacterForEntity(stage, selected);
-            const Warp::Entity* rig = stage.get(playingRig);
-            if(rig && rig->animator && rig->animator->enabled &&
-               rig->animator->activeAnimation < rig->animator->animations.size()) {
-                const Warp::AnimationClip& clip = rig->animator->animations[rig->animator->activeAnimation];
-                if(clip.endFrame > clip.startFrame){
-                    playbackStart = clip.startFrame;
-                    playbackEnd = clip.endFrame;
-                    loopPlayback = clip.loop;
-                }
-            }
-            if(!Loom::advanceClipPlaybackFrame(frame, double(frameSeconds) * stage.framesPerSecond,
-                                               playbackStart, playbackEnd, loopPlayback)) playing = false;
-        }
-
-        //-- posao: zivi snimak, i sto kad zavrsi ------------------------------------------------
-        const bool justFinished = wasRunning && !job.running;
-        wasRunning = job.running;
-        if(job.running && job.task == Loom::Task::Solve &&
-           std::chrono::duration<double>(now - lastRead).count() > 0.7){
-            lastRead = now;
-            Loom::Snapshot snapshot;
-            if(Loom::readSnapshot(job.outputDirectory + "/napredak.bin", snapshot) && !snapshot.points.empty()){
-                live = Warp::Stage{};
-                Loom::addSnapshot(live, snapshot, "solve_u_tijeku");
-                if(stage.size() == 0){
-                    //Prazna scena: pogled prati ono sto solve nalazi
-                    Loom::frameAll(live, 1.0, view.orbit);
-                    extent = Loom::sceneExtent(live, 1.0);
-                }
-            }
-        }
-        if(justFinished){
-            live = Warp::Stage{};
-            if(job.failed){
-                std::lock_guard<std::mutex> guard(job.lock);
-                const std::string why = Loom::explainFailure(job.lines);
-                message = why.empty() ? "Job failed - see Terminal" : "Failed: " + why;
-                terminal.visible = true;
-            }else if(job.task == Loom::Task::Solve){
-                importFolder(job.outputDirectory, jobVideo);
-                for(Warp::Media& media : stage.media){
-                    if(media.path == jobVideo) media.result = job.outputDirectory;
-                }
-                //Splat je vec istreniran u istom poslu (--then)
-                std::error_code splatError;
-                if(afterJob == After::ImportAndTrain && fs::is_regular_file(job.outputDirectory + "/scena.ply", splatError)){
-                    std::string name = fs::path(job.outputDirectory).filename().string();
-                    if(name.size() > 5 && name.substr(name.size() - 5) == "_loom") name.resize(name.size() - 5);
-                    const Warp::Id id = stage.create("Splat", stage.find("/" + name));
-                    stage.get(id)->splat = Warp::Splat{job.outputDirectory + "/scena.ply"};
-                    message = "Solve + splat ready: " + job.outputDirectory + "/scena.ply";
-                }
-            }else if(job.task == Loom::Task::Train){
-                //Splat ide u grupu svoje mape, ako je u sceni
-                std::string name = fs::path(job.outputDirectory).filename().string();
-                if(name.size() > 5 && name.substr(name.size() - 5) == "_loom") name.resize(name.size() - 5);
-                const Warp::Id group = stage.find("/" + name);
-                const Warp::Id id = stage.create("Splat", group);
-                stage.get(id)->splat = Warp::Splat{job.outputDirectory + "/scena.ply"};
-                message = "Splat ready: " + job.outputDirectory + "/scena.ply";
-            }else if(job.task == Loom::Task::Clean){
-                //Ocisceni splat zamijeni izvor u sceni; izvor ostaje na disku
-                Warp::Entity* target = stage.get(splatCleanTarget);
-                std::error_code error;
-                if(target && target->splat && fs::is_regular_file(splatCleanOutput, error)){
-                    const bool same = target->splat->path == splatCleanOutput;
-                    target->splat->path = splatCleanOutput;
-                    if(same) viewportSplat.reload();
-                    browser.refresh();
-                    message = "Floaters cleaned: " + fs::path(splatCleanOutput).filename().string();
-                }else{
-                    message = "Cleaning failed; see Terminal.";
-                    terminal.visible = true;
-                }
-            }else if(job.task == Loom::Task::Proxy){
-                //Proxy je u sustavu splata, pa ide kao njegovo dijete bez pomaka i mjerila
-                std::error_code error;
-                Spool::GltfScene proxyScene;
-                std::string problem;
-                Spool::GltfLoadConfig proxyConfig;
-                proxyConfig.decodeImages = false;
-                if(stage.contains(proxyTarget) && fs::is_regular_file(proxyOutput, error) &&
-                   Spool::loadGltf(proxyOutput, proxyScene, problem, proxyConfig)){
-                    const Loom::ModelImportReport report = Loom::importGltf(stage, proxyScene, proxyTarget, glm::vec3(0.0f), 1.0f);
-                    if(Warp::Entity* proxy = stage.get(report.group)){
-                        proxy->name = fs::path(proxyOutput).stem().string();
-                        //importGltf model spusti na pod i centrira (za likove); proxy mora ostati
-                        //tocno u sustavu splata
-                        proxy->local.translation = glm::vec3(0.0f);
-                        proxy->local.scale = glm::vec3(1.0f);
-                    }
-                    selected = report.group;
-                    focus = Focus::Entity;
-                    browser.refresh();
-                    message = "Proxy mesh: " + fs::path(proxyOutput).filename().string() + " (+ .obj for Blender, same space as kamera.usda)";
-                }else{
-                    message = "Proxy mesh failed; see Terminal." + (problem.empty() ? std::string() : " " + problem);
-                    terminal.visible = true;
-                }
-            }else if(job.task == Loom::Task::AutoRig){
-                const fs::path output(job.outputDirectory);
-                std::error_code error;
-                if(fs::is_regular_file(output / "complete.json", error) &&
-                   fs::is_regular_file(output / "rigged.glb", error)){
-                    autoRig.output = output;
-                    browser.at = output;
-                    importAutoRigModel(output / "rigged.glb");
-                    message = "Auto Rig complete: skeleton + weights passed deformation checks. Inspect the imported rig.";
-                    autoRig.open = true;
-                    motionPanel.open = false;
-
-                }else{
-                    message = "Auto Rig failed; full log: " + (output / "autorig.log").string();
-                    terminal.visible = true;
-                }
-            }else if(job.task == Loom::Task::WeaverMotion){
-                std::error_code error;
-                fs::path outputBvh = generatedMotionPath;
-                outputBvh += ".bvh";
-                if(fs::is_regular_file(outputBvh, error)){
-                    browser.at = outputBvh.parent_path();
-                    browser.refresh();
-                    importMotion(outputBvh, generatedMotionTarget);
-                    if(!message.empty()) message =
-                        std::string(generatedMotionIsBricks ? "MotionBricks" : "Kimodo") + " complete; " + message;
-                    motionPanel.open = true;
-                }else if(fs::is_directory(generatedMotionPath, error)){
-                    const std::vector<fs::path> samples = Loom::weaverMotionFilesIn(generatedMotionPath);
-                    browser.at = generatedMotionPath.parent_path();
-                    browser.refresh();
-                    motionPanel.historyRead = {};
-                    if(!samples.empty()){
-                        if(samples.size() == 1){
-                            importMotion(samples.front(), generatedMotionTarget);
-                            message = "Kimodo generated one BVH sample; it is available in Recent Motions.";
-                        }else{
-                            message = "Kimodo generated " + std::to_string(samples.size()) + " BVH variations; choose one in Recent Motions.";
-                        }
-                        motionPanel.open = true;
-                    }else{
-                        message = "Kimodo saved native NPZ/CSV outputs; Loom's timeline preview currently imports SOMA BVH only.";
-                        motionPanel.open = true;
-                    }
-                }else{
-                    fs::path outputNpz = generatedMotionPath;
-                    outputNpz += ".npz";
-                    fs::path outputCsv = generatedMotionPath;
-                    outputCsv += ".csv";
-                    if(fs::is_regular_file(outputNpz, error) || fs::is_regular_file(outputCsv, error)){
-                        browser.at = generatedMotionPath.parent_path();
-                        browser.refresh();
-                        message = "Kimodo saved native NPZ/CSV outputs; Loom's timeline preview currently imports SOMA BVH only.";
-                        motionPanel.open = true;
-                    }else{
-                        message = "Kimodo did not produce a recognized motion output; check Terminal.";
-                        terminal.visible = true;
-                    }
-                }
-            }
-            browser.refresh();
-        }
-        if(std::chrono::duration<double>(now - lastBrowse).count() > 3.0){
-            lastBrowse = now;
-            browser.refresh();
-        }
-
-        if(extentDirty){
+    
+        auto openProject = [&](const fs::path& path){
+            std::string error;
+            Warp::Stage opened;
+            if(!Warp::loadProject(path.string(), opened, error)){ message = "Could not open: " + error; return; }
+            stage = std::move(opened);
+            projectPath = path;
+            moodboardHome = path.parent_path();
+            Loom::loadMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
+            selected = Warp::None;
+            selectedMedia = -1;
+            collapsed.clear();
+            view = Loom::ViewportState{};
+            frame = stage.startFrame;
             extent = Loom::sceneExtent(stage, frame);
             extentDirty = false;
-        }
-
-        ui.begin(input, float(windowWidth), float(windowHeight));
-        const Treadle::Theme& theme = ui.style();
-
-        //Gumb za alatnu traku i timeline: vodoravno, na zadanom mjestu. Treadleovi gumbi idu
-        //u stupac, a traka je red. Vraca je li kliknut i gdje pocinje sljedeci
-        auto toolButton = [&](const std::string& label, float x, float y, float height, bool on = false){
-            const float width = Treadle::textWidth(label, theme.textScale) + 2.0f * theme.padding;
-            const Treadle::Ui::Region region = ui.region("gumb:" + label, Treadle::Rect{x, y, width, height});
-            ui.canvas().rect(region.box, on ? theme.accent : (region.hot ? theme.hot : theme.control));
-            if(on) ui.canvas().outline(region.box, 1.0f, theme.title);
-            ui.canvas().text(x + theme.padding, y + (height - Treadle::textHeight(theme.textScale)) * 0.5f,
-                             label, on ? theme.textOnAccent : theme.text, theme.textScale);
-            return std::make_pair(region.pressed, x + width + 6.0f);
+            Loom::frameAll(stage, frame, view.orbit);
+            message = "Opened project " + path.filename().string();
+            savedFingerprint = stage.fingerprint();
+            history.reset(stage);
+            fs::path newer;
+            if(Loom::newerAutosave(path, newer)) offeredAutosave = newer;
         };
-
-        //== ALATNA TRAKA =========================================================================
-        {
-            const Treadle::Rect& bar = layout.toolbar;
-            ui.canvas().rect(bar, Treadle::Color{0.045f, 0.065f, 0.050f, 1.0f});
-            ui.canvas().text(bar.x + 12.0f, bar.y + 13.0f, "LOOM", theme.title, theme.textScale);
-            const float y = bar.y + 7.0f, h = bar.height - 14.0f;
-            auto [moveTool, afterMove] = toolButton("W", bar.x + 90.0f, y, h, tool == Tool::Move);
-            if(moveTool) tool = Tool::Move;
-            auto [rotateTool, afterRotateTool] = toolButton("E", afterMove, y, h, tool == Tool::Rotate);
-            if(rotateTool) tool = Tool::Rotate;
-            //Ploha iz odabira: vucenjem u pogledu se oznaci komad plohe (LoomEditorTools.h)
-            auto [surfaceButton, afterRotate] = toolButton("S", afterRotateTool, y, h, surfaceTool.active);
-            if(surfaceButton) surfaceTool.active = !surfaceTool.active;
-            auto [fit, afterFit] = toolButton("Frame (F)", afterRotate + 12.0f, y, h);
-            if(fit){ view.lookThrough = Warp::None; Loom::frameAll(stage.size() ? stage : live, frame, view.orbit); }
-            auto [through, afterThrough] = toolButton("Camera (0)", afterFit, y, h, view.lookThrough != Warp::None);
-            if(through){
-                if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
-                else{
-                    const Warp::Entity* chosen = stage.get(selected);
-                    view.lookThrough = chosen && chosen->camera ? selected : firstCamera();
+    
+        auto newScene = [&](){
+            stage = Warp::Stage{};
+            if(!projectPath.empty()) moodboardHome = projectPath.parent_path();
+            projectPath.clear();
+            Loom::loadMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
+            selected = Warp::None;
+            selectedMedia = -1;
+            view = Loom::ViewportState{};
+            frame = 1.0;
+            extentDirty = true;
+            message = "New scene";
+            savedFingerprint = stage.fingerprint();
+            history.reset(stage);
+        };
+    
+        auto firstCamera = [&](){
+            Warp::Id found = Warp::None;
+            stage.walk([&](const Warp::Entity& e, int){ if(found == Warp::None && e.camera) found = e.id; });
+            return found;
+        };
+    
+        auto removeSelected = [&](Warp::Id id){
+            stage.remove(id);
+            if(view.lookThrough != Warp::None && !stage.contains(view.lookThrough)) view.lookThrough = Warp::None;
+            selected = Warp::None;
+            extentDirty = true;
+        };
+    
+        //-- ploca iza kamere ----------------------------------------------------------------------
+        //Cjevovod je Loomov fullscreen prolaz; crta se u pravokutnik kadra suzenjem viewporta, a
+        //material.baseColor mnozi snimku - to je svjetlina ploce
+        PipelineConfig plateConfig;
+        plateConfig.vertexBindings.clear();
+        plateConfig.vertexAttributes.clear();
+        plateConfig.descriptorBindings = {Texture::getLayoutBinding(), Material::getDataLayoutBinding()};
+        plateConfig.vertShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.vert.spv";
+        plateConfig.fragShaderPath = std::string(LOOM_SHADER_DIR) + "/fullscreen.frag.spv";
+        plateConfig.cullMode = vk::CullModeFlagBits::eNone;
+        VulkanGraphicsPipeline platePipeline = loom.createPipeline(plateConfig);
+        std::unique_ptr<StreamingTexture> plateTexture;
+        std::unique_ptr<Material> plateMaterial;
+        //COMPOSITOR (LoomCompositor.h): radni prostor s cvorovima; slika pregleda ide istim putem kao ploca
+        Loom::Compositor compositor;
+        std::unique_ptr<StreamingTexture> compositorTexture;
+        std::unique_ptr<Material> compositorMaterial;
+        bool compositorReady = false;
+        Loom::CompositorLayout compositorLayout;
+        Loom::PlateStream plateStream;
+        bool showPlate = true;
+        float plateBrightness = 1.0f;
+        bool plateReady = false;
+        int64_t plateShown = -1;
+        std::vector<uint8_t> platePixels;
+    
+        //-- splat u pogledu -----------------------------------------------------------------------------
+        Loom::ViewportSplat viewportSplat(loom);
+        //Rezanje i ciscenje splata (LoomSplatCut.h). Koliko je u kocki se broji samo kad se kocka,
+        //rezanje ili splat promijene - prolaz kroz cijeli oblak
+        Warp::Id splatShownId = Warp::None;          //splat koji pogled crta (iz proslog kadra)
+        Warp::Id splatCleanTarget = Warp::None;      //ciji splat posao ciscenja zamijeni
+        Warp::Id splatFrameWhenLoaded = Warp::None;  //splat otvoren iz preglednika: pogled na njega kad stigne
+        std::string splatCleanOutput;
+        Warp::Id proxyTarget = Warp::None;           //splat ciji je proxy mesh u izradi; proxy postaje njegovo dijete
+        std::string proxyOutput;
+        glm::mat4 cutBoxSeen(0.0f);
+        size_t cutCountSeen = 0, cutInside = 0;
+        std::string cutPathSeen;
+    
+        //-- PBR meshevi, materijali, ploha iz odabira (LoomPbr.h, LoomEditorTools.h) -------------------
+        Loom::ViewportMeshes viewportMeshes(loom);
+        Loom::MaterialPanelState materialState;
+        Loom::SurfaceTool surfaceTool;
+        view.gpuMeshes = true;
+    
+        //Poslije uvoza modela: odabran cvor s mrezom (pa se vide njegovi materijali), a u sceni koja je
+        //bila prazna pogled se uokviri na model - "Uokviri" gleda oblak tocaka, a modela bez oblaka nema
+        auto afterModelImport = [&](const Loom::ModelImportReport& report, bool wasEmpty){
+            Warp::Id meshNode = report.group;
+            std::vector<Warp::Id> pending{report.group};
+            while(!pending.empty()){
+                const Warp::Id id = pending.back();
+                pending.pop_back();
+                const Warp::Entity* e = stage.get(id);
+                if(!e) continue;
+                if(e->model){ meshNode = id; break; }
+                pending.insert(pending.end(), e->children.rbegin(), e->children.rend());
+            }
+            selected = meshNode;
+            focus = Focus::Entity;
+            extentDirty = true;
+            if(wasEmpty && stage.get(report.group)){
+                const Warp::Entity& group = *stage.get(report.group);
+                const float height = std::max(1e-3f, (report.high.y - report.low.y) * group.local.scale.y);
+                view.lookThrough = Warp::None;
+                view.orbit.target = group.local.translation + glm::vec3(0.0f, 0.5f * height + report.low.y * group.local.scale.y, 0.0f);
+                view.orbit.distance = height * 2.2f;
+            }
+        };
+        auto importAutoRigModel = [&](const fs::path& path){
+            int width = 0, height = 0;
+            glfwGetWindowSize(window, &width, &height);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(width), float(height), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+            const bool wasEmpty = stage.size() == 0;
+            const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
+            if(!report.problem.empty()){ message = "Auto Rig import: " + report.problem; return; }
+            afterModelImport(report, wasEmpty);
+            const Warp::Id rigRoot = Loom::motionCharacterForEntity(stage, report.group);
+            const Loom::MotionRigRestPose rest = Loom::motionRigRestPose(stage, rigRoot);
+            const bool hasRig = !rest.joints.empty();
+            const bool animatorReady = hasRig && Loom::ensureRigAnimator(stage, rigRoot);
+            bool naturalPose = false;
+            if(animatorReady && path.filename() != "bend_preview.glb"){
+                std::array<Warp::Id, 52> ids;
+                if(Loom::motionFindVerifiedUniRig52(rest, ids))
+                    naturalPose = Loom::applyUniRigRelaxedRestPose(stage, rigRoot);
+            }
+            if(naturalPose) message = "Humanoid imported with Animator and natural arm and finger pose.";
+            else if(animatorReady) message = "Humanoid imported with Animator ready.";
+            else message = "Imported " + path.filename().string() + "; no skeleton was found.";
+        };
+        auto startAutoRig = [&](){
+            if(job.running) return;
+            const fs::path source(autoRig.source);
+            std::error_code error;
+            std::string sourceExtension = source.extension().string();
+            std::transform(sourceExtension.begin(), sourceExtension.end(), sourceExtension.begin(), [](unsigned char c){ return char(std::tolower(c)); });
+            if(!fs::is_regular_file(source, error) || (sourceExtension != ".glb" && sourceExtension != ".gltf")){
+                message = "Auto Rig: select an unrigged .glb or .gltf file first."; return;
+            }
+            const fs::path root(LOOM_ROOT_DIR);
+            const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
+            autoRig.output = root / "tools/autorig/outputs" / ("rig_" + std::to_string(stamp));
+            afterJob = After::Nothing;
+            terminal.visible = true;
+            startJob(Loom::autoRigCommand(root, fs::absolute(source), autoRig.output),
+                     autoRig.output.string(), Loom::Task::AutoRig, 0);
+            message = "Auto Rig: generating a new skeleton and skin weights.";
+        };
+        auto autoRigBackendReady = [&](){
+            const fs::path root(LOOM_ROOT_DIR);
+            return fs::is_regular_file(root / "tools/autorig/.venv/bin/python") &&
+                   fs::is_regular_file(root / "tools/autorig/vendor/UniRig/run.py");
+        };
+        auto importModelAsset = [&](const fs::path& path, const Treadle::Rect& viewport){
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewport, view);
+            const bool wasEmpty = stage.size() == 0;
+            const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
+            if(!report.problem.empty()) message = "Model: " + report.problem;
+            else{
+                afterModelImport(report, wasEmpty);
+                char text[192];
+                std::snprintf(text, sizeof(text), "Model %s: %zu nodes, %zu meshes, %zu materials",
+                              path.filename().string().c_str(), report.nodes, report.meshes, report.materials);
+                message = text;
+            }
+        };
+        auto importHumanoidAsset = [&](const fs::path& path){
+            if(job.running){ message = "Wait for the current job to finish before importing a humanoid."; return; }
+            Spool::GltfScene sourceScene;
+            std::string error;
+            if(!Spool::loadGltf(path.string(), sourceScene, error, Spool::GltfLoadConfig{false})){
+                message = "Humanoid import: " + error;
+                return;
+            }
+            motionPanel.open = false;
+            if(!sourceScene.skins.empty()){
+                autoRig.open = false;
+                importAutoRigModel(path);
+                return;
+            }
+            if(!autoRigBackendReady()){
+                message = "Auto Rig is not installed. Run tools/autorig/setup.sh first.";
+                return;
+            }
+            autoRig.source = path.string();
+            autoRig.open = true;
+            startAutoRig();
+        };
+        auto addHumanoidMascott = [&](){
+            const fs::path root(LOOM_ROOT_DIR);
+            fs::path mascot = root / "tools/autorig/outputs/mascot-03/rigged.glb";
+            std::error_code error;
+            if(!fs::is_regular_file(mascot, error)){
+                mascot.clear();
+                const fs::path outputs = root / "tools/autorig/outputs";
+                for(const auto& entry : fs::directory_iterator(outputs, error)){
+                    if(error) break;
+                    if(!entry.is_directory(error) || entry.path().filename().string().rfind("mascot-", 0) != 0) continue;
+                    const fs::path candidate = entry.path() / "rigged.glb";
+                    if(fs::is_regular_file(candidate, error) && fs::is_regular_file(entry.path() / "complete.json", error))
+                        mascot = candidate;
                 }
             }
-            auto [plateButton, afterPlate] = toolButton("Plate (V)", afterThrough, y, h, showPlate);
-            if(plateButton) showPlate = !showPlate;
-            auto [rigButton, afterRig] = toolButton("Auto Rig", afterPlate + 12.0f, y, h);
-            if(rigButton) openAutoRig();
-            auto [saveButton, afterSave] = toolButton(dirty ? "Save *" : "Save", afterRig + 12.0f, y, h, dirty);
-            if(saveButton) saveProjectNow();
-            auto [newButton, afterNew] = toolButton("New", afterSave, y, h);
-            if(newButton) ui.openMenu("New");
-            auto [boardButton, afterBoard] = toolButton("Moodboard (M)", afterNew, y, h, moodboard.open);
-            if(boardButton) setMoodboardOpen(!moodboard.open);
-
-            //Stanje posla ili zadnja poruka, desno
-            std::string status = message;
-            Treadle::Color colour = theme.dim;
-            if(job.running){
-                const double elapsed = std::chrono::duration<double>(now - job.started).count();
-                const int phase = job.phase;
-                const int phaseCount = int(sizeof(Loom::phases) / sizeof(Loom::phases[0]));
-                if(job.task == Loom::Task::Train){
-                    char text[96];
-                    std::snprintf(text, sizeof(text), "Training %.0f%% - %s",
-                                  job.fraction >= 0.0f ? 100.0 * double(job.fraction) : 0.0,
-                                  Loom::humanTime(elapsed).c_str());
-                    status = text;
-                }else if(job.task == Loom::Task::WeaverMotion){
-                    status = "Kimodo generating motion - " + Loom::humanTime(elapsed);
-                }else if(job.task == Loom::Task::AutoRig){
-                    status = "Auto Rig - " + Loom::humanTime(elapsed);
-                }else if(job.task == Loom::Task::Clean){
-                    status = "Cleaning floaters - " + Loom::humanTime(elapsed);
-                }else if(job.task == Loom::Task::Proxy){
-                    status = "Building proxy / blockers - " + Loom::humanTime(elapsed);
-                }else{
-                    status = "Solve: ";
-                    status += (phase >= 0 && phase < phaseCount) ? Loom::phases[phase].label : "starting";
-                    status += " - " + Loom::humanTime(elapsed);
-                    //PROCJENA JE OZNACENA KAO PROCJENA: udjeli su izmjereni na jednoj snimci
-                    if(phase >= 0 && phase < phaseCount && Loom::phases[phase].share > 0.02 &&
-                       Loom::phases[phase].share < 1.0){
-                        status += ", about " + Loom::humanTime(std::max(0.0, elapsed / Loom::phases[phase].share - elapsed));
-                    }
-                }
-                colour = theme.accent;
-            }else if(job.failed){
-                colour = theme.warning;
+            if(mascot.empty()){
+                message = "HumanoidMascott is missing; run Auto Rig on the mascot model first.";
+                return;
             }
-            std::string sceneName = projectPath.empty() ? "Untitled" : projectPath.stem().string();
-            const Warp::Entity* activeCamera = stage.get(view.lookThrough);
-            const std::string cameraName = activeCamera && activeCamera->camera ? activeCamera->name : "Orbit";
-            char fpsText[24];
-            std::snprintf(fpsText, sizeof(fpsText), "%.0f", double(smoothedFps));
-
-            const float metadataStart = bar.x + afterBoard + 8.0f;
-            const float metadataEnd = bar.x + bar.width - 10.0f;
-            const float metadataRoom = std::max(0.0f, metadataEnd - metadataStart);
-            const float metaScale = theme.textScale * 0.68f;
-            float cursorRight = metadataEnd;
-            auto headerChip = [&](const std::string& key, const std::string& value, float width,
-                                  const Treadle::Color& accent){
-                const std::string label = Treadle::fitText(key + " " + value, width - 12.0f, metaScale);
-                const float actualWidth = std::min(width, std::max(30.0f, Treadle::textWidth(label, metaScale) + 12.0f));
-                const Treadle::Rect chip{cursorRight - actualWidth, bar.y + 8.0f, actualWidth, bar.height - 16.0f};
-                ui.canvas().rect(chip, Treadle::Color{accent.r, accent.g, accent.b, 0.10f});
-                ui.canvas().outline(chip, 1.0f, Treadle::Color{accent.r, accent.g, accent.b, 0.48f});
-                ui.canvas().text(chip.x + (chip.width - Treadle::textWidth(label, metaScale)) * 0.5f,
-                                 chip.y + (chip.height - Treadle::textHeight(metaScale)) * 0.5f,
-                                 label, accent, metaScale);
-                cursorRight = chip.x - 4.0f;
-            };
-
-            if(metadataRoom >= 282.0f){
-                headerChip("FPS", fpsText, 55.0f, {0.36f, 0.95f, 0.61f, 1.0f});
-                headerChip("CAM", cameraName, 102.0f, {0.18f, 0.88f, 1.0f, 1.0f});
-                headerChip("SCN", sceneName, 128.0f, theme.accent);
-            }else if(metadataRoom >= 232.0f){
-                headerChip("FPS", fpsText, 50.0f, {0.36f, 0.95f, 0.61f, 1.0f});
-                headerChip("CAM", cameraName, 78.0f, {0.18f, 0.88f, 1.0f, 1.0f});
-                headerChip("SCN", sceneName, 96.0f, theme.accent);
-            }else if(metadataRoom >= 182.0f){
-                headerChip("FPS", fpsText, 44.0f, {0.36f, 0.95f, 0.61f, 1.0f});
-                headerChip("CAM", cameraName, 62.0f, {0.18f, 0.88f, 1.0f, 1.0f});
-                headerChip("SCN", sceneName, 68.0f, theme.accent);
-            }else if(metadataRoom > 0.0f){
-                const std::string summary = Treadle::fitText("SCN " + sceneName + "  CAM " + cameraName + "  " + fpsText + " FPS",
-                                                              metadataRoom - 12.0f, metaScale);
-                const Treadle::Rect chip{metadataStart, bar.y + 8.0f, metadataRoom, bar.height - 16.0f};
-                ui.canvas().rect(chip, Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.10f});
-                ui.canvas().outline(chip, 1.0f, Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.48f});
-                ui.canvas().text(chip.x + 6.0f, chip.y + (chip.height - Treadle::textHeight(metaScale)) * 0.5f,
-                                 summary, theme.title, metaScale);
-                cursorRight = metadataStart;
+            const size_t before = stage.size();
+            autoRig.open = false;
+            motionPanel.open = false;
+            importAutoRigModel(mascot);
+            if(stage.size() > before) message = "HumanoidMascott added with its Animator ready.";
+        };
+        //== IMPORTER (LoomImporter.h): jedan prozor za sve sto editor zna uvesti ==================
+        Loom::ImporterState importer;
+        auto openImporter = [&](){
+            importer.show(importer.at.empty() ? browser.at : importer.at);
+            importer.status.clear();
+        };
+        //Splat sam za sebe; pogled crta prvi vidljivi, pa se ostali sakriju
+        auto importSplatFile = [&](const fs::path& splatFile){
+            stage.walk([&](const Warp::Entity& e, int){ if(e.splat) stage.get(e.id)->visible = false; });
+            const Warp::Id id = stage.create(splatFile.stem().string());
+            stage.get(id)->splat = Warp::Splat{splatFile.string()};
+            selected = id;
+            focus = Focus::Entity;
+            showSplat = true;
+            splatFrameWhenLoaded = id;
+            message = "Splat: " + splatFile.filename().string();
+        };
+        //Snimka u medije projekta (jednom); vraca njezin indeks
+        auto addVideoToProject = [&](const fs::path& video){
+            for(size_t i = 0; i < stage.media.size(); ++i){
+                if(stage.media[i].path == video.string()){ selectedMedia = int(i); focus = Focus::Media; return int(i); }
             }
-
-            const float statusRoom = std::max(0.0f, cursorRight - metadataStart - 4.0f);
-            if(statusRoom > 8.0f){
-                const float statusScale = theme.textScale * 0.78f;
-                const std::string fitted = Treadle::fitText(status, statusRoom, statusScale);
-                ui.canvas().text(cursorRight - Treadle::textWidth(fitted, statusScale), bar.y + 13.0f,
-                                 fitted, colour, statusScale);
+            stage.media.push_back(probeMedia(video));
+            selectedMedia = int(stage.media.size()) - 1;
+            focus = Focus::Media;
+            message = "Media: " + video.filename().string();
+            return selectedMedia;
+        };
+        //Nova kamera tocno iz trenutnog pogleda (polozaj, smjer, vidno polje)
+        auto addCameraHere = [&](Warp::Id parent){
+            int w = 0, h = 0;
+            glfwGetWindowSize(window, &w, &h);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+            const Warp::Id id = Loom::addCameraFromView(stage, glm::inverse(camera.view), camera.focal, camera.frame.height, frame, parent);
+            selected = id;
+            focus = Focus::Entity;
+            extentDirty = true;
+            message = "Added " + stage.get(id)->name + " (from view; 0 looks through it)";
+        };
+        auto addEmpty = [&](Warp::Id parent){
+            const Warp::Id id = stage.create("Empty", parent);
+            selected = id;
+            focus = Focus::Entity;
+        };
+        bool splatWasLoading = false;
+        int splatSettledFrames = 0;
+        int meshSettledFrames = 0;
+    
+        uint32_t framesDrawn = 0;
+        if(!startProject.empty()){
+            openProject(startProject);
+            if(shotFrame >= 0.0) frame = shotFrame;
+            if(shotThrough) view.lookThrough = firstCamera();
+            browser.at = fs::absolute(startProject).parent_path();
+            browser.refresh();
+        }
+        if(!shotResult.empty()){
+            importFolder(shotResult, "");
+            if(shotFrame >= 0.0) frame = shotFrame;
+            if(shotThrough) view.lookThrough = firstCamera();
+            if(shotCube){
+                //Kocka se postavi u jednom kadru a snima u drugom - to je provjera drzi li se snimke
+                const double shown = frame;
+                if(shotCubeFrame >= 0.0) frame = shotCubeFrame;
+                addMesh(Warp::Shape::Cube, Warp::None);
+                frame = shown;
             }
         }
+        if(!shotMotionText.empty()){
+            motionPanel.actions.clear();
+            for(const std::string& text : shotMotionText) motionPanel.actions.push_back(Loom::MotionAction{text, 3.0f});
+            openMotionWorkflow();
+        }
+        if(!shotModel.empty() || shotSurfaceWanted){
+            int w = 0, h = 0;
+            glfwGetWindowSize(window, &w, &h);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+            extent = Loom::sceneExtent(stage, frame);
+            if(!shotModel.empty()){
+                const bool wasEmpty = stage.size() == 0;
+                const Loom::ModelImportReport report = Loom::importModelAtView(stage, shotModel, frame, camera, extent);
+                std::printf("model: %s%zu nodes, %zu meshes, %zu materials\n", report.problem.c_str(), report.nodes, report.meshes, report.materials);
+                afterModelImport(report, wasEmpty);
+            }
+            if(shotSurfaceWanted){
+                //Pravokutnik je zadan u pikselima POGLEDA (od njegovog gornjeg lijevog kuta)
+                const Treadle::Rect r{camera.rect.x + shotSurface[0], camera.rect.y + shotSurface[1], shotSurface[2], shotSurface[3]};
+                surfaceTool.active = true;
+                surfaceTool.selected = Loom::selectFrontPoints(stage, frame, camera, r);
+                surfaceTool.fit = Loom::fitSurface(surfaceTool.selected, camera.eye);
+                selected = Loom::placeOnSurface(stage, surfaceTool, Warp::Shape::Cube);
+                surfaceTool.active = false;         //snimka pokazuje kocku, ne odabir preko nje
+                std::printf("surface: %zu points, %zu on the plane, normal %.3f %.3f %.3f\n", surfaceTool.fit.total, surfaceTool.fit.used,
+                            surfaceTool.fit.normal.x, surfaceTool.fit.normal.y, surfaceTool.fit.normal.z);
+            }
+            focus = Focus::Entity;
+        }
+        if(!shotMotion.empty()){
+            // For command-line previews, --kadar selects the displayed frame. Place the clip at
+            // the scene start first, then scrub to the requested sample after import.
+            if(shotFrame >= 0.0) frame = stage.startFrame;
+            importMotion(shotMotion, motionPanel.targetCharacter);
+            if(shotFrame >= 0.0) frame = std::clamp(shotFrame, stage.startFrame, stage.endFrame);
+            std::printf("%s\n", message.c_str());
+        }
+        if(!shotSave.empty()){
+            projectPath = shotSave;
+            saveProjectNow();
+            std::printf("%s\n", message.c_str());
+        }
+    
+        std::string windowTitle;
+        while(!quitting){
+            glfwPollEvents();
+            Loom::loadMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
+    
+            //Otisak svaki kadar: prolaz kroz stablo i kljuceve, desetinka milisekunde i na 2301 kljucu
+            const bool dirty = stage.fingerprint() != savedFingerprint;
+            if(!historyStarted){
+                //Whatever the command line opened is the starting point, not an undo step. A newer
+                //autosave of an untitled scene is offered once at start
+                history.reset(stage);
+                historyStarted = true;
+                fs::path newer;
+                if(projectPath.empty() && stage.size() == 0 && Loom::newerAutosave({}, newer)) offeredAutosave = newer;
+            }
+            if(autosave.tick(stage, projectPath, dirty)) message = "Autosaved";
+            const std::string title = std::string("Loom - ") + (projectPath.empty() ? "untitled" : projectPath.filename().string()) +
+                                      (dirty ? " *" : "");
+            if(title != windowTitle){ glfwSetWindowTitle(window, title.c_str()); windowTitle = title; }
+    
+            //ZATVARANJE PROZORA S NESPREMLJENIM se zaustavi i pita. Bez nespremljenog - izlaz
+            if(glfwWindowShouldClose(window)){
+                if(!dirty && !viewportSplat.hasCuts()) break;
+                glfwSetWindowShouldClose(window, GLFW_FALSE);
+                int w = 0, h = 0;
+                glfwGetWindowSize(window, &w, &h);
+                ui.openMenuAt("Exit", float(w) * 0.5f - 200.0f, float(h) * 0.4f);
+            }
+    
+            int windowWidth = 0, windowHeight = 0;
+            glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            double cursorX = 0.0, cursorY = 0.0;
+            glfwGetCursorPos(window, &cursorX, &cursorY);
+            const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                               glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+    
+            Treadle::Input input;
+            input.mouseX = float(cursorX);
+            input.mouseY = float(cursorY);
+            const bool leftDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            const bool rightDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            const bool middleDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+            input.down[uint32_t(Treadle::MouseButton::Left)] = leftDown;
+            input.down[uint32_t(Treadle::MouseButton::Right)] = rightDown;
+            input.down[uint32_t(Treadle::MouseButton::Middle)] = middleDown;
+            for(uint32_t button = 0; button < uint32_t(Treadle::MouseButton::Count); ++button){
+                input.pressedEvent[button] = mousePressedEvents[button];
+                input.releasedEvent[button] = mouseReleasedEvents[button];
+                input.pressX[button] = mousePressX[button];
+                input.pressY[button] = mousePressY[button];
+                mousePressedEvents[button] = false;
+                mouseReleasedEvents[button] = false;
+            }
+            const bool leftPressed = input.pressedEvent[uint32_t(Treadle::MouseButton::Left)] || (leftDown && !leftWasDown);
+            const bool leftReleased = input.releasedEvent[uint32_t(Treadle::MouseButton::Left)] || (!leftDown && leftWasDown);
+            const bool middlePressed = input.pressedEvent[uint32_t(Treadle::MouseButton::Middle)] || (middleDown && !middleWasDown);
+            const bool rightPressed = input.pressedEvent[uint32_t(Treadle::MouseButton::Right)] || (rightDown && !rightWasDown);
+            const double leftClickX = input.pressedEvent[uint32_t(Treadle::MouseButton::Left)]
+                ? input.pressX[uint32_t(Treadle::MouseButton::Left)] : cursorX;
+            const double leftClickY = input.pressedEvent[uint32_t(Treadle::MouseButton::Left)]
+                ? input.pressY[uint32_t(Treadle::MouseButton::Left)] : cursorY;
+            const double rightClickX = input.pressedEvent[uint32_t(Treadle::MouseButton::Right)]
+                ? input.pressX[uint32_t(Treadle::MouseButton::Right)] : cursorX;
+            const double rightClickY = input.pressedEvent[uint32_t(Treadle::MouseButton::Right)]
+                ? input.pressY[uint32_t(Treadle::MouseButton::Right)] : cursorY;
+            if(input.pressedEvent[uint32_t(Treadle::MouseButton::Left)]){
+                cursorX = leftClickX;
+                cursorY = leftClickY;
+                input.mouseX = float(leftClickX);
+                input.mouseY = float(leftClickY);
+            }
+            input.wheel = scrollAccumulated;
+            input.shift = shift;
+            //Utipkano i pritisnute tipke od proslog kadra; Treadle ih da polju u fokusu
+            input.text.swap(typedCharacters);
+            typedCharacters.clear();
+            input.keys.swap(typedKeys);
+            typedKeys.clear();
+    
+            if(selected != lastTrailSelection){
+                if(stage.contains(lastTrailSelection) && lastTrailSelection != selected){
+                    selectionTrail.erase(std::remove(selectionTrail.begin(), selectionTrail.end(), lastTrailSelection),
+                                         selectionTrail.end());
+                    selectionTrail.insert(selectionTrail.begin(), lastTrailSelection);
+                    if(selectionTrail.size() > 6) selectionTrail.resize(6);
+                }
+                lastTrailSelection = selected;
+            }
+            selectionTrail.erase(std::remove_if(selectionTrail.begin(), selectionTrail.end(), [&](Warp::Id id){
+                return !stage.contains(id) || id == selected;
+            }), selectionTrail.end());
+    
+            const auto now = std::chrono::steady_clock::now();
+            const float rawFrameSeconds = float(std::chrono::duration<double>(now - lastFrame).count());
+            const float frameSeconds = std::min(0.1f, rawFrameSeconds);
+            input.timeSeconds = float(std::chrono::duration<double>(now.time_since_epoch()).count());
+            if(rawFrameSeconds > 1e-6f){
+                const float instantaneousFps = 1.0f / rawFrameSeconds;
+                smoothedFps = smoothedFps > 0.0f ? smoothedFps + 0.15f * (instantaneousFps - smoothedFps)
+                                                   : instantaneousFps;
+            }
+            lastFrame = now;
 
-        const float drawerWidth = std::min(layout.viewport.width,
-            std::clamp(layout.viewport.width * 0.30f, 260.0f, 360.0f));
-        const Treadle::Rect drawerBox{layout.viewport.x + layout.viewport.width - drawerWidth, layout.viewport.y,
-                                       drawerWidth, layout.viewport.height};
-        {
-            Treadle::DrawList& canvas = ui.canvas();
-            canvas.rect(layout.rail, theme.panel);
-            canvas.rect(layout.rail.x + layout.rail.width - 1.0f, layout.rail.y, 1.0f,
-                        layout.rail.height, theme.panelEdge);
-            auto railItem = [&](RailPane pane, const std::string& label, int row){
-                const float side = layout.rail.width - 12.0f;
-                const float stride = std::min(62.0f, std::max(38.0f, (layout.rail.height - 16.0f) / 7.0f));
-                const Treadle::Rect box{layout.rail.x + 6.0f, layout.rail.y + 8.0f + float(row) * stride,
-                                        side, std::min(54.0f, stride - 3.0f)};
-                const Treadle::Ui::Region hit = ui.region("loom-rail-" + label, box);
-                if(hit.pressed){
-                    if(pane == RailPane::Timeline){
-                        timelineVisible = !timelineVisible;
-                    }else if(pane == RailPane::Terminal){
-                        terminal.visible = !terminal.visible;
-                        if(terminal.visible) terminal.unreadError = false;
-                    }else if(pane == RailPane::Motion){
-                        if(motionPanel.open){ motionPanel.open = false; autoRig.open = false; }
-                        else openMotionWorkflow();
-                    }else if(pane == RailPane::Scene || pane == RailPane::Components){
-                        motionPanel.open = false;
-                        autoRig.open = false;
-                        if(pane == RailPane::Scene) outlineVisible = !outlineVisible;
-                        else componentsVisible = !componentsVisible;
-                        activeRailPane = RailPane::None;
+            const float railFullWidth = std::min(56.0f, std::max(46.0f, float(windowWidth) * 0.045f));
+            const float railTimelineHeight = timelineVisible ? std::clamp(float(windowHeight) * 0.2f, 110.0f, 190.0f) : 0.0f;
+            const float railTerminalHeight = terminal.visible ? std::min(
+                std::clamp(float(windowHeight) * 0.23f, 150.0f, 250.0f),
+                std::max(0.0f, float(windowHeight) - 40.0f - railTimelineHeight - 170.0f)) : 0.0f;
+            const float railMiddleHeight = std::max(0.0f, float(windowHeight) - 40.0f -
+                                                    railTimelineHeight - railTerminalHeight);
+            const float handleHeight = std::min(58.0f, railMiddleHeight);
+            const Treadle::Rect railHoverArea{0.0f, 40.0f + std::max(0.0f, (railMiddleHeight - handleHeight) * 0.5f),
+                                              16.0f, handleHeight};
+            const Treadle::Rect fullRailArea{0.0f, 40.0f, railFullWidth, railMiddleHeight};
+            railHoverOpen = railHoverOpen ? fullRailArea.contains(input.mouseX, input.mouseY)
+                                          : railHoverArea.contains(input.mouseX, input.mouseY);
+            const float revealTarget = railHoverOpen ? 1.0f : 0.0f;
+            railReveal += (revealTarget - railReveal) * (1.0f - std::exp(-13.0f * frameSeconds));
+            if(std::fabs(revealTarget - railReveal) < 0.002f) railReveal = revealTarget;
+            const Loom::EditorLayout layout = Loom::layoutEditor(float(windowWidth), float(windowHeight), outlineVisible, componentsVisible,
+                                                                  timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal);
+    
+            if(playing){
+                double playbackStart = stage.startFrame, playbackEnd = stage.endFrame;
+                bool loopPlayback = false;
+                const Warp::Id playingRig = Loom::motionCharacterForEntity(stage, selected);
+                const Warp::Entity* rig = stage.get(playingRig);
+                if(rig && rig->animator && rig->animator->enabled &&
+                   rig->animator->activeAnimation < rig->animator->animations.size()) {
+                    const Warp::AnimationClip& clip = rig->animator->animations[rig->animator->activeAnimation];
+                    if(clip.endFrame > clip.startFrame){
+                        playbackStart = clip.startFrame;
+                        playbackEnd = clip.endFrame;
+                        loopPlayback = clip.loop;
+                    }
+                }
+                if(!Loom::advanceClipPlaybackFrame(frame, double(frameSeconds) * stage.framesPerSecond,
+                                                   playbackStart, playbackEnd, loopPlayback)) playing = false;
+            }
+    
+            //-- posao: zivi snimak, i sto kad zavrsi ------------------------------------------------
+            const bool justFinished = wasRunning && !job.running;
+            wasRunning = job.running;
+            if(job.running && job.task == Loom::Task::Solve &&
+               std::chrono::duration<double>(now - lastRead).count() > 0.7){
+                lastRead = now;
+                Loom::Snapshot snapshot;
+                if(Loom::readSnapshot(job.outputDirectory + "/napredak.bin", snapshot) && !snapshot.points.empty()){
+                    live = Warp::Stage{};
+                    Loom::addSnapshot(live, snapshot, "solve_u_tijeku");
+                    if(stage.size() == 0){
+                        //Prazna scena: pogled prati ono sto solve nalazi
+                        Loom::frameAll(live, 1.0, view.orbit);
+                        extent = Loom::sceneExtent(live, 1.0);
+                    }
+                }
+            }
+            if(justFinished){
+                live = Warp::Stage{};
+                if(job.failed){
+                    std::lock_guard<std::mutex> guard(job.lock);
+                    const std::string why = Loom::explainFailure(job.lines);
+                    message = why.empty() ? "Job failed - see Terminal" : "Failed: " + why;
+                    terminal.visible = true;
+                }else if(job.task == Loom::Task::Solve){
+                    importFolder(job.outputDirectory, jobVideo);
+                    for(Warp::Media& media : stage.media){
+                        if(media.path == jobVideo) media.result = job.outputDirectory;
+                    }
+                    //Splat je vec istreniran u istom poslu (--then)
+                    std::error_code splatError;
+                    if(afterJob == After::ImportAndTrain && fs::is_regular_file(job.outputDirectory + "/scena.ply", splatError)){
+                        std::string name = fs::path(job.outputDirectory).filename().string();
+                        if(name.size() > 5 && name.substr(name.size() - 5) == "_loom") name.resize(name.size() - 5);
+                        const Warp::Id id = stage.create("Splat", stage.find("/" + name));
+                        stage.get(id)->splat = Warp::Splat{job.outputDirectory + "/scena.ply"};
+                        message = "Solve + splat ready: " + job.outputDirectory + "/scena.ply";
+                    }
+                }else if(job.task == Loom::Task::Train){
+                    //Splat ide u grupu svoje mape, ako je u sceni
+                    std::string name = fs::path(job.outputDirectory).filename().string();
+                    if(name.size() > 5 && name.substr(name.size() - 5) == "_loom") name.resize(name.size() - 5);
+                    const Warp::Id group = stage.find("/" + name);
+                    const Warp::Id id = stage.create("Splat", group);
+                    stage.get(id)->splat = Warp::Splat{job.outputDirectory + "/scena.ply"};
+                    message = "Splat ready: " + job.outputDirectory + "/scena.ply";
+                }else if(job.task == Loom::Task::Clean){
+                    //Ocisceni splat zamijeni izvor u sceni; izvor ostaje na disku
+                    Warp::Entity* target = stage.get(splatCleanTarget);
+                    std::error_code error;
+                    if(target && target->splat && fs::is_regular_file(splatCleanOutput, error)){
+                        const bool same = target->splat->path == splatCleanOutput;
+                        target->splat->path = splatCleanOutput;
+                        if(same) viewportSplat.reload();
+                        browser.refresh();
+                        message = "Floaters cleaned: " + fs::path(splatCleanOutput).filename().string();
                     }else{
+                        message = "Cleaning failed; see Terminal.";
+                        terminal.visible = true;
+                    }
+                }else if(job.task == Loom::Task::Proxy){
+                    //Proxy je u sustavu splata, pa ide kao njegovo dijete bez pomaka i mjerila
+                    std::error_code error;
+                    Spool::GltfScene proxyScene;
+                    std::string problem;
+                    Spool::GltfLoadConfig proxyConfig;
+                    proxyConfig.decodeImages = false;
+                    if(stage.contains(proxyTarget) && fs::is_regular_file(proxyOutput, error) &&
+                       Spool::loadGltf(proxyOutput, proxyScene, problem, proxyConfig)){
+                        const Loom::ModelImportReport report = Loom::importGltf(stage, proxyScene, proxyTarget, glm::vec3(0.0f), 1.0f);
+                        if(Warp::Entity* proxy = stage.get(report.group)){
+                            proxy->name = fs::path(proxyOutput).stem().string();
+                            //importGltf model spusti na pod i centrira (za likove); proxy mora ostati
+                            //tocno u sustavu splata
+                            proxy->local.translation = glm::vec3(0.0f);
+                            proxy->local.scale = glm::vec3(1.0f);
+                        }
+                        selected = report.group;
+                        focus = Focus::Entity;
+                        browser.refresh();
+                        message = "Proxy mesh: " + fs::path(proxyOutput).filename().string() + " (+ .obj for Blender, same space as kamera.usda)";
+                    }else{
+                        message = "Proxy mesh failed; see Terminal." + (problem.empty() ? std::string() : " " + problem);
+                        terminal.visible = true;
+                    }
+                }else if(job.task == Loom::Task::AutoRig){
+                    const fs::path output(job.outputDirectory);
+                    std::error_code error;
+                    if(fs::is_regular_file(output / "complete.json", error) &&
+                       fs::is_regular_file(output / "rigged.glb", error)){
+                        autoRig.output = output;
+                        browser.at = output;
+                        importAutoRigModel(output / "rigged.glb");
+                        message = "Auto Rig complete: skeleton + weights passed deformation checks. Inspect the imported rig.";
+                        autoRig.open = true;
                         motionPanel.open = false;
-                        autoRig.open = false;
-                        activeRailPane = activeRailPane == pane ? RailPane::None : pane;
+    
+                    }else{
+                        message = "Auto Rig failed; full log: " + (output / "autorig.log").string();
+                        terminal.visible = true;
+                    }
+                }else if(job.task == Loom::Task::WeaverMotion){
+                    std::error_code error;
+                    fs::path outputBvh = generatedMotionPath;
+                    outputBvh += ".bvh";
+                    if(fs::is_regular_file(outputBvh, error)){
+                        browser.at = outputBvh.parent_path();
+                        browser.refresh();
+                        importMotion(outputBvh, generatedMotionTarget);
+                        if(!message.empty()) message =
+                            std::string(generatedMotionIsBricks ? "MotionBricks" : "Kimodo") + " complete; " + message;
+                        motionPanel.open = true;
+                    }else if(fs::is_directory(generatedMotionPath, error)){
+                        const std::vector<fs::path> samples = Loom::weaverMotionFilesIn(generatedMotionPath);
+                        browser.at = generatedMotionPath.parent_path();
+                        browser.refresh();
+                        motionPanel.historyRead = {};
+                        if(!samples.empty()){
+                            if(samples.size() == 1){
+                                importMotion(samples.front(), generatedMotionTarget);
+                                message = "Kimodo generated one BVH sample; it is available in Recent Motions.";
+                            }else{
+                                message = "Kimodo generated " + std::to_string(samples.size()) + " BVH variations; choose one in Recent Motions.";
+                            }
+                            motionPanel.open = true;
+                        }else{
+                            message = "Kimodo saved native NPZ/CSV outputs; Loom's timeline preview currently imports SOMA BVH only.";
+                            motionPanel.open = true;
+                        }
+                    }else{
+                        fs::path outputNpz = generatedMotionPath;
+                        outputNpz += ".npz";
+                        fs::path outputCsv = generatedMotionPath;
+                        outputCsv += ".csv";
+                        if(fs::is_regular_file(outputNpz, error) || fs::is_regular_file(outputCsv, error)){
+                            browser.at = generatedMotionPath.parent_path();
+                            browser.refresh();
+                            message = "Kimodo saved native NPZ/CSV outputs; Loom's timeline preview currently imports SOMA BVH only.";
+                            motionPanel.open = true;
+                        }else{
+                            message = "Kimodo did not produce a recognized motion output; check Terminal.";
+                            terminal.visible = true;
+                        }
                     }
                 }
-                const bool active = pane == RailPane::Motion ? motionPanel.open :
-                    (pane == RailPane::Scene ? outlineVisible :
-                     (pane == RailPane::Components ? componentsVisible :
-                      (pane == RailPane::Timeline ? timelineVisible :
-                       (pane == RailPane::Terminal ? terminal.visible : activeRailPane == pane))));
-                const Treadle::Color ink = active ? theme.title : theme.dim;
-                if(active) canvas.rect(box, Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.16f});
-                else if(hit.hot) canvas.rect(box, theme.hot);
-                canvas.outline(box, active ? 1.5f : 1.0f, active ? theme.accent : theme.panelEdge);
-
-                const float cx = box.x + box.width * 0.5f;
-                const float iy = box.y + 5.0f;
-                if(pane == RailPane::Media){
-                    canvas.folderIcon(cx - 9.0f, iy + 1.0f, 18.0f, ink);
-                    canvas.triangle(cx - 2.0f, iy + 4.0f, cx - 2.0f, iy + 12.0f, cx + 5.0f, iy + 8.0f,
-                                    active ? theme.accent : ink);
-                }else if(pane == RailPane::Scene){
-                    const float cy = iy + 9.0f;
-                    canvas.line(cx, cy - 6.0f, cx - 8.0f, cy + 5.0f, 1.4f, ink);
-                    canvas.line(cx, cy - 6.0f, cx + 8.0f, cy + 5.0f, 1.4f, ink);
-                    canvas.line(cx - 8.0f, cy + 5.0f, cx + 8.0f, cy + 5.0f, 1.4f, ink);
-                    canvas.rect(cx - 2.5f, cy - 9.0f, 5.0f, 5.0f, ink);
-                    canvas.rect(cx - 10.5f, cy + 3.0f, 5.0f, 5.0f, ink);
-                    canvas.rect(cx + 5.5f, cy + 3.0f, 5.0f, 5.0f, ink);
-                }else if(pane == RailPane::Components){
-                    for(int i = 0; i < 3; ++i){
-                        const float y = iy + 4.0f + float(i) * 6.0f;
-                        canvas.line(cx - 8.0f, y + 2.0f, cx + 8.0f, y + 2.0f, 1.5f, ink);
-                        canvas.rect(cx - 8.0f + float((i + 1) % 3) * 6.0f, y, 4.0f, 4.0f,
-                                    active ? theme.accent : theme.title);
-                    }
-                }else if(pane == RailPane::Timeline){
-                    canvas.line(cx - 11.0f, iy + 4.0f, cx + 11.0f, iy + 4.0f, 1.4f, ink);
-                    canvas.line(cx - 11.0f, iy + 17.0f, cx + 11.0f, iy + 17.0f, 1.4f, ink);
-                    for(int tick = 0; tick < 4; ++tick){
-                        const float x = cx - 9.0f + float(tick) * 6.0f;
-                        canvas.line(x, iy + 5.0f, x, iy + 12.0f, 1.2f, ink);
-                    }
-                    canvas.line(cx + 2.0f, iy + 2.0f, cx + 2.0f, iy + 19.0f, 2.0f, theme.accent);
-                }else if(pane == RailPane::Terminal){
-                    canvas.outline(Treadle::Rect{cx - 11.0f, iy + 2.0f, 22.0f, 17.0f}, 1.2f, ink);
-                    canvas.text(cx - 8.0f, iy + 3.0f, ">_", ink, theme.textScale * 0.7f);
-                    if(terminal.unreadError) canvas.rect(cx + 8.0f, iy, 5.0f, 5.0f, theme.warning);
-                    else if(job.running || motionLive.active) canvas.rect(cx + 8.0f, iy, 5.0f, 5.0f, theme.accent);
-                }else if(pane == RailPane::AiChat){
-                    canvas.outline(Treadle::Rect{cx - 10.0f, iy + 2.0f, 20.0f, 14.0f}, 1.3f, ink);
-                    canvas.line(cx - 3.0f, iy + 16.0f, cx - 7.0f, iy + 20.0f, 1.3f, ink);
-                    canvas.line(cx - 7.0f, iy + 20.0f, cx + 1.0f, iy + 16.0f, 1.3f, ink);
-                    canvas.rect(cx - 5.0f, iy + 8.0f, 2.0f, 2.0f, ink);
-                    canvas.rect(cx - 1.0f, iy + 8.0f, 2.0f, 2.0f, ink);
-                    canvas.rect(cx + 3.0f, iy + 8.0f, 2.0f, 2.0f, ink);
-                }else{
-                    const Treadle::Color axes[3] = {{1.0f, 0.18f, 0.28f, 1.0f},
-                                                    {0.20f, 1.0f, 0.42f, 1.0f},
-                                                    {0.24f, 0.55f, 1.0f, 1.0f}};
-                    canvas.line(cx - 10.0f, iy + 14.0f, cx - 3.0f, iy + 5.0f, 1.8f, axes[0]);
-                    canvas.line(cx - 3.0f, iy + 5.0f, cx + 3.0f, iy + 12.0f, 1.8f, axes[1]);
-                    canvas.line(cx + 3.0f, iy + 12.0f, cx + 10.0f, iy + 3.0f, 1.8f, axes[2]);
-                }
-                const float labelScale = theme.textScale * 0.58f;
-                canvas.text(cx - Treadle::textWidth(label, labelScale) * 0.5f, box.y + box.height - 19.0f,
-                            label, ink, labelScale);
+                browser.refresh();
+            }
+            if(std::chrono::duration<double>(now - lastBrowse).count() > 3.0){
+                lastBrowse = now;
+                browser.refresh();
+            }
+    
+            if(extentDirty){
+                extent = Loom::sceneExtent(stage, frame);
+                extentDirty = false;
+            }
+    
+            ui.begin(input, float(windowWidth), float(windowHeight));
+            const Treadle::Theme& theme = ui.style();
+    
+            //Gumb za alatnu traku i timeline: vodoravno, na zadanom mjestu. Treadleovi gumbi idu
+            //u stupac, a traka je red. Vraca je li kliknut i gdje pocinje sljedeci
+            auto toolButton = [&](const std::string& label, float x, float y, float height, bool on = false){
+                const float width = Treadle::textWidth(label, theme.textScale) + 2.0f * theme.padding;
+                const Treadle::Ui::Region region = ui.region("gumb:" + label, Treadle::Rect{x, y, width, height});
+                ui.canvas().rect(region.box, on ? theme.accent : (region.hot ? theme.hot : theme.control));
+                if(on) ui.canvas().outline(region.box, 1.0f, theme.title);
+                ui.canvas().text(x + theme.padding, y + (height - Treadle::textHeight(theme.textScale)) * 0.5f,
+                                 label, on ? theme.textOnAccent : theme.text, theme.textScale);
+                return std::make_pair(region.pressed, x + width + 6.0f);
             };
-            railItem(RailPane::Media, "MEDIA", 0);
-            railItem(RailPane::Scene, "SCENE", 1);
-            railItem(RailPane::Components, "COMP", 2);
-            railItem(RailPane::Motion, "MOTION", 3);
-            railItem(RailPane::Timeline, "TIME", 4);
-            railItem(RailPane::Terminal, "TERM", 5);
-            railItem(RailPane::AiChat, "AI CHAT", 6);
+    
+            //== ALATNA TRAKA =========================================================================
+            {
+                const Treadle::Rect& bar = layout.toolbar;
+                ui.canvas().rect(bar, Treadle::Color{0.045f, 0.065f, 0.050f, 1.0f});
+                ui.canvas().text(bar.x + 12.0f, bar.y + 13.0f,
+                                 compositor.open ? "COMPOSITOR" : proceduraPanel.open ? "PROCEDURA" : motionPanel.open ? "ANIMATOR" : "LOOM", theme.title,
+                                 compositor.open ? theme.textScale * 0.64f : proceduraPanel.open ? theme.textScale * 0.72f : theme.textScale);
+                const float y = bar.y + 7.0f, h = bar.height - 14.0f;
+                float afterBoard = bar.x + 90.0f;
+                if(proceduraPanel.open){
+                    auto [backToScene, afterBack] = toolButton("Back to Scene", bar.x + 90.0f, y, h);
+                    (void)afterBack;
+                    if(backToScene){ proceduraPanel.open = false; activeRailPane = RailPane::None; }
+                }else if(motionPanel.open){
+                    auto [backToScene, afterBack] = toolButton("Back to Scene", bar.x + 90.0f, y, h);
+                    if(backToScene) motionPanel.open = false;
+                    auto [playPause, afterPlayback] = toolButton(playing ? "Pause" : "Play", afterBack, y, h, playing);
+                    if(playPause) playing = !playing;
+                    auto [saveButton, afterSave] = toolButton(dirty ? "Save *" : "Save", afterPlayback, y, h, dirty);
+                    if(saveButton) saveProjectNow();
+                    afterBoard = afterSave;
+                }else{
+                    auto [moveTool, afterMove] = toolButton("W", bar.x + 90.0f, y, h, tool == Tool::Move);
+                    if(moveTool) tool = Tool::Move;
+                    auto [rotateTool, afterRotateTool] = toolButton("E", afterMove, y, h, tool == Tool::Rotate);
+                    if(rotateTool) tool = Tool::Rotate;
+                    //Ploha iz odabira: vucenjem u pogledu se oznaci komad plohe (LoomEditorTools.h)
+                    auto [surfaceButton, afterRotate] = toolButton("S", afterRotateTool, y, h, surfaceTool.active);
+                    if(surfaceButton) surfaceTool.active = !surfaceTool.active;
+                    auto [fit, afterFit] = toolButton("Frame (F)", afterRotate + 12.0f, y, h);
+                    if(fit){ view.lookThrough = Warp::None; Loom::frameAll(stage.size() ? stage : live, frame, view.orbit); }
+                    auto [through, afterThrough] = toolButton("Camera (0)", afterFit, y, h, view.lookThrough != Warp::None);
+                    if(through){
+                        if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
+                        else{
+                            const Warp::Entity* chosen = stage.get(selected);
+                            view.lookThrough = chosen && chosen->camera ? selected : firstCamera();
+                        }
+                    }
+                    auto [plateButton, afterPlate] = toolButton("Plate (V)", afterThrough, y, h, showPlate);
+                    if(plateButton) showPlate = !showPlate;
+                    auto [rigButton, afterRig] = toolButton("Auto Rig", afterPlate + 12.0f, y, h);
+                    if(rigButton) openAutoRig();
+                    auto [saveButton, afterSave] = toolButton(dirty ? "Save *" : "Save", afterRig + 12.0f, y, h, dirty);
+                    if(saveButton) saveProjectNow();
+                    auto [newButton, afterNew] = toolButton("New", afterSave, y, h);
+                    if(newButton) ui.openMenu("New");
+                    auto [boardButton, afterBoardNormal] = toolButton("Moodboard (M)", afterNew, y, h, moodboard.open);
+                    if(boardButton) setMoodboardOpen(!moodboard.open);
+                    afterBoard = afterBoardNormal;
+                }
+    
+                //Stanje posla ili zadnja poruka, desno
+                std::string status = message;
+                Treadle::Color colour = theme.dim;
+                if(job.running){
+                    const double elapsed = std::chrono::duration<double>(now - job.started).count();
+                    const int phase = job.phase;
+                    const int phaseCount = int(sizeof(Loom::phases) / sizeof(Loom::phases[0]));
+                    if(job.task == Loom::Task::Train){
+                        char text[96];
+                        std::snprintf(text, sizeof(text), "Training %.0f%% - %s",
+                                      job.fraction >= 0.0f ? 100.0 * double(job.fraction) : 0.0,
+                                      Loom::humanTime(elapsed).c_str());
+                        status = text;
+                    }else if(job.task == Loom::Task::WeaverMotion){
+                        status = "Kimodo generating motion - " + Loom::humanTime(elapsed);
+                    }else if(job.task == Loom::Task::AutoRig){
+                        status = "Auto Rig - " + Loom::humanTime(elapsed);
+                    }else if(job.task == Loom::Task::Clean){
+                        status = "Cleaning floaters - " + Loom::humanTime(elapsed);
+                    }else if(job.task == Loom::Task::Proxy){
+                        status = "Building proxy / blockers - " + Loom::humanTime(elapsed);
+                    }else{
+                        status = "Solve: ";
+                        status += (phase >= 0 && phase < phaseCount) ? Loom::phases[phase].label : "starting";
+                        status += " - " + Loom::humanTime(elapsed);
+                        //PROCJENA JE OZNACENA KAO PROCJENA: udjeli su izmjereni na jednoj snimci
+                        if(phase >= 0 && phase < phaseCount && Loom::phases[phase].share > 0.02 &&
+                           Loom::phases[phase].share < 1.0){
+                            status += ", about " + Loom::humanTime(std::max(0.0, elapsed / Loom::phases[phase].share - elapsed));
+                        }
+                    }
+                    colour = theme.accent;
+                }else if(job.failed){
+                    colour = theme.warning;
+                }
+                std::string sceneName = projectPath.empty() ? "Untitled" : projectPath.stem().string();
+                const Warp::Entity* activeCamera = stage.get(view.lookThrough);
+                const std::string cameraName = activeCamera && activeCamera->camera ? activeCamera->name : "Orbit";
+                char fpsText[24];
+                std::snprintf(fpsText, sizeof(fpsText), "%.0f", double(smoothedFps));
+    
+                const float metadataStart = bar.x + afterBoard + 8.0f;
+                const float metadataEnd = bar.x + bar.width - 10.0f;
+                const float metadataRoom = std::max(0.0f, metadataEnd - metadataStart);
+                const float metaScale = theme.textScale * 0.68f;
+                float cursorRight = metadataEnd;
+                auto headerChip = [&](const std::string& key, const std::string& value, float width,
+                                      const Treadle::Color& accent){
+                    const std::string label = Treadle::fitText(key + " " + value, width - 12.0f, metaScale);
+                    const float actualWidth = std::min(width, std::max(30.0f, Treadle::textWidth(label, metaScale) + 12.0f));
+                    const Treadle::Rect chip{cursorRight - actualWidth, bar.y + 8.0f, actualWidth, bar.height - 16.0f};
+                    ui.canvas().rect(chip, Treadle::Color{accent.r, accent.g, accent.b, 0.10f});
+                    ui.canvas().outline(chip, 1.0f, Treadle::Color{accent.r, accent.g, accent.b, 0.48f});
+                    ui.canvas().text(chip.x + (chip.width - Treadle::textWidth(label, metaScale)) * 0.5f,
+                                     chip.y + (chip.height - Treadle::textHeight(metaScale)) * 0.5f,
+                                     label, accent, metaScale);
+                    cursorRight = chip.x - 4.0f;
+                };
+    
+                if(metadataRoom >= 282.0f){
+                    headerChip("FPS", fpsText, 55.0f, {0.36f, 0.95f, 0.61f, 1.0f});
+                    headerChip("CAM", cameraName, 102.0f, {0.18f, 0.88f, 1.0f, 1.0f});
+                    headerChip("SCN", sceneName, 128.0f, theme.accent);
+                }else if(metadataRoom >= 232.0f){
+                    headerChip("FPS", fpsText, 50.0f, {0.36f, 0.95f, 0.61f, 1.0f});
+                    headerChip("CAM", cameraName, 78.0f, {0.18f, 0.88f, 1.0f, 1.0f});
+                    headerChip("SCN", sceneName, 96.0f, theme.accent);
+                }else if(metadataRoom >= 182.0f){
+                    headerChip("FPS", fpsText, 44.0f, {0.36f, 0.95f, 0.61f, 1.0f});
+                    headerChip("CAM", cameraName, 62.0f, {0.18f, 0.88f, 1.0f, 1.0f});
+                    headerChip("SCN", sceneName, 68.0f, theme.accent);
+                }else if(metadataRoom > 0.0f){
+                    const std::string summary = Treadle::fitText("SCN " + sceneName + "  CAM " + cameraName + "  " + fpsText + " FPS",
+                                                                  metadataRoom - 12.0f, metaScale);
+                    const Treadle::Rect chip{metadataStart, bar.y + 8.0f, metadataRoom, bar.height - 16.0f};
+                    ui.canvas().rect(chip, Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.10f});
+                    ui.canvas().outline(chip, 1.0f, Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.48f});
+                    ui.canvas().text(chip.x + 6.0f, chip.y + (chip.height - Treadle::textHeight(metaScale)) * 0.5f,
+                                     summary, theme.title, metaScale);
+                    cursorRight = metadataStart;
+                }
+    
+                const float statusRoom = std::max(0.0f, cursorRight - metadataStart - 4.0f);
+                if(statusRoom > 8.0f){
+                    const float statusScale = theme.textScale * 0.78f;
+                    const std::string fitted = Treadle::fitText(status, statusRoom, statusScale);
+                    ui.canvas().text(cursorRight - Treadle::textWidth(fitted, statusScale), bar.y + 13.0f,
+                                     fitted, colour, statusScale);
+                }
+            }
+    
+            const float drawerWidth = std::min(layout.viewport.width,
+                std::clamp(layout.viewport.width * 0.30f, 260.0f, 360.0f));
+            const Treadle::Rect drawerBox{layout.viewport.x + layout.viewport.width - drawerWidth, layout.viewport.y,
+                                           drawerWidth, layout.viewport.height};
+            {
+                Treadle::DrawList& canvas = ui.canvas();
+                canvas.rect(layout.rail, theme.panel);
+                ui.region("loom-rail-surface", layout.rail);
+                if(railReveal > 0.72f){
+                    canvas.marble(layout.rail, Treadle::Color{0.57f, 0.68f, 0.49f, 0.13f},
+                                  Treadle::Color{0.02f, 0.035f, 0.025f, 0.10f}, input.timeSeconds);
+                    canvas.rect(layout.rail.x + layout.rail.width - 1.0f, layout.rail.y, 1.0f,
+                                layout.rail.height, theme.panelEdge);
+                    auto railItem = [&](RailPane pane, const std::string& label, int row){
+                        const float side = layout.rail.width - 12.0f;
+                        const float stride = std::min(62.0f, std::max(34.0f, (layout.rail.height - 16.0f) / 9.0f));
+                        const Treadle::Rect box{layout.rail.x + 6.0f, layout.rail.y + 8.0f + float(row) * stride,
+                                                side, std::min(54.0f, stride - 3.0f)};
+                        const Treadle::Ui::Region hit = ui.region("loom-rail-" + label, box);
+                        if(hit.pressed){
+                            if(pane == RailPane::Timeline){
+                                proceduraPanel.open = false;
+                                timelineVisible = !timelineVisible;
+                            }else if(pane == RailPane::Terminal){
+                                proceduraPanel.open = false;
+                                terminal.visible = !terminal.visible;
+                                if(terminal.visible) terminal.unreadError = false;
+                            }else if(pane == RailPane::Compositor){
+                                //COMPOSITOR: vlastiti radni prostor; prvi put zadani graf nad plocom kamere
+                                proceduraPanel.open = false;
+                                compositor.open = !compositor.open;
+                                if(compositor.open){
+                                    motionPanel.open = false;
+                                    autoRig.open = false;
+                                    std::string video;
+                                    if(const Warp::Entity* through = stage.get(view.lookThrough); through && through->camera) video = through->camera->plate;
+                                    if(video.empty() && !browser.videos.empty()) video = browser.videos.front().string();
+                                    Loom::compositorDefaultGraph(compositor, video);
+                                }
+                            }else if(pane == RailPane::Motion){
+                                compositor.open = false;
+                                proceduraPanel.open = false;
+                                if(motionPanel.open){ motionPanel.open = false; autoRig.open = false; }
+                                else openMotionWorkflow();
+                            }else if(pane == RailPane::Procedura){
+                                compositor.open = false;
+                                motionPanel.open = false;
+                                autoRig.open = false;
+                                proceduraPanel.open = !proceduraPanel.open;
+                                activeRailPane = proceduraPanel.open ? RailPane::Procedura : RailPane::None;
+                            }else if(pane == RailPane::Scene || pane == RailPane::Components){
+                                proceduraPanel.open = false;
+                                motionPanel.open = false;
+                                autoRig.open = false;
+                                if(pane == RailPane::Scene) outlineVisible = !outlineVisible;
+                                else componentsVisible = !componentsVisible;
+                                activeRailPane = RailPane::None;
+                            }else{
+                                proceduraPanel.open = false;
+                                motionPanel.open = false;
+                                autoRig.open = false;
+                                activeRailPane = activeRailPane == pane ? RailPane::None : pane;
+                            }
+                        }
+                        const bool active = pane == RailPane::Compositor ? compositor.open : pane == RailPane::Motion ? motionPanel.open :
+                            (pane == RailPane::Procedura ? proceduraPanel.open :
+                            (pane == RailPane::Scene ? outlineVisible :
+                             (pane == RailPane::Components ? componentsVisible :
+                              (pane == RailPane::Timeline ? timelineVisible :
+                               (pane == RailPane::Terminal ? terminal.visible : activeRailPane == pane)))));
+                        const Treadle::Color ink = active ? theme.title : theme.dim;
+                        if(active) canvas.rect(box, Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.16f});
+                        else if(hit.hot) canvas.rect(box, theme.hot);
+                        canvas.outline(box, active ? 1.5f : 1.0f, active ? theme.accent : theme.panelEdge);
+    
+                        const float cx = box.x + box.width * 0.5f;
+                        const float iy = box.y + 5.0f;
+                        if(pane == RailPane::Media){
+                            canvas.folderIcon(cx - 9.0f, iy + 1.0f, 18.0f, ink);
+                            canvas.triangle(cx - 2.0f, iy + 4.0f, cx - 2.0f, iy + 12.0f, cx + 5.0f, iy + 8.0f,
+                                            active ? theme.accent : ink);
+                        }else if(pane == RailPane::Scene){
+                            const float cy = iy + 9.0f;
+                            canvas.line(cx, cy - 6.0f, cx - 8.0f, cy + 5.0f, 1.4f, ink);
+                            canvas.line(cx, cy - 6.0f, cx + 8.0f, cy + 5.0f, 1.4f, ink);
+                            canvas.line(cx - 8.0f, cy + 5.0f, cx + 8.0f, cy + 5.0f, 1.4f, ink);
+                            canvas.rect(cx - 2.5f, cy - 9.0f, 5.0f, 5.0f, ink);
+                            canvas.rect(cx - 10.5f, cy + 3.0f, 5.0f, 5.0f, ink);
+                            canvas.rect(cx + 5.5f, cy + 3.0f, 5.0f, 5.0f, ink);
+                        }else if(pane == RailPane::Procedura){
+                            canvas.outline(Treadle::Rect{cx - 12.0f, iy + 2.0f, 9.0f, 7.0f}, 1.4f, ink);
+                            canvas.outline(Treadle::Rect{cx + 3.0f, iy + 11.0f, 9.0f, 7.0f}, 1.4f, ink);
+                            canvas.line(cx - 3.0f, iy + 5.5f, cx + 3.0f, iy + 14.5f, 1.4f, active ? theme.accent : ink);
+                        }else if(pane == RailPane::Compositor){
+                            //Dva cvora i veza: A preko B
+                            canvas.outline(Treadle::Rect{cx - 12.0f, iy + 2.0f, 9.0f, 7.0f}, 1.4f, ink);
+                            canvas.outline(Treadle::Rect{cx + 3.0f, iy + 11.0f, 9.0f, 7.0f}, 1.4f, ink);
+                            canvas.line(cx - 3.0f, iy + 5.5f, cx + 3.0f, iy + 14.5f, 1.4f, active ? theme.accent : ink);
+                        }else if(pane == RailPane::Components){
+                            for(int i = 0; i < 3; ++i){
+                                const float y = iy + 4.0f + float(i) * 6.0f;
+                                canvas.line(cx - 8.0f, y + 2.0f, cx + 8.0f, y + 2.0f, 1.5f, ink);
+                                canvas.rect(cx - 8.0f + float((i + 1) % 3) * 6.0f, y, 4.0f, 4.0f,
+                                            active ? theme.accent : theme.title);
+                            }
+                        }else if(pane == RailPane::Timeline){
+                            canvas.line(cx - 11.0f, iy + 4.0f, cx + 11.0f, iy + 4.0f, 1.4f, ink);
+                            canvas.line(cx - 11.0f, iy + 17.0f, cx + 11.0f, iy + 17.0f, 1.4f, ink);
+                            for(int tick = 0; tick < 4; ++tick){
+                                const float x = cx - 9.0f + float(tick) * 6.0f;
+                                canvas.line(x, iy + 5.0f, x, iy + 12.0f, 1.2f, ink);
+                            }
+                            canvas.line(cx + 2.0f, iy + 2.0f, cx + 2.0f, iy + 19.0f, 2.0f, theme.accent);
+                        }else if(pane == RailPane::Terminal){
+                            canvas.outline(Treadle::Rect{cx - 11.0f, iy + 2.0f, 22.0f, 17.0f}, 1.2f, ink);
+                            canvas.text(cx - 8.0f, iy + 3.0f, ">_", ink, theme.textScale * 0.7f);
+                            if(terminal.unreadError) canvas.rect(cx + 8.0f, iy, 5.0f, 5.0f, theme.warning);
+                            else if(job.running || motionLive.active) canvas.rect(cx + 8.0f, iy, 5.0f, 5.0f, theme.accent);
+                        }else if(pane == RailPane::AiChat){
+                            canvas.outline(Treadle::Rect{cx - 10.0f, iy + 2.0f, 20.0f, 14.0f}, 1.3f, ink);
+                            canvas.line(cx - 3.0f, iy + 16.0f, cx - 7.0f, iy + 20.0f, 1.3f, ink);
+                            canvas.line(cx - 7.0f, iy + 20.0f, cx + 1.0f, iy + 16.0f, 1.3f, ink);
+                            canvas.rect(cx - 5.0f, iy + 8.0f, 2.0f, 2.0f, ink);
+                            canvas.rect(cx - 1.0f, iy + 8.0f, 2.0f, 2.0f, ink);
+                            canvas.rect(cx + 3.0f, iy + 8.0f, 2.0f, 2.0f, ink);
+                        }else{
+                            const Treadle::Color axes[3] = {{1.0f, 0.18f, 0.28f, 1.0f},
+                                                            {0.20f, 1.0f, 0.42f, 1.0f},
+                                                            {0.24f, 0.55f, 1.0f, 1.0f}};
+                            canvas.line(cx - 10.0f, iy + 14.0f, cx - 3.0f, iy + 5.0f, 1.8f, axes[0]);
+                            canvas.line(cx - 3.0f, iy + 5.0f, cx + 3.0f, iy + 12.0f, 1.8f, axes[1]);
+                            canvas.line(cx + 3.0f, iy + 12.0f, cx + 10.0f, iy + 3.0f, 1.8f, axes[2]);
+                        }
+                        const float labelScale = theme.textScale * 0.58f;
+                        canvas.text(cx - Treadle::textWidth(label, labelScale) * 0.5f, box.y + box.height - 19.0f,
+                                    label, ink, labelScale);
+                    };
+                    railItem(RailPane::Media, "MEDIA", 0);
+                    railItem(RailPane::Scene, "SCENE", 1);
+                    railItem(RailPane::Components, "COMP", 2);
+                    railItem(RailPane::Motion, "MOTION", 3);
+                    railItem(RailPane::Procedura, "PROC", 4);
+                    railItem(RailPane::Timeline, "TIME", 5);
+                    railItem(RailPane::Terminal, "TERM", 6);
+                    railItem(RailPane::AiChat, "AI CHAT", 7);
+                    railItem(RailPane::Compositor, "COMPOSE", 8);
+            }else{
+                const float handleY = layout.rail.y + layout.rail.height * 0.5f;
+                const Treadle::Rect handleBox{2.0f, handleY - 18.0f, 8.0f, 36.0f};
+                const Treadle::Ui::Region handle = ui.region("loom-rail-handle", handleBox);
+                const float handleAlpha = std::clamp(1.0f - railReveal / 0.72f, 0.0f, 1.0f);
+                const Treadle::Color handleFill = handle.hot
+                    ? Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.36f * handleAlpha}
+                    : Treadle::Color{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, 0.58f * handleAlpha};
+                canvas.rect(handleBox, handleFill);
+                canvas.outline(handleBox, 1.0f, Treadle::Color{theme.panelEdge.r, theme.panelEdge.g,
+                                                               theme.panelEdge.b, 0.9f});
+                const float midY = handleY;
+                canvas.triangle(3.0f, midY - 5.0f, 3.0f, midY + 5.0f, 8.0f, midY,
+                                Treadle::Color{theme.text.r, theme.text.g, theme.text.b, handleAlpha});
+            }
         }
 
         //== MEDIA ================================================================================
@@ -2627,132 +2513,14 @@ int main(int argc, char** argv){
         }
 
         if(activeRailPane == RailPane::AiChat){
-            ui.dock("AI CHAT", drawerBox, &aiChatScroll);
-            const float wrapWidth = std::max(48.0f, drawerBox.width - 2.0f * ui.style().padding - 14.0f);
-            const float textScale = ui.style().textScale;
-            auto wrapChatText = [&](const std::string& text){
-                std::vector<std::string> lines;
-                std::string line, word;
-                auto appendWord = [&](){
-                    if(word.empty()) return;
-                    const std::string candidate = line.empty() ? word : line + " " + word;
-                    if(Treadle::textWidth(candidate, textScale) <= wrapWidth){
-                        line = candidate;
-                    }else{
-                        if(!line.empty()) lines.push_back(std::move(line));
-                        line.clear();
-                        for(char c : word){
-                            const std::string next = line + c;
-                            if(!line.empty() && Treadle::textWidth(next, textScale) > wrapWidth){
-                                lines.push_back(std::move(line));
-                                line.clear();
-                            }
-                            line.push_back(c);
-                        }
-                    }
-                    word.clear();
-                };
-                for(char c : text){
-                    if(c == 10){
-                        appendWord();
-                        lines.push_back(std::move(line));
-                        line.clear();
-                    }else if(std::isspace(static_cast<unsigned char>(c))){
-                        appendWord();
-                    }else{
-                        word.push_back(c);
-                    }
-                }
-                appendWord();
-                if(!line.empty() || lines.empty()) lines.push_back(std::move(line));
-                return lines;
-            };
-            auto wrappedLabel = [&](const std::string& text){
-                for(const std::string& line : wrapChatText(text)) ui.label(line);
-            };
-
-            if(aiChatExecutable.empty()){
-                wrappedLabel("OpenCode CLI was not found on PATH.");
-                wrappedLabel("OpenCode is optional and is not included with Loom.");
-                wrappedLabel("Install it separately from opencode.ai, then restart Loom.");
-                wrappedLabel("If it is installed already, make sure opencode is on PATH.");
-                wrappedLabel("Loom does not bundle OpenCode or its license.");
-            }else if(!aiChatSetupError.empty()){
-                wrappedLabel(aiChatSetupError);
-            }else if(!aiChatSkillError.empty() || aiChatSkill.empty()){
-                wrappedLabel(aiChatSkillError.empty() ? "Loom AI skill document is empty." : aiChatSkillError);
-                wrappedLabel("AI Chat is disabled until the Loom engine skill document can be loaded.");
-            }else{
-                wrappedLabel("OpenCode CLI detected · Loom AI skill loaded");
-            }
-
-            std::vector<AiChatMessage> messages;
-            std::string status;
-            bool busy = false;
-            {
-                std::lock_guard<std::mutex> guard(aiChatLock);
-                messages = aiChatMessages;
-                status = aiChatStatus;
-                busy = aiChatBusy;
-            }
-            if(!status.empty()) wrappedLabel(status);
-            if(ui.button("NEW CHAT")){
-                std::lock_guard<std::mutex> guard(aiChatLock);
-                if(aiChatBusy){
-                    aiChatStatus = "Wait for the current reply before starting a new chat.";
-                }else{
-                    aiChatMessages.clear();
-                    aiChatSession.clear();
-                    aiChatStatus = aiChatExecutable.empty() ? "OpenCode was not found on PATH." :
-                        (!aiChatSkillError.empty() || aiChatSkill.empty() ? "Loom AI skill document is unavailable." : "OpenCode ready; Loom AI skill loaded");
-                    aiChatScroll = 0.0f;
-                }
-            }
-            ui.separator();
-            if(messages.empty()) ui.label("Start a conversation about Loom.");
-            for(size_t messageIndex = 0; messageIndex < messages.size(); ++messageIndex){
-                const AiChatMessage& chatMessage = messages[messageIndex];
-                ui.label(chatMessage.fromUser ? "YOU" : "LOOM AI");
-                wrappedLabel(chatMessage.text);
-                if(!chatMessage.actions.empty()){
-                    ui.label("PROPOSED LOOM ACTIONS");
-                    for(size_t actionIndex = 0; actionIndex < chatMessage.actions.size(); ++actionIndex){
-                        const auto& action = chatMessage.actions[actionIndex];
-                        std::string detail = std::to_string(actionIndex + 1) + ". " + action.name +
-                            " (" + Loom::openCodeJsonValueText(action.arguments) + ")";
-                        if(detail.size() > 700) detail.resize(700), detail += "...";
-                        wrappedLabel(detail);
-                    }
-                    if(!chatMessage.actionBatchResolved){
-                        if(ui.button("APPLY ACTIONS (" + std::to_string(messageIndex + 1) + ")"))
-                            applyAiActionBatch(messageIndex);
-                        if(ui.button("DISCARD ACTIONS (" + std::to_string(messageIndex + 1) + ")"))
-                            discardAiActionBatch(messageIndex);
-                    }else if(!chatMessage.actionBatchResult.empty()){
-                        wrappedLabel(chatMessage.actionBatchResult);
-                    }
-                }
-                ui.separator();
-            }
-            if(busy) ui.label("Working...");
-            const Treadle::Ui::TextFieldResult inputResult = ui.textField(
-                "loom-ai-chat-input", &aiChatInput,
-                Treadle::Ui::TextFieldConfig{3, "Ask about Loom...", 4096, true});
-            bool submit = inputResult.submitted;
-            if(ui.button("SEND")) submit = true;
-            if(submit && !busy){
-                const std::string prompt = aiChatInput;
-                aiChatInput.clear();
-                sendAiChatPrompt(prompt);
-            }
-            wrappedLabel("OpenCode runs externally using your OpenCode installation and account. Loom receives only its answer and proposed actions.");
-            wrappedLabel("Loom sends no scene snapshot or source code. Every action needs your APPLY ACTIONS click.");
+            ui.dock("AI CHAT", drawerBox);
+            ui.label("In Progress");
         }
         Warp::Id hoveredAtlasId = Warp::None;
         Treadle::Rect hoveredAtlasRect;
 
         //== SCENE ATLAS ======================================================================
-        if(outlineVisible){
+        if(outlineVisible && !motionPanel.open && !proceduraPanel.open && !compositor.open){
             ui.dock("SCENE ATLAS", layout.hierarchy, &hierarchyScroll);
             const Treadle::Rect addBox{layout.hierarchy.x + layout.hierarchy.width - 33.0f,
                                         layout.hierarchy.y + 5.0f, 24.0f, 24.0f};
@@ -2815,7 +2583,7 @@ int main(int argc, char** argv){
         }
 
         //== COMPONENTS =============================================================================
-        if(componentsVisible){
+        if((componentsVisible || motionPanel.open || proceduraPanel.open) && !compositor.open){
             ui.dock("INSTRUMENT DECK", layout.properties, &propertiesScroll);
         {
             Warp::Entity* entity = focus == Focus::Entity ? stage.get(selected) : nullptr;
@@ -2975,6 +2743,143 @@ int main(int argc, char** argv){
                             char frameRange[64];
                             std::snprintf(frameRange, sizeof(frameRange), "%.0f - %.0f", active.startFrame, active.endFrame);
                             ui.value("Frames", frameRange);
+
+                            ui.separator();
+                            ui.label("POSE OVERWRITE");
+                            const double poseFrame = std::round(frame);
+                            const bool frameInClip = poseFrame >= active.startFrame && poseFrame <= active.endFrame;
+                            if(!poseEdit.active){
+                                if(frameInClip && ui.button("Edit pose at this frame")){
+                                    poseEdit.active = true;
+                                    animatorRigDrag.control = -1;
+                                    motionPanel.open = false;
+                                    followAnimatorPreview = true;
+                                    poseEdit.rig = animatorRig;
+                                    poseEdit.animation = animator.activeAnimation;
+                                    poseEdit.frame = poseFrame;
+                                    frame = poseFrame;
+                                    poseEdit.original = active;
+                                    poseEdit.basePose.clear();
+                                    selected = animatorRig;
+                                    focus = Focus::Entity;
+                                    motionPanel.controlRigMode = true;
+                                    animatorRigDrag.control = -1;
+                                    const Loom::MotionRigRestPose rigPose = Loom::motionRigRestPose(stage, animatorRig);
+                                    for(const Loom::MotionRigJointRest& joint : rigPose.joints)
+                                        if(stage.get(joint.id)) poseEdit.basePose.emplace_back(joint.id, stage.localAt(joint.id, poseFrame));
+                                    playing = false;
+                                    message = "Pose edit started at frame " + std::to_string(int(poseFrame)) +
+                                              ". Select and adjust bones, then choose a blend mode.";
+                                }
+                                if(!frameInClip) ui.label("Move the playhead inside the clip to edit its pose.");
+                            }else{
+                                const bool editTarget = poseEdit.rig == animatorRig &&
+                                    poseEdit.animation == animator.activeAnimation;
+                                const bool editFrame = editTarget && poseFrame == poseEdit.frame;
+                                ui.label("Editing frame " + std::to_string(int(poseEdit.frame)) +
+                                         " · adjust bones in the viewport or Transform panel.");
+                                if(!editTarget) ui.label("Return to the original clip to finish this pose edit.");
+                                else if(!editFrame) ui.label("Return to the original frame to finish this pose edit.");
+                                ui.label("Smart Blend: fade in, hold, then return to the original motion.");
+                                ui.slider("Blend in (frames)", &poseBlendInFrames, 0.0f, 30.0f);
+                                ui.slider("Hold (frames)", &poseBlendHoldFrames, 0.0f, 180.0f);
+                                ui.slider("Blend out (frames)", &poseBlendOutFrames, 1.0f, 60.0f);
+                                poseBlendInFrames = std::round(poseBlendInFrames);
+                                poseBlendHoldFrames = std::round(poseBlendHoldFrames);
+                                poseBlendOutFrames = std::round(poseBlendOutFrames);
+                                const int poseAction = ui.buttonRow({"Smart Blend", "No Blend", "Cancel"});
+                                if(poseAction == 2){
+                                    if(Warp::Entity* owner = stage.get(poseEdit.rig); owner && owner->animator &&
+                                       poseEdit.animation < owner->animator->animations.size())
+                                        owner->animator->animations[poseEdit.animation] = poseEdit.original;
+                                    poseEdit = PoseEditSession{};
+                                    message = "Pose edit cancelled; original clip restored.";
+                                }else if(poseAction >= 0 && editFrame){
+                                    frame = poseEdit.frame;
+                                    playing = false;
+                                    std::vector<Warp::Transform> editedPose;
+                                    editedPose.reserve(poseEdit.basePose.size());
+                                    for(const auto& joint : poseEdit.basePose)
+                                        editedPose.push_back(stage.get(joint.first) ?
+                                            stage.localAt(joint.first, poseEdit.frame) : joint.second);
+                                    active = poseEdit.original;
+                                    size_t changedJoints = 0;
+                                    for(size_t i = 0; i < editedPose.size(); ++i){
+                                        const Warp::Id id = poseEdit.basePose[i].first;
+                                        if(!stage.get(id)) continue;
+                                        const Warp::Transform& before = poseEdit.basePose[i].second;
+                                        const Warp::Transform& after = editedPose[i];
+                                        const bool changed = glm::length(after.translation - before.translation) > 1e-4f ||
+                                            glm::length(after.scale - before.scale) > 1e-4f ||
+                                            std::fabs(glm::dot(after.rotation, before.rotation)) < 0.99999f;
+                                        if(!changed) continue;
+                                        ++changedJoints;
+                                        if(poseAction == 1){
+                                            stage.setLocalAt(id, poseEdit.frame, after);
+                                            continue;
+                                        }
+                                        // Apply the pose offset only within the chosen blend window.
+                                        const double first = std::max(active.startFrame,
+                                            poseEdit.frame - double(std::lround(poseBlendInFrames)));
+                                        const double requestedOut = std::max(1.0, double(std::lround(poseBlendOutFrames)));
+                                        const double last = std::min(active.endFrame,
+                                            poseEdit.frame + double(std::lround(poseBlendHoldFrames)) + requestedOut);
+                                        const double holdEnd = std::min(
+                                            poseEdit.frame + double(std::lround(poseBlendHoldFrames)),
+                                            std::max(poseEdit.frame, last - requestedOut));
+                                        std::vector<double> blendFrames{first, poseEdit.frame, holdEnd, last};
+                                        for(const Warp::AnimatorTrack& track : active.tracks){
+                                            if(track.target != id) continue;
+                                            auto appendKeyTimes = [&](const auto& keys){
+                                                for(double t : keys.times)
+                                                    if(t >= first && t <= last) blendFrames.push_back(t);
+                                            };
+                                            appendKeyTimes(track.translationKeys);
+                                            appendKeyTimes(track.rotationKeys);
+                                            appendKeyTimes(track.scaleKeys);
+                                            break;
+                                        }
+                                        for(double t = std::ceil(first); t < poseEdit.frame; t += 1.0)
+                                            blendFrames.push_back(t);
+                                        for(double t = std::floor(holdEnd) + 1.0; t < last; t += 1.0)
+                                            blendFrames.push_back(t);
+                                        std::sort(blendFrames.begin(), blendFrames.end());
+                                        blendFrames.erase(std::unique(blendFrames.begin(), blendFrames.end()), blendFrames.end());
+                                        std::vector<Warp::Transform> originals;
+                                        originals.reserve(blendFrames.size());
+                                        for(double t : blendFrames) originals.push_back(stage.localAt(id, t));
+                                        const glm::quat rotationDelta = glm::normalize(after.rotation * glm::inverse(before.rotation));
+                                        const glm::vec3 translationDelta = after.translation - before.translation;
+                                        const glm::vec3 scaleDelta = after.scale - before.scale;
+                                        for(size_t key = 0; key < blendFrames.size(); ++key){
+                                            const double t = blendFrames[key];
+                                            float weight = 1.0f;
+                                            if(t < poseEdit.frame)
+                                                weight = float((t - first) / std::max(1e-6, poseEdit.frame - first));
+                                            else if(t > holdEnd)
+                                                weight = float((last - t) / std::max(1e-6, last - holdEnd));
+                                            weight = std::clamp(weight, 0.0f, 1.0f);
+                                            weight = weight * weight * (3.0f - 2.0f * weight);
+                                            Warp::Transform blended = originals[key];
+                                            blended.translation += translationDelta * weight;
+                                            blended.scale += scaleDelta * weight;
+                                            const glm::quat weightedRotation = glm::normalize(glm::slerp(
+                                                glm::quat(1.0f, 0.0f, 0.0f, 0.0f), rotationDelta, weight));
+                                            blended.rotation = glm::normalize(weightedRotation * originals[key].rotation);
+                                            stage.setLocalAt(id, t, blended);
+                                        }
+                                        // The chosen frame must match the pose the artist just edited exactly.
+                                        stage.setLocalAt(id, poseEdit.frame, after);
+                                    }
+                                    poseEdit = PoseEditSession{};
+                                    message = changedJoints ?
+                                        (std::string(poseAction == 0 ? "Smart Blend" : "No Blend") +
+                                         " overwrote pose on " + std::to_string(changedJoints) + " joints.") :
+                                        "No bone changes to overwrite.";
+                                }else if(poseAction >= 0){
+                                    message = "Return to the selected clip and frame before overwriting the pose.";
+                                }
+                            }
 
                             std::vector<MotionPlaybackCheckpoint> fallbackCheckpoints;
                             const std::vector<MotionPlaybackCheckpoint>* checkpoints = nullptr;
@@ -3401,34 +3306,97 @@ int main(int argc, char** argv){
             //Traka: kadrovi, kljucevi odabranog, glava
             const float trackTop = rowY + rowH + 12.0f;
             const float availableTrackHeight = area.y + area.height - trackTop - 12.0f;
-            const float rootTrackHeight = motionPanel.open ? (motionPanel.flowMode == 1 ? 74.0f :
-                (motionPanel.rootPathEnabled ? 58.0f : 42.0f)) : 0.0f;
+            const bool showMotionPathTrack = motionPanel.open && motionPanel.flowMode != 2;
+            const float rootTrackHeight = showMotionPathTrack ? (motionPanel.flowMode == 1 ? 68.0f : 52.0f) : 0.0f;
             const float stageTrackHeight = std::max(motionPanel.open ? 18.0f : 24.0f,
-                                                    availableTrackHeight - (motionPanel.open ? rootTrackHeight + 4.0f : 0.0f));
+                                                    availableTrackHeight - (showMotionPathTrack ? rootTrackHeight + 4.0f : 0.0f));
             const Treadle::Rect track{area.x + 16.0f, trackTop, area.width - 32.0f, stageTrackHeight};
             const Treadle::Rect rootTrack{track.x, track.y + track.height + 4.0f, track.width, rootTrackHeight};
-            canvas.rect(track, Treadle::Color{0.105f, 0.125f, 0.095f, 1.0f});
-            //Subtle moving grain adds texture without competing with keyframes or the playhead.
-            const float grainSpacing = 32.0f;
-            const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count();
-            const float grainOffset = float(std::fmod(seconds * 12.0, double(grainSpacing)));
-            const Treadle::Color grain{0.78f, 0.65f, 0.32f, 0.075f};
-            for(float y = track.y + 7.0f; y + 5.0f < track.y + track.height; y += 20.0f){
-                for(float x = track.x + grainOffset; x + 7.0f < track.x + track.width; x += grainSpacing){
-                    canvas.line(x, y + 4.0f, x + 7.0f, y - 4.0f, 1.0f, grain);
+            const float labelGutter = motionPanel.open ? 62.0f : 0.0f;
+            const Treadle::Rect contentTrack{track.x + labelGutter, track.y,
+                std::max(1.0f, track.width - labelGutter), track.height};
+
+            struct MotionTimelineAction{
+                int source = 0;
+                int part = 0;
+                int partCount = 1;
+                int firstFrame = 0;
+                int lastFrame = 0;
+                int groupFirstFrame = 0;
+                int groupFrames = 0;
+                std::string prompt;
+            };
+            std::vector<Loom::MotionAction> timelineSources;
+            if(showMotionPathTrack){
+                if(motionPanel.flowMode == 1) timelineSources.push_back(motionPanel.directedAction);
+                else timelineSources = motionPanel.actions;
+            }
+            if(motionPanel.flowMode == 0 && !motionPanel.resizingTimelineAction)
+                motionPanel.selectedTimelineAction = motionPanel.activeAction;
+            std::vector<MotionTimelineAction> timelineActions;
+            int motionFrameEnd = 0;
+            for(size_t source = 0; source < timelineSources.size(); ++source){
+                std::vector<Loom::MotionAction> parts = Loom::filledActions({timelineSources[source]});
+                if(parts.empty()) parts.push_back(Loom::MotionAction{"", timelineSources[source].duration});
+                std::vector<int> partFrames;
+                int groupFrames = 0;
+                for(const Loom::MotionAction& part : parts){
+                    const int frames = std::max(1, Loom::kimodoMotionFrameCount({Loom::MotionAction{"motion", part.duration}}));
+                    partFrames.push_back(frames);
+                    groupFrames += frames;
+                }
+                const int groupFirst = motionFrameEnd;
+                for(size_t part = 0; part < parts.size(); ++part){
+                    MotionTimelineAction item;
+                    item.source = int(source);
+                    item.part = int(part);
+                    item.partCount = int(parts.size());
+                    item.firstFrame = motionFrameEnd;
+                    item.lastFrame = motionFrameEnd + partFrames[part];
+                    item.groupFirstFrame = groupFirst;
+                    item.groupFrames = groupFrames;
+                    item.prompt = parts[part].prompt;
+                    timelineActions.push_back(std::move(item));
+                    motionFrameEnd += partFrames[part];
                 }
             }
-            const double span = std::max(1.0, stage.endFrame - stage.startFrame);
-            auto xOf = [&](double f){ return track.x + float((f - stage.startFrame) / span) * track.width; };
+            const double sceneFps = std::max(1.0, stage.framesPerSecond);
+            int maxActionParts = 1;
+            for(size_t source = 0; source < timelineSources.size(); ++source)
+                maxActionParts = std::max(maxActionParts, int(Loom::filledActions({timelineSources[source]}).size()));
+            const int resizeSlackFrames = showMotionPathTrack ? 300 * maxActionParts : 0;
+            const double motionEnd = stage.startFrame + double(motionFrameEnd + resizeSlackFrames) *
+                                     sceneFps / double(Loom::kimodoMotionFps);
+            double timelineEnd = std::max(stage.endFrame, motionEnd);
+            if(motionPanel.resizingTimelineAction && motionPanel.timelineDragDisplayEndFrame > stage.startFrame)
+                timelineEnd = motionPanel.timelineDragDisplayEndFrame;
+            const double span = std::max(1.0, timelineEnd - stage.startFrame);
+            auto xOf = [&](double f){ return contentTrack.x + float((f - stage.startFrame) / span) * contentTrack.width; };
+            auto sceneFrameFromMotionFrame = [&](double f){
+                return stage.startFrame + f * sceneFps / double(Loom::kimodoMotionFps);
+            };
+            auto motionFrameAtX = [&](float x, int lastFrame){
+                const double sceneFrame = stage.startFrame + double(x - contentTrack.x) /
+                    std::max(1.0f, contentTrack.width) * span;
+                const double sourceFrame = (sceneFrame - stage.startFrame) * double(Loom::kimodoMotionFps) / sceneFps;
+                return std::clamp(int(std::lround(sourceFrame)), 0, std::max(0, lastFrame));
+            };
 
-            //Oznake kadrova: razmak koji daje barem 70 piksela medju brojevima
-            const double pixelsPerFrame = double(track.width) / span;
+            canvas.rect(track, Treadle::Color{0.105f, 0.125f, 0.095f, 1.0f});
+            if(motionPanel.open){
+                const Warp::Entity* timelineEntity = stage.get(selected);
+                const std::string keyLabel = timelineEntity ? "KEYS  /  " + timelineEntity->name : "SCENE KEYS";
+                canvas.text(track.x + 7.0f, track.y + 12.0f,
+                            Treadle::fitText(keyLabel, labelGutter - 10.0f, 1.0f), theme.dim, 1.0f);
+            }
+            // Shared ruler: scene-frame units, with Kimodo's 30 Hz keys converted to scene time.
+            const double pixelsPerFrame = double(contentTrack.width) / span;
             double tick = 1.0;
             for(double candidate : {1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 250.0, 500.0, 1000.0, 2000.0, 5000.0}){
                 tick = candidate;
                 if(candidate * pixelsPerFrame >= 70.0) break;
             }
-            for(double f = std::ceil(stage.startFrame / tick) * tick; f <= stage.endFrame; f += tick){
+            for(double f = std::ceil(stage.startFrame / tick) * tick; f <= timelineEnd; f += tick){
                 const float x = xOf(f);
                 canvas.rect(x, track.y, 1.0f, 8.0f, theme.dim);
                 canvas.text(x + 3.0f, track.y + 3.0f, std::to_string(int(f)), theme.dim, 1.0f);
@@ -3442,7 +3410,7 @@ int main(int argc, char** argv){
                 float lastKey = -10.0f;
                 for(double t : times){
                     const float x = xOf(t);
-                    if(x - lastKey < 2.0f) continue;       //tisuce kljuceva: jedan po pikselu
+                    if(x - lastKey < 2.0f) continue;
                     canvas.rect(x, track.y + track.height - 12.0f, 1.5f, 10.0f, Treadle::Color{1.0f, 0.78f, 0.25f, 0.8f});
                     lastKey = x;
                 }
@@ -3450,161 +3418,245 @@ int main(int argc, char** argv){
             const float head = xOf(frame);
             canvas.rect(head - 1.0f, track.y - 4.0f, 2.0f, track.height + 8.0f, Treadle::Color{0.95f, 0.35f, 0.30f, 1.0f});
 
-            // WeaverMotion constraint lane renders before scene scrubbing claims input.
-            if(motionPanel.open){
-                const int lastFrame = Loom::kimodoMotionLastFrame(motionPanel.actions);
+            // Motion lanes use the same x mapping as scene keys and the frame ruler above.
+            if(showMotionPathTrack){
+                const int lastFrame = std::max(0, motionFrameEnd - 1);
+                const float actionTop = rootTrack.y + 17.0f;
+                const float pathTop = rootTrack.y + 34.0f;
+                const float poseTop = rootTrack.y + 50.0f;
+                const float laneHeight = 12.0f;
+                const float markerY = pathTop + laneHeight * 0.5f;
+                const float actionBottom = actionTop + laneHeight;
+                const float pathBottom = pathTop + laneHeight;
+                const float poseBottom = poseTop + laneHeight;
                 canvas.rect(rootTrack, Treadle::Color{0.075f, 0.092f, 0.070f, 1.0f});
-                const float pathLabelScale = std::max(1.0f, theme.textScale * 0.82f);
-                canvas.text(rootTrack.x + 5.0f, rootTrack.y + 3.0f,
-                            (motionPanel.flowMode == 1 ? "POSE KEYS + ROOT PATH    0-" : "ACTIONS + ROOT PATH    0-") + std::to_string(lastFrame) + " @ 30 fps",
-                            theme.text, pathLabelScale);
-                const float markerY = rootTrack.y + rootTrack.height - 10.0f;
-                auto rootX = [&](int f){
-                    const double frameSpan = std::max(1, lastFrame);
-                    return rootTrack.x + float(double(std::clamp(f, 0, lastFrame)) / frameSpan) * rootTrack.width;
-                };
-                if(!motionPanel.rootPathEnabled){
-                    canvas.text(rootTrack.x + 5.0f, rootTrack.y + 15.0f,
-                                "Click to add a path point", theme.dim, pathLabelScale);
-                }else{
-                    const std::vector<Loom::MotionAction> pathActions = Loom::filledActions(motionPanel.actions);
-                    int actionStartFrame = 0;
-                    for(size_t i = 0; i < pathActions.size(); ++i){
-                        const int actionFrames = std::max(1, Loom::kimodoMotionFrameCount({pathActions[i]}));
-                        const int actionEndFrame = std::min(lastFrame + 1, actionStartFrame + actionFrames);
-                        const float x0 = rootX(actionStartFrame);
-                        const float x1 = rootX(actionEndFrame);
-                        const Treadle::Color actionColour = (i % 2 == 0)
-                            ? Treadle::Color{0.24f, 0.39f, 0.32f, 1.0f}
-                            : Treadle::Color{0.30f, 0.34f, 0.25f, 1.0f};
-                        canvas.rect(x0, rootTrack.y + (motionPanel.flowMode == 1 ? 36.0f : 20.0f),
-                                    std::max(2.0f, x1 - x0 - 1.0f), 13.0f, actionColour);
-                        if(x1 - x0 > 44.0f){
-                            std::string prompt = pathActions[i].prompt;
-                            std::transform(prompt.begin(), prompt.end(), prompt.begin(),
-                                           [](unsigned char c){ return char(std::tolower(c)); });
-                            std::string actionName = "ACTION " + std::to_string(i + 1);
-                            if(prompt.find("peace") != std::string::npos || prompt.find("victory sign") != std::string::npos)
-                                actionName = "PEACE SIGN";
-                            else if(prompt.find("roll") != std::string::npos) actionName = "FORWARD ROLL";
-                            else if(prompt.find("wave") != std::string::npos && prompt.find("walk") != std::string::npos)
-                                actionName = "WALK + WAVE";
-                            else if(prompt.find("wave") != std::string::npos) actionName = "WAVE";
-                            else if(prompt.find("walk") != std::string::npos) actionName = "WALK";
-                            canvas.text(x0 + 5.0f, rootTrack.y + (motionPanel.flowMode == 1 ? 36.0f : 20.0f),
-                                        Treadle::fitText(actionName, x1 - x0 - 12.0f, 1.0f),
-                                        theme.text, 1.0f);
-                        }
-                        if(actionEndFrame <= lastFrame)
-                            canvas.line(x1, rootTrack.y + (motionPanel.flowMode == 1 ? 34.0f : 18.0f),
-                                        x1, markerY - 5.0f, 1.0f, theme.dim);
-                        actionStartFrame = actionEndFrame;
+                canvas.text(rootTrack.x + 7.0f, rootTrack.y + 4.0f,
+                            "MOTION TRACKS  /  aligned to scene time", theme.dim, 1.0f);
+                canvas.rect(rootTrack.x, actionTop, rootTrack.width, laneHeight, Treadle::Color{0.10f, 0.12f, 0.09f, 1.0f});
+                canvas.rect(rootTrack.x, pathTop, rootTrack.width, laneHeight, Treadle::Color{0.09f, 0.11f, 0.085f, 1.0f});
+                canvas.text(rootTrack.x + 7.0f, actionTop + 2.0f, "ACTIONS", theme.dim, 1.0f);
+                canvas.text(rootTrack.x + 7.0f, pathTop + 2.0f, "ROOT PATH", theme.dim, 1.0f);
+                if(motionPanel.flowMode == 1){
+                    canvas.rect(rootTrack.x, poseTop, rootTrack.width, laneHeight, Treadle::Color{0.085f, 0.105f, 0.105f, 1.0f});
+                    canvas.text(rootTrack.x + 7.0f, poseTop + 2.0f, "POSES", theme.dim, 1.0f);
+                }
+                const Treadle::Color grid{0.75f, 0.82f, 0.72f, 0.13f};
+                for(double f = std::ceil(stage.startFrame / tick) * tick; f <= timelineEnd; f += tick){
+                    const float x = xOf(f);
+                    canvas.line(x, actionTop, x, motionPanel.flowMode == 1 ? poseBottom : pathBottom, 0.55f, grid);
+                }
+
+                for(size_t i = 0; i < timelineActions.size(); ++i){
+                    const MotionTimelineAction& item = timelineActions[i];
+                    const float x0 = xOf(sceneFrameFromMotionFrame(item.firstFrame));
+                    const float x1 = xOf(sceneFrameFromMotionFrame(item.lastFrame));
+                    const bool chosen = item.source == motionPanel.selectedTimelineAction;
+                    const Treadle::Color fill = chosen ? theme.title :
+                        (item.source % 2 == 0 ? Treadle::Color{0.24f, 0.39f, 0.32f, 1.0f}
+                                              : Treadle::Color{0.30f, 0.34f, 0.25f, 1.0f});
+                    canvas.rect(x0, actionTop + 1.0f, std::max(2.0f, x1 - x0 - 1.0f), laneHeight - 2.0f, fill);
+                    if(x1 - x0 > 38.0f){
+                        std::string title = motionPanel.flowMode == 1 ? "DIRECT" : "ACTION " + std::to_string(item.source + 1);
+                        if(item.partCount > 1) title += "  STEP " + std::to_string(item.part + 1);
+                        char durationText[24];
+                        std::snprintf(durationText, sizeof(durationText), "  %.2fs", double(timelineSources[size_t(item.source)].duration));
+                        canvas.text(x0 + 4.0f, actionTop + 2.0f,
+                                    Treadle::fitText(title + durationText, x1 - x0 - 12.0f, 1.0f),
+                                    theme.text, 1.0f);
                     }
+                    if(item.part + 1 == item.partCount){
+                        const Treadle::Color grip = chosen ? theme.text : Treadle::Color{0.9f, 0.91f, 0.78f, 0.72f};
+                        canvas.line(x1 - 4.0f, actionTop + 3.0f, x1 - 4.0f, actionBottom - 3.0f, 1.0f, grip);
+                        canvas.line(x1 - 2.0f, actionTop + 3.0f, x1 - 2.0f, actionBottom - 3.0f, 1.0f, grip);
+                    }
+                }
+                if(!motionPanel.rootPathEnabled || motionPanel.rootWaypoints.empty()){
+                    canvas.text(contentTrack.x + 5.0f, pathTop + 2.0f, "Click to add a waypoint", theme.dim, 1.0f);
+                }else{
                     for(size_t i = 1; i < motionPanel.rootWaypoints.size(); ++i){
-                        canvas.line(rootX(motionPanel.rootWaypoints[i - 1].frame), markerY,
-                                    rootX(motionPanel.rootWaypoints[i].frame), markerY,
+                        canvas.line(xOf(sceneFrameFromMotionFrame(motionPanel.rootWaypoints[i - 1].frame)), markerY,
+                                    xOf(sceneFrameFromMotionFrame(motionPanel.rootWaypoints[i].frame)), markerY,
                                     2.0f, theme.accent);
                     }
                     for(size_t i = 0; i < motionPanel.rootWaypoints.size(); ++i){
                         const Loom::MotionRootWaypoint& key = motionPanel.rootWaypoints[i];
-                        const float x = rootX(key.frame);
+                        const float x = xOf(sceneFrameFromMotionFrame(key.frame));
                         const Treadle::Color colour = int(i) == motionPanel.selectedRootWaypoint
                             ? theme.title : Treadle::Color{1.0f, 0.72f, 0.26f, 1.0f};
                         canvas.rect(x - 5.0f, markerY - 5.0f, 10.0f, 10.0f, colour);
+                        if(int(i) == motionPanel.selectedRootWaypoint)
+                            canvas.text(x + 7.0f, pathTop + 2.0f, "PATH " + std::to_string(i + 1), theme.text, 1.0f);
+                    }
+                }
+                if(motionPanel.flowMode == 1){
+                    for(size_t i = 0; i < motionPanel.poseConstraints.size(); ++i){
+                        const float x = xOf(sceneFrameFromMotionFrame(motionPanel.poseConstraints[i].frame));
+                        const Treadle::Color tint = int(i) == motionPanel.selectedPose ? theme.title :
+                            Treadle::Color{0.39f, 0.86f, 1.0f, 1.0f};
+                        canvas.rect(x - 5.0f, poseTop + 1.0f, 10.0f, laneHeight - 2.0f, tint);
+                        if(int(i) == motionPanel.selectedPose)
+                            canvas.text(x + 7.0f, poseTop + 2.0f, "POSE " + std::to_string(i + 1), theme.text, 1.0f);
                     }
                 }
 
-                if(motionPanel.flowMode == 1){
-                    canvas.text(rootTrack.x + 5.0f, rootTrack.y + 16.0f,
-                                "POSES  click to add / right-click to remove", theme.dim, 1.0f);
-                    for(size_t i = 0; i < motionPanel.poseConstraints.size(); ++i){
-                        const float x = rootX(motionPanel.poseConstraints[i].frame);
-                        const Treadle::Color tint = int(i) == motionPanel.selectedPose ? theme.title :
-                            Treadle::Color{0.39f, 0.86f, 1.0f, 1.0f};
-                        canvas.rect(x - 5.0f, rootTrack.y + 25.0f, 10.0f, 9.0f, tint);
-                    }
-                }
                 const Treadle::Ui::Region rootEdit = ui.region("kimodo-root-constraints", rootTrack);
-                const bool poseLane = motionPanel.flowMode == 1 && rootEdit.mouseY < rootTrack.y + 35.0f;
+                const bool inTimelineContent = rootEdit.mouseX >= contentTrack.x;
+                const bool actionLane = rootEdit.mouseY >= actionTop && rootEdit.mouseY < actionBottom;
+                const bool pathLane = rootEdit.mouseY >= pathTop && rootEdit.mouseY < pathBottom;
+                const bool poseLane = motionPanel.flowMode == 1 && rootEdit.mouseY >= poseTop && rootEdit.mouseY < poseBottom;
                 auto nearestRootWaypoint = [&](float mouseX){
                     int nearest = -1;
-                    float distance = 13.0f;
+                    float distance = 12.0f;
                     for(size_t i = 0; i < motionPanel.rootWaypoints.size(); ++i){
-                        const float d = std::fabs(rootX(motionPanel.rootWaypoints[i].frame) - mouseX);
+                        const float d = std::fabs(xOf(sceneFrameFromMotionFrame(motionPanel.rootWaypoints[i].frame)) - mouseX);
                         if(d < distance){ distance = d; nearest = int(i); }
                     }
                     return nearest;
                 };
-                if(rootEdit.pressed) motionPanel.draggingPoseLane = poseLane;
-                if(!rootEdit.held && !rootEdit.pressed) motionPanel.draggingPoseLane = false;
-                if(rootEdit.pressed && poseLane){
-                    const int frameAt = std::clamp(int(std::lround(double(rootEdit.mouseX - rootTrack.x) /
-                        std::max(1.0f, rootTrack.width) * std::max(1, lastFrame))), 0, lastFrame);
-                    auto found = std::lower_bound(motionPanel.poseConstraints.begin(), motionPanel.poseConstraints.end(), frameAt,
-                        [](const Loom::MotionPoseConstraint& key, int f){ return key.frame < f; });
-                    auto nearest = found;
-                    if(found != motionPanel.poseConstraints.begin()){
-                        auto previous = found - 1;
-                        if(found == motionPanel.poseConstraints.end() ||
-                           std::fabs(rootX(previous->frame) - rootEdit.mouseX) <
-                           std::fabs(rootX(found->frame) - rootEdit.mouseX)) nearest = previous;
+                auto nearestPoseConstraint = [&](float mouseX){
+                    int nearest = -1;
+                    float distance = 12.0f;
+                    for(size_t i = 0; i < motionPanel.poseConstraints.size(); ++i){
+                        const float d = std::fabs(xOf(sceneFrameFromMotionFrame(motionPanel.poseConstraints[i].frame)) - mouseX);
+                        if(d < distance){ distance = d; nearest = int(i); }
                     }
-                    if(nearest != motionPanel.poseConstraints.end() &&
-                       std::fabs(rootX(nearest->frame) - rootEdit.mouseX) < 10.0f){
-                        motionPanel.selectedPose = int(nearest - motionPanel.poseConstraints.begin());
-                    }else if(motionPanel.poseConstraints.size() < 20){
-                        Loom::MotionPoseConstraint pose;
-                        pose.frame = frameAt;
-                        if(found != motionPanel.poseConstraints.begin()){
-                            pose = *(found - 1);
-                            pose.frame = frameAt;
+                    return nearest;
+                };
+                if(rootEdit.pressed){
+                    motionPanel.resizingTimelineAction = false;
+                    motionPanel.timelineDragLane = 0;
+                    motionPanel.draggingPoseLane = false;
+                    if(inTimelineContent && actionLane){
+                        motionPanel.timelineDragLane = 1;
+                        int chosenSegment = -1;
+                        float bestDistance = 12.0f;
+                        for(size_t i = 0; i < timelineActions.size(); ++i){
+                            const MotionTimelineAction& item = timelineActions[i];
+                            const float x0 = xOf(sceneFrameFromMotionFrame(item.firstFrame));
+                            const float x1 = xOf(sceneFrameFromMotionFrame(item.lastFrame));
+                            const float distance = rootEdit.mouseX < x0 ? x0 - rootEdit.mouseX :
+                                rootEdit.mouseX > x1 ? rootEdit.mouseX - x1 : 0.0f;
+                            if(distance < bestDistance){ bestDistance = distance; chosenSegment = int(i); }
                         }
-                        motionPanel.selectedPose = int(motionPanel.poseConstraints.insert(found, pose) -
-                                                       motionPanel.poseConstraints.begin());
-                    }
-                    frame = std::clamp(stage.startFrame + double(frameAt) * stage.framesPerSecond /
-                        Loom::kimodoMotionFps, stage.startFrame, stage.endFrame);
-                    playing = false;
-                }else if(rootEdit.pressed){
-                    motionPanel.rootPathEnabled = true;
-                    const int nearest = nearestRootWaypoint(rootEdit.mouseX);
-                    if(nearest >= 0){
-                        motionPanel.selectedRootWaypoint = nearest;
-                        motionPanel.rootTrackCursorFrame = float(motionPanel.rootWaypoints[size_t(nearest)].frame);
-                    }else{
-                        const int frameAt = int(std::lround(double(rootEdit.mouseX - rootTrack.x) /
-                                                             std::max(1.0f, rootTrack.width) * std::max(1, lastFrame)));
-                        Loom::MotionRootWaypoint key = Loom::motionRootPathAt(motionPanel.rootWaypoints,
-                            float(frameAt), motionPanel.smoothRootPath);
-                        Loom::upsertMotionRootWaypoint(motionPanel.rootWaypoints, key, lastFrame);
-                        const auto found = std::lower_bound(motionPanel.rootWaypoints.begin(), motionPanel.rootWaypoints.end(), key.frame,
-                            [](const Loom::MotionRootWaypoint& item, int f){ return item.frame < f; });
-                        motionPanel.selectedRootWaypoint = int(found - motionPanel.rootWaypoints.begin());
-                        motionPanel.rootTrackCursorFrame = float(key.frame);
+                        if(chosenSegment >= 0 && bestDistance < 12.0f){
+                            const MotionTimelineAction& item = timelineActions[size_t(chosenSegment)];
+                            motionPanel.selectedTimelineAction = item.source;
+                            if(motionPanel.flowMode == 0)
+                                motionPanel.activeAction = std::clamp(item.source, 0, int(motionPanel.actions.size()) - 1);
+                            const float endX = xOf(sceneFrameFromMotionFrame(item.lastFrame));
+                            if(item.part + 1 == item.partCount && std::fabs(rootEdit.mouseX - endX) <= 8.0f){
+                                motionPanel.resizingTimelineAction = true;
+                                motionPanel.timelineDragDisplayEndFrame = timelineEnd;
+                            }
+                            frame = std::clamp(sceneFrameFromMotionFrame(item.firstFrame), stage.startFrame, stage.endFrame);
+                            playing = false;
+                        }
+                    }else if(inTimelineContent && poseLane){
+                        motionPanel.timelineDragLane = 3;
+                        const int frameAt = motionFrameAtX(rootEdit.mouseX, lastFrame);
+                        auto found = std::lower_bound(motionPanel.poseConstraints.begin(), motionPanel.poseConstraints.end(), frameAt,
+                            [](const Loom::MotionPoseConstraint& key, int f){ return key.frame < f; });
+                        auto nearest = found;
+                        if(found != motionPanel.poseConstraints.begin()){
+                            auto previous = found - 1;
+                            if(found == motionPanel.poseConstraints.end() ||
+                               std::fabs(xOf(sceneFrameFromMotionFrame(previous->frame)) - rootEdit.mouseX) <
+                               std::fabs(xOf(sceneFrameFromMotionFrame(found->frame)) - rootEdit.mouseX)) nearest = previous;
+                        }
+                        if(nearest != motionPanel.poseConstraints.end() &&
+                           std::fabs(xOf(sceneFrameFromMotionFrame(nearest->frame)) - rootEdit.mouseX) < 10.0f){
+                            motionPanel.selectedPose = int(nearest - motionPanel.poseConstraints.begin());
+                        }else if(motionPanel.poseConstraints.size() < 20){
+                            Loom::MotionPoseConstraint pose;
+                            pose.frame = frameAt;
+                            if(found != motionPanel.poseConstraints.begin()){
+                                pose = *(found - 1);
+                                pose.frame = frameAt;
+                            }
+                            motionPanel.selectedPose = int(motionPanel.poseConstraints.insert(found, pose) -
+                                                           motionPanel.poseConstraints.begin());
+                        }
+                        motionPanel.draggingPoseLane = motionPanel.selectedPose >= 0;
+                        frame = std::clamp(sceneFrameFromMotionFrame(frameAt), stage.startFrame, stage.endFrame);
+                        playing = false;
+                    }else if(inTimelineContent && pathLane){
+                        motionPanel.timelineDragLane = 2;
+                        motionPanel.rootPathEnabled = true;
+                        const int nearest = nearestRootWaypoint(rootEdit.mouseX);
+                        if(nearest >= 0){
+                            motionPanel.selectedRootWaypoint = nearest;
+                            motionPanel.rootTrackCursorFrame = float(motionPanel.rootWaypoints[size_t(nearest)].frame);
+                        }else{
+                            const int frameAt = motionFrameAtX(rootEdit.mouseX, lastFrame);
+                            Loom::MotionRootWaypoint key = Loom::motionRootPathAt(motionPanel.rootWaypoints,
+                                float(frameAt), motionPanel.smoothRootPath);
+                            Loom::upsertMotionRootWaypoint(motionPanel.rootWaypoints, key, lastFrame);
+                            const auto found = std::lower_bound(motionPanel.rootWaypoints.begin(), motionPanel.rootWaypoints.end(), key.frame,
+                                [](const Loom::MotionRootWaypoint& item, int f){ return item.frame < f; });
+                            motionPanel.selectedRootWaypoint = int(found - motionPanel.rootWaypoints.begin());
+                            motionPanel.rootTrackCursorFrame = float(key.frame);
+                        }
+                        const int frameAt = motionPanel.rootWaypoints.empty() ? 0 :
+                            motionPanel.rootWaypoints[size_t(motionPanel.selectedRootWaypoint)].frame;
+                        frame = std::clamp(sceneFrameFromMotionFrame(frameAt), stage.startFrame, stage.endFrame);
+                        playing = false;
                     }
                 }
-                if(rootEdit.held && !motionPanel.draggingPoseLane && motionPanel.selectedRootWaypoint >= 0 &&
-                   size_t(motionPanel.selectedRootWaypoint) < motionPanel.rootWaypoints.size()){
-                    const int frameAt = int(std::lround(double(rootEdit.mouseX - rootTrack.x) /
-                                                         std::max(1.0f, rootTrack.width) * std::max(1, lastFrame)));
+                if(rootEdit.held && motionPanel.timelineDragLane == 1 && motionPanel.resizingTimelineAction &&
+                   motionPanel.selectedTimelineAction >= 0 &&
+                   size_t(motionPanel.selectedTimelineAction) < timelineSources.size()){
+                    const int sourceIndex = motionPanel.selectedTimelineAction;
+                    const MotionTimelineAction* group = nullptr;
+                    for(const MotionTimelineAction& item : timelineActions)
+                        if(item.source == sourceIndex){ group = &item; break; }
+                    if(group && group->partCount > 0){
+                        const int targetFrame = motionFrameAtX(rootEdit.mouseX, std::max(lastFrame + resizeSlackFrames, 300));
+                        const int pathEnd = motionPanel.rootWaypoints.empty() ? 0 : motionPanel.rootWaypoints.back().frame;
+                        const int poseEnd = motionPanel.poseConstraints.empty() ? 0 : motionPanel.poseConstraints.back().frame;
+                        const int minimumClipFrames = std::max(pathEnd, poseEnd) + 1;
+                        const int otherFrames = std::max(0, motionFrameEnd - group->groupFrames);
+                        const float minimumSeconds = std::max(1.0f,
+                            float(minimumClipFrames - otherFrames) /
+                            (float(Loom::kimodoMotionFps) * float(group->partCount)));
+                        const float requestedSeconds = float(targetFrame - group->groupFirstFrame) /
+                            (float(Loom::kimodoMotionFps) * float(group->partCount));
+                        const float duration = std::clamp(std::round(requestedSeconds * 20.0f) / 20.0f,
+                                                          std::min(10.0f, minimumSeconds), 10.0f);
+                        if(motionPanel.flowMode == 1) motionPanel.directedAction.duration = duration;
+                        else motionPanel.actions[size_t(sourceIndex)].duration = duration;
+                    }
+                }else if(rootEdit.held && motionPanel.timelineDragLane == 3 && motionPanel.draggingPoseLane &&
+                         motionPanel.selectedPose >= 0 &&
+                         size_t(motionPanel.selectedPose) < motionPanel.poseConstraints.size()){
+                    const int targetFrame = motionFrameAtX(rootEdit.mouseX, lastFrame);
+                    Loom::MotionPoseConstraint moving = motionPanel.poseConstraints[size_t(motionPanel.selectedPose)];
+                    motionPanel.poseConstraints.erase(motionPanel.poseConstraints.begin() + motionPanel.selectedPose);
+                    auto at = std::lower_bound(motionPanel.poseConstraints.begin(), motionPanel.poseConstraints.end(), targetFrame,
+                        [](const Loom::MotionPoseConstraint& key, int f){ return key.frame < f; });
+                    const int low = at == motionPanel.poseConstraints.begin() ? 0 : (at - 1)->frame + 1;
+                    const int high = at == motionPanel.poseConstraints.end() ? lastFrame : at->frame - 1;
+                    if(low <= high) moving.frame = std::clamp(targetFrame, low, high);
+                    at = std::lower_bound(motionPanel.poseConstraints.begin(), motionPanel.poseConstraints.end(), moving.frame,
+                        [](const Loom::MotionPoseConstraint& key, int f){ return key.frame < f; });
+                    motionPanel.selectedPose = int(motionPanel.poseConstraints.insert(at, std::move(moving)) -
+                                                    motionPanel.poseConstraints.begin());
+                }else if(rootEdit.held && motionPanel.timelineDragLane == 2 && !motionPanel.draggingPoseLane &&
+                         !motionPanel.resizingTimelineAction && motionPanel.selectedRootWaypoint >= 0 &&
+                         size_t(motionPanel.selectedRootWaypoint) < motionPanel.rootWaypoints.size()){
+                    const int frameAt = motionFrameAtX(rootEdit.mouseX, lastFrame);
                     Loom::moveMotionRootWaypoint(motionPanel.rootWaypoints,
                         size_t(motionPanel.selectedRootWaypoint), frameAt, lastFrame);
                     motionPanel.rootTrackCursorFrame =
                         float(motionPanel.rootWaypoints[size_t(motionPanel.selectedRootWaypoint)].frame);
                 }
-                if(rootEdit.rightPressed && poseLane){
-                    int nearest = -1;
-                    float distance = 11.0f;
-                    for(size_t i = 0; i < motionPanel.poseConstraints.size(); ++i){
-                        const float d = std::fabs(rootX(motionPanel.poseConstraints[i].frame) - rootEdit.mouseX);
-                        if(d < distance){ distance = d; nearest = int(i); }
-                    }
+                if(rootEdit.rightPressed && inTimelineContent && poseLane){
+                    const int nearest = nearestPoseConstraint(rootEdit.mouseX);
                     if(nearest >= 0){
                         motionPanel.poseConstraints.erase(motionPanel.poseConstraints.begin() + nearest);
                         motionPanel.selectedPose = motionPanel.poseConstraints.empty() ? -1 :
                             std::min(nearest, int(motionPanel.poseConstraints.size()) - 1);
                     }
-                }else if(rootEdit.rightPressed){
+                }else if(rootEdit.rightPressed && inTimelineContent && pathLane){
                     const int nearest = nearestRootWaypoint(rootEdit.mouseX);
                     if(nearest > 0){
                         motionPanel.rootWaypoints.erase(motionPanel.rootWaypoints.begin() + nearest);
@@ -3612,10 +3664,16 @@ int main(int argc, char** argv){
                             int(motionPanel.rootWaypoints.size()) - 1);
                     }
                 }
+                if(!rootEdit.held && !rootEdit.pressed){
+                    motionPanel.draggingPoseLane = false;
+                    motionPanel.resizingTimelineAction = false;
+                    motionPanel.timelineDragLane = 0;
+                    motionPanel.timelineDragDisplayEndFrame = 0.0;
+                }
             }
             const Treadle::Ui::Region scrub = ui.region("timeline", track);
-            if(scrub.held){
-                const double f = stage.startFrame + double((scrub.mouseX - track.x) / track.width) * span;
+            if(scrub.held && scrub.mouseX >= contentTrack.x){
+                const double f = stage.startFrame + double((scrub.mouseX - contentTrack.x) / contentTrack.width) * span;
                 frame = std::clamp(std::round(f), stage.startFrame, stage.endFrame);
                 playing = false;
             }
@@ -3640,15 +3698,9 @@ int main(int argc, char** argv){
             if(action.preview) importAutoRigModel(autoRig.output / "bend_preview.glb");
         }
 
-        //== POKRET IZ TEKSTA: panel preko desnog dijela pogleda ====================================
+        //== ANIMATOR WORKSPACE: rig viewport, motion controls and timeline ========================
         tickMotionBricksLive();
         if(motionPanel.open){
-            const Treadle::Rect& v = layout.viewport;
-            const float width = motionPanel.rootPathEnabled
-                ? std::min(430.0f, v.width * 0.45f)
-                : std::min(560.0f, v.width - 20.0f);
-            const float motionPanelX = motionPanel.rootPathEnabled
-                ? v.x + 10.0f : v.x + v.width - width - 10.0f;
             Loom::MotionPanelStatus motionStatus;
             motionStatus.motionBricksReady =
                 fs::is_regular_file(fs::path(LOOM_ROOT_DIR) / "tools/motionbricks/.venv/bin/python") &&
@@ -3682,7 +3734,12 @@ int main(int argc, char** argv){
             motionStatus.characters = sceneMotionCharacters;
             motionStatus.characterNote = "Detected from imported GLTF/GLB mesh + joint hierarchies.";
             const Loom::MotionPanelAction motionAction = Loom::drawMotionPanel(ui, motionPanel,
-                Treadle::Rect{motionPanelX, v.y + 10.0f, width, v.height - 20.0f}, motionStatus, motionPanelScroll);
+                layout.motion, motionStatus, motionPanelScroll);
+            const Warp::Id selectedMotionRig = Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter);
+            if(selectedMotionRig != Warp::None && selected != selectedMotionRig){
+                selected = selectedMotionRig;
+                focus = Focus::Entity;
+            }
             if(motionPanel.flowMode == 1){
                 const double neededEnd = stage.startFrame +
                     double(Loom::kimodoMotionLastFrame({motionPanel.directedAction})) *
@@ -3707,6 +3764,9 @@ int main(int argc, char** argv){
                 importMotion(motionAction.comparePath, motionPanel.targetCharacter, motionAction.compareMode);
             if(motionAction.close) motionPanel.open = false;
         }
+
+        if(proceduraPanel.open)
+            Loom::drawWeaverProceduraPanel(ui, proceduraPanel, layout.motion);
 
         //== PLOHA IZ ODABIRA: sto je odabrano i sto se s tim moze ================================
         if(surfaceTool.active){
@@ -3913,10 +3973,11 @@ int main(int argc, char** argv){
         //Desni klik uz putanju otvara alat za dodavanje poze na tocnoj tocki putanje.
         //Uzorkujemo glatku krivulju po pod-kadrovima kako bi se pogodila i izmedu waypointa.
         int motionPathContextFrame = -1;
-        const bool canContextMotionPath = motionPanel.open && motionPanel.rootPathEnabled &&
+        const bool canContextMotionPath = motionPanel.open && motionPanel.flowMode != 2 &&
+            motionPanel.rootPathEnabled &&
             stage.contains(motionPanel.targetCharacter) && !motionPanel.rootWaypoints.empty();
-        if(rightDown && !rightWasDown && canContextMotionPath &&
-           layout.viewport.contains(float(cursorX), float(cursorY)) && !ui.wantsMouse()){
+        if(rightPressed && canContextMotionPath &&
+           layout.viewport.contains(float(rightClickX), float(rightClickY)) && !ui.wantsMouse() && !compositor.open){
             const Loom::ViewCamera contextCamera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
             const Warp::Id rootBone = motionRootAnchor(motionPanel.targetCharacter);
             glm::vec3 pathOrigin = glm::vec3(stage.worldMatrix(rootBone, stage.startFrame)[3]);
@@ -3929,7 +3990,7 @@ int main(int argc, char** argv){
                 float(motionPanel.rootWaypoints.back().frame));
             const int sampleCount = std::max(1, int(std::ceil(std::max(0.0f,
                 pathEndFrame - pathStartFrame) * 2.0f)));
-            const glm::vec2 pointer{float(cursorX), float(cursorY)};
+            const glm::vec2 pointer{float(rightClickX), float(rightClickY)};
             float nearestDistance = 15.0f;
             float nearestFrame = -1.0f;
             glm::vec2 previousPixel;
@@ -3964,15 +4025,15 @@ int main(int argc, char** argv){
                 int(std::lround(nearestFrame)), 0, lastMotionFrame);
         }
         //Desni klik izvan putanje zadrzava postojeci izbornik pogleda.
-        if(rightDown && !rightWasDown && layout.viewport.contains(float(cursorX), float(cursorY)) &&
-           !ui.wantsMouse() && !ui.menuOpen("Media") && !ui.menuOpen("Entity") && !ui.menuOpen("Atlas")){
+        if(rightPressed && layout.viewport.contains(float(rightClickX), float(rightClickY)) &&
+           !ui.wantsMouse() && !compositor.open && !ui.menuOpen("Media") && !ui.menuOpen("Entity") && !ui.menuOpen("Atlas")){
             if(motionPathContextFrame >= 0){
                 motionPathMenuFrame = motionPathContextFrame;
-                ui.openMenuAt("Motion Path", float(cursorX), float(cursorY));
+                ui.openMenuAt("Motion Path", float(rightClickX), float(rightClickY));
             }else{
                 ui.openMenu("View");
             }
-            menuPixel = glm::vec2(float(cursorX), float(cursorY));
+            menuPixel = glm::vec2(float(rightClickX), float(rightClickY));
         }
         auto openContextSubmenu = [&](const std::string& id){
             const float popupWidth = 220.0f;
@@ -4217,8 +4278,8 @@ int main(int argc, char** argv){
         //== VIEWPORT HUD: STAGE COMPASS + CAMERA POSTCARDS =====================================
         {
             const Treadle::Rect& hudViewport = layout.viewport;
-            //Importer prekriva pogled; kompas i razglednice bi se crtali preko njega
-            if(!importer.open && hudViewport.width > 300.0f && hudViewport.height > 190.0f){
+            //Importer i Compositor prekrivaju pogled; kompas i razglednice bi se crtali preko njih
+            if(!importer.open && !compositor.open && hudViewport.width > 300.0f && hudViewport.height > 190.0f){
                 static int cameraPostcardOffset = 0;
                 static bool cameraCompareMode = false;
                 static Warp::Id cameraCompareA = Warp::None;
@@ -4268,76 +4329,93 @@ int main(int argc, char** argv){
                 });
 
                 const float compassW = std::min(164.0f, hudViewport.width * 0.31f);
-                const float compassH = 166.0f;
-                const Treadle::Rect compassBox{hudViewport.x + 14.0f, hudViewport.y + 14.0f, compassW, compassH};
-                const auto compass = ui.region("stage-compass", compassBox);
+                const float compassHitH = compassMinimized ? 34.0f : 166.0f;
+                const Treadle::Rect compassHitBox{hudViewport.x + 14.0f, hudViewport.y + 14.0f, compassW, compassHitH};
+                const auto compass = ui.region("stage-compass", compassHitBox);
+                const Treadle::Rect toggleBox{compassHitBox.x + compassW - 27.0f, compassHitBox.y + 5.0f, 21.0f, 21.0f};
+                const auto compassToggle = ui.region("stage-compass-toggle", toggleBox);
+                if(compassToggle.pressed) compassMinimized = !compassMinimized;
+                const float compassH = compassMinimized ? 34.0f : 166.0f;
+                const Treadle::Rect compassBox{compassHitBox.x, compassHitBox.y, compassW, compassH};
                 canvas.rect(compassBox, panelFill);
                 canvas.outline(compassBox, 1.0f, panelEdge);
-                canvas.text(compassBox.x + 9.0f, compassBox.y + 7.0f, "STAGE COMPASS", gold, hudTextScale);
-                const Treadle::Rect mapBox{compassBox.x + 9.0f, compassBox.y + 27.0f,
-                                           compassBox.width - 18.0f, compassBox.height - 37.0f};
-                canvas.rect(mapBox, {0.055f, 0.078f, 0.063f, 0.78f});
-                canvas.outline(mapBox, 1.0f, {0.28f, 0.39f, 0.29f, 0.75f});
-                const float mapCx = mapBox.x + mapBox.width * 0.5f;
-                const float mapCy = mapBox.y + mapBox.height * 0.5f;
-                const float mapR = std::min(mapBox.width, mapBox.height) * 0.39f;
-                for(int grid = -1; grid <= 1; ++grid){
-                    const float offset = float(grid) * mapR * 0.5f;
-                    canvas.line(mapCx + offset, mapCy - mapR, mapCx + offset, mapCy + mapR,
-                                1.0f, {0.32f, 0.44f, 0.34f, 0.24f});
-                    canvas.line(mapCx - mapR, mapCy + offset, mapCx + mapR, mapCy + offset,
-                                1.0f, {0.32f, 0.44f, 0.34f, 0.24f});
-                }
-                canvas.line(mapCx - mapR, mapCy, mapCx + mapR, mapCy, 1.0f, {0.58f, 0.66f, 0.51f, 0.34f});
-                canvas.line(mapCx, mapCy - mapR, mapCx, mapCy + mapR, 1.0f, {0.58f, 0.66f, 0.51f, 0.34f});
-                canvas.text(mapCx - Treadle::textWidth("-Z", hudTextScale) * 0.5f, mapBox.y + 1.0f,
-                            "-Z", softText, hudTextScale);
-                canvas.text(mapCx - Treadle::textWidth("+Z", hudTextScale) * 0.5f, mapBox.y + mapBox.height - 12.0f,
-                            "+Z", softText, hudTextScale);
-                canvas.text(mapBox.x + 1.0f, mapCy - 5.0f, "-X", softText, hudTextScale);
-                canvas.text(mapBox.x + mapBox.width - 19.0f, mapCy - 5.0f, "+X", softText, hudTextScale);
-
-                auto markerPixel = [&](const CompassMarker& marker){
-                    const float scale = mapR / (std::max(0.5f, compassRadius) * 1.12f);
-                    return glm::vec2(mapCx + (marker.world.x - extent.centre.x) * scale,
-                                     mapCy + (marker.world.z - extent.centre.z) * scale);
-                };
-                for(const CompassMarker& marker : compassMarkers){
-                    const glm::vec2 at = markerPixel(marker);
-                    if(!mapBox.contains(at.x, at.y)) continue;
-                    const Treadle::Color colour = marker.id == selected ? gold : marker.colour;
-                    if(marker.camera){
-                        const glm::vec2 heading = glm::normalize(glm::vec2(marker.forward.x, marker.forward.z));
-                        const glm::vec2 tip = at + heading * 11.0f;
-                        canvas.line(at.x, at.y, tip.x, tip.y, 1.5f, colour);
-                        const glm::vec2 side(-heading.y, heading.x);
-                        canvas.line(tip.x, tip.y, tip.x - heading.x * 4.0f + side.x * 3.0f,
-                                    tip.y - heading.y * 4.0f + side.y * 3.0f, 1.2f, colour);
-                        canvas.line(tip.x, tip.y, tip.x - heading.x * 4.0f - side.x * 3.0f,
-                                    tip.y - heading.y * 4.0f - side.y * 3.0f, 1.2f, colour);
-                        canvas.triangle(at.x, at.y - 4.0f, at.x + 4.0f, at.y, at.x, at.y + 4.0f, colour);
-                        canvas.triangle(at.x, at.y - 4.0f, at.x - 4.0f, at.y, at.x, at.y + 4.0f, colour);
-                    }else{
-                        canvas.triangle(at.x, at.y - 4.0f, at.x + 4.0f, at.y, at.x, at.y + 4.0f, colour);
-                        canvas.triangle(at.x, at.y - 4.0f, at.x - 4.0f, at.y, at.x, at.y + 4.0f, colour);
+                const std::string compassTitle = Treadle::fitText("STAGE COMPASS", compassW - 43.0f, hudTextScale);
+                canvas.text(compassBox.x + 9.0f, compassBox.y + 7.0f, compassTitle, gold, hudTextScale);
+                canvas.rect(toggleBox, compassToggle.hot ? panelEdge : Treadle::Color{0.10f, 0.14f, 0.11f, 0.88f});
+                canvas.outline(toggleBox, 1.0f, panelEdge);
+                const float toggleMidX = toggleBox.x + toggleBox.width * 0.5f;
+                const float toggleMidY = toggleBox.y + toggleBox.height * 0.5f;
+                canvas.line(toggleBox.x + 5.0f, toggleMidY, toggleBox.x + toggleBox.width - 5.0f,
+                            toggleMidY, 1.5f, gold);
+                if(compassMinimized)
+                    canvas.line(toggleMidX, toggleBox.y + 5.0f, toggleMidX, toggleBox.y + toggleBox.height - 5.0f,
+                                1.5f, gold);
+                if(!compassMinimized){
+                    const Treadle::Rect mapBox{compassBox.x + 9.0f, compassBox.y + 27.0f,
+                                               compassBox.width - 18.0f, compassBox.height - 37.0f};
+                    canvas.rect(mapBox, {0.055f, 0.078f, 0.063f, 0.78f});
+                    canvas.outline(mapBox, 1.0f, {0.28f, 0.39f, 0.29f, 0.75f});
+                    const float mapCx = mapBox.x + mapBox.width * 0.5f;
+                    const float mapCy = mapBox.y + mapBox.height * 0.5f;
+                    const float mapR = std::min(mapBox.width, mapBox.height) * 0.39f;
+                    for(int grid = -1; grid <= 1; ++grid){
+                        const float offset = float(grid) * mapR * 0.5f;
+                        canvas.line(mapCx + offset, mapCy - mapR, mapCx + offset, mapCy + mapR,
+                                    1.0f, {0.32f, 0.44f, 0.34f, 0.24f});
+                        canvas.line(mapCx - mapR, mapCy + offset, mapCx + mapR, mapCy + offset,
+                                    1.0f, {0.32f, 0.44f, 0.34f, 0.24f});
                     }
-                    if(marker.id == selected)
-                        canvas.outline(Treadle::Rect{at.x - 6.0f, at.y - 6.0f, 12.0f, 12.0f}, 1.0f, gold);
-                }
-                if(compass.pressed){
-                    float nearest = 9.0f;
-                    Warp::Id hit = Warp::None;
+                    canvas.line(mapCx - mapR, mapCy, mapCx + mapR, mapCy, 1.0f, {0.58f, 0.66f, 0.51f, 0.34f});
+                    canvas.line(mapCx, mapCy - mapR, mapCx, mapCy + mapR, 1.0f, {0.58f, 0.66f, 0.51f, 0.34f});
+                    canvas.text(mapCx - Treadle::textWidth("-Z", hudTextScale) * 0.5f, mapBox.y + 1.0f,
+                                "-Z", softText, hudTextScale);
+                    canvas.text(mapCx - Treadle::textWidth("+Z", hudTextScale) * 0.5f, mapBox.y + mapBox.height - 12.0f,
+                                "+Z", softText, hudTextScale);
+                    canvas.text(mapBox.x + 1.0f, mapCy - 5.0f, "-X", softText, hudTextScale);
+                    canvas.text(mapBox.x + mapBox.width - 19.0f, mapCy - 5.0f, "+X", softText, hudTextScale);
+
+                    auto markerPixel = [&](const CompassMarker& marker){
+                        const float scale = mapR / (std::max(0.5f, compassRadius) * 1.12f);
+                        return glm::vec2(mapCx + (marker.world.x - extent.centre.x) * scale,
+                                         mapCy + (marker.world.z - extent.centre.z) * scale);
+                    };
                     for(const CompassMarker& marker : compassMarkers){
                         const glm::vec2 at = markerPixel(marker);
-                        const float distance = glm::length(at - glm::vec2(compass.mouseX, compass.mouseY));
-                        if(distance < nearest){ nearest = distance; hit = marker.id; }
+                        if(!mapBox.contains(at.x, at.y)) continue;
+                        const Treadle::Color colour = marker.id == selected ? gold : marker.colour;
+                        if(marker.camera){
+                            const glm::vec2 heading = glm::normalize(glm::vec2(marker.forward.x, marker.forward.z));
+                            const glm::vec2 tip = at + heading * 11.0f;
+                            canvas.line(at.x, at.y, tip.x, tip.y, 1.5f, colour);
+                            const glm::vec2 side(-heading.y, heading.x);
+                            canvas.line(tip.x, tip.y, tip.x - heading.x * 4.0f + side.x * 3.0f,
+                                        tip.y - heading.y * 4.0f + side.y * 3.0f, 1.2f, colour);
+                            canvas.line(tip.x, tip.y, tip.x - heading.x * 4.0f - side.x * 3.0f,
+                                        tip.y - heading.y * 4.0f - side.y * 3.0f, 1.2f, colour);
+                            canvas.triangle(at.x, at.y - 4.0f, at.x + 4.0f, at.y, at.x, at.y + 4.0f, colour);
+                            canvas.triangle(at.x, at.y - 4.0f, at.x - 4.0f, at.y, at.x, at.y + 4.0f, colour);
+                        }else{
+                            canvas.triangle(at.x, at.y - 4.0f, at.x + 4.0f, at.y, at.x, at.y + 4.0f, colour);
+                            canvas.triangle(at.x, at.y - 4.0f, at.x - 4.0f, at.y, at.x, at.y + 4.0f, colour);
+                        }
+                        if(marker.id == selected)
+                            canvas.outline(Treadle::Rect{at.x - 6.0f, at.y - 6.0f, 12.0f, 12.0f}, 1.0f, gold);
                     }
-                    if(hit != Warp::None){
-                        selected = hit;
-                        focus = Focus::Entity;
-                        view.lookThrough = Warp::None;
-                        view.orbit.target = glm::vec3(stage.worldMatrix(hit, frame)[3]);
-                        view.orbit.distance = std::max(0.35f, extent.radius * 0.8f);
+                    if(compass.pressed && !compassToggle.pressed && mapBox.contains(compass.mouseX, compass.mouseY)){
+                        float nearest = 9.0f;
+                        Warp::Id hit = Warp::None;
+                        for(const CompassMarker& marker : compassMarkers){
+                            const glm::vec2 at = markerPixel(marker);
+                            const float distance = glm::length(at - glm::vec2(compass.mouseX, compass.mouseY));
+                            if(distance < nearest){ nearest = distance; hit = marker.id; }
+                        }
+                        if(hit != Warp::None){
+                            selected = hit;
+                            focus = Focus::Entity;
+                            view.lookThrough = Warp::None;
+                            view.orbit.target = glm::vec3(stage.worldMatrix(hit, frame)[3]);
+                            view.orbit.distance = std::max(0.35f, extent.radius * 0.8f);
+                        }
                     }
                 }
 
@@ -4608,7 +4686,7 @@ int main(int argc, char** argv){
         //== SCENE PULSE: LIVE VIEWPORT ACTIVITY =================================================
         {
             const Treadle::Rect& pulseViewport = layout.viewport;
-            if(!importer.open && pulseViewport.width > 300.0f && pulseViewport.height > 190.0f){
+            if(!importer.open && !compositor.open && pulseViewport.width > 300.0f && pulseViewport.height > 190.0f){
                 static glm::vec3 previousOrbitTarget = view.orbit.target;
                 static float previousOrbitYaw = view.orbit.yaw;
                 static float previousOrbitPitch = view.orbit.pitch;
@@ -4808,10 +4886,7 @@ int main(int argc, char** argv){
             }
             const Loom::ViewCamera skeletonCamera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
             const Treadle::Rect& v = layout.viewport;
-            const float motionWidth = motionPanel.rootPathEnabled
-                ? std::min(430.0f, v.width * 0.45f) : std::min(560.0f, v.width - 20.0f);
-            const float motionX = motionPanel.rootPathEnabled ? v.x + 10.0f : v.x + v.width - motionWidth - 10.0f;
-            const Treadle::Rect motionBox{motionX, v.y + 10.0f, motionWidth, v.height - 20.0f};
+            const Treadle::Rect motionBox{};
             auto toWorld = [&](const glm::vec3& local){ return anchor + pathRotation * (local * scale); };
             auto toRigLocal = [&](const glm::vec3& world){
                 return glm::inverse(pathRotation) * (world - anchor) / std::max(1e-4f, scale);
@@ -4834,7 +4909,7 @@ int main(int argc, char** argv){
 
             //Compact mode switch: the default rig edits intent through IK targets; joint mode
             //keeps the precise SOMA30 rotation handles available for technical adjustments.
-            const float modeWidth = 184.0f, modeHeight = 28.0f;
+            const float modeWidth = 206.0f, modeHeight = 30.0f;
             const Treadle::Rect modeBox{v.x + v.width - modeWidth - 12.0f, v.y + 12.0f,
                                         modeWidth, modeHeight};
             const float modeGap = 4.0f, modeButtonWidth = (modeWidth - modeGap) * 0.5f;
@@ -4850,12 +4925,12 @@ int main(int argc, char** argv){
             const Treadle::Color modeIdle{0.055f, 0.075f, 0.065f, 0.96f};
             canvas.rect(rigModeBox, motionPanel.controlRigMode ? rigActive : modeIdle);
             canvas.outline(rigModeBox, 1.0f, motionPanel.controlRigMode ? theme.accent : theme.panelEdge);
-            canvas.text(rigModeBox.x + 13.0f, rigModeBox.y + 7.0f, "RIG CONTROLS",
-                        motionPanel.controlRigMode ? theme.title : theme.dim, theme.textScale * 0.62f);
+            canvas.text(rigModeBox.x + 11.0f, rigModeBox.y + 8.0f, "RIG CONTROLS",
+                        motionPanel.controlRigMode ? theme.title : theme.dim, theme.textScale * 0.68f);
             canvas.rect(jointModeBox, !motionPanel.controlRigMode ? rigActive : modeIdle);
             canvas.outline(jointModeBox, 1.0f, !motionPanel.controlRigMode ? theme.accent : theme.panelEdge);
-            canvas.text(jointModeBox.x + 15.0f, jointModeBox.y + 7.0f, "JOINTS",
-                        !motionPanel.controlRigMode ? theme.title : theme.dim, theme.textScale * 0.62f);
+            canvas.text(jointModeBox.x + 15.0f, jointModeBox.y + 8.0f, "JOINTS",
+                        !motionPanel.controlRigMode ? theme.title : theme.dim, theme.textScale * 0.68f);
 
             std::array<bool, 11> controlHot{};
             std::array<glm::vec2, 11> controlPixels{};
@@ -4883,7 +4958,7 @@ int main(int argc, char** argv){
                     if(!controlVisible[i]) continue;
                     const Loom::MotionDirectControl& control = controls[i];
                     const glm::vec3 world = controlWorld(control);
-                    const Treadle::Rect hitBox{controlPixels[i].x - 10.0f, controlPixels[i].y - 10.0f, 20.0f, 20.0f};
+                    const Treadle::Rect hitBox{controlPixels[i].x - 14.0f, controlPixels[i].y - 14.0f, 28.0f, 28.0f};
                     const auto hit = ui.region("motion-rig-control-" + std::to_string(i), hitBox);
                     controlHot[i] = hit.hot || hit.held;
                     if(hit.pressed){
@@ -5035,7 +5110,7 @@ int main(int argc, char** argv){
                                 ? Treadle::Color{1.0f, 0.57f, 0.24f, 1.0f}
                                 : Treadle::Color{0.24f, 0.92f, 0.98f, 1.0f};
                     if(rootLocked) tint = theme.dim;
-                    const float radius = active || controlHot[i] ? 8.5f : 6.5f;
+                    const float radius = active || controlHot[i] ? 10.0f : 8.0f;
                     const Treadle::Rect box{controlPixels[i].x - radius, controlPixels[i].y - radius,
                                             radius * 2.0f, radius * 2.0f};
                     canvas.rect(box, active ? Treadle::Color{tint.r, tint.g, tint.b, 0.62f}
@@ -5046,16 +5121,30 @@ int main(int argc, char** argv){
                     canvas.line(controlPixels[i].x, controlPixels[i].y - 3.0f,
                                 controlPixels[i].x, controlPixels[i].y + 3.0f, 1.1f, tint);
                     if(active || controlHot[i]){
-                        const float labelScale = std::max(1.0f, theme.textScale * 0.58f);
-                        canvas.text(controlPixels[i].x + 12.0f, controlPixels[i].y - 6.0f,
-                                    control.label, tint, labelScale);
+                        const float labelScale = std::max(1.0f, theme.textScale * 0.62f);
+                        const float labelWidth = std::clamp(float(std::char_traits<char>::length(control.label)) *
+                            labelScale * 0.64f + 16.0f, 42.0f, 92.0f);
+                        float labelX = controlPixels[i].x + 14.0f;
+                        if(labelX + labelWidth > v.x + v.width - 6.0f) labelX = controlPixels[i].x - labelWidth - 14.0f;
+                        const float labelY = std::clamp(controlPixels[i].y - 10.0f,
+                            v.y + 5.0f, v.y + v.height - 23.0f);
+                        const Treadle::Rect labelBox{labelX, labelY, labelWidth, 19.0f};
+                        canvas.rect(labelBox, Treadle::Color{0.015f, 0.025f, 0.025f, 0.94f});
+                        canvas.outline(labelBox, 1.0f, tint);
+                        canvas.text(labelX + 7.0f, labelY + 3.0f, control.label, tint, labelScale);
                     }
                 }
-                const float hintScale = std::max(1.0f, theme.textScale * 0.54f);
+                const float hintScale = std::max(1.0f, theme.textScale * 0.58f);
                 const float hintX = std::max(motionBox.x + motionBox.width + 10.0f, modeBox.x - 310.0f);
-                const std::string hint = Treadle::fitText(
-                    "drag targets/poles  |  Alt-drag hand/foot to rotate", modeBox.x - hintX - 8.0f, hintScale);
-                canvas.text(hintX, modeBox.y + 8.0f, hint, theme.dim, hintScale);
+                const float hintWidth = std::max(0.0f, modeBox.x - hintX - 8.0f);
+                if(hintWidth > 90.0f){
+                    const Treadle::Rect hintBox{hintX, modeBox.y + 2.0f, hintWidth, 26.0f};
+                    canvas.rect(hintBox, Treadle::Color{0.015f, 0.025f, 0.025f, 0.82f});
+                    canvas.outline(hintBox, 1.0f, Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.28f});
+                    const std::string hint = Treadle::fitText(
+                        "Drag a target to pose  ·  Alt-drag to rotate", hintWidth - 12.0f, hintScale);
+                    canvas.text(hintX + 6.0f, modeBox.y + 9.0f, hint, theme.dim, hintScale);
+                }
             }else{
                 for(size_t i = 0; i < joints.size(); ++i){
                     glm::vec2 pixel;
@@ -5079,13 +5168,346 @@ int main(int argc, char** argv){
             const float helpX = motionPanel.rootPathEnabled ? v.x + v.width - helpWidth - 10.0f : v.x + 10.0f;
             Loom::drawMotionHelp(ui, motionPanel, Treadle::Rect{helpX, v.y + 10.0f, helpWidth, helpHeight});
         }
+        const Warp::Entity* poseRigEntity = stage.get(poseEdit.rig);
+        const bool showAnimatorPoseRig = poseEdit.active && poseRigEntity && poseRigEntity->animator &&
+            poseEdit.animation == poseRigEntity->animator->activeAnimation &&
+            std::round(frame) == poseEdit.frame && layout.viewport.width > 40.0f &&
+            layout.viewport.height > 40.0f && !compositor.open;
+        if(!showAnimatorPoseRig) animatorRigDrag.control = -1;
+        if(showAnimatorPoseRig){
+            const auto jointIds = motionDirectRigJointIds(poseEdit.rig);
+            const auto& directBones = Loom::motionDirectBones();
+            const auto& controls = Loom::motionDirectControls();
+            const Loom::ViewCamera poseCamera = Loom::viewCameraFor(stage, poseEdit.frame, layout.viewport, view);
+            const Treadle::Rect& viewport = layout.viewport;
+            Treadle::DrawList& canvas = ui.canvas();
+            auto controlJointIndex = [](const Loom::MotionDirectControl& control){
+                if(control.kind == Loom::MotionDirectControlKind::PathRoot) return 0;
+                if(control.kind == Loom::MotionDirectControlKind::RotateJoint) return control.joint;
+                if(control.kind == Loom::MotionDirectControlKind::LimbTarget) return control.end;
+                return control.middle;
+            };
+            auto jointWorld = [&](int index){
+                return index >= 0 && index < int(jointIds.size()) && jointIds[size_t(index)] != Warp::None
+                    ? glm::vec3(stage.worldMatrix(jointIds[size_t(index)], poseEdit.frame)[3])
+                    : glm::vec3(0.0f);
+            };
+            auto hasJoint = [&](int index){
+                return index >= 0 && index < int(jointIds.size()) &&
+                    jointIds[size_t(index)] != Warp::None && stage.get(jointIds[size_t(index)]);
+            };
+            auto controlAvailable = [&](const Loom::MotionDirectControl& control){
+                if(control.kind == Loom::MotionDirectControlKind::LimbTarget ||
+                   control.kind == Loom::MotionDirectControlKind::Pole){
+                    if(!hasJoint(control.upper) || !hasJoint(control.middle) || !hasJoint(control.end)) return false;
+                    const Warp::Entity* middle = stage.get(jointIds[size_t(control.middle)]);
+                    const Warp::Entity* end = stage.get(jointIds[size_t(control.end)]);
+                    return middle && end && middle->parent == jointIds[size_t(control.upper)] &&
+                        end->parent == jointIds[size_t(control.middle)];
+                }
+                return hasJoint(controlJointIndex(control));
+            };
+            auto intersectPosePlane = [&](const glm::vec2& pixel, const glm::vec3& point,
+                                          const glm::vec3& normal, glm::vec3& hitPoint){
+                const Loom::Ray ray = Loom::rayThrough(poseCamera, pixel);
+                const float denominator = glm::dot(ray.direction, normal);
+                if(std::fabs(denominator) < 1e-5f) return false;
+                const float distance = glm::dot(point - ray.origin, normal) / denominator;
+                if(distance < 0.0f) return false;
+                hitPoint = ray.origin + distance * ray.direction;
+                return true;
+            };
+            auto setJointLocal = [&](int index, const Warp::Transform& local){
+                if(hasJoint(index)) stage.setLocalAt(jointIds[size_t(index)], poseEdit.frame, local);
+            };
+            auto parentWorldFor = [&](int index){
+                const Warp::Entity* entity = hasJoint(index) ? stage.get(jointIds[size_t(index)]) : nullptr;
+                return !entity || entity->parent == Warp::None
+                    ? glm::mat4(1.0f) : stage.worldMatrix(entity->parent, poseEdit.frame);
+            };
+            auto setJointWorldRotation = [&](int index, const glm::quat& worldRotation,
+                                             Warp::Transform local){
+                if(!hasJoint(index)) return;
+                local.rotation = glm::normalize(glm::inverse(rotationOf(parentWorldFor(index))) * worldRotation);
+                setJointLocal(index, local);
+            };
+            auto solveLimb = [&](const Loom::MotionDirectControl& control,
+                                 const glm::vec3& endTarget, const glm::vec3& poleTarget){
+                const glm::vec3 root = jointWorld(control.upper);
+                const glm::vec3 middle = jointWorld(control.middle);
+                const glm::vec3 end = jointWorld(control.end);
+                const float upperLength = glm::length(middle - root);
+                const float lowerLength = glm::length(end - middle);
+                glm::vec3 toTarget = endTarget - root;
+                float distance = glm::length(toTarget);
+                if(upperLength < 1e-5f || lowerLength < 1e-5f || distance < 1e-5f) return;
+                const glm::vec3 direction = toTarget / distance;
+                distance = std::clamp(distance, std::fabs(upperLength - lowerLength) + 1e-4f,
+                                      upperLength + lowerLength - 1e-4f);
+                glm::vec3 bend = poleTarget - root;
+                bend -= direction * glm::dot(bend, direction);
+                if(glm::dot(bend, bend) < 1e-8f){
+                    bend = middle - root;
+                    bend -= direction * glm::dot(bend, direction);
+                }
+                if(glm::dot(bend, bend) < 1e-8f)
+                    bend = glm::cross(direction, std::fabs(direction.y) < 0.9f
+                        ? glm::vec3(0, 1, 0) : glm::vec3(0, 0, 1));
+                bend = glm::normalize(bend);
+                const float along = (upperLength * upperLength - lowerLength * lowerLength + distance * distance) /
+                                    (2.0f * distance);
+                const float height = std::sqrt(std::max(0.0f, upperLength * upperLength - along * along));
+                const glm::vec3 middleTarget = root + direction * along + bend * height;
+
+                const Warp::Id upperId = jointIds[size_t(control.upper)];
+                const Warp::Id middleId = jointIds[size_t(control.middle)];
+                const glm::quat upperWorldRotation = rotationOf(stage.worldMatrix(upperId, poseEdit.frame));
+                const glm::quat upperDelta = Loom::motionDirectRotationBetween(middle - root, middleTarget - root);
+                setJointWorldRotation(control.upper, glm::normalize(upperDelta * upperWorldRotation),
+                                      stage.localAt(upperId, poseEdit.frame));
+
+                const glm::vec3 updatedMiddle = jointWorld(control.middle);
+                const glm::vec3 updatedEnd = jointWorld(control.end);
+                const glm::quat middleWorldRotation = rotationOf(stage.worldMatrix(middleId, poseEdit.frame));
+                const glm::quat middleDelta = Loom::motionDirectRotationBetween(
+                    updatedEnd - updatedMiddle, endTarget - updatedMiddle);
+                setJointWorldRotation(control.middle, glm::normalize(middleDelta * middleWorldRotation),
+                                      stage.localAt(middleId, poseEdit.frame));
+            };
+
+            std::array<glm::vec2, 11> controlPixels{};
+            std::array<bool, 11> controlVisible{};
+            std::array<bool, 11> controlHot{};
+            auto projectPoseRig = [&]{
+                for(size_t i = 0; i < controls.size(); ++i){
+                    controlVisible[i] = false;
+                    if(!controlAvailable(controls[i])) continue;
+                    const int joint = controlJointIndex(controls[i]);
+                    controlVisible[i] = Loom::project(poseCamera, jointWorld(joint), controlPixels[i]) &&
+                        viewport.contains(controlPixels[i].x, controlPixels[i].y);
+                }
+            };
+            projectPoseRig();
+
+            for(size_t i = 0; i < directBones.size(); ++i){
+                const int parent = directBones[i].parent;
+                if(parent < 0 || !hasJoint(int(i)) || !hasJoint(parent)) continue;
+                glm::vec2 childPixel, parentPixel;
+                if(!Loom::project(poseCamera, jointWorld(int(i)), childPixel) ||
+                   !Loom::project(poseCamera, jointWorld(parent), parentPixel) ||
+                   !viewport.contains(childPixel.x, childPixel.y) ||
+                   !viewport.contains(parentPixel.x, parentPixel.y)) continue;
+                canvas.line(parentPixel.x, parentPixel.y, childPixel.x, childPixel.y, 2.2f,
+                            Treadle::Color{0.23f, 0.85f, 0.97f, 0.82f});
+            }
+
+            if(!leftDown) animatorRigDrag.control = -1;
+            for(size_t i = 0; i < controls.size(); ++i){
+                if(!controlVisible[i]) continue;
+                const Loom::MotionDirectControl& control = controls[i];
+                const int targetJoint = controlJointIndex(control);
+                const float hitRadius = control.kind == Loom::MotionDirectControlKind::PathRoot ? 15.0f : 13.0f;
+                const auto hit = ui.region("animator-pose-rig-control-" + std::to_string(i),
+                    Treadle::Rect{controlPixels[i].x - hitRadius, controlPixels[i].y - hitRadius,
+                                  hitRadius * 2.0f, hitRadius * 2.0f});
+                controlHot[i] = hit.hot || hit.held;
+                if(hit.pressed){
+                    animatorRigDrag = AnimatorRigDragState{};
+                    animatorRigDrag.control = int(i);
+                    animatorRigDrag.rig = poseEdit.rig;
+                    animatorRigDrag.frame = poseEdit.frame;
+                    animatorRigDrag.startMouse = glm::vec2(hit.mouseX, hit.mouseY);
+                    animatorRigDrag.startWorld = jointWorld(targetJoint);
+                    const Warp::Id selectedJoint = jointIds[size_t(targetJoint)];
+                    selected = selectedJoint;
+                    focus = Focus::Entity;
+                    motionPanel.selectedRigControl = int(i);
+                    auto captureJoint = [&](int joint){
+                        if(animatorRigDrag.jointCount >= animatorRigDrag.jointIndices.size() || !hasJoint(joint)) return;
+                        const size_t slot = animatorRigDrag.jointCount++;
+                        animatorRigDrag.jointIndices[slot] = joint;
+                        animatorRigDrag.startLocal[slot] = stage.localAt(jointIds[size_t(joint)], poseEdit.frame);
+                    };
+                    if(control.kind == Loom::MotionDirectControlKind::PathRoot){
+                        captureJoint(0);
+                        animatorRigDrag.planeNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+                    }else if(control.kind == Loom::MotionDirectControlKind::RotateJoint){
+                        captureJoint(control.joint);
+                    }else{
+                        captureJoint(control.upper);
+                        captureJoint(control.middle);
+                        if(control.kind == Loom::MotionDirectControlKind::LimbTarget) captureJoint(control.end);
+                        animatorRigDrag.planeNormal = glm::normalize(animatorRigDrag.startWorld - poseCamera.eye);
+                    }
+                    if(glm::dot(animatorRigDrag.planeNormal, animatorRigDrag.planeNormal) < 1e-8f)
+                        animatorRigDrag.planeNormal = glm::vec3(0.0f, 0.0f, 1.0f);
+                    if(!intersectPosePlane(animatorRigDrag.startMouse, animatorRigDrag.startWorld,
+                                           animatorRigDrag.planeNormal, animatorRigDrag.planeStartHit))
+                        animatorRigDrag.planeStartHit = animatorRigDrag.startWorld;
+                }
+                if(!hit.held || animatorRigDrag.control != int(i) || animatorRigDrag.rig != poseEdit.rig ||
+                   animatorRigDrag.frame != poseEdit.frame || !leftDown) continue;
+
+                const glm::vec2 mouse(hit.mouseX, hit.mouseY);
+                if(glm::length(mouse - animatorRigDrag.startMouse) < 0.25f) continue;
+                for(size_t joint = 0; joint < animatorRigDrag.jointCount; ++joint)
+                    setJointLocal(animatorRigDrag.jointIndices[joint], animatorRigDrag.startLocal[joint]);
+
+                if(control.kind == Loom::MotionDirectControlKind::PathRoot){
+                    glm::vec3 currentHit;
+                    if(!intersectPosePlane(mouse, animatorRigDrag.planeStartHit,
+                                           animatorRigDrag.planeNormal, currentHit)) continue;
+                    const glm::vec3 targetWorld = animatorRigDrag.startWorld +
+                        (currentHit - animatorRigDrag.planeStartHit);
+                    Warp::Transform local = animatorRigDrag.startLocal[0];
+                    const Warp::Entity* rootEntity = stage.get(jointIds[0]);
+                    const glm::mat4 parentWorld = !rootEntity || rootEntity->parent == Warp::None
+                        ? glm::mat4(1.0f) : stage.worldMatrix(rootEntity->parent, poseEdit.frame);
+                    local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(targetWorld, 1.0f));
+                    setJointLocal(0, local);
+                }else if(control.kind == Loom::MotionDirectControlKind::RotateJoint){
+                    const int joint = control.joint;
+                    const Warp::Id id = jointIds[size_t(joint)];
+                    const glm::mat4 inverseView = glm::inverse(poseCamera.view);
+                    const glm::vec3 cameraRight = glm::normalize(glm::vec3(inverseView[0]));
+                    const glm::vec3 cameraUp = glm::normalize(glm::vec3(inverseView[1]));
+                    const glm::vec2 delta = mouse - animatorRigDrag.startMouse;
+                    const glm::quat worldDelta = glm::normalize(
+                        glm::angleAxis(glm::radians(-delta.x * 0.45f), cameraUp) *
+                        glm::angleAxis(glm::radians(-delta.y * 0.45f), cameraRight));
+                    const glm::quat startWorldRotation = rotationOf(
+                        stage.worldMatrix(id, poseEdit.frame));
+                    setJointWorldRotation(joint, glm::normalize(worldDelta * startWorldRotation),
+                                          animatorRigDrag.startLocal[0]);
+                }else{
+                    glm::vec3 currentHit;
+                    if(!intersectPosePlane(mouse, animatorRigDrag.planeStartHit,
+                                           animatorRigDrag.planeNormal, currentHit)) continue;
+                    const glm::vec3 targetWorld = animatorRigDrag.startWorld +
+                        (currentHit - animatorRigDrag.planeStartHit);
+                    const bool rotateEnd = control.kind == Loom::MotionDirectControlKind::LimbTarget &&
+                        (glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+                         glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS);
+                    if(rotateEnd){
+                        const int end = control.end;
+                        const Warp::Id endId = jointIds[size_t(end)];
+                        const glm::mat4 inverseView = glm::inverse(poseCamera.view);
+                        const glm::vec3 cameraRight = glm::normalize(glm::vec3(inverseView[0]));
+                        const glm::vec3 cameraUp = glm::normalize(glm::vec3(inverseView[1]));
+                        const glm::vec2 delta = mouse - animatorRigDrag.startMouse;
+                        const glm::quat worldDelta = glm::normalize(
+                            glm::angleAxis(glm::radians(-delta.x * 0.45f), cameraUp) *
+                            glm::angleAxis(glm::radians(-delta.y * 0.45f), cameraRight));
+                        setJointWorldRotation(end, glm::normalize(worldDelta *
+                            rotationOf(stage.worldMatrix(endId, poseEdit.frame))), animatorRigDrag.startLocal[2]);
+                    }else{
+                        const glm::vec3 endTarget = control.kind == Loom::MotionDirectControlKind::LimbTarget
+                            ? targetWorld : jointWorld(control.end);
+                        const glm::vec3 poleTarget = control.kind == Loom::MotionDirectControlKind::Pole
+                            ? targetWorld : jointWorld(control.middle);
+                        solveLimb(control, endTarget, poleTarget);
+                    }
+                }
+                projectPoseRig();
+            }
+
+            projectPoseRig();
+            for(size_t i = 0; i < controls.size(); ++i){
+                if(!controlVisible[i]) continue;
+                const Loom::MotionDirectControl& control = controls[i];
+                const bool active = animatorRigDrag.control == int(i) || motionPanel.selectedRigControl == int(i);
+                const Treadle::Color tint = control.kind == Loom::MotionDirectControlKind::PathRoot
+                    ? Treadle::Color{1.0f, 0.76f, 0.28f, 1.0f}
+                    : control.kind == Loom::MotionDirectControlKind::RotateJoint
+                        ? Treadle::Color{0.81f, 0.54f, 1.0f, 1.0f}
+                        : control.kind == Loom::MotionDirectControlKind::Pole
+                            ? Treadle::Color{1.0f, 0.57f, 0.24f, 1.0f}
+                            : Treadle::Color{0.24f, 0.92f, 0.98f, 1.0f};
+                const float radius = active || controlHot[i] ? 10.0f : 8.0f;
+                const Treadle::Rect box{controlPixels[i].x - radius, controlPixels[i].y - radius,
+                                        radius * 2.0f, radius * 2.0f};
+                canvas.rect(box, active ? Treadle::Color{tint.r, tint.g, tint.b, 0.62f}
+                                        : Treadle::Color{0.02f, 0.04f, 0.04f, 0.92f});
+                canvas.outline(box, active ? 2.0f : 1.3f, tint);
+                canvas.line(controlPixels[i].x - 3.0f, controlPixels[i].y,
+                            controlPixels[i].x + 3.0f, controlPixels[i].y, 1.1f, tint);
+                canvas.line(controlPixels[i].x, controlPixels[i].y - 3.0f,
+                            controlPixels[i].x, controlPixels[i].y + 3.0f, 1.1f, tint);
+                if(active || controlHot[i]){
+                    const float labelScale = std::max(1.0f, theme.textScale * 0.62f);
+                    const float labelWidth = std::clamp(float(std::char_traits<char>::length(control.label)) *
+                        labelScale * 0.64f + 16.0f, 42.0f, 92.0f);
+                    float labelX = controlPixels[i].x + 14.0f;
+                    if(labelX + labelWidth > viewport.x + viewport.width - 6.0f)
+                        labelX = controlPixels[i].x - labelWidth - 14.0f;
+                    const float labelY = std::clamp(controlPixels[i].y - 10.0f,
+                        viewport.y + 5.0f, viewport.y + viewport.height - 23.0f);
+                    const Treadle::Rect labelBox{labelX, labelY, labelWidth, 19.0f};
+                    canvas.rect(labelBox, Treadle::Color{0.015f, 0.025f, 0.025f, 0.94f});
+                    canvas.outline(labelBox, 1.0f, tint);
+                    canvas.text(labelX + 7.0f, labelY + 3.0f, control.label, tint, labelScale);
+                }
+            }
+            const Treadle::Rect badge{viewport.x + 12.0f, viewport.y + 12.0f, 250.0f, 28.0f};
+            canvas.rect(badge, Treadle::Color{0.015f, 0.025f, 0.025f, 0.90f});
+            canvas.outline(badge, 1.0f, Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.56f});
+            canvas.text(badge.x + 9.0f, badge.y + 7.0f, "POSE CONTROL RIG  ·  DRAG TARGETS",
+                        theme.title, std::max(1.0f, theme.textScale * 0.65f));
+        }
+        //== COMPOSITOR ===========================================================================
+        //Preko srednjeg dijela prozora: pregled, graf i svojstva. Pregled ostaje neoslikan - ondje
+        //ide slika iz compositorTexture u prolazu crtanja, prije suicelja
+        if(compositor.open){
+            const float left = layout.rail.x + layout.rail.width + 4.0f;
+            const float top = layout.toolbar.y + layout.toolbar.height + 4.0f;
+            const float bottom = (timelineVisible ? layout.timeline.y : float(windowHeight)) - 4.0f;
+            const Treadle::Rect middle{left, top, float(windowWidth) - left - 4.0f, std::max(0.0f, bottom - top)};
+            compositorLayout = Loom::layoutCompositor(middle);
+            Loom::compositorTick(compositor);
+            Loom::compositorUpdate(compositor, std::max<int64_t>(0, int64_t(std::llround(frame)) - 1));
+            Treadle::DrawList& canvas = ui.canvas();
+            const Treadle::Rect& v = compositorLayout.viewer;
+            const Treadle::Rect image = Loom::compositorImageRect(compositor, v);
+            const Treadle::Color shade{0.025f, 0.03f, 0.028f, 1.0f};
+            canvas.rect(Treadle::Rect{layout.rail.x + layout.rail.width, layout.toolbar.y + layout.toolbar.height,
+                                      float(windowWidth) - layout.rail.x - layout.rail.width, top - layout.toolbar.y - layout.toolbar.height}, shade);
+            if(image.width > 0.0f){
+                canvas.rect(Treadle::Rect{v.x, v.y, v.width, image.y - v.y}, shade);
+                canvas.rect(Treadle::Rect{v.x, image.y + image.height, v.width, v.y + v.height - image.y - image.height}, shade);
+                canvas.rect(Treadle::Rect{v.x, image.y, image.x - v.x, image.height}, shade);
+                canvas.rect(Treadle::Rect{image.x + image.width, image.y, v.x + v.width - image.x - image.width, image.height}, shade);
+            }else{
+                canvas.rect(v, shade);
+                canvas.text(v.x + 16.0f, v.y + v.height * 0.5f, "Choose a video on the Read node.", theme.dim, theme.textScale);
+            }
+            canvas.outline(v, 1.0f, theme.panelEdge);
+            canvas.text(v.x + 8.0f, v.y + 5.0f, "VIEWER   frame " + std::to_string(std::max<int64_t>(0, int64_t(std::llround(frame)) - 1)),
+                        theme.dim, theme.textScale * 0.7f);
+            canvas.rect(Treadle::Rect{v.x, v.y + v.height, v.width, compositorLayout.graph.y - v.y - v.height}, shade);
+            canvas.rect(Treadle::Rect{compositorLayout.graph.x + compositorLayout.graph.width, top,
+                                      compositorLayout.properties.x - compositorLayout.graph.x - compositorLayout.graph.width, middle.height}, shade);
+            canvas.rect(Treadle::Rect{left - 4.0f, top, 4.0f, middle.height}, shade);
+            canvas.rect(Treadle::Rect{middle.x + middle.width, top, 4.0f, middle.height}, shade);
+            ui.region("comp-viewer", v);
+            Loom::compositorGraph(ui, compositor, compositorLayout.graph, input);
+            std::string cameraPlate;
+            if(const Warp::Entity* through = stage.get(view.lookThrough); through && through->camera) cameraPlate = through->camera->plate;
+            Loom::compositorProperties(ui, compositor, compositorLayout.properties, LOOM_ROOT_DIR, browser.videos, cameraPlate);
+            if(compositor.timelineFrames > 0){
+                stage.startFrame = 1.0;
+                stage.endFrame = double(compositor.timelineFrames);
+                if(compositor.timelineFps > 0.0) stage.framesPerSecond = compositor.timelineFps;
+                frame = 1.0;
+                compositor.timelineFrames = 0;
+            }
+        }
         ui.end();
         ui.style() = moodboardBaseTheme;
 
         //== POGLED: mis i tipke, tek kad suicelje nije uzelo mis ==================================
         const Treadle::Rect& viewportRect = layout.viewport;
-        const bool overViewport = viewportRect.contains(float(cursorX), float(cursorY)) && !ui.wantsMouse();
-        if(followAnimatorPreview && !(motionPanel.open && motionPanel.rootPathEnabled)){
+        const bool overViewport = viewportRect.contains(float(cursorX), float(cursorY)) && !ui.wantsMouse() && !compositor.open;
+        if(followAnimatorPreview && !(motionPanel.open && motionPanel.flowMode != 2 && motionPanel.rootPathEnabled)){
             const Warp::Id followRoot = Loom::motionCharacterForEntity(stage, selected);
             const Warp::Entity* followEntity = stage.get(followRoot);
             if(followEntity && followEntity->animator && !followEntity->animator->animations.empty()){
@@ -5116,7 +5538,7 @@ int main(int argc, char** argv){
                      : !overViewport ? -1
                      : tool == Tool::Move ? Loom::gizmoAxisAt(pickCamera, gizmo, mouse) : Loom::ringAxisAt(pickCamera, gizmo, mouse);
 
-        const bool editingPath = motionPanel.open && motionPanel.rootPathEnabled &&
+        const bool editingPath = motionPanel.open && motionPanel.flowMode != 2 && motionPanel.rootPathEnabled &&
                                  stage.contains(motionPanel.targetCharacter) &&
                                  !motionPanel.rootWaypoints.empty();
         glm::vec3 pathAnchor(0.0f);
@@ -5152,7 +5574,7 @@ int main(int argc, char** argv){
                 if(motionPanel.rootPathAutoEnd && index == int(motionPanel.rootWaypoints.size()) - 1)
                     motionPanel.rootPathAutoDistance = false;
             };
-            if(leftDown && !leftWasDown && overViewport && !surfaceTool.active){
+            if(leftPressed && overViewport && !surfaceTool.active){
                 if(pathHot >= 0){
                     pathDragIndex = pathHot;
                     motionPanel.selectedRootWaypoint = pathHot;
@@ -5216,13 +5638,13 @@ int main(int argc, char** argv){
                 if(splatId == Warp::None || !showSplat) return;
                 const glm::mat4 world = stage.worldMatrix(splatId, frame);
                 viewportSplat.forEachCentre(0.3f, [&](const glm::vec3& p){ visit(glm::vec3(world * glm::vec4(p, 1.0f))); });
-            });
+            }, leftPressed, leftReleased);
 
         //Lijevi: strelica pomice, klik bira, vucenje okrece
-        if(leftDown && !leftWasDown && !surfaceTool.active){
+        if(leftPressed && !surfaceTool.active){
             leftInViewport = overViewport && !pathGesture;
             dragging = false;
-            pressX = cursorX; pressY = cursorY;
+            pressX = leftClickX; pressY = leftClickY;
             gizmoAxisHeld = leftInViewport ? gizmoAxisHot : -1;
             transformGhostActive = gizmoAxisHeld >= 0 && chosen && tool == Tool::Move;
             transformGhostId = transformGhostActive ? selected : Warp::None;
@@ -5266,14 +5688,14 @@ int main(int argc, char** argv){
                 view.orbit.pitch = std::clamp(view.orbit.pitch + float(cursorY - lastY) * 0.008f, -1.5f, 1.5f);
             }
         }
-        if(!leftDown && leftWasDown && leftInViewport && !dragging){
+        if(leftReleased && leftInViewport && !dragging){
             selected = Loom::pickEntity(stage, frame, pickCamera, glm::vec2(float(cursorX), float(cursorY)));
             focus = Focus::Entity;
         }
         if(!leftDown) leftInViewport = false;
 
         //Srednji gumb kao u Blenderu: okretanje, sa shiftom pomicanje
-        if(middleDown && !middleWasDown) middleDragging = overViewport;
+        if(middlePressed) middleDragging = overViewport;
         if(!middleDown) middleDragging = false;
         if(middleDragging){
             view.lookThrough = Warp::None;
@@ -5694,7 +6116,28 @@ int main(int argc, char** argv){
             for(const std::string& problem : viewportMeshes.takeErrors()) message = "Could not read model: " + problem;
         }
 
+        //COMPOSITOR: tekstura pregleda se (ponovno) stvara kad se velicina promijeni, kao ploca
+        if(compositor.open && compositor.outputChanged && compositor.outputWidth > 0 &&
+           (!compositorTexture || compositorTexture->getExtent().width != compositor.outputWidth ||
+            compositorTexture->getExtent().height != compositor.outputHeight)){
+            loom.waitIdle();
+            compositorMaterial.reset();
+            StreamingTextureConfig textureConfig;
+            textureConfig.format = vk::Format::eR8G8B8A8Srgb;
+            compositorTexture = std::make_unique<StreamingTexture>(loom.device, loom.command,
+                vk::Extent2D{compositor.outputWidth, compositor.outputHeight}, textureConfig);
+            compositorMaterial = std::make_unique<Material>(loom.device, loom.command, loom.getDescriptorPool(),
+                                                            platePipeline, compositorTexture->getSampled());
+            compositorReady = false;
+        }
         if(!loom.renderer.beginFrame()) continue;
+        if(compositor.open && compositor.outputChanged && compositorTexture &&
+           compositor.output.size() == size_t(compositor.outputWidth) * compositor.outputHeight * 4){
+            compositorTexture->update(compositor.output.data(), compositor.output.size());
+            compositorMaterial->setSampledImage(compositorTexture->getSampled());
+            compositorReady = true;
+            compositor.outputChanged = false;
+        }
         if(splatActive) viewportSplat.compute();
         if(meshesActive) viewportMeshes.render();
         //Tek NAKON beginFrame: prsten teksture se oslanja na to da je renderer vec pricekao
@@ -5736,6 +6179,22 @@ int main(int argc, char** argv){
                                               {uint32_t(meshArea.width * sx), uint32_t(meshArea.height * sy)}},
                                    vk::Extent2D{uint32_t(framebufferWidth), uint32_t(framebufferHeight)});
         }
+        //COMPOSITOR: slika pregleda u svoj pravokutnik, preko svega sto je pogled nacrtao ispod
+        if(compositor.open && compositorReady && compositorMaterial){
+            const Treadle::Rect image = Loom::compositorImageRect(compositor, compositorLayout.viewer);
+            if(image.width > 1.0f && image.height > 1.0f){
+                const float sx = float(framebufferWidth) / float(std::max(1, windowWidth));
+                const float sy = float(framebufferHeight) / float(std::max(1, windowHeight));
+                compositorMaterial->setBaseColor(glm::vec4(1.0f));
+                const vk::raii::CommandBuffer& commands = loom.renderer.borrowCommands();
+                commands.setViewport(0, vk::Viewport{image.x * sx, image.y * sy, image.width * sx, image.height * sy, 0.0f, 1.0f});
+                commands.setScissor(0, vk::Rect2D{{int32_t(image.x * sx), int32_t(image.y * sy)},
+                                                  {uint32_t(image.width * sx), uint32_t(image.height * sy)}});
+                loom.renderer.drawFullscreen(*compositorMaterial);
+                commands.setViewport(0, vk::Viewport{0.0f, 0.0f, float(framebufferWidth), float(framebufferHeight), 0.0f, 1.0f});
+                commands.setScissor(0, vk::Rect2D{{0, 0}, {uint32_t(framebufferWidth), uint32_t(framebufferHeight)}});
+            }
+        }
         if(!overlay.vertices.empty()){
             overlayPainter.draw(loom.renderer, overlay, uint32_t(windowWidth), uint32_t(windowHeight));
         }
@@ -5776,11 +6235,6 @@ int main(int argc, char** argv){
         }
     }
     if(worker.joinable()) worker.join();
-    if(aiChatWorker.joinable()) aiChatWorker.join();
-    if(!aiChatWorkingDirectory.empty()){
-        std::error_code error;
-        fs::remove_all(aiChatWorkingDirectory, error);
-    }
     plateStream.close();
     loom.waitIdle();
     return 0;

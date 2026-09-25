@@ -64,6 +64,9 @@ struct DrawList{
 
     //Pravokutnik; zaobljen ako je cornerRadius veci od nule
     void rect(const Rect& box, const Color& color);
+
+    //Zeleni mramorni uzorak s razgranatim zilama i vremenski promjenjivim svjetlosnim pulsom.
+    void marble(const Rect& box, const Color& vein, const Color& shadow, float timeSeconds = 0.0f);
     void rect(float x, float y, float width, float height, const Color& color);
 
     //RAVAN pravokutnik, bez obzira na cornerRadius. Za pozadinu plohe i izbornika, kojoj se

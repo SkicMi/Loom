@@ -1,0 +1,14 @@
+# model	Kimodo-SOMA-RP-v1.1
+# target	2
+# first_heading_angle	0
+# root_margin	0.04
+# transition_frames	5
+# movement_preset	Crawl
+# contact_settings	automatic
+# foot_contact_ik	off
+# kimodo_postprocess	on
+# root_path	authored
+# workflow	recipe + live
+# pose_keys	0
+# fast_path_override	off
+A person crawls forward on hands and knees close to the floor with steady contacts	4

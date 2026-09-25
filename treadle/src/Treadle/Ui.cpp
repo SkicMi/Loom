@@ -37,13 +37,18 @@ void Ui::begin(const Input& newInput, float width, float height){
 
     bool anyPress = false;
     for(uint32_t button = 0; button < uint32_t(MouseButton::Count); ++button){
-        pressed[button] = newInput.down[button] && !wasDown[button];
-        released[button] = !newInput.down[button] && wasDown[button];
+        pressed[button] = newInput.pressedEvent[button] || (newInput.down[button] && !wasDown[button]);
+        released[button] = newInput.releasedEvent[button] || (!newInput.down[button] && wasDown[button]);
         menuPressed[button] = false;
         anyPress = anyPress || pressed[button];
     }
 
     input = newInput;
+    for(uint32_t button = 0; button < uint32_t(MouseButton::Count); ++button){
+        if(!newInput.pressedEvent[button]) continue;
+        input.mouseX = newInput.pressX[button];
+        input.mouseY = newInput.pressY[button];
+    }
     screenWidth = width;
     screenHeight = height;
 
@@ -93,6 +98,9 @@ void Ui::end(){
     list.vertices.insert(list.vertices.end(), overlay.vertices.begin(), overlay.vertices.end());
     for(uint32_t index : overlay.indices) list.indices.push_back(base + index);
 
+    //Kratki klik moze imati press i release izmedju dva kadra. Pocetak kadra tada vec
+    //ocisti stari aktivni widget; ocisti ga i ovdje da ga pritisak istog kadra ne ostavi zalijepljenim.
+    if(released[uint32_t(MouseButton::Left)]) activeId = 0;
     for(uint32_t button = 0; button < uint32_t(MouseButton::Count); ++button){
         wasDown[button] = input.down[button];
     }
@@ -152,13 +160,7 @@ void Ui::dock(const std::string& title, const Rect& box, float* scroll){
     panelVertexBase = list.vertices.size();
     list.rect(panelBox, Color{theme.panel.r, theme.panel.g, theme.panel.b, 0.97f});
 
-    //A quiet botanical weave sits in the panel gutter: warm sage/gold strokes, low contrast.
-    const Color grain{0.78f, 0.67f, 0.39f, 0.045f};
-    const float grainX = box.x + box.width - 8.0f;
-    for(float y = box.y + 42.0f; y < box.y + box.height - 10.0f; y += 34.0f){
-        list.line(grainX - 3.0f, y, grainX, y + 6.0f, 1.0f, grain);
-        list.line(grainX, y + 6.0f, grainX + 2.0f, y + 12.0f, 1.0f, grain);
-    }
+    list.marble(box, Color{0.57f, 0.68f, 0.49f, 0.13f}, Color{0.02f, 0.035f, 0.025f, 0.10f}, input.timeSeconds);
     const Color headerWash{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, 0.10f};
     list.rect(box.x + 1.0f, box.y + 1.0f, std::max(0.0f, box.width - 2.0f),
               textHeight(theme.textScale) + theme.padding * 1.15f, headerWash);

@@ -1,6 +1,8 @@
 #include "Treadle/Draw.h"
 
+#include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace Treadle{
 
@@ -47,6 +49,70 @@ void DrawList::rectFlat(const Rect& box, const Color& color){
 
 void DrawList::rect(const Rect& box, const Color& color){
     rect(box.x, box.y, box.width, box.height, color);
+}
+
+void DrawList::marble(const Rect& box, const Color& vein, const Color& shadow, float timeSeconds){
+    if(box.width < 20.0f || box.height < 36.0f) return;
+
+    const int count = std::clamp(int(box.width / 52.0f), 2, 7);
+    auto pointOnVein = [&](int index, float t){
+        const float phase = float(index) * 1.83f + 0.55f;
+        const float base = (float(index) + 0.5f) / float(count);
+        const float drift = 0.19f * (t - 0.5f) +
+                            0.105f * std::sin(t * 5.1f + phase) +
+                            0.045f * std::sin(t * 16.4f + phase * 1.7f) +
+                            0.018f * std::sin(t * 37.0f + phase * 2.3f);
+        const float x = box.x + box.width * std::clamp(base + drift, 0.035f, 0.965f);
+        const float y = box.y + 3.0f + t * std::max(0.0f, box.height - 6.0f);
+        return std::pair<float, float>{x, y};
+    };
+
+    constexpr int segments = 42;
+    for(int veinIndex = 0; veinIndex < count; ++veinIndex){
+        auto previous = pointOnVein(veinIndex, 0.0f);
+        for(int segment = 1; segment <= segments; ++segment){
+            const float t = float(segment) / float(segments);
+            const auto point = pointOnVein(veinIndex, t);
+            line(previous.first, previous.second, point.first, point.second, 2.6f, shadow);
+            line(previous.first + 1.1f, previous.second, point.first + 1.1f, point.second,
+                 1.05f, vein);
+            const float pulseWave = 0.5f + 0.5f * std::sin(t * 15.0f - timeSeconds * 2.4f + float(veinIndex) * 2.7f);
+            const float pulse = std::pow(std::max(0.0f, pulseWave), 12.0f);
+            float fleckPosition = std::fmod(t * 2.8f - timeSeconds * 0.22f + float(veinIndex) * 0.31f, 1.0f);
+            if(fleckPosition < 0.0f) fleckPosition += 1.0f;
+            const float travelingFleck = std::pow(std::max(0.0f,
+                1.0f - std::fabs(fleckPosition - 0.5f) * 2.0f), 8.0f);
+            line(previous.first + 1.1f, previous.second, point.first + 1.1f, point.second,
+                 3.8f, Color{0.27f, 0.98f, 0.53f, 0.025f + 0.15f * pulse + 0.12f * travelingFleck});
+            line(previous.first + 1.1f, previous.second, point.first + 1.1f, point.second,
+                 0.72f, Color{0.78f, 1.0f, 0.80f, 0.035f + 0.46f * pulse + 0.24f * travelingFleck});
+            previous = point;
+        }
+
+        //Povremene grane daju zili prirodan tok bez pravilnog uzorka ili zlatnih ukrasa.
+        if(veinIndex % 2 == 0){
+            const float startT = 0.20f + 0.17f * float(veinIndex % 3);
+            const auto start = pointOnVein(veinIndex, startT);
+            const float direction = veinIndex % 3 == 0 ? 1.0f : -1.0f;
+            auto previousBranch = start;
+            constexpr int branchSegments = 12;
+            for(int segment = 1; segment <= branchSegments; ++segment){
+                const float u = float(segment) / float(branchSegments);
+                const float t = startT + 0.19f * u;
+                const auto root = pointOnVein(veinIndex, t);
+                const float bend = direction * box.width * 0.17f * u +
+                                   box.width * 0.024f * std::sin(u * 3.14159f);
+                const float x = std::clamp(root.first + bend, box.x + 3.0f, box.x + box.width - 3.0f);
+                const float pulse = std::pow(std::max(0.0f, 0.5f + 0.5f *
+                    std::sin(u * 9.0f - timeSeconds * 2.0f + float(veinIndex))), 10.0f);
+                line(previousBranch.first, previousBranch.second, x, root.second, 2.4f,
+                     Color{0.27f, 0.98f, 0.53f, 0.035f + pulse * 0.13f});
+                line(previousBranch.first, previousBranch.second, x, root.second, 0.75f,
+                     Color{0.72f, 0.98f, 0.74f, 0.035f + pulse * 0.28f});
+                previousBranch = {x, root.second};
+            }
+        }
+    }
 }
 
 void DrawList::line(float x0, float y0, float x1, float y1, float thickness, const Color& color){

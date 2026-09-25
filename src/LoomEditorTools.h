@@ -185,16 +185,20 @@ struct SurfaceTool{
 using PointEnumerator = std::function<void(const std::function<void(const glm::vec3&)>&)>;
 
 //Mis u pogledu dok je alat upaljen. true: mis je alatov (pogled se ne okrece)
-inline bool surfaceToolMouse(SurfaceTool& tool, bool leftDown, bool leftWasDown, glm::vec2 mouse, bool overViewport,
-                             const Warp::Stage& stage, double frame, const ViewCamera& camera, const PointEnumerator& extra){
+inline bool surfaceToolMouse(SurfaceTool& tool, bool leftDown, bool leftWasDown, glm::vec2 mouse,
+                             bool overViewport, const Warp::Stage& stage, double frame,
+                             const ViewCamera& camera, const PointEnumerator& extra,
+                             bool pressEvent = false, bool releaseEvent = false){
     if(!tool.active) return false;
-    if(leftDown && !leftWasDown && overViewport){
+    const bool leftPressed = pressEvent || (leftDown && !leftWasDown);
+    const bool leftReleased = releaseEvent || (!leftDown && leftWasDown);
+    if(leftPressed && overViewport){
         tool.dragging = true;
         tool.from = tool.to = mouse;
     }
     if(tool.dragging){
         tool.to = mouse;
-        if(!leftDown){
+        if(leftReleased){
             tool.dragging = false;
             const Treadle::Rect r = tool.rect();
             if(r.width > 3.0f && r.height > 3.0f){
@@ -206,6 +210,7 @@ inline bool surfaceToolMouse(SurfaceTool& tool, bool leftDown, bool leftWasDown,
     }
     return false;
 }
+
 
 //Pravokutnik dok se vuce, odabrane tocke, i ploha: obrub diska u ravnini i normala
 inline void paintSurfaceTool(const SurfaceTool& tool, const ViewCamera& camera, Treadle::DrawList& list){

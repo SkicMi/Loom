@@ -1,0 +1,7 @@
+# movement_preset	Walk
+# motionbricks_style	walk
+# contact_settings	automatic
+# foot_contact_ik	on
+# kimodo_postprocess	not_applicable
+# root_path	authored
+MotionBricks live Walk	4
