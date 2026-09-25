@@ -452,6 +452,9 @@
         std::vector<Loom::MotionCharacter> sceneMotionCharacters;
         std::chrono::steady_clock::time_point sceneMotionCharactersRead{};
         Loom::PlateFloorWatch plateWatch;       //pod snimke pod likom i zakljucanost stopala (LoomPlateFloor.h)
+        //Iz kojeg je BVH-a koji klip lika: Review > Redo part treba izvorni take (i njegov NPZ)
+        std::map<std::pair<Warp::Id, size_t>, fs::path> takeByClip;
+        double generatedMotionStartFrame = -1.0;   //dio takea iznova: novi klip pocinje gdje i izvor
         Loom::AutoRigState autoRig;
         float autoRigScroll = 0.0f;
     
@@ -782,6 +785,9 @@
                     (compare == Loom::MotionCompareMode::SourceSkeleton ? " [source BVH]" : "");
                 const Loom::WeaverMotionImportReport report = Loom::importWeaverMotionClip(stage, clip, importName, placement);
                 if(!report.problem.empty()){ message = "Motion: " + report.problem; return; }
+                if(placement.fitToParentRig && compare == Loom::MotionCompareMode::None)
+                    if(const Warp::Entity* taken = stage.get(placement.parent); taken && taken->animator)
+                        takeByClip[{placement.parent, taken->animator->activeAnimation}] = path;
                 size_t authoredDetails = 0;
                 if(placement.fitToParentRig){
                     std::vector<Loom::MotionActionInterval> intervals;
@@ -881,6 +887,7 @@
                 message = "Another Loom job is still running.";
                 return;
             }
+            generatedMotionStartFrame = -1.0;
             Loom::MotionRequest request = motionPanel.request();
             if(!request.allowFastPath && !request.rootWaypoints.empty()){
                 const std::string prompt = request.actions.empty() ? std::string{} : request.actions.front().prompt;
@@ -949,6 +956,76 @@
             message = "Kimodo runs on the GPU; the LLM2Vec encoder runs on the CPU.";
         };
     
+        //DIO TAKEA IZNOVA (tools/weavermotion/kimodo_range.py): kadrovi izvan raspona postanu Kimodova
+        //fullbody ogranicenja iz izvornog NPZ-a, Kimodo generira varijante, a spoj uzme izvor izvan
+        //raspona bit po bit i novo unutra. Varijante prolaze istu ocjenu i najbolja se ucita
+        auto startMotionRangeRegeneration = [&](const fs::path& take, int first, int last, const std::string& prompt,
+                                                double motionTakeStartFrame){
+            if(job.running){ message = "Another Loom job is still running."; return; }
+            fs::path sourceNpz = take;
+            sourceNpz.replace_extension(".npz");
+            const fs::path runner = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/python";
+            const fs::path adapter = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_cli.py";
+            const fs::path rangeTool = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_range.py";
+            if(!fs::is_regular_file(sourceNpz) || !fs::is_regular_file(runner) || !fs::is_regular_file(rangeTool)){
+                message = "Cannot regenerate part: the take has no Kimodo NPZ or Kimodo is not installed.";
+                return;
+            }
+            Loom::MotionRequest request = motionPanel.request();
+            request.directedFlow = false;
+            request.rootWaypoints.clear();
+            request.poseConstraints.clear();
+            request.targetCharacter = Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter);
+            if(request.model.find("SOMA") == std::string::npos) request.model = "Kimodo-SOMA-RP-v1.1";
+            //Isti opisi i trajanja kao take - broj kadrova mora biti isti da se spoj poklopi. Novi
+            //opis zamijeni sve: izvan raspona ionako vladaju ogranicenja, pa opis djeluje samo unutra
+            //Broj kadrova iz samog BVH-a; opisi iz .txt mogu zaokruzivanjem trajanja dati kadar vise
+            //ili manje, pa se zadnje trajanje dotjera da generirano ima tocno isto kadrova
+            Engine::WeaverMotion::Clip takeClip;
+            std::string readProblem;
+            if(!Engine::WeaverMotion::readKimodoBvh(take.string(), takeClip, readProblem)){ message = "Could not read take: " + readProblem; return; }
+            const int takeFrames = int(takeClip.frames.size());
+            request.actions = Loom::motionActionsForClip(take);
+            if(!prompt.empty() || request.actions.empty()){
+                request.actions = {{prompt.empty() ? std::string("A person moves naturally") : prompt, float(takeFrames) / Loom::kimodoMotionFps}};
+            }else if(const int planned = Loom::kimodoMotionFrameCount(request.actions); planned != takeFrames){
+                request.actions.back().duration += float(takeFrames - planned) / Loom::kimodoMotionFps;
+            }
+            if(Loom::kimodoMotionFrameCount(request.actions) != takeFrames){
+                message = "Could not match the take length (" + std::to_string(takeFrames) + " frames) with Kimodo durations.";
+                return;
+            }
+            const fs::path outputDirectory = motionDirectory();
+            std::error_code error;
+            fs::create_directories(outputDirectory, error);
+            const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const fs::path outputStem = outputDirectory / ("motion_" + std::to_string(stamp));
+            request.constraints = outputStem.string() + ".constraints.json";
+            const std::string q = " ";
+            const std::string constraintsCommand = Loom::shellQuoteArgument(runner.string()) + q +
+                Loom::shellQuoteArgument(rangeTool.string()) + " constraints " + Loom::shellQuoteArgument(sourceNpz.string()) + q +
+                std::to_string(first) + q + std::to_string(last) + q + Loom::shellQuoteArgument(request.constraints.string());
+            const fs::path generated = request.numSamples > 1 ? outputStem : fs::path(outputStem.string() + ".npz");
+            const std::string spliceCommand = Loom::shellQuoteArgument(runner.string()) + q +
+                Loom::shellQuoteArgument(rangeTool.string()) + " splice " + Loom::shellQuoteArgument(sourceNpz.string()) + q +
+                Loom::shellQuoteArgument(generated.string()) + q + std::to_string(first) + q + std::to_string(last);
+            generatedMotionPath = outputStem;
+            generatedMotionTarget = request.targetCharacter;
+            generatedMotionIsBricks = false;
+            generatedMotionStartFrame = motionTakeStartFrame;
+            Loom::writeMotionSidecar(outputStem, request);
+            {
+                std::ofstream note(outputStem.string() + ".txt", std::ios::app);
+                note << "# regenerated_from\t" << take.string() << "\t" << first << "-" << last << '\n';
+            }
+            afterJob = After::Nothing;
+            startJob(constraintsCommand + " && " + Loom::buildMotionCommand(runner, request, outputStem, adapter) + " && " + spliceCommand,
+                     outputDirectory.string(), Loom::Task::WeaverMotion, 0);
+            message = "Regenerating frames " + std::to_string(first) + "-" + std::to_string(last) +
+                      "; everything outside stays as it was.";
+        };
+
         auto startMotionBricksGeneration = [&](){
             if(job.running){ message = "Another Loom job is still running."; return; }
             const fs::path root(LOOM_ROOT_DIR);
@@ -2053,6 +2130,12 @@
                     }
                 }else if(job.task == Loom::Task::WeaverMotion){
                     std::error_code error;
+                    //Ponovljeni dio takea se uvozi od kadra na kojem pocinje izvor, pa se usporedjuju
+                    //isti kadrovi; obicno generiranje ide od playheada kao dosad
+                    if(generatedMotionStartFrame >= 0.0){
+                        frame = generatedMotionStartFrame;
+                        generatedMotionStartFrame = -1.0;
+                    }
                     fs::path outputBvh = generatedMotionPath;
                     outputBvh += ".bvh";
                     if(fs::is_regular_file(outputBvh, error)){
@@ -3779,6 +3862,18 @@
             plateWatch.update(stage, frame, Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter),
                               std::chrono::duration<double>(now.time_since_epoch()).count());
             motionStatus.plate = &plateWatch;
+            if(const Warp::Id takeRig = Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter); takeRig != Warp::None)
+                if(const Warp::Entity* rigEntity = stage.get(takeRig); rigEntity && rigEntity->animator && !rigEntity->animator->animations.empty()){
+                    const size_t index = std::min(rigEntity->animator->activeAnimation, rigEntity->animator->animations.size() - 1);
+                    const auto found = takeByClip.find({takeRig, index});
+                    if(found != takeByClip.end() && fs::is_regular_file(found->second)){
+                        const Warp::AnimationClip& takeClip = rigEntity->animator->animations[index];
+                        motionStatus.activeTake = found->second;
+                        motionStatus.activeTakeStart = takeClip.startFrame;
+                        motionStatus.activeTakeFrames = int(std::lround((takeClip.endFrame - takeClip.startFrame) *
+                            Loom::kimodoMotionFps / std::max(1.0, stage.framesPerSecond))) + 1;
+                    }
+                }
             motionStatus.characterNote = "Detected from imported GLTF/GLB mesh + joint hierarchies.";
             const Loom::MotionPanelAction motionAction = Loom::drawMotionPanel(ui, motionPanel,
                 layout.motion, motionStatus, motionPanelScroll);
@@ -3810,6 +3905,10 @@
                     plateWatch.checkedAt = -1.0;
                 }else message = problem;
             }
+            if(!motionAction.regenerateTake.empty())
+                startMotionRangeRegeneration(motionAction.regenerateTake, motionAction.regenerateFirst,
+                                             motionAction.regenerateLast, motionAction.regeneratePrompt,
+                                             motionStatus.activeTakeStart);
             if(motionAction.generate) startMotionGeneration();
             if(motionAction.generateMotionBricks) startMotionBricksGeneration();
             if(motionAction.startLiveRecording) startMotionBricksLive();

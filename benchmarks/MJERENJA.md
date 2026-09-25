@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (372 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (373 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -413,4 +413,5 @@ Iz `benchmarks/mjerenja.jsonl` (372 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-26 00:10 | motion_1790358021365 | A person walks forward at a relaxed pace with a natural arm swing | varijanti=4, najbolja=03, ocjena_najbolje=3.710, ocjena_najgore=5.620, skate_cm_s=31.26, propada_cm=0.050, trzaj=60.10, lebdi_cm=0.000, mjera=MotionScore (Engine/MotionQuality) |
 | 2026-09-26 01:06 | motion_1790364325023_02 na Mascot_Manny | pose blend: upperarm_r +40 st u kadrovima 20 i 60, 25 fps scena, 30 Hz klip | mjera=realblend (FK prema originalu, korak 0.1 kadra), prije_zglobova=61, prije_noga_m=0.246, prije_stopalo_m=0.566, prije_skok_ruke_st=38.22, poslije_zglobova=1, poslije_noga_m=0.000, poslije_stopalo_m=0.000, poslije_skok_ruke_st=0.000, odluka=zadrzano: aditivni ispravak samo diranih zglobova, na vremenima postojecih kljuceva |
 | 2026-09-26 01:19 | motion_1790364325023_02 na Mascot_Manny | pose blend, desna ruka (upperarm +35 st, lowerarm -25 st) u kadrovima 20 i 60: odstupanje sake od crte izmedju kljuceva u sustavu prsa | mjera=realblend2, samo_kutovi_mm=383.50, ik_sake_mm=5.210, ik_na_kljucevima=0 mm osim kadra 55.17 (ruka ispruzena, cilj izvan dosega), noga_mm=0.000, odluka=zadrzano: sake po polozaju u sustavu prsa + IK |
+| 2026-09-26 01:41 | motion_1790364325023_02 -> motion_1790379449333 | dio takea iznova (kadrovi 36-82 od 120), iz editora, 4 varijante, 200 koraka | mjera=kimodo_range + MotionScore, vrijeme_s=43, izvan_raspona_m=0.000, rub_korak_m=0.137, izvor_najveci_korak_m=0.243, sredina_promjena_medijan_m=0.270, ocjena_izvor=3.110, ocjena_najbolja=2.430, odluka=zadrzano: fullbody ogranicenja izvan raspona + spoj s pretapanjem 4 kadra |
 

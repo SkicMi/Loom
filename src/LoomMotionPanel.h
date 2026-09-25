@@ -884,6 +884,9 @@ struct MotionPanelState{
     bool qualityCompareOpen = false;
     MotionQualityCache qualityCache;        //ocjena varijanti, po datoteci i vremenu zapisa
     bool plateFloorOpen = false;
+    bool redoOpen = false;                  //Review: ponovno generiranje dijela takea
+    float redoFirst = -1.0f, redoLast = -1.0f;   //kadrovi takea (30 Hz), -1 dok nije odabrano
+    std::string redoPrompt;                 //prazno: isti opisi kao take
     float cameraHeightMetres = 1.5f;        //visina snimatelja; iz nje metar scene (LoomPlateFloor.h)
     bool targetListOpen = false;
     bool gesturesOpen = false;
@@ -1039,6 +1042,9 @@ struct MotionPanelAction{
     bool stopLiveRecording = false;
     int jumpPoseFrame = -1;
     bool standOnPlateFloor = false;
+    std::filesystem::path regenerateTake;   //take ciji se dio generira iznova (BVH)
+    int regenerateFirst = -1, regenerateLast = -1;
+    std::string regeneratePrompt;
     std::filesystem::path importPath;
     bool close = false;
 };
@@ -1063,6 +1069,9 @@ struct MotionPanelStatus{
     std::string characterNote;              //sto je s rigged likom (WeaverMascott)
     std::vector<MotionCharacter> characters;
     const PlateFloorWatch* plate = nullptr;  //pod snimke i zakljucanost lika; null izvan scene solvea
+    std::filesystem::path activeTake;       //BVH aktivnog klipa na liku (prazno: klip nije iz takea)
+    double activeTakeStart = 1.0;           //kadar scene na kojem take pocinje
+    int activeTakeFrames = 0;               //duljina takea u kadrovima takea (30 Hz)
 };
 
 inline Treadle::Color motionStatusOk(){ return {0.36f, 0.95f, 0.61f, 0.95f}; }
@@ -1460,8 +1469,56 @@ inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelStat
 
 //-- REVIEW: spremljeni pokreti ----------------------------------------------------------------
 
+//Ponovno generiranje DIJELA takea (tools/weavermotion/kimodo_range.py): raspon se odabere na
+//ucitanom takeu playheadom, sve izvan njega ostaje kakvo jest, Kimodo generira samo sredinu
+inline void drawMotionRedoRange(Treadle::Ui& ui, MotionPanelState& state, const MotionPanelStatus& status,
+                                MotionPanelAction& action){
+    const Treadle::Theme& theme = ui.style();
+    std::string summary = status.activeTake.empty() ? "load a take first" : "frames " +
+        (state.redoFirst < 0.0f ? std::string("?") : std::to_string(int(state.redoFirst))) + " - " +
+        (state.redoLast < 0.0f ? std::string("?") : std::to_string(int(state.redoLast)));
+    if(!ui.disclosure("Redo part of the take", summary, &state.redoOpen)) return;
+    if(status.activeTake.empty()){
+        ui.hint("Click a saved take above to load it on the character; then pick the part to redo here.");
+        return;
+    }
+    std::filesystem::path npz = status.activeTake;
+    npz.replace_extension(".npz");
+    if(!std::filesystem::is_regular_file(npz)){
+        ui.hint("This take has no native Kimodo NPZ (e.g. a MotionBricks recording), so it cannot be partly regenerated.");
+        return;
+    }
+    //Playhead u kadar takea: take je 30 Hz, scena ima svoj fps
+    const int last = std::max(0, status.activeTakeFrames - 1);
+    const int here = std::clamp(int(std::lround((status.currentFrame - status.activeTakeStart) *
+                                                kimodoMotionFps / std::max(1.0, status.timelineFps))), 0, last);
+    ui.value("Take", Treadle::fitText(status.activeTake.stem().string(), 190.0f, theme.textScale));
+    const int picked = ui.buttonRow({"Start here (" + std::to_string(here) + ")", "End here (" + std::to_string(here) + ")"});
+    if(picked == 0) state.redoFirst = float(here);
+    if(picked == 1) state.redoLast = float(here);
+    if(state.redoFirst >= 0.0f && state.redoLast >= 0.0f && state.redoFirst > state.redoLast) std::swap(state.redoFirst, state.redoLast);
+    Treadle::Ui::TextFieldConfig field;
+    field.lines = 2;
+    field.maxLength = 400;
+    field.placeholder = "New prompt for this part (empty: same as the take)";
+    ui.textField("redo-prompt", &state.redoPrompt, field);
+    const bool ranged = state.redoFirst >= 0.0f && state.redoLast >= 0.0f;
+    const bool whole = ranged && int(state.redoFirst) == 0 && int(state.redoLast) >= last;
+    const bool ready = ranged && !whole && status.runnerReady && !status.running && !status.otherJob;
+    if(!ranged) ui.hint("Move the playhead to where the bad part starts and ends.");
+    else if(whole) ui.hint("That is the whole take - use Create instead.");
+    else ui.hint("Everything outside frames " + std::to_string(int(state.redoFirst)) + "-" + std::to_string(int(state.redoLast)) +
+                 " stays exactly as it is; Kimodo makes new variants of this part and the best one loads.");
+    if(ui.button(ready ? "REGENERATE THIS PART" : status.running ? "Generating..." : "Pick a part to regenerate") && ready){
+        action.regenerateTake = status.activeTake;
+        action.regenerateFirst = int(state.redoFirst);
+        action.regenerateLast = int(state.redoLast);
+        action.regeneratePrompt = state.redoPrompt;
+    }
+}
+
 inline void drawMotionReview(Treadle::Ui& ui, MotionPanelState& state, const Treadle::Rect& area,
-                             MotionPanelAction& action){
+                             const MotionPanelStatus& status, MotionPanelAction& action){
     const Treadle::Theme& theme = ui.style();
     ui.caption("SAVED TAKES   /   " + std::to_string(state.history.size()));
     if(state.history.empty()){
@@ -1517,6 +1574,9 @@ inline void drawMotionReview(Treadle::Ui& ui, MotionPanelState& state, const Tre
             i = end;
         }
     }
+
+    ui.caption("FIX");
+    drawMotionRedoRange(ui, state, status, action);
 
     ui.caption("DIAGNOSTICS");
     if(ui.disclosure("Compare import stages", "", &state.qualityCompareOpen)){
@@ -1936,7 +1996,7 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
 
     MotionFooterState footer;
     if(state.flowMode == 2){
-        drawMotionReview(ui, state, area, action);
+        drawMotionReview(ui, state, area, status, action);
         return action;
     }
     if(state.flowMode == 1){

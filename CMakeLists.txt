@@ -576,6 +576,9 @@ if(LOOM_BUILD_TESTS)
             COMMAND "${LOOM_KIMODO_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_weavermotion_constraints.py"
                     "${CMAKE_CURRENT_BINARY_DIR}/weavermotion_constraints_fixture.json")
         set_tests_properties(test_weavermotion_constraint_schema PROPERTIES DEPENDS test_motion_panel)
+        # Ponovno generiranje dijela takea: ogranicenja i spoj, bez kartice (tools/weavermotion/kimodo_range.py)
+        add_test(NAME test_kimodo_range
+            COMMAND "${LOOM_KIMODO_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kimodo_range.py")
     endif()
 
 
