@@ -1,6 +1,6 @@
 # Loom — predaja projekta
 
-Zadnje osvjezeno: 17. rujna 2026.
+Zadnje osvjezeno: 25. rujna 2026.
 Repo: `https://github.com/SkicMi/Loom.git`, grana **`main`** (radi se isključivo na njoj).
 
 Ovo je **radni brief**, ne pregled. Piše što projekt jest, gdje stoji **s brojkama**, u što se smije
@@ -29,7 +29,7 @@ Sve je vlastito osim `gsplat`-a (rasterizacija i zgušnjavanje pri treningu) i F
 
 ## 2. Arhitektura
 
-Pet biblioteka, **nijedna ne ovisi o drugoj**:
+Šest biblioteka, **nijedna ne ovisi o drugoj**:
 
 | modul | što radi | ključni headeri |
 |---|---|---|
@@ -37,6 +37,7 @@ Pet biblioteka, **nijedna ne ovisi o drugoj**:
 | **`Spool`** (`spool/src/Spool`) | čita i piše datoteke | `ImageFile.h`, `VideoFile.h`, `GaussianPly.h` |
 | **`Engine`** (`engine/src/Engine`) | rekonstrukcija | `ScaleSpace.h`, `MatchGraph.h`, `Reconstruct.h`, `Bundle.h`, `ColmapExport.h`, `CameraHints.h` |
 | **`Treadle`** (`treadle/src/Treadle`) | UI, **nula vanjskih ovisnosti** | `Ui.h`, `Draw.h` |
+| **`Tracer`** (`tracer/src/Tracer`) | **LoomTracer** — fizikalni path tracer za render iz kamere, samo glm + dretve | `Renderer.h`, `Scene.h`, `Bsdf.h`, `Film.h` |
 | **`Warp`** (`warp/src/Warp`) | scena: stablo entiteta s komponentama, ključevi kroz vrijeme (USD-oblik), samo glm; projekt se sprema kao pravi `.usda` (vlastiti čitač podskupa, bez OpenUSD-a) | `Stage.h`, `Project.h`, `Usda.h`, `UsdCamera.h` |
 
 Tier disciplina u Loomu je **branjena testom**: `<Loom/Loom.h>` se preprocesira i u 1 622 367 znakova
@@ -49,6 +50,7 @@ detektor koji ne radi.
 |---|---|
 | **`VideoSolve`** | glavni alat: .MP4 → poze + točke + slike u COLMAP formatu; `--samo-kamera` za matchmove (bez slika, ~18 % brže) |
 | **`loom`** (LoomDesk) | editor: media lijevo, pogled, scena i svojstva desno, timeline; solve/splat desnim klikom, kocka kroz riješenu kameru preko snimke. `loom <mapa> --snimi x.png --rezultat <mapa_loom> --kadar N --kroz --kocka-u M` sprema vlastiti kadar (prozor se izvana ne da snimiti). Projekt: `loom projekt.usda`, Spremi/Ctrl+S. Splat se crta u pogledu (B), samo nulti SH clan |
+| **`loom-render`** (LoomRender) | render projekta iz kamere bez prozora (LoomTracer): `loom-render projekt.usda --kadar 42 --uzorci 256` ili `--od 1 --do 120`; PNG + EXR (R G B A, `cg.*`, `shadow.*`, `Z`, `N.*`, `albedo.*`). Isti most kao gumb Render u editoru |
 | **`TruthBench`** | **apsolutna** greška na snimci koju Loom sam nacrta (istina poznata) |
 | **`ModelInfo`** | što vrijedi rekonstrukcija **bez poznate istine** — baza, šavovi |
 | **`OverlayBox`** | kocka zalijepljena za scenu preko pravih kadrova — prava VFX provjera |
@@ -599,6 +601,75 @@ zadani seed poza/tocaka koji nas bundle prima umjesto uvijek-vlastite inicijaliz
 iskoristi ondje gdje nasa geometrija danas nema signala. `tools/solve/mapanything_solve.sh` vec
 postoji i radi kao samostalan alat za slucajeve gdje i nas solver i COLMAP padnu.
 
+### 8. Render iz kamere i LoomTracer — PRVA VERZIJA (25.9.)
+
+**Što je.** U editoru: panel **RENDER** u lijevoj traci i gumb **Render (F12)** u alatnoj traci;
+prozor sa slikom koja se čisti preko pogleda (**F11**). Render ide kroz riješenu (ili bilo koju)
+kameru u pozadinskoj niti nad kopijom scene, pa se smije dalje uređivati. Bira se:
+
+- **engine**: `LoomTracer` (path tracer) ili `Viewport` (kadrovi pogleda kroz kameru u PNG, brzo,
+  rezolucija prozora, bez slojeva — pogled se za to vrijeme očisti od mreže, točaka, gizma i HUD-a)
+- **što je u slici**: snimka iza CG-a, prozirna pozadina, shadow catcher, nebo vidljivo kameri,
+  dubina (Z), normale, albedo
+- **kadrovi**: trenutni ili cijeli timeline (`ime_####`), veličina 100/50/25 %
+- **svjetlo**: Preethamovo nebo + sunce (elevacija, azimut, jakost, veličina diska = mekoća sjene,
+  izmaglica), HDRI (`.hdr`, nekomprimirani `.exr`, `.png`) ili jednolika boja; emisijski materijali
+  su sami svjetla
+- **prikaz**: Standard (snimka se vraća bit po bit ista) ili AgX; ekspozicija; EXR i/ili PNG
+
+**Shadow catcher.** Uz snimku (ili prozirnu pozadinu) su ravnine, proxy mesh i blokeri iz splata
+(`_proxy`/`_blocker` u imenu datoteke) i sve s `catcher` u imenu — *stvarna scena*: kamera ih ne
+vidi, ali skupljaju sjenu CG-a (sloj `shadow`), a u odrazu i lomu pokazuju **piksel snimke** u toj
+točki (staklo lomi pravi pod, zlato ga reflektira).
+
+**LoomTracer** (`tracer/`): binned-SAH BVH; Sobol s Owenovim miješanjem po parovima dimenzija;
+principijelni BSDF (Lambert + GGX s uzorkovanjem vidljivih normala, metal, lak, hrapavo staklo s
+lomom) s **nadoknadom višestrukog raspršenja** (Turquin) i skaliranjem difuzije albedom odsjaja;
+NEE + BSDF uzorkovanje spojeni MIS-om (sunce kao disk, kugle/reflektori, emisijski trokuti, nebo
+po važnosti); ruski rulet; A-trous filtar vođen albedom/normalom/dubinom/varijancom. Warp
+materijal je dobio `transmission`, `ior`, `specular`, `clearcoat`, `clearcoatRoughness` (spremaju
+se u `.usda`, uređuju u panelu materijala pod TRACER ONLY).
+
+**Izmjereno** (`test_tracer`, 24 provjere protiv analitičkih odgovora, bez kartice):
+
+| provjera | rezultat | istina |
+|---|---|---|
+| bijela peć: Lambert / plastika / hrapavi metal / staklo / lak | 0.9998 / 0.9998 / 0.9996 / 1.0001 / 0.9997 | 1 |
+| negativna kontrola: GGX bez nadoknade, hrapavost 1 | E = 0.451 | (gubi 55 %) |
+| sunce na Lambertu (točka i disk 0.53°) | 0.47746 | a·E/π = 0.47746 |
+| točkasto i kuglasto svjetlo | 0.63662 | I/(π h²) = 0.63662 |
+| svijetli kvadrat nad podom (MIS) | 0.55367 | faktor oblika 0.55413 |
+| projekcija (pomaknuta glavna točka) | 0.014 px | formula pogleda editora |
+| dubina | 6.00005 / 5.00000 | 6 / 5 |
+| snimka izvan sjene | bit po bit | — |
+| 1 dretva = 4 dretve | bit po bit | — |
+
+`test_render_bridge` (12, cijeli put: Warp + snimka ffv1 bez gubitka → EXR/PNG natrag): kamera =
+pogled editora na **3.8e-6 px**, pravi kadar snimke (plateFirstFrame + kadar − 1), PNG izvan sjene i
+CG-a **jednak snimci bajt po bajt**, EXR slojevi, sekvenca u pozadinskoj sesiji. `test_spool_exr`
+(5): half zaokruživanje za svih 63 488 konačnih vrijednosti, zapis/čitanje, komprimirani se odbije.
+
+**Brzina** (CPU, 4 jezgre ovog sandboxa): ~9 M zraka/s; 1280×720, 64 uzorka, 10 k trokuta ≈ 18 s.
+
+**Poznata ograničenja — ne skrivati:**
+- **Samo CPU.** Sljedeći korak je GPU (Vulkan ray query ili compute nad istim BVH-om) — scena,
+  BSDF i testovi su već odvojeni od izvršavanja, pa se protiv istih analitičkih brojeva provjerava.
+- Staklo baca **tamnu sjenu** (zraka sjene ne prolazi kroz lom; kaustike dolaze samo BSDF putem i
+  šumne su) — isto kao Cycles bez caustics trikova.
+- Warp još **nema svjetala kao entiteta** (UsdLux); svjetlo je sunce/nebo/HDRI iz postavki rendera
+  i emisijski materijali. Kugle/reflektori postoje u traceru, nisu spojeni na scenu.
+- Filtar nije OIDN: na 64+ uzoraka čisti, na 4–16 ostavlja mrlje; sirovi CG je uvijek u EXR-u.
+- Catcher pod u neizravnom svjetlu uzima albedo ≈ linearni piksel snimke (pretpostavka jedinične
+  rasvjete poda) — boja se prelije ispravno, jakost je približna.
+- Splat i oblak točaka se ne traceaju; iza CG-a je snimka. Dubinska oštrina postoji u traceru
+  (`Camera::apertureRadius`), još nije u panelu.
+- Engine `Viewport` crta ravnine neprozirno (raster nema catcher).
+- Samo prvi UV skup; glTF `occlusion` mapa se namjerno ignorira (tracer zaklanjanje računa).
+
+**Editor se provjerava okom**: `loom projekt.usda --snimi x.png --render [--uzorci 32]` otvori panel,
+renderira i spremi prozor kad render završi (`--render-pogled` za engine Viewport). Pod Xvfb-om s
+lavapipeom (`VK_ICD_FILENAMES=.../lvp_icd.json xvfb-run -a ...`) radi i bez kartice.
+
 ## 8. Testni materijal — koje snimke i kako ih snimiti
 
 Cilj nije "četiri snimke" nego **četiri različita kvara**. Drona nema i neće ga biti neko vrijeme;
@@ -679,6 +750,9 @@ cd build && ctest -j1                      # 88 testova
 
 ./build/VideoSolve snimka.mp4 10 80 0 izlaz/
 ./build/ModelInfo izlaz/                   # zdravlje rješenja, bez istine
+
+./build/loom-render projekt.usda --uzorci 256 --normale   # render iz kamere (LoomTracer)
+./build/test_tracer                        # tracer protiv analitičkih odgovora, bez kartice
 ```
 
 **Ključna dokumentacija: `tools/solve/README.md`** — svako mjerenje, svaka odbačena ideja i svaki

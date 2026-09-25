@@ -83,6 +83,11 @@ public:
                                                               : m.alphaMode == Material::Alpha::Blend ? "blend" : "opaque") << "\"\n";
         out << "        custom float loom:alphaCutoff = "; number(m.alphaCutoff); out << '\n';
         out << "        custom bool loom:doubleSided = " << (m.doubleSided ? 1 : 0) << '\n';
+        out << "        custom float loom:transmission = "; number(m.transmission); out << '\n';
+        out << "        custom float loom:ior = "; number(m.ior); out << '\n';
+        out << "        custom float loom:specular = "; number(m.specular); out << '\n';
+        out << "        custom float loom:clearcoat = "; number(m.clearcoat); out << '\n';
+        out << "        custom float loom:clearcoatRoughness = "; number(m.clearcoatRoughness); out << '\n';
         slot(2, "baseColorMap", m.baseColorMap);
         slot(2, "metallicRoughnessMap", m.metallicRoughnessMap);
         slot(2, "normalMap", m.normalMap);
@@ -97,6 +102,9 @@ public:
         out << "            float inputs:opacity = "; number(m.alphaMode == Material::Alpha::Opaque ? 1.0 : m.baseColor.a); out << '\n';
         if(m.alphaMode == Material::Alpha::Mask){ out << "            float inputs:opacityThreshold = "; number(m.alphaCutoff); out << '\n'; }
         out << "            color3f inputs:emissiveColor = "; vector(m.emissive * m.emissiveStrength); out << '\n';
+        out << "            float inputs:ior = "; number(m.ior); out << '\n';
+        out << "            float inputs:clearcoat = "; number(m.clearcoat); out << '\n';
+        out << "            float inputs:clearcoatRoughness = "; number(m.clearcoatRoughness); out << '\n';
         out << "            token outputs:surface\n        }\n    }\n";
     }
 
@@ -511,6 +519,11 @@ bool loadProject(const std::string& path, Stage& stage, std::string& error){
             m.alphaMode = alpha == "mask" ? Material::Alpha::Mask : alpha == "blend" ? Material::Alpha::Blend : Material::Alpha::Opaque;
             m.alphaCutoff = float(numberOf(entry, "loom:alphaCutoff", 0.5));
             m.doubleSided = numberOf(entry, "loom:doubleSided", 0.0) != 0.0;
+            m.transmission = float(numberOf(entry, "loom:transmission", 0.0));
+            m.ior = float(numberOf(entry, "loom:ior", 1.5));
+            m.specular = float(numberOf(entry, "loom:specular", 1.0));
+            m.clearcoat = float(numberOf(entry, "loom:clearcoat", 0.0));
+            m.clearcoatRoughness = float(numberOf(entry, "loom:clearcoatRoughness", 0.03));
             auto slot = [&](const char* name, TextureSlot& t){
                 t.source = textOf(entry, std::string("loom:") + name);
                 if(const usda::Attribute* info = entry.find(std::string("loom:") + name + "Info")){

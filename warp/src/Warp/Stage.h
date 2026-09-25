@@ -159,6 +159,15 @@ struct Material{
     Alpha alphaMode = Alpha::Opaque;
     float alphaCutoff = 0.5f;
     bool doubleSided = false;
+
+    //Sto zna samo path tracer (LoomTracer); pogled ih ne crta. Isti smisao kao u Blenderovom
+    //Principled BSDF-u: transmission 1 je staklo s lomom po ior-u, clearcoat je lak preko svega,
+    //specular mnozi odsjaj dielektrika (0 = cisti Lambert)
+    float transmission = 0.0f;
+    float ior = 1.5f;
+    float specular = 1.0f;
+    float clearcoat = 0.0f;
+    float clearcoatRoughness = 0.03f;
 };
 
 //Mreza iz glTF modela: datoteka, koja mreza u njoj, i materijal za svaki njezin primitiv

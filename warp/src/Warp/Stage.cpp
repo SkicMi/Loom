@@ -421,6 +421,7 @@ uint64_t Stage::fingerprint() const{
     for(const Material& m : materials){
         h.text(m.name); h.add(m.baseColor); h.add(m.metallic); h.add(m.roughness); h.add(m.emissive); h.add(m.emissiveStrength);
         h.add(m.alphaMode); h.add(m.alphaCutoff); h.add(m.doubleSided);
+        h.add(m.transmission); h.add(m.ior); h.add(m.specular); h.add(m.clearcoat); h.add(m.clearcoatRoughness);
         for(const TextureSlot* t : {&m.baseColorMap, &m.metallicRoughnessMap, &m.normalMap, &m.occlusionMap, &m.emissiveMap}){
             h.text(t->source); h.add(t->image); h.add(t->texCoord); h.add(t->amount);
         }
