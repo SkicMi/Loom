@@ -2841,6 +2841,14 @@
                                 settings.outFrames = poseBlendOutFrames;
                                 settings.ending = poseKeyEnding == 0 ? Loom::PoseKeyEnding::Return : Loom::PoseKeyEnding::Hold;
                                 settings.blendBetween = blendBetween;
+                                //Sake se drze po POLOZAJU u sustavu prsa i rijese IK-om (LoomPoseBlend.h,
+                                //UDOVI): ispravak samih kutova je sake oko kljuca pomicao do 15 cm
+                                const auto limbIds = motionDirectRigJointIds(poseEdit.rig);
+                                for(const std::array<int, 3> arm : {std::array<int, 3>{11, 12, 13}, std::array<int, 3>{17, 18, 19}})
+                                    if(limbIds[size_t(arm[0])] != Warp::None && limbIds[size_t(arm[1])] != Warp::None &&
+                                       limbIds[size_t(arm[2])] != Warp::None)
+                                        settings.limbs.push_back({limbIds[size_t(arm[0])], limbIds[size_t(arm[1])],
+                                                                  limbIds[size_t(arm[2])], limbIds[3]});
                                 Loom::applyPoseKeys(stage, keys, active.startFrame, active.endFrame, settings);
                                 frame = keys.front().frame;
                                 playing = false;

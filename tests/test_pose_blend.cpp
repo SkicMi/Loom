@@ -164,5 +164,82 @@ int main(){
         report.check("ispravak u svakom kljucu izmedju cijelih kadrova (30 Hz u 25 fps)", allCorrected,
                      allCorrected ? "nema skakanja" : fmt("original probija u kadru %.2f", worst));
     }
+    {
+        //RUKA PO POLOZAJU SAKE. Prsa se njisu, klavikula i nadlaktica imaju svoj pokret; kljucevi u 40 i
+        //60 postave ruku. Izmedju njih saka u sustavu prsa mora ici TOCNO po crti izmedju dvaju
+        //postavljenih polozaja - korisnik je vidio da se ruka oko kljuca "udalji". Negativna kontrola:
+        //isti kljucevi bez uda (samo ispravak kutova) - saka odluta
+        auto armStage = [](Warp::Id ids[5]){
+            Warp::Stage stage;
+            const char* names[5] = {"Chest", "Clavicle", "UpperArm", "LowerArm", "Hand"};
+            const glm::vec3 offsets[5] = {{0, 1.3f, 0}, {0.1f, 0.2f, 0}, {0.12f, 0, 0}, {0.3f, 0, 0}, {0.27f, 0, 0}};
+            for(int j = 0; j < 5; ++j){
+                ids[j] = stage.create(names[j], j ? ids[j - 1] : Warp::None);
+                stage.get(ids[j])->joint = Warp::Joint{};
+            }
+            const double step = 25.0 / 30.0;
+            for(int i = 0; i < 120; ++i){
+                const double t = 1.0 + step * double(i);
+                const float f = float(t);
+                const glm::quat motion[5] = {
+                    glm::angleAxis(glm::radians(12.0f * std::sin(f / 6.0f)), glm::vec3(0, 1, 0)),
+                    glm::angleAxis(glm::radians(10.0f * std::sin(f / 7.0f)), glm::vec3(0, 0, 1)),
+                    glm::angleAxis(glm::radians(-50.0f + 30.0f * std::sin(f / 5.0f)), glm::vec3(0, 0, 1)),
+                    glm::angleAxis(glm::radians(40.0f + 15.0f * std::sin(f / 4.0f)), glm::vec3(0, 1, 0)),
+                    glm::angleAxis(glm::radians(10.0f * std::sin(f / 3.0f)), glm::vec3(1, 0, 0)),
+                };
+                for(int j = 0; j < 5; ++j){
+                    stage.get(ids[j])->translationKeys.set(t, offsets[j] + (j == 0 ? glm::vec3(0.0f, 0.0f, 0.02f * f) : glm::vec3(0.0f)));
+                    stage.get(ids[j])->rotationKeys.set(t, motion[j]);
+                }
+            }
+            return stage;
+        };
+        auto handInChest = [](const Warp::Stage& stage, const Warp::Id ids[5], double t){
+            return glm::vec3(glm::inverse(stage.worldMatrix(ids[0], t)) * stage.worldMatrix(ids[4], t)[3]);
+        };
+        auto run = [&](bool useLimb, double& worst, double& worstOnKeys, glm::vec3& at40, glm::vec3& at60){
+            Warp::Id ids[5];
+            Warp::Stage stage = armStage(ids);
+            //Uredjivanje kao u editoru: ruka se zakrene u oba kljuca, klip se vrati na original
+            std::vector<Loom::PoseKey> keys;
+            const Warp::Stage original = stage;
+            for(double f : {40.0, 60.0}){
+                Warp::Transform upper = stage.localAt(ids[2], f), lower = stage.localAt(ids[3], f);
+                upper.rotation = glm::angleAxis(glm::radians(35.0f), glm::vec3(0, 1, 0)) * upper.rotation;
+                lower.rotation = lower.rotation * glm::angleAxis(glm::radians(-25.0f), glm::vec3(0, 0, 1));
+                Loom::PoseKey key{f, {}};
+                for(int j = 0; j < 5; ++j) key.pose.emplace_back(ids[j], j == 2 ? upper : j == 3 ? lower : stage.localAt(ids[j], f));
+                keys.push_back(key);
+            }
+            //Ocekivani polozaji sake u kljucevima, iz uredjenih poza
+            Warp::Stage edited = stage;
+            for(const Loom::PoseKey& key : keys) for(const auto& joint : key.pose) edited.setLocalAt(joint.first, key.frame, joint.second);
+            at40 = handInChest(edited, ids, 40.0);
+            at60 = handInChest(edited, ids, 60.0);
+            Loom::PoseKeySettings settings;
+            if(useLimb) settings.limbs.push_back({ids[2], ids[3], ids[4], ids[0]});
+            Loom::applyPoseKeys(stage, keys, 1.0, 100.0, settings);
+            worst = worstOnKeys = 0.0;
+            auto errorAt = [&](double t){
+                const float s = Loom::easeInOut(float((t - 40.0) / 20.0));
+                return double(glm::length(handInChest(stage, ids, t) - (at40 + (at60 - at40) * s)));
+            };
+            for(double t = 40.0; t <= 60.0; t += 0.1) worst = std::max(worst, errorAt(t));
+            //Na zapisanim kljucevima (30 Hz) mora biti tocno; izmedju njih se kutovi interpoliraju
+            for(double t : stage.get(ids[2])->rotationKeys.times)
+                if(t >= 40.0 && t <= 60.0) worstOnKeys = std::max(worstOnKeys, errorAt(t));
+            (void)original;
+        };
+        double limbError = 0.0, limbOnKeys = 0.0, angleError = 0.0, angleOnKeys = 0.0;
+        glm::vec3 a40, a60;
+        run(true, limbError, limbOnKeys, a40, a60);
+        run(false, angleError, angleOnKeys, a40, a60);
+        report.check("saka po crti izmedju kljuceva u sustavu prsa (IK): tocno na kljucevima, < 1 mm izmedju",
+                     limbOnKeys < 1e-5 && limbError < 1e-3,
+                     fmt("na kljucevima %.4f mm, izmedju %.3f mm", limbOnKeys * 1000.0, limbError * 1000.0));
+        report.check("negativna kontrola: samo kutovi pa saka odluta", angleError > 5e-3,
+                     fmt("bez IK-a %.1f mm", angleError * 1000.0));
+    }
     return report.result();
 }
