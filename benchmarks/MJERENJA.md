@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (341 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (352 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -103,6 +103,7 @@ Iz `benchmarks/mjerenja.jsonl` (341 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 20:47 | C0257 | E14: ispravak poza u treningu | 15000 | 1920x1080 | 1866479 | 1713 | 26.87 | 21.96 | 0.802 |  | kamera=classic, izlaz=e14_pose.ply, izdvojenih=39 |
 | 2026-09-25 21:09 | C0257 | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) | 15000 | 1920x1080 | 1930114 | 1262 | 25.27 | 20.44 | 0.781 |  | kamera=classic, izlaz=e15_surface.ply, izdvojenih=39 |
 | 2026-09-25 21:33 | C0257 | E16: bilateralna mreza umjesto ekspozicije | 15000 | 1920x1080 | 2206230 | 1422 | 25.67 | 20.97 | 0.806 |  | kamera=classic, izlaz=e16_bilagrid.ply, izdvojenih=39 |
+| 2026-09-25 22:56 | C0257 | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 | 15000 | 1920x1080 | 2155145 | 2400 | 26.16 | 21.45 | 0.809 |  | kamera=classic, izlaz=e14b_pose.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -168,6 +169,8 @@ Iz `benchmarks/mjerenja.jsonl` (341 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 21:09 | C0257 | E15: povrsina u treningu (0.1, plosnatost 0.1, od 7000) | 3840x2160 | 24.81 | 0.819 | 0.143 | 39 |  |  | psnr_medijan=25.22, splat=e15_surface.ply |
 | 2026-09-25 21:33 | C0257 | E16: bilateralna mreza umjesto ekspozicije | 1920x1080 | 25.88 | 0.809 | 0.425 | 39 |  |  | psnr_medijan=25.67, splat=e16_bilagrid.ply |
 | 2026-09-25 21:33 | C0257 | E16: bilateralna mreza umjesto ekspozicije | 3840x2160 | 25.79 | 0.829 | 0.168 | 39 |  |  | psnr_medijan=25.63, splat=e16_bilagrid.ply |
+| 2026-09-25 22:57 | C0257 | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 | 1920x1080 | 26.14 | 0.806 | 0.438 | 39 |  |  | psnr_medijan=26.16, splat=e14b_pose.ply |
+| 2026-09-25 22:57 | C0257 | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 | 3840x2160 | 26.05 | 0.828 | 0.172 | 39 |  |  | psnr_medijan=26.06, splat=e14b_pose.ply |
 
 ## usporedba
 
@@ -349,6 +352,12 @@ Iz `benchmarks/mjerenja.jsonl` (341 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 21:33 |  | E16: bilateralna mreza umjesto ekspozicije prema zadanom (d1) | PSNR dB | -0.020 | 0.126 | 20/39 |  | a=q_lanac2_d1, b=q_e16_bilagrid_d1 |
 | 2026-09-25 21:33 |  | E16: bilateralna mreza umjesto ekspozicije prema zadanom (d1) | SSIM | 0.000 | 0.001 | 20/39 |  | a=q_lanac2_d1, b=q_e16_bilagrid_d1 |
 | 2026-09-25 21:33 |  | E16: bilateralna mreza umjesto ekspozicije prema zadanom (d1) | ostrina | -0.004 | 0.004 | 20/39 |  | a=q_lanac2_d1, b=q_e16_bilagrid_d1 |
+| 2026-09-25 22:57 |  | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 prema zadanom (d2) | PSNR dB | 0.243 | 0.082 | 29/39 |  | a=q_lanac2_d2, b=q_e14b_pose_d2 |
+| 2026-09-25 22:57 |  | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 prema zadanom (d2) | SSIM | -0.000 | 0.001 | 22/39 |  | a=q_lanac2_d2, b=q_e14b_pose_d2 |
+| 2026-09-25 22:57 |  | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 prema zadanom (d2) | ostrina | -0.005 | 0.004 | 20/39 |  | a=q_lanac2_d2, b=q_e14b_pose_d2 |
+| 2026-09-25 22:57 |  | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 prema zadanom (d1) | PSNR dB | 0.235 | 0.080 | 29/39 |  | a=q_lanac2_d1, b=q_e14b_pose_d1 |
+| 2026-09-25 22:57 |  | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 prema zadanom (d1) | SSIM | 0.000 | 0.000 | 23/39 |  | a=q_lanac2_d1, b=q_e14b_pose_d1 |
+| 2026-09-25 22:57 |  | E14b: ispravak poza, rijetki Adam 1e-5 od 3000 prema zadanom (d1) | ostrina | -0.000 | 0.002 | 20/39 |  | a=q_lanac2_d1, b=q_e14b_pose_d1 |
 
 ## dekodiranje
 
@@ -377,4 +386,6 @@ Iz `benchmarks/mjerenja.jsonl` (341 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 21:34 | C0257 | E16 bilateralna mreza umjesto ekspozicije: odbaceno - PSNR -0.02+-0.13 (sum), ostrina -0.018, trening 24 min umjesto 16 |  |
 | 2026-09-25 21:45 | C0255 | pune slicice s 6 razina piramide: isto 1121/1772 (63.3 %), drift p90 1.14->1.98 st - odbaceno; neuspjeli medjukadrovi su odsjecci od 70 neriješenih kljucnih kadrova, ne raspon pracenja |  |
 | 2026-09-25 22:08 | C0255 | pune slicice: lazne poze nerijesenih kljucnih kadrova uklonjene (70 na C0255); promasaj lanca raspodijeljen po odsjecku - skok na granici najveci 1.45->0.145, p90 0.098->0.036 (unutar odsjecka 0.023) |  |
+| 2026-09-25 22:13 | C0255 | makro dio (1250-1960) sam za sebe: 35/70 kamera, omjer izdvojenih 2.88, samokalibracija 84 st odbijena - snimka preslaba za klasicni solve (bijelo bez teksture, mala dubinska ostrina); treba nauceni prior |  |
+| 2026-09-25 23:01 | C0257 | E14b ispravak poza (rijetki Adam 1e-5 od 3000): PSNR +0.24+-0.08 dB (29/39) na 1080p i 4K, SSIM i ostrina isti - ZADANO |  |
 

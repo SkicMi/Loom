@@ -74,7 +74,8 @@ def main():
         scores = base / f"{name}_d2.npy"
         evaluate = (f'{env} {python} tools/splat/evaluate_splat.py "{model}" "{splat}" --downscale 2 '
                     f'--out "{scores}" --opis "skup {args.oznaka}: {name}"'
-                    + (f' --exposure "{exposure}"' if exposure.exists() else ""))
+                    + (f' --exposure "{exposure}"' if exposure.exists() else "")
+                    + (f' --poses "{model / "scena_poses.json"}"' if (model / "scena_poses.json").exists() else ""))
         run(evaluate, base / f"{name}_ocjena.log")
         values = np.load(scores)
         log = (base / f"{name}.log").read_text(errors="replace")

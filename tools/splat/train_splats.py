@@ -383,7 +383,9 @@ def main():
     # ispravak (zakret + pomak) koji se uci s gradijentom zajedno sa splatom; izdvojeni kadrovi
     # dobiju ispravak interpoliran od susjeda (isto kao ekspozicija) i zapisu se u <izlaz>_poses.json
     #=============================================================================================
-    ap.add_argument("--pose-opt", action=argparse.BooleanOptionalAction, default=False,
+    #ZADANO UKLJUCENO (E14b, C0257): PSNR +0.24 +- 0.08 dB na 1080p i 4K, bolji na 29/39 kadrova,
+    #SSIM i ostrina isti; zakret medijan 0.06 st
+    ap.add_argument("--pose-opt", action=argparse.BooleanOptionalAction, default=True,
                     help="uci ispravak poze po kadru; zapisuje <izlaz>_poses.json")
     #PRVI POKUSAJ (E14, obicni Adam, 1e-4 od 500. koraka) je poze pustio da odlutaju: zakret
     #medijan 0.42 st umjesto ocekivanih stotinki, PSNR +0.68 dB ali ostrina 0.44 -> 0.14. Adam je
