@@ -38,8 +38,9 @@ struct Params{
     glm::uvec4 flags;
     glm::vec4 values;
     glm::uvec4 extra;
+    glm::vec4 distortion;
 };
-static_assert(sizeof(Params) == 22 * 16, "Params mora odgovarati shaders/tracer.slang");
+static_assert(sizeof(Params) == 23 * 16, "Params mora odgovarati shaders/tracer.slang");
 
 struct GpuMaterial{
     glm::vec4 baseColor, surface, layers, emission;
@@ -212,7 +213,9 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     p.toMap0 = glm::vec4(c.sky.worldToMap()[0], 0.0f); p.toMap1 = glm::vec4(c.sky.worldToMap()[1], 0.0f); p.toMap2 = glm::vec4(c.sky.worldToMap()[2], 0.0f);
     p.fromMap0 = glm::vec4(c.sky.mapToWorld()[0], 0.0f); p.fromMap1 = glm::vec4(c.sky.mapToWorld()[1], 0.0f); p.fromMap2 = glm::vec4(c.sky.mapToWorld()[2], 0.0f);
     p.flags = glm::uvec4(c.sky.active() ? 1u : 0u, world.environment.cameraVisible ? 1u : 0u, backplateTexture, skyLight);
-    p.values = glm::vec4(settings.indirectClamp, 0.0f, 0.0f, 0.0f);
+    p.values = glm::vec4(settings.indirectClamp, world.camera.distorted() ? world.camera.k1 : 0.0f,
+                         world.camera.distorted() ? world.camera.k2 : 0.0f, 0.0f);
+    p.distortion = world.camera.distorted() ? world.camera.lens : glm::vec4(0.0f);
     p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), 0u, 0u);
 
     //-- na karticu -------------------------------------------------------------------------------------

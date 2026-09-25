@@ -152,6 +152,11 @@ public:
             indent(in); out << "custom int2 loom:resolution = (" << lens.width << ", " << lens.height << ")\n";
             if(!lens.plate.empty()){ indent(in); out << "custom asset loom:plate = "; asset(lens.plate); out << '\n'; }
             indent(in); out << "custom int loom:plateFirstFrame = " << lens.plateFirstFrame << '\n';
+            if(lens.distorted()){
+                indent(in); out << "custom float4 loom:distortionLens = ("; number(lens.distortionFx); out << ", ";
+                number(lens.distortionFy); out << ", "; number(lens.distortionCx); out << ", "; number(lens.distortionCy); out << ")\n";
+                indent(in); out << "custom float2 loom:radialDistortion = ("; number(lens.k1); out << ", "; number(lens.k2); out << ")\n";
+            }
         }
         if(entity.points){
             const Points& points = *entity.points;
@@ -364,6 +369,16 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
         }
         lens.plate = textOf(prim, "loom:plate");
         lens.plateFirstFrame = int(numberOf(prim, "loom:plateFirstFrame", 0.0));
+        if(const usda::Attribute* d = prim.find("loom:distortionLens")){
+            lens.distortionFx = float(d->value.at(0, 0.0));
+            lens.distortionFy = float(d->value.at(1, 0.0));
+            lens.distortionCx = float(d->value.at(2, 0.0));
+            lens.distortionCy = float(d->value.at(3, 0.0));
+        }
+        if(const usda::Attribute* k = prim.find("loom:radialDistortion")){
+            lens.k1 = float(k->value.at(0, 0.0));
+            lens.k2 = float(k->value.at(1, 0.0));
+        }
         entity.camera = lens;
     }
     if(prim.type == "Points"){

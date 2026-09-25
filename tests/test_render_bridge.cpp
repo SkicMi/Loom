@@ -21,6 +21,7 @@
 #include "LoomViewport.h"
 
 #include <Spool/Sequence.h>
+#include <Warp/Project.h>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -240,6 +241,54 @@ int main(){
         const int cornerBefore = plain.isValid() ? plain.pixels[1] : 0, cornerAfter = restyled.isValid() ? restyled.pixels[1] : 0;
         report.check("post poslije rendera", session.hasResult() && restyled.isValid() && cornerAfter < cornerBefore * 0.8,
                      fmt("%s, kut %d -> %d, %.3f s", path.c_str(), cornerBefore, cornerAfter, seconds));
+    }
+
+    //-- 6b. distorzija lece: kroz .usda i natrag, i ST-mapa uz render ----------------------------------
+    {
+        Warp::Camera& lens = *stage.get(cameraId)->camera;
+        lens.distortionFx = 148.0f; lens.distortionFy = 148.0f; lens.distortionCx = 80.5f; lens.distortionCy = 45.2f;
+        lens.k1 = -0.21f; lens.k2 = 0.04f;
+        const std::string projectFile = (work / "leca.usda").string();
+        std::string problem;
+        Warp::Stage back;
+        const bool saved = Warp::saveProject(stage, projectFile, problem) && Warp::loadProject(projectFile, back, problem);
+        const Warp::Entity* cam = saved ? back.find("/Kamera") != Warp::None ? back.get(back.find("/Kamera")) : nullptr : nullptr;
+        const bool same = cam && cam->camera && cam->camera->k1 == lens.k1 && cam->camera->k2 == lens.k2 &&
+                          cam->camera->distortionFx == lens.distortionFx && cam->camera->distortionCy == lens.distortionCy;
+        report.check("leca: projekt", same, problem);
+
+        Loom::RenderOptions distorted = options;
+        distorted.samples = 4;
+        distorted.name = "zakrivljeno";
+        Loom::RenderAssets lensAssets;
+        Loom::BuiltScene lensBuilt;
+        Loom::buildTracerScene(stage, 2.0, distorted, lensAssets, lensBuilt, problem);
+        const Tracer::Camera tracerCamera = lensBuilt.scene.camera;
+        Tracer::Renderer lensRenderer(std::move(lensBuilt.scene));
+        Tracer::RenderSettings few;
+        few.samples = 4;
+        lensRenderer.render(few);
+        Loom::writeRender(lensRenderer.frame(false), lensRenderer.scene(), distorted, true, true, (work / "leca").string(), "zakrivljeno", problem);
+        const fs::path stmapPath = work / "leca" / "zakrivljeno_stmap.exr";
+        bool stmapOk = false;
+        float worst = 0.0f;
+        if(fs::exists(stmapPath)){
+            const Spool::ExrImage stmap = Spool::loadExr(stmapPath.string());
+            const Spool::ExrChannel* r = stmap.find("R");
+            const Spool::ExrChannel* g = stmap.find("G");
+            const Spool::ExrChannel* rr = stmap.find("redistort.R");
+            stmapOk = r && g && rr && stmap.width == PlateWidth;
+            //Kut: undistort karta pokazuje gdje je ravni piksel na zakrivljenoj snimci
+            for(uint32_t y : {0u, 44u, 89u}) for(uint32_t x : {0u, 80u, 159u}){
+                if(!stmapOk) break;
+                const glm::vec2 from = tracerCamera.distortPixel(glm::vec2(float(x) + 0.5f, float(y) + 0.5f));
+                const size_t i = size_t(y) * PlateWidth + x;
+                worst = std::max(worst, std::abs(r->values[i] * PlateWidth - from.x) + std::abs((1.0f - g->values[i]) * PlateHeight - from.y));
+            }
+        }
+        report.check("leca: st-mapa", stmapOk && worst < 1e-3f && tracerCamera.distorted(), fmt("najveca razlika %.2e px", double(worst)));
+        lens = Warp::Camera(lens);
+        lens.distortionFx = 0.0f;       //ostatak testa bez distorzije
     }
 
     //-- 7. isti render kroz GPU pogon (kartica bez prozora): posao iz sesije, isti zapis --------------

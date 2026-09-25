@@ -249,8 +249,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         if(!fromCamera && mirrorChain && world.backplate.valid()){
             const glm::vec3 local = glm::vec3(cameraInverse * glm::vec4(d, 0.0f));
             if(local.z < 0.0f){
-                const glm::vec2 px(camera.centre.x + camera.focalPixels * local.x / -local.z,
-                                   camera.centre.y - camera.focalPixels * local.y / -local.z);
+                const glm::vec2 px = camera.pixelOf(local);
                 const glm::vec2 uv = glm::clamp(px / glm::vec2(float(camera.width), float(camera.height)),
                                                 glm::vec2(0.0f), glm::vec2(1.0f));
                 return glm::vec3(world.backplate.sample(uv));
@@ -442,8 +441,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         if(depth > 0 && (triangleFlags[hit.triangle] & Catcher) && world.backplate.valid()){
             const glm::vec3 local = glm::vec3(worldToCamera * glm::vec4(p, 1.0f));
             if(local.z < 0.0f){
-                const glm::vec2 px(camera.centre.x + camera.focalPixels * local.x / -local.z,
-                                   camera.centre.y - camera.focalPixels * local.y / -local.z);
+                const glm::vec2 px = camera.pixelOf(local);
                 const glm::vec2 uv = px / glm::vec2(float(camera.width), float(camera.height));
                 if(uv.x >= 0.0f && uv.x <= 1.0f && uv.y >= 0.0f && uv.y <= 1.0f){
                     const glm::vec3 plateColour(world.backplate.sample(uv));

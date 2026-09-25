@@ -216,6 +216,31 @@ int main(){
         report.check("dubina", std::abs(f.depth[best] - (-local.z - 0.05f)) < 0.02f, fmt("%.4f, ocekivano ~%.4f", f.depth[best], -local.z - 0.05f));
     }
 
+    //-- 3b. distorzija lece na kartici -----------------------------------------------------------------
+    {
+        Tracer::Scene scene;
+        Tracer::Material white; white.emission = glm::vec3(1.0f); white.baseColor = glm::vec3(0.0f);
+        const glm::vec3 where(1.45f, 0.95f, -0.2f);
+        scene.addMesh(Tracer::uvSphere(0.04f, 48, 24), glm::translate(glm::mat4(1.0f), where), scene.addMaterial(white));
+        scene.camera = lookAt({0.0f, 0.3f, 3.0f}, {0, 0.2f, 0}, 320, 180, 260.0f, glm::vec2(161.0f, 88.0f));
+        scene.camera.lens = glm::vec4(255.0f, 255.0f, 158.0f, 91.0f);
+        scene.camera.k1 = -0.18f;
+        scene.camera.k2 = 0.03f;
+        glm::vec2 expected;
+        scene.camera.project(where, expected);
+        const Tracer::Frame f = onCard(loom, pipelines, std::move(scene), 32);
+        glm::dvec2 centroid(0.0);
+        double mass = 0.0;
+        for(uint32_t y = 0; y < f.height; ++y) for(uint32_t x = 0; x < f.width; ++x){
+            const float c = f.cg[(size_t(y) * f.width + x) * 4 + 3];
+            centroid += glm::dvec2(x + 0.5, y + 0.5) * double(c);
+            mass += c;
+        }
+        centroid /= std::max(mass, 1e-9);
+        const float error = glm::length(glm::vec2(centroid) - expected);
+        report.check("distorzija", error < 0.2f, fmt("greska %.3f px", error));
+    }
+
     //-- 4. ista slika kao procesor (i negativna kontrola) -----------------------------------------------
     {
         double gpuSeconds = 0.0;

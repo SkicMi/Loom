@@ -276,6 +276,11 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
         const float sx = float(c.width) / float(lens.width), sy = float(c.height) / float(lens.height);
         c.focalPixels = lens.focalPixels * sx;
         c.centre = glm::vec2(lens.centreX * sx, lens.centreY * sy);
+        if(lens.distorted()){
+            c.lens = glm::vec4(lens.distortionFx * sx, lens.distortionFy * sy, lens.distortionCx * sx, lens.distortionCy * sy);
+            c.k1 = lens.k1;
+            c.k2 = lens.k2;
+        }
     }
 
     //-- snimka ------------------------------------------------------------------------------------
@@ -577,6 +582,32 @@ inline std::vector<std::string> writeRender(const Tracer::Frame& frame, const Tr
             Spool::saveExr(base + ".exr", frame.width, frame.height, std::move(channels));
             return base + ".exr";
         }));
+        //ST-MAPA ZA NUKE kad je leca zakrivljena: render je vec zakrivljen kao snimka, ali kompozitor
+        //cesto treba ravnu plocu (track, paint) pa natrag. Konvencija STMap cvora: izlazni piksel
+        //uzme ulaz na (R*sirina, G*visina), G raste PREMA GORE.
+        //   R, G                  undistort: zakrivljena snimka -> ravna (pinhole) slika
+        //   redistort.R, .G       obrnuto: ravni CG -> zakrivljen kao snimka
+        const Tracer::Camera& camera = scene.camera;
+        if(options.writeExr && camera.distorted()){
+            jobs.push_back(std::async(std::launch::async, [&frame, &camera, folder, name = options.name]{
+                const uint32_t w = frame.width, h = frame.height;
+                std::vector<Spool::ExrChannel> channels(4);
+                const char* names[4] = {"R", "G", "redistort.R", "redistort.G"};
+                for(int k = 0; k < 4; ++k){ channels[size_t(k)].name = names[k]; channels[size_t(k)].half = false; channels[size_t(k)].values.resize(size_t(w) * h); }
+                for(uint32_t y = 0; y < h; ++y) for(uint32_t x = 0; x < w; ++x){
+                    const glm::vec2 p(float(x) + 0.5f, float(y) + 0.5f);
+                    const glm::vec2 from = camera.distortPixel(p), back = camera.undistortPixel(p);
+                    const size_t i = size_t(y) * w + x;
+                    channels[0].values[i] = from.x / float(w);
+                    channels[1].values[i] = 1.0f - from.y / float(h);
+                    channels[2].values[i] = back.x / float(w);
+                    channels[3].values[i] = 1.0f - back.y / float(h);
+                }
+                const std::string path = (std::filesystem::path(folder) / (name + "_stmap.exr")).string();
+                Spool::saveExr(path, w, h, std::move(channels));
+                return path;
+            }));
+        }
         //Sve se saceka i prije nego se javi greska - nit ne smije nadzivjeti okvir koji je cita
         std::string firstProblem;
         for(std::future<std::string>& job : jobs){

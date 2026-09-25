@@ -41,8 +41,9 @@ struct Params{
     float4 toMap0, toMap1, toMap2;       // svijet -> mapa, stupci
     float4 fromMap0, fromMap1, fromMap2; // mapa -> svijet, stupci
     uint4 flags;            // skyActive, skyVisibleToCamera, backplateTexture (NONE), skyLightIndex (NONE)
-    float4 values;          // indirectClamp, 0, 0, 0
+    float4 values;          // indirectClamp, k1, k2, 0
     uint4 extra;            // seed, conditionalOffset, 0, 0
+    float4 distortion;      // fx, fy, cx, cy objektiva (fx 0: ravna leca)
 };
 
 struct Material{
@@ -755,8 +756,29 @@ float3 clampContribution(float3 c, bool indirect, float clampValue){
     return l > clampValue ? c * (clampValue / l) : c;
 }
 
+// Distorzija lece, u pikselima slike - Tracer::Camera::distortPixel / undistortPixel
+bool distortedLens(Params P){ return P.distortion.x > 0.0 && (P.values.y != 0.0 || P.values.z != 0.0); }
+float2 distortPixel(Params P, float2 p){
+    if(!distortedLens(P)) return p;
+    const float2 n = (p - P.distortion.zw) / P.distortion.xy;
+    const float r2 = dot(n, n);
+    return P.distortion.zw + P.distortion.xy * n * (1.0 + r2 * (P.values.y + r2 * P.values.z));
+}
+float2 undistortPixel(Params P, float2 p){
+    if(!distortedLens(P)) return p;
+    const float2 m = (p - P.distortion.zw) / P.distortion.xy;
+    float2 n = m;
+    for(int step = 0; step < 8; ++step){
+        const float r2 = dot(n, n);
+        const float factor = 1.0 + r2 * (P.values.y + r2 * P.values.z);
+        if(factor <= 0.0) break;
+        n = m / factor;
+    }
+    return P.distortion.zw + P.distortion.xy * n;
+}
+
 float3 backplateAt(Params P, float3 local, bool clampToFrame, out bool inside){
-    const float2 px = float2(P.lens.y + P.lens.x * local.x / -local.z, P.lens.z - P.lens.x * local.y / -local.z);
+    const float2 px = distortPixel(P, float2(P.lens.y + P.lens.x * local.x / -local.z, P.lens.z - P.lens.x * local.y / -local.z));
     float2 uv = px / float2(P.lens2.y, P.lens2.z);
     inside = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
     if(clampToFrame) uv = clamp(uv, float2(0.0), float2(1.0));
@@ -798,7 +820,8 @@ float tent(float u){
     return u < 0.5 ? -r + r * sqrt(2.0 * u) : r - r * sqrt(2.0 - 2.0 * u);
 }
 
-void cameraRay(Params P, float2 pixel, float2 lens, out float3 origin, out float3 direction){
+void cameraRay(Params P, float2 pixelIn, float2 lens, out float3 origin, out float3 direction){
+    const float2 pixel = undistortPixel(P, pixelIn);
     float3 d = float3((pixel.x - P.lens.y) / P.lens.x, -(pixel.y - P.lens.z) / P.lens.x, -1.0);
     float3 o = float3(0.0);
     if(P.lens.w > 0.0){

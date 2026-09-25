@@ -387,6 +387,8 @@ uint64_t Stage::fingerprint() const{
         if(e.camera){
             h.add(e.camera->focalPixels); h.add(e.camera->centreX); h.add(e.camera->centreY);
             h.add(e.camera->width); h.add(e.camera->height); h.text(e.camera->plate); h.add(e.camera->plateFirstFrame);
+            h.add(e.camera->distortionFx); h.add(e.camera->distortionFy); h.add(e.camera->distortionCx);
+            h.add(e.camera->distortionCy); h.add(e.camera->k1); h.add(e.camera->k2);
         }
         h.add(e.points.has_value());
         if(e.points){

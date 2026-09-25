@@ -161,8 +161,19 @@ struct Camera{
     float apertureRadius = 0.0f;                //u jedinicama scene; 0 = sve ostro
     float focusDistance = 1.0f;                 //udaljenost ostre ravnine, duz -Z kamere
 
-    //Zraka kroz tocku slike (u pikselima, kontinuirano). lens u [0,1)^2 bira tocku na leci
-    void ray(glm::vec2 pixel, glm::vec2 lens, glm::vec3& origin, glm::vec3& direction) const;
+    //DISTORZIJA LECE (Brown, radijalno), u pikselima slike: stvarni piksel = distort(pinhole piksel)
+    //s vlastitim f i c objektiva (Warp::Camera). Zraka ide kroz ISPRAVLJENU tocku, pa render ima
+    //zakrivljenje snimke bez ikakvog prevzorkovanja. lensFx 0: ravna leca
+    glm::vec4 lens{0.0f};                       //fx, fy, cx, cy
+    float k1 = 0.0f, k2 = 0.0f;
+    bool distorted() const {return lens.x > 0.0f && lens.y > 0.0f && (k1 != 0.0f || k2 != 0.0f);}
+    glm::vec2 distortPixel(glm::vec2 pinhole) const;
+    glm::vec2 undistortPixel(glm::vec2 pixel) const;
+    //Tocka u prostoru kamere (z < 0) u piksele slike, s distorzijom
+    glm::vec2 pixelOf(const glm::vec3& local) const;
+
+    //Zraka kroz tocku slike (u pikselima, kontinuirano). lensSample u [0,1)^2 bira tocku na leci
+    void ray(glm::vec2 pixel, glm::vec2 lensSample, glm::vec3& origin, glm::vec3& direction) const;
     //Obrnuto: svijet u piksele. false iza kamere
     bool project(const glm::vec3& world, glm::vec2& pixel) const;
 };

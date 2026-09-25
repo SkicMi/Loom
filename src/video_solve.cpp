@@ -1798,6 +1798,19 @@ int main(int realArgc, char** realArgv){
         // trenira dok procesor lokalizira medjukadrove
         //=================================================================================
         const bool colmapWritten = Engine::writeColmapText(outputDirectory, best, bestIntrinsics, solveObservations, {}, colours);
+        //OBJEKTIV SNIMKE uz ispravljenu kameru. cameras.txt opisuje ravnu (PINHOLE) kameru ispravljenih
+        //slika; snimka je i dalje zakrivljena. Editor iz ovoga zna zakriviti render isto kao leca,
+        //pa CG na rubu kadra ne klizi po snimci (LoomRender.h, Warp::Camera::distorted)
+        if(colmapWritten && havePhysicalLens && (physicalLens.k1 != 0.0f || physicalLens.k2 != 0.0f)){
+            std::ofstream lensFile(outputDirectory + "/lens.txt");
+            lensFile << "# Loom: distorzija IZVORNE snimke prema pinhole kameri iz cameras.txt, u pikselima snimke\n"
+                     << "# n = (p - c) / f, distorted = c + f * n * (1 + k1 r^2 + k2 r^4)\n"
+                     << "# radial fx fy cx cy k1 k2\n";
+            char line[256];
+            std::snprintf(line, sizeof(line), "radial %.9g %.9g %.9g %.9g %.9g %.9g\n", double(physicalLens.fx), double(physicalLens.fy),
+                          double(physicalLens.cx), double(physicalLens.cy), double(physicalLens.k1), double(physicalLens.k2));
+            lensFile << line;
+        }
         if(colmapWritten && !thenCommand.empty()){
             std::printf("  --then: pokrecem uz pune slicice: %s\n", thenCommand.c_str());
             thenWorker = std::thread([&thenCommand, &thenStatus]{

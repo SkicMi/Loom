@@ -109,6 +109,15 @@ struct Camera{
     //kamere koju je netko dodao rukom
     std::string plate;
     int plateFirstFrame = 0;
+
+    //DISTORZIJA SNIMKE (Brown, radijalno), u pikselima snimke. Pinhole gore je kamera ISPRAVLJENE
+    //slike - ona koju je solve rijesio. Pravi piksel snimke je distort(pinhole piksel):
+    //   n = (p - c) / f,  p' = c + f * n * (1 + k1 r^2 + k2 r^4),  r = |n|
+    //s vlastitim f i c (objektiv koji je solve procijenio). distortionFx 0: ravna leca.
+    //Render kroz ovakvu kameru zakrivi CG isto kao sto je leca zakrivila snimku
+    float distortionFx = 0.0f, distortionFy = 0.0f, distortionCx = 0.0f, distortionCy = 0.0f;
+    float k1 = 0.0f, k2 = 0.0f;
+    bool distorted() const {return distortionFx > 0.0f && distortionFy > 0.0f && (k1 != 0.0f || k2 != 0.0f);}
 };
 
 //Oblak tocaka iz solvea. Boje su prazne kad ih solve nije zapisao

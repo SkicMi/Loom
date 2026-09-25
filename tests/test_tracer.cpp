@@ -331,6 +331,42 @@ int main(){
                          expected.x, expected.y, error));
     }
 
+    //-- 9b. Distorzija lece: kugla pada na distort(pinhole projekcije), i undistort(distort(p)) = p --
+    {
+        Scene scene;
+        Material white; white.emission = glm::vec3(1.0f); white.baseColor = glm::vec3(0.0f);
+        const glm::vec3 where(1.45f, 0.95f, -0.2f);
+        scene.addMesh(uvSphere(0.04f, 48, 24), glm::translate(glm::mat4(1.0f), where), scene.addMaterial(white));
+        scene.camera = lookAt({0.0f, 0.3f, 3.0f}, {0, 0.2f, 0}, 320, 180, 260.0f, glm::vec2(161.0f, 88.0f));
+        scene.camera.lens = glm::vec4(255.0f, 255.0f, 158.0f, 91.0f);
+        scene.camera.k1 = -0.18f;
+        scene.camera.k2 = 0.03f;
+        glm::vec2 expected;
+        scene.camera.project(where, expected);
+        const glm::vec3 local = glm::vec3(glm::inverse(scene.camera.cameraToWorld) * glm::vec4(where, 1.0f));
+        const glm::vec2 pinhole(161.0f + 260.0f * local.x / -local.z, 88.0f - 260.0f * local.y / -local.z);
+        float roundTrip = 0.0f;
+        for(float x = 0.0f; x <= 320.0f; x += 32.0f) for(float y = 0.0f; y <= 180.0f; y += 30.0f)
+            roundTrip = std::max(roundTrip, glm::length(scene.camera.undistortPixel(scene.camera.distortPixel({x, y})) - glm::vec2(x, y)));
+        Renderer renderer(std::move(scene));
+        RenderSettings settings;
+        settings.samples = 64;
+        renderer.render(settings);
+        const Frame f = renderer.frame();
+        glm::dvec2 centroid(0.0);
+        double mass = 0.0;
+        for(uint32_t y = 0; y < f.height; ++y) for(uint32_t x = 0; x < f.width; ++x){
+            const float c = f.cg[(size_t(y) * f.width + x) * 4 + 3];
+            centroid += glm::dvec2(x + 0.5, y + 0.5) * double(c);
+            mass += c;
+        }
+        centroid /= std::max(mass, 1e-9);
+        const float error = glm::length(glm::vec2(centroid) - expected);
+        report.check("distorzija", error < 0.2f && glm::length(expected - pinhole) > 3.0f && roundTrip < 0.01f,
+                     fmt("teziste (%.2f, %.2f), distort (%.2f, %.2f), pinhole bi bio (%.2f, %.2f); greska %.3f px, povratak %.4f px",
+                         centroid.x, centroid.y, expected.x, expected.y, pinhole.x, pinhole.y, error, roundTrip));
+    }
+
     //-- 10. Dubina i shadow catcher -----------------------------------------------------------------
     {
         Scene scene;

@@ -63,12 +63,41 @@ glm::vec4 Texture::sample(glm::vec2 uv) const{
     return glm::mix(glm::mix(a, b, tx), glm::mix(c, d, tx), ty);
 }
 
-void Camera::ray(glm::vec2 pixel, glm::vec2 lens, glm::vec3& origin, glm::vec3& direction) const{
+glm::vec2 Camera::distortPixel(glm::vec2 p) const{
+    if(!distorted()) return p;
+    const glm::vec2 f(lens.x, lens.y), c(lens.z, lens.w);
+    const glm::vec2 n = (p - c) / f;
+    const float r2 = glm::dot(n, n);
+    return c + f * n * (1.0f + r2 * (k1 + r2 * k2));
+}
+
+glm::vec2 Camera::undistortPixel(glm::vec2 p) const{
+    if(!distorted()) return p;
+    //Obrnuto fiksnom tockom, kao Engine::undistort - ali osam koraka: rub 4K kadra s k1 0.2 treba
+    //vise od pet da greska padne ispod stotinke piksela (test_tracer)
+    const glm::vec2 f(lens.x, lens.y), c(lens.z, lens.w);
+    const glm::vec2 m = (p - c) / f;
+    glm::vec2 n = m;
+    for(int step = 0; step < 8; ++step){
+        const float r2 = glm::dot(n, n);
+        const float factor = 1.0f + r2 * (k1 + r2 * k2);
+        if(factor <= 0.0f) break;
+        n = m / factor;
+    }
+    return c + f * n;
+}
+
+glm::vec2 Camera::pixelOf(const glm::vec3& local) const{
+    return distortPixel(glm::vec2(centre.x + focalPixels * local.x / -local.z, centre.y - focalPixels * local.y / -local.z));
+}
+
+void Camera::ray(glm::vec2 pixelIn, glm::vec2 lensSample, glm::vec3& origin, glm::vec3& direction) const{
+    const glm::vec2 pixel = undistortPixel(pixelIn);
     glm::vec3 d((pixel.x - centre.x) / focalPixels, -(pixel.y - centre.y) / focalPixels, -1.0f);
     glm::vec3 o(0.0f);
     if(apertureRadius > 0.0f){
         //Konkoncentricno preslikavanje kvadrata na krug (Shirley-Chiu): ravnomjerno, bez nabora
-        const glm::vec2 s = lens * 2.0f - 1.0f;
+        const glm::vec2 s = lensSample * 2.0f - 1.0f;
         glm::vec2 disk(0.0f);
         if(s.x != 0.0f || s.y != 0.0f){
             const float pi4 = glm::pi<float>() * 0.25f;
@@ -85,7 +114,7 @@ void Camera::ray(glm::vec2 pixel, glm::vec2 lens, glm::vec3& origin, glm::vec3& 
 bool Camera::project(const glm::vec3& world, glm::vec2& pixel) const{
     const glm::vec3 p = glm::vec3(glm::inverse(cameraToWorld) * glm::vec4(world, 1.0f));
     if(p.z >= 0.0f) return false;
-    pixel = glm::vec2(centre.x + focalPixels * p.x / -p.z, centre.y - focalPixels * p.y / -p.z);
+    pixel = pixelOf(p);
     return true;
 }
 
