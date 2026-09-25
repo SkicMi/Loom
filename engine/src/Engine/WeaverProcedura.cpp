@@ -1,5 +1,6 @@
 #include "WeaverProcedura.h"
 
+#include <cstddef>
 #include <queue>
 #include <set>
 #include <tuple>

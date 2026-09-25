@@ -2107,7 +2107,7 @@
                 float afterBoard = bar.x + 90.0f;
                 if(proceduraPanel.open){
                     auto [backToScene, afterBack] = toolButton("Back to Scene", bar.x + 90.0f, y, h);
-                    (void)afterBack;
+                    afterBoard = afterBack;
                     if(backToScene){ proceduraPanel.open = false; activeRailPane = RailPane::None; }
                 }else if(motionPanel.open){
                     auto [backToScene, afterBack] = toolButton("Back to Scene", bar.x + 90.0f, y, h);
@@ -5792,6 +5792,7 @@
             else if(importer.open) importer.open = false;
             else if(autoRig.open) autoRig.open = false;
             else if(motionPanel.open) motionPanel.open = false;
+            else if(proceduraPanel.open){ proceduraPanel.open = false; activeRailPane = RailPane::None; }
             else if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
         }
 

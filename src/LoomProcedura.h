@@ -19,14 +19,10 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
     ui.label("PROCEDURAL GRAPH");
     ui.separator();
 
-    const Engine::WeaverProcedura::ValidationResult validation =
-        Engine::WeaverProcedura::validate(state.graph);
     ui.value("Nodes", std::to_string(state.graph.nodes.size()));
     ui.value("Connections", std::to_string(state.graph.links.size()));
     ui.value("Seed", std::to_string(state.graph.seed));
-
-    if(!validation) ui.label("Graph error: " + validation.error);
-    else if(state.graph.nodes.empty()) ui.label("Empty graph. The graph scaffold is ready.");
+    if(state.graph.nodes.empty()) ui.label("Empty graph. The graph scaffold is ready.");
 
     ui.separator();
     ui.label("First generator slice: Curve to Sweep.");
