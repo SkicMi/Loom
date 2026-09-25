@@ -151,6 +151,24 @@ def ssim(a, b, window, size):
     return (((2 * mxy + c1) * (2 * vxy + c2)) / ((mxx + myy + c1) * (vx + vy + c2))).mean()
 
 
+def ssim_fast(a, b, line):
+    """Isti SSIM kao ssim(), za gubitak u treningu: Gaussov prozor je umnozak dvaju 1D, pa se pet
+    zamucivanja (x, y, x^2, y^2, xy) radi kao JEDNA grupna konvolucija vodoravno i jedna okomito -
+    22 umjesto 5 x 121 mnozenja po pikselu. Rub s nulama se razdvaja isto, pa je rezultat isti do
+    zaokruzivanja. Na 1080p s 3.75M gaussiana gubitak je bio 8.3 ms od 99 ms koraka"""
+    x = a.permute(2, 0, 1)
+    y = b.permute(2, 0, 1)
+    stack = torch.cat([x, y, x * x, y * y, x * y], 0)[None]
+    size = line.numel(); pad = size // 2
+    across = torch.nn.functional.conv2d(stack, line.view(1, 1, 1, size).expand(15, 1, 1, size), padding=(0, pad), groups=15)
+    blurred = torch.nn.functional.conv2d(across, line.view(1, 1, size, 1).expand(15, 1, size, 1), padding=(pad, 0), groups=15)[0]
+    mx, my, sxx, syy, sxy = blurred.split(3)
+    mxx, myy, mxy = mx * mx, my * my, mx * my
+    vx, vy, vxy = sxx - mxx, syy - myy, sxy - mxy
+    c1, c2 = 0.01 ** 2, 0.03 ** 2
+    return (((2 * mxy + c1) * (2 * vxy + c2)) / ((mxx + myy + c1) * (vx + vy + c2))).mean()
+
+
 #=============================================================================================
 # Dubina iz modela kao uporiste ondje gdje geometrija nema nikakvo
 #
@@ -274,6 +292,12 @@ def main():
     ap.add_argument("--exposure", action=argparse.BooleanOptionalAction, default=True,
                     help="naucena korekcija boje po kadru (pojacanje i pomak po kanalu) za auto-ISO; "
                          "izdvojeni kadrovi dobiju interpoliranu od susjeda, zapise se u <izlaz>_exposure.json")
+    #ZADANO UKLJUCENO: na C0257 (15000 koraka, bez granice) korak 99 -> 73 ms pri 3.75M gaussiana,
+    #ostrina +10 % (1080p) i +25 % (4K, bolja na 39/39), PSNR prosjek -0.18 +- 0.08 ali medijan +0.3
+    ap.add_argument("--visible-adam", action=argparse.BooleanOptionalAction, default=True,
+                    help="optimizator gaussiana azurira samo one vidljive u kadru (gsplat SelectiveAdam)")
+    ap.add_argument("--profile", action="store_true",
+                    help="svakih 500 koraka prosjecno vrijeme po dijelu koraka (sinkronizira karticu - samo za mjerenje)")
     ap.add_argument("--finish-full-res", type=int, default=0,
                     help="jos toliko koraka NA PUNOJ RAZLUCIVOSTI nakon --steps (postupno: grubo pa fino)")
     ap.add_argument("--opis", default="",
@@ -444,8 +468,15 @@ def main():
     spread = float(np.linalg.norm(points - points.mean(axis=0), axis=1).mean())
     rates = {"means": 1.6e-4 * spread, "scales": 5e-3, "quats": 1e-3,
              "opacities": 5e-2, "sh0": 2.5e-3, "shN": 2.5e-3 / 20}
-    optimizers = {k: torch.optim.Adam([{"params": params[k], "lr": rates[k], "name": k}],
-                                      eps=1e-15, betas=(0.9, 0.999)) for k in params}
+    #VIDLJIVI ADAM (--visible-adam): obicni Adam svaki korak prode kroz SVE gaussiane (26 ms od 99 pri
+    #3.75M), a u jednom kadru vidi se tek dio njih. SelectiveAdam azurira momente samo vidljivima
+    if args.visible_adam:
+        from gsplat.optimizers import SelectiveAdam
+        optimizers = {k: SelectiveAdam([{"params": params[k], "lr": rates[k], "name": k}],
+                                       eps=1e-15, betas=(0.9, 0.999)) for k in params}
+    else:
+        optimizers = {k: torch.optim.Adam([{"params": params[k], "lr": rates[k], "name": k}],
+                                          eps=1e-15, betas=(0.9, 0.999)) for k in params}
 
     #EKSPOZICIJA PO KADRU (--exposure). Kamera snima na auto-ISO (C0257: 500-1250, 27 promjena),
     #pa ista ploha u razlicitim kadrovima ima razlicitu svjetlinu - a bez ovoga je trener mora
@@ -583,6 +614,7 @@ def main():
 
     windowSize = 11
     window = gaussian_window(windowSize, 1.5, device)
+    windowLine = window[0, 0].sum(0)            #1D prozor: redak 2D prozora zbrojen po stupcima
     lastDepthTerm = 0.0
     lastNeedles = 0.0
     print(f"Trening: {args.steps} koraka, mjerilo scene {spread:.2f}, gubitak {args.loss}, "
@@ -601,7 +633,17 @@ def main():
             out.append(torch.from_numpy(np.asarray(picture, dtype=np.uint8)))
         return torch.stack(out)
 
+    phaseTimes = {}
+    phaseMark = [time.time()]
+    def tick(name):
+        if not args.profile: return
+        torch.cuda.synchronize()
+        now = time.time()
+        phaseTimes[name] = phaseTimes.get(name, 0.0) + now - phaseMark[0]
+        phaseMark[0] = now
+
     for step in range(args.steps + args.finish_full_res):
+        tick("ostalo")
         if step == args.steps and args.finish_full_res > 0 and scale > 1:
             scale = 1
             width, height = camera["width"], camera["height"]
@@ -612,11 +654,13 @@ def main():
             print(f"  puna razlucivost od koraka {step}: {width}x{height}, jos {args.finish_full_res} koraka", flush=True)
         index = int(torch.randint(len(pictures), (1,), generator=generator))
         truth = pictures[index].to(device, non_blocking=True).float() / 255.0
+        tick("slika")
 
         rendered, alpha, info = draw(views[index:index+1], viewsEnd[index:index+1],
                                      min(args.sh_degree, step // 1000),     #niži redovi prvi, kao u izvornom radu
                                      "RGB+ED" if len(depthMaps) else "RGB")
 
+        tick("crtanje")
         strategy.step_pre_backward(params, optimizers, state, step, info)
         image = rendered[0][..., :3]
         if exposure is not None:
@@ -639,7 +683,7 @@ def main():
             absolute = (image - truth).abs().mean()
 
         if args.loss == "ssim":
-            structure = 1.0 - ssim(image, truth, window, windowSize)
+            structure = 1.0 - ssim_fast(image, truth, windowLine)
             loss = 0.8 * absolute + 0.2 * structure
         else:
             loss = absolute
@@ -701,14 +745,27 @@ def main():
             exposureOptimizer.zero_grad(set_to_none=True)
         for optimizer in optimizers.values():
             optimizer.zero_grad(set_to_none=True)
+        tick("gubitak")
         loss.backward()
+        tick("unatrag")
 
         if args.strategy == "mcmc":
             strategy.step_post_backward(params, optimizers, state, step, info, lr=rates["means"])
         else:
             strategy.step_post_backward(params, optimizers, state, step, info, packed=not usesUt)
-        for optimizer in optimizers.values():
-            optimizer.step()
+        tick("zgusnjavanje")
+        if args.visible_adam:
+            if "gaussian_ids" in info:
+                visible = torch.zeros(params["means"].shape[0], dtype=torch.bool, device=device)
+                visible[info["gaussian_ids"]] = True
+            else:
+                visible = (info["radii"] > 0).all(-1).any(0)
+            for optimizer in optimizers.values():
+                optimizer.step(visible)
+        else:
+            for optimizer in optimizers.values():
+                optimizer.step()
+        tick("optimizator")
         if exposure is not None:
             exposureOptimizer.step()
 
@@ -724,6 +781,11 @@ def main():
             extra = f"  dubina {lastDepthTerm:.4f} (tezina {args.depth_weight})" if len(depthMaps) else ""
             if args.anisotropy_weight > 0.0: extra += f"  iglice {lastNeedles:.3f} (tezina {args.anisotropy_weight})"
             print(f"  {step:5d}  gubitak {loss.item():.4f}  gaussiana {params['means'].shape[0]}{extra}")
+            if args.profile and phaseTimes:
+                total = sum(phaseTimes.values())
+                print("         ms po koraku: " + ", ".join(f"{k} {1000 * v / 500:.1f}" for k, v in phaseTimes.items())
+                      + f"; ukupno {1000 * total / 500:.1f}", flush=True)
+                phaseTimes.clear()
 
     # -------------------------------------------------------------------------------
     # Ciscenje (floaters.py)
