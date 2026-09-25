@@ -1113,8 +1113,14 @@ int main(int realArgc, char** realArgv){
         unknown.width = info.width; unknown.height = info.height;
         unknown.cx = 0.5f * float(info.width); unknown.cy = 0.5f * float(info.height);
         unknown.fx = unknown.fy = 0.5f * float(info.width); //samo predlozak; odgovor dolazi iz grafa
+        //SAMOKALIBRACIJA BEZ TEZINA PO IZVORU. Tezina uglova 0.5 pomaze konacnoj rekonstrukciji, ali
+        //samokalibraciju pomakne: na C0257 f 4259 / k1 -0.025 (potvrdjeno splatom) postane 4402 / 0.000,
+        //a SSIM na 4K padne za 0.03. Kalibracija iz samo preciznih opazanja je jos gora (f 4354-4599,
+        //k1 0, brzi kandidat pokvaren) - pa f i k1 iz svih opazanja s jednakom tezinom
+        Engine::ReconstructConfig calibrating = reconstructionConfig(false);
+        calibrating.coarseWeight = 1.0;
         automatic = Engine::reconstructSelfCalibrated(
-            observations, cameraCount, pointCount, unknown, reconstructionConfig(false));
+            observations, cameraCount, pointCount, unknown, calibrating);
         if(automatic.determined){
             const double fov = 2.0 * std::atan(0.5 * double(info.width) /
                                                double(automatic.measuredIntrinsics.fx)) *

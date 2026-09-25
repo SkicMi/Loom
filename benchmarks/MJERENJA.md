@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (259 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (264 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -43,6 +43,11 @@ Iz `benchmarks/mjerenja.jsonl` (259 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 02:24 | C0257 | E10 cijela snimka, f 4259, --coarse-weight 0.5 | 231 | 1089 | 229/229 | 267086 | 1.367 | 2.948 | 2.200 | 4259 |  | 82.80 | 165.80 | 1384 | 352.80 | omjer 2.53 -> 2.20; precizne 0.876 -> 0.867 px | zapisano_px=1.639, izlaz=e_w05, faze_s=pracenje i graf 265.5, brzi kandidat 110.0, puna obrada 277.9, provjere 0.0, slike kadrova 81.5, pune slicice i USD 352.9, COLMAP i provjera 1.0, prostor_mjerila_medijan_px=0.867 |
 | 2026-09-25 02:33 | C0257 | analiza: izoblicenje po kadru na ostatku preciznih znacajki |  |  |  |  |  |  |  |  |  |  |  |  |  | stabilizacija/RS objasne ~0.1 px; vecina je sum polozaja znacajki - 0.5 px nije dostizno podesavanjem | prostor_mjerila_medijan_px=0.844, nakon_afinog_px=0.806, nakon_kvadratnog_px=0.751 |
 | 2026-09-25 15:53 | C0257 | CISTO: cijeli lanac (solve + trening --then), zadano | 231 | 1846 | 229/229 | 267253 | 1.359 | 4.415 | 3.170 | 4402 | -0.000 | 82.00 | 158.60 | 1240 | 343.40 | cijeli lanac 30m46 (solve 17m25, trening uz njega jos 13m20); samokalibracija f 4402, k1 -0.0004 | izdvojeni_od=brzog kandidata, zapisano_px=1.625, izlaz=lanac, faze_s=pracenje i graf 257.3, brzi kandidat 224.9, puna obrada 157.8, provjere 0.0, slike kadrova 60.8, pune slicice i USD 343.6, COLMAP i provjera 1.1 |
+| 2026-09-25 16:47 | C0257 | samokalibracija A: tezina 1.0, sva opazanja |  |  |  |  |  |  |  | 4259 | -0.025 |  |  |  |  | potvrdjeno splatom |  |
+| 2026-09-25 16:47 | C0257 | samokalibracija B: tezina 0.5, sva opazanja |  |  |  |  |  |  |  | 4402 | -0.000 |  |  |  |  | SSIM 4K -0.03 u cistom mjerenju |  |
+| 2026-09-25 16:47 | C0257 | samokalibracija C: tezina 0.5, samo precizna |  |  |  |  |  |  |  | 4599 | -0.000 |  |  |  |  | nestabilno, brzi kandidat pokvaren |  |
+| 2026-09-25 16:47 | C0257 | samokalibracija D: tezina 1.0, samo precizna |  |  |  |  |  |  |  | 4354 | -0.000 |  |  |  |  | nestabilno, brzi kandidat pokvaren |  |
+| 2026-09-25 16:47 | C0257 | samokalibracija E: samokalibracija 1.0, obrada 0.5 (zadano) |  |  |  |  |  |  |  | 4259 | -0.025 |  |  |  |  | zadano: kalibracija A, rekonstrukcija kao E10 (izdvojeni 2.947, omjer 2.20) |  |
 
 ## trening
 
