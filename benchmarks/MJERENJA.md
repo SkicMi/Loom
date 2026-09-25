@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (362 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (370 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -398,4 +398,17 @@ Iz `benchmarks/mjerenja.jsonl` (362 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 22:13 | C0255 | makro dio (1250-1960) sam za sebe: 35/70 kamera, omjer izdvojenih 2.88, samokalibracija 84 st odbijena - snimka preslaba za klasicni solve (bijelo bez teksture, mala dubinska ostrina); treba nauceni prior |  |
 | 2026-09-25 23:01 | C0257 | E14b ispravak poza (rijetki Adam 1e-5 od 3000): PSNR +0.24+-0.08 dB (29/39) na 1080p i 4K, SSIM i ostrina isti - ZADANO |  |
 | 2026-09-25 23:16 | C0257 | E17 najostriji susjed (+-4) s pozom iz punih slicica: ostrina +28 % (1080p) i +48 % (4K), bolje na 39/39, PSNR +0.05 (sum) - ugradjuje se u VideoSolve |  |
+| 2026-09-26 00:10 |  | MotionQuality: najbolja od Kimodovih varijanti bira se sama (klizanje, propadanje, lebdenje, trzaj, skok kukova, ruta); na 7 generiranja najgora varijanta je 1.3-5.5x losija od najbolje, a 3 od 4 u motion_1790364325023 lebde 12-27 cm - ZADANO u editoru |  |
+
+## pokret
+
+| datum | snimka | opis | ostalo |
+|---|---|---|---|
+| 2026-09-26 00:10 | motion_1790364325023 | A person walks along the path | varijanti=4, najbolja=02, ocjena_najbolje=3.110, ocjena_najgore=17.11, skate_cm_s=11.40, propada_cm=0.000, trzaj=183.20, lebdi_cm=1.880, mjera=MotionScore (Engine/MotionQuality) |
+| 2026-09-26 00:10 | motion_1790369311054 | A person runs forward with an athletic stride and coordinated arm swing / A person pulls o | varijanti=4, najbolja=00, ocjena_najbolje=3.100, ocjena_najgore=6.430, skate_cm_s=11.69, propada_cm=1.190, trzaj=179.80, lebdi_cm=0.000, mjera=MotionScore (Engine/MotionQuality) |
+| 2026-09-26 00:10 | motion_1790368235350 | A person crawls forward on hands and knees close to the floor with steady contacts | varijanti=4, najbolja=02, ocjena_najbolje=3.210, ocjena_najgore=4.140, skate_cm_s=15.58, propada_cm=2.080, trzaj=66.50, lebdi_cm=0.030, mjera=MotionScore (Engine/MotionQuality) |
+| 2026-09-26 00:10 | motion_1790357086676 | A person runs forward with an athletic stride and coordinated arm swing | varijanti=4, najbolja=03, ocjena_najbolje=3.260, ocjena_najgore=5.360, skate_cm_s=11.78, propada_cm=0.010, trzaj=253.40, lebdi_cm=0.690, mjera=MotionScore (Engine/MotionQuality) |
+| 2026-09-26 00:10 | motion_1790295931355 | A person dances happily | varijanti=4, najbolja=00, ocjena_najbolje=1.820, ocjena_najgore=3.390, skate_cm_s=9.810, propada_cm=0.020, trzaj=100.20, lebdi_cm=0.000, mjera=MotionScore (Engine/MotionQuality) |
+| 2026-09-26 00:10 | motion_1790367917330 | A person walks backward along the path | varijanti=4, najbolja=01, ocjena_najbolje=2.170, ocjena_najgore=4.590, skate_cm_s=8.920, propada_cm=0.630, trzaj=80.20, lebdi_cm=1.060, mjera=MotionScore (Engine/MotionQuality) |
+| 2026-09-26 00:10 | motion_1790358021365 | A person walks forward at a relaxed pace with a natural arm swing | varijanti=4, najbolja=03, ocjena_najbolje=3.710, ocjena_najgore=5.620, skate_cm_s=31.26, propada_cm=0.050, trzaj=60.10, lebdi_cm=0.000, mjera=MotionScore (Engine/MotionQuality) |
 

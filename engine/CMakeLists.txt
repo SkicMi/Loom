@@ -50,6 +50,7 @@ add_library(Engine STATIC
     src/Engine/SelfCalibration.cpp
     src/Engine/SolveCache.cpp
     src/Engine/WeaverMotion.cpp
+    src/Engine/MotionQuality.cpp
     src/Engine/WeaverProcedura.cpp
 )
 

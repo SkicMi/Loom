@@ -2046,7 +2046,18 @@
                                 importMotion(samples.front(), generatedMotionTarget);
                                 message = "Kimodo generated one BVH sample; it is available in Recent Motions.";
                             }else{
-                                message = "Kimodo generated " + std::to_string(samples.size()) + " BVH variations; choose one in Recent Motions.";
+                                //Najbolja po mjeri (LoomMotionQuality.h) ide na lik odmah; ostale
+                                //cekaju u Reviewu. Prije je trebalo otvoriti svaku da se nadje dobra
+                                const int best = Loom::bestMotionVariant(samples, motionPanel.qualityCache);
+                                if(best >= 0){
+                                    importMotion(samples[size_t(best)], generatedMotionTarget);
+                                    message = "Kimodo generated " + std::to_string(samples.size()) +
+                                        " variations; loaded #" + std::to_string(best + 1) + " (" +
+                                        Engine::MotionQuality::summary(motionPanel.qualityCache.get(samples[size_t(best)])) +
+                                        "). Others are in Review.";
+                                }else{
+                                    message = "Kimodo generated " + std::to_string(samples.size()) + " BVH variations; choose one in Review.";
+                                }
                             }
                             motionPanel.open = true;
                         }else{

@@ -17,6 +17,7 @@
 //=============================================================================================
 #include "LoomJob.h"
 #include "LoomMotionDirect.h"
+#include "LoomMotionQuality.h"
 #include "LoomWeaverMotion.h"
 
 #include <Treadle/Ui.h>
@@ -880,6 +881,7 @@ struct MotionPanelState{
     bool hasCopiedPose = false;
     int qualityCompareIndex = 0;
     bool qualityCompareOpen = false;
+    MotionQualityCache qualityCache;        //ocjena varijanti, po datoteci i vremenu zapisa
     bool targetListOpen = false;
     bool gesturesOpen = false;
     bool recipeOptionsOpen = false;
@@ -1439,10 +1441,15 @@ inline void drawMotionReview(Treadle::Ui& ui, MotionPanelState& state, const Tre
             std::sort(variants.begin(), variants.end(), [](const MotionHistoryEntry* a, const MotionHistoryEntry* b){
                 return a->bvh.filename() < b->bvh.filename();
             });
+            //Najbolja varijanta je oznacena, a ispod stoji zasto: korisnik vidi i izbor i razlog,
+            //i moze ga odbiti - mjera ne vidi stil ni to je li pokret ono sto je opis trazio
+            std::vector<std::filesystem::path> paths;
+            for(const MotionHistoryEntry* variant : variants) paths.push_back(variant->bvh);
+            const int best = bestMotionVariant(paths, state.qualityCache);
             std::string title = first.actions.empty() ? first.bvh.stem().string() : first.actions.front().prompt;
             if(first.actions.size() > 1) title += "  (+" + std::to_string(first.actions.size() - 1) + ")";
             if(ui.selectable(Treadle::fitText(title, area.width - 40.0f, theme.textScale), false))
-                action.importPath = variants.front()->bvh;
+                action.importPath = variants[size_t(std::max(0, best))]->bvh;
             if(ui.rightClicked() && !first.actions.empty()){
                 state.actions = first.actions;
                 state.activeAction = 0;
@@ -1455,9 +1462,15 @@ inline void drawMotionReview(Treadle::Ui& ui, MotionPanelState& state, const Tre
             }
             if(variants.size() > 1){
                 std::vector<std::string> labels;
-                for(size_t k = 0; k < variants.size() && k < 8; ++k) labels.push_back(std::to_string(k + 1));
-                const int clicked = ui.pills(labels, -1);
+                for(size_t k = 0; k < variants.size() && k < 8; ++k)
+                    labels.push_back(int(k) == best ? std::to_string(k + 1) + " best" : std::to_string(k + 1));
+                const int clicked = ui.pills(labels, best);
                 if(clicked >= 0) action.importPath = variants[size_t(clicked)]->bvh;
+            }
+            if(best >= 0){
+                const Engine::MotionQuality::Report& report = state.qualityCache.get(paths[size_t(best)]);
+                ui.hint(Engine::MotionQuality::summary(report) +
+                        (report.score > 4.0f ? "  -  weakest: " + report.worst : std::string()));
             }
             i = end;
         }

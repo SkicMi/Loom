@@ -451,6 +451,11 @@ target_link_libraries(ModelInfo PRIVATE Engine)
 add_executable(OverlayBox src/overlay_box.cpp)
 target_link_libraries(OverlayBox PRIVATE Engine Spool)
 
+# MotionScore - ocjena generiranog pokreta bez gledanja: klizanje stopala, propadanje, trzaji,
+# skok korijena (Engine/MotionQuality.h). Za varijante istog opisa kaze koja je najbolja
+add_executable(MotionScore src/motion_score.cpp)
+target_link_libraries(MotionScore PRIVATE Engine)
+
 add_executable(VideoSolve src/video_solve.cpp)
 # Loom samo za --gpu-match (DescriptorMatcher na kartici); bez zastavice se kartica ne dira
 target_link_libraries(VideoSolve PRIVATE Spool Engine Loom)
