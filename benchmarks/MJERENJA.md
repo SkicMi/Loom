@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (224 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (234 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -82,6 +82,8 @@ Iz `benchmarks/mjerenja.jsonl` (224 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 02:50 | C0257 |  | 6001 | 1920x1080 | 3655125 | 380 | 25.10 | 21.03 | 0.801 |  | kamera=classic, izlaz=prof.ply, izdvojenih=39 |
 | 2026-09-25 03:08 | C0257 | E11 visible-adam + brzi SSIM, kao cisto mjerenje | 15000 | 1920x1080 | 1575873 | 1047 | 25.50 | 21.41 | 0.798 |  | kamera=classic, izlaz=vadam.ply, izdvojenih=39 |
 | 2026-09-25 04:22 | C0257 | profil koraka pri 3.75M gaussiana (1080p) |  |  |  |  |  |  |  | Adam 25.9 -> 3.8 ms (SelectiveAdam), SSIM 8.3 -> 6.4 ms; ostaje unatrag 37, crtanje 16, MCMC 9 | ms_prije=99.30, ms_poslije=73.00 |
+| 2026-09-25 04:38 | C0257 |  | 8001 | 1920x1080 | 2649927 | 471 | 25.19 | 20.68 | 0.807 |  | kamera=classic, izlaz=prof.ply, izdvojenih=39 |
+| 2026-09-25 04:54 | C0257 | E12 brisanje nevidljivih svakih 1000 + granica 2.5M | 15000 | 1920x1080 | 2094359 | 952 | 25.38 | 19.36 | 0.802 |  | kamera=classic, izlaz=prune.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -122,6 +124,8 @@ Iz `benchmarks/mjerenja.jsonl` (224 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 02:33 | C0257 | E10 coarse 0.5 | 3840x2160 | 25.32 | 0.825 | 0.102 | 39 |  |  | psnr_medijan=25.23, splat=e_w05.ply |
 | 2026-09-25 03:08 | C0257 | E11 visible-adam | 1920x1080 | 25.57 | 0.805 | 0.437 | 39 |  |  | psnr_medijan=25.50, splat=vadam.ply |
 | 2026-09-25 03:09 | C0257 | E11 visible-adam | 3840x2160 | 25.49 | 0.827 | 0.172 | 39 |  |  | psnr_medijan=25.43, splat=vadam.ply |
+| 2026-09-25 04:55 | C0257 | E12 brisanje + 2.5M | 1920x1080 | 25.48 | 0.806 | 0.436 | 39 |  |  | psnr_medijan=25.38, splat=prune.ply |
+| 2026-09-25 04:55 | C0257 | E12 brisanje + 2.5M | 3840x2160 | 25.40 | 0.828 | 0.168 | 39 |  |  | psnr_medijan=25.30, splat=prune.ply |
 
 ## usporedba
 
@@ -237,6 +241,12 @@ Iz `benchmarks/mjerenja.jsonl` (224 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 03:09 | C0257 | visible-adam + brzi SSIM prema obicnom Adamu (d1) | PSNR dB | -0.174 | 0.080 | 15/39 | zadano: 99 -> 73 ms/korak, ostrina +10 %/+25 %, PSNR prosjek -0.18 (medijan +0.3) | a=q_cist_d1, b=q_vadam_d1 |
 | 2026-09-25 03:09 | C0257 | visible-adam + brzi SSIM prema obicnom Adamu (d1) | SSIM | 0.000 | 0.001 | 19/39 | zadano: 99 -> 73 ms/korak, ostrina +10 %/+25 %, PSNR prosjek -0.18 (medijan +0.3) | a=q_cist_d1, b=q_vadam_d1 |
 | 2026-09-25 03:09 | C0257 | visible-adam + brzi SSIM prema obicnom Adamu (d1) | ostrina | 0.035 | 0.004 | 39/39 | zadano: 99 -> 73 ms/korak, ostrina +10 %/+25 %, PSNR prosjek -0.18 (medijan +0.3) | a=q_cist_d1, b=q_vadam_d1 |
+| 2026-09-25 04:55 | C0257 | brisanje nevidljivih + 2.5M prema E11 (d2) | PSNR dB | -0.091 | 0.072 | 22/39 | zadano: 17.5 -> 15.9 min, SSIM +0.0015 (31/39), PSNR/ostrina u sumu | a=q_vadam_d2, b=q_prune_d2 |
+| 2026-09-25 04:55 | C0257 | brisanje nevidljivih + 2.5M prema E11 (d2) | SSIM | 0.002 | 0.000 | 31/39 | zadano: 17.5 -> 15.9 min, SSIM +0.0015 (31/39), PSNR/ostrina u sumu | a=q_vadam_d2, b=q_prune_d2 |
+| 2026-09-25 04:55 | C0257 | brisanje nevidljivih + 2.5M prema E11 (d2) | ostrina | -0.000 | 0.002 | 18/39 | zadano: 17.5 -> 15.9 min, SSIM +0.0015 (31/39), PSNR/ostrina u sumu | a=q_vadam_d2, b=q_prune_d2 |
+| 2026-09-25 04:55 | C0257 | brisanje nevidljivih + 2.5M prema E11 (d1) | PSNR dB | -0.089 | 0.071 | 23/39 | zadano: 17.5 -> 15.9 min, SSIM +0.0015 (31/39), PSNR/ostrina u sumu | a=q_vadam_d1, b=q_prune_d1 |
+| 2026-09-25 04:55 | C0257 | brisanje nevidljivih + 2.5M prema E11 (d1) | SSIM | 0.001 | 0.000 | 28/39 | zadano: 17.5 -> 15.9 min, SSIM +0.0015 (31/39), PSNR/ostrina u sumu | a=q_vadam_d1, b=q_prune_d1 |
+| 2026-09-25 04:55 | C0257 | brisanje nevidljivih + 2.5M prema E11 (d1) | ostrina | -0.004 | 0.001 | 13/39 | zadano: 17.5 -> 15.9 min, SSIM +0.0015 (31/39), PSNR/ostrina u sumu | a=q_vadam_d1, b=q_prune_d1 |
 
 ## dekodiranje
 

@@ -296,8 +296,12 @@ def main():
     #ostrina +10 % (1080p) i +25 % (4K, bolja na 39/39), PSNR prosjek -0.18 +- 0.08 ali medijan +0.3
     ap.add_argument("--visible-adam", action=argparse.BooleanOptionalAction, default=True,
                     help="optimizator gaussiana azurira samo one vidljive u kadru (gsplat SelectiveAdam)")
-    ap.add_argument("--prune-every", type=int, default=0,
-                    help="svakih N koraka (od 3000.) ukloni gaussiane nevidljive u svim trening kadrovima")
+    #ZADANO 1000, uz granicu 2.5M: na C0257 trening 17.5 -> 15.9 min, SSIM bolji na 31/39,
+    #PSNR i ostrina u sumu; budzet ide na vidljive (na kraju 2.09M korisnih prema 1.58M)
+    ap.add_argument("--prune-every", type=int, default=1000,
+                    help="svakih N koraka (od 3000.) ukloni gaussiane nevidljive u svim trening kadrovima; 0 iskljuci")
+    ap.add_argument("--prune-budget", type=int, default=2500000,
+                    help="uz --prune-every i bez --max-gaussians: granica je manja od ove i one iz memorije kartice")
     ap.add_argument("--profile", action="store_true",
                     help="svakih 500 koraka prosjecno vrijeme po dijelu koraka (sinkronizira karticu - samo za mjerenje)")
     ap.add_argument("--finish-full-res", type=int, default=0,
@@ -509,6 +513,7 @@ def main():
         #Trecina slobodne memorije: ostatak trosi rasterizacija, unatrazni prolaz i vrhunac pri
         #dijeljenju. Izmjereno da granica tako ispadne blizu one na kojoj je stvarno puklo
         budget = int(free * 0.33 / bytesPer)
+        if args.prune_every > 0 and args.prune_budget > 0: budget = min(budget, args.prune_budget)
         print(f"Kartica: {free / (1 << 30):.1f} GB slobodno, {bytesPer} B po gaussiani "
               f"-> granica {budget / 1e6:.1f} M")
 
