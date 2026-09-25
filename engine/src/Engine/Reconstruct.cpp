@@ -303,9 +303,11 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         return healthy;
     }
 
-    if(config.initialPairTrials > 1 && config.forceInitialA == config.forceInitialB){
+    if((config.initialPairTrials > 1 || config.initialPairRetries > 0) &&
+       config.forceInitialA == config.forceInitialB){
         ReconstructConfig once = config;
         once.initialPairTrials = 1;
+        once.initialPairRetries = 0;
 
         Reconstruction best;
         std::vector<std::pair<uint32_t, uint32_t>> seen;
@@ -332,7 +334,7 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
             if(better) best = std::move(attempt);
         };
 
-        if(config.parallelInitialPairTrials){
+        if(config.parallelInitialPairTrials && config.initialPairTrials > 1){
             //Izbor sljedeceg para ovisi samo o prethodno IZABRANIM parovima, ne o ostatku njihove
             //rekonstrukcije. Zato se prvo jeftino ponovi samo pocetna faza i dobije tocno isti niz
             //parova kao u sekvencijalnom putu. Tek tada se puna, medusobno neovisna rjesenja grade
@@ -394,6 +396,19 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
 
                 keepIfBetter(std::move(attempt));
             }
+        }
+
+        //Sjeme koje nije rijesilo ni trecinu snimke - vidi ReconstructConfig::initialPairRetries
+        for(uint32_t retry = 0; retry < config.initialPairRetries && best.ok &&
+            double(best.posedCameras) < config.initialPairRetryBelow * double(cameraCount); ++retry){
+            ReconstructConfig probe = once;
+            probe.skipInitialPairs = seen;
+            Reconstruction attempt = reconstruct(observations, cameraCount, pointCount, intrinsics, probe);
+            if(!attempt.ok) break;
+            const std::pair<uint32_t, uint32_t> pair{attempt.initialA, attempt.initialB};
+            if(std::find(seen.begin(), seen.end(), pair) != seen.end()) break;
+            seen.push_back(pair);
+            keepIfBetter(std::move(attempt));
         }
 
         if(best.ok){

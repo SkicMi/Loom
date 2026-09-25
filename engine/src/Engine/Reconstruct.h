@@ -130,6 +130,19 @@ struct ReconstructConfig{
     //=========================================================================================
     uint32_t initialPairTrials = 4;
 
+    //=========================================================================================
+    // A SEED THAT SOLVED LESS THAN A THIRD OF THE CLIP GETS ANOTHER TRY.
+    //
+    // Measured on C0255 (189 keyframes, the clip falls apart into weakly linked stretches): the
+    // one-seed fast candidate and the self-calibration both started at 135-141 and never left a
+    // 35-camera stretch, while a seed at 26-37 solves 119. Self-calibration then fitted f and k1
+    // to those 35 cameras (69 deg, 7 % distortion) and the splat came out 7 dB worse. After the
+    // planned trials, while the best posed fewer than initialPairRetryBelow of the cameras, the
+    // next seed is tried, up to initialPairRetries more. A clip that solves well never pays
+    //=========================================================================================
+    uint32_t initialPairRetries = 3;
+    double initialPairRetryBelow = 1.0 / 3.0;
+
     //Full trials with already-chosen initial pairs share no mutable state and can be built
     //concurrently. False exists as a reference path for the bit-identical test and measurement;
     //the pair choice and winner rule must stay the same in both modes.

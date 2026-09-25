@@ -1108,6 +1108,7 @@ int main(int realArgc, char** realArgv){
     //zatim ih zajedno dotjera s pozama i tockama. Poznata kalibracija i rucno zadani FOV imaju
     //prednost: eksplicitna informacija se ne smije tiho zamijeniti procjenom.
     Engine::SelfCalibratedReconstruction automatic;
+    double distortionShare = 0.0;     //pomak kuta od distorzije kao udio polumjera
     if(!calibrated && fieldOfView <= 0.0){
         Engine::Intrinsics unknown;
         unknown.width = info.width; unknown.height = info.height;
@@ -1143,12 +1144,13 @@ int main(int realArgc, char** realArgv){
             // - ondje je scena bila gotovo ravna, baza 2.05 st, sto je degeneriran slucaj za
             // samokalibraciju.
             //
-            // Prag se NE postavlja jer bi bio pogodjen: objektivi se razlikuju, a riblje oko je
-            // izvan ovog modela ionako. Broj se ispisuje da se o njemu dade suditi
+            // Prag je postavljen tek kad je izmjeren (vidi distortionShare ispod): na C0257 je tocna
+            // samokalibracija 0.67 %, a krive su bile 5.3 % (kameni zid), 7.1 i 7.9 % (C0255)
             //=================================================================
             const double halfDiagonal = std::hypot(0.5 * double(info.width), 0.5 * double(info.height));
             const double normalised = halfDiagonal / double(automatic.measuredIntrinsics.fx);
             const double shift = halfDiagonal * double(automatic.measuredIntrinsics.k1) * normalised * normalised;
+            distortionShare = std::abs(shift) / halfDiagonal;
             std::printf("    distorzija pomice kut za %.1f px (%.2f %% polumjera); "
                         "ispravljeni objektiv je obicno ispod jednog posto\n",
                         shift, 100.0 * shift / halfDiagonal);
@@ -1216,9 +1218,29 @@ int main(int realArgc, char** realArgv){
         }
     }
 
+    //=====================================================================================
+    // DISTORZIJA KOJU OBJEKTIV NEMA JE DRUGA DIJAGNOZA ISTE SLABOSTI.
+    //
+    // Na C0255 je samokalibracija dala 69.4 st uz k1 0.113 (kut se pomice 7.1 % polumjera) na samo
+    // 35 od 189 kamera - tik ispod ograde objektiva (66 x 1.05). Bez pretrage je taj kandidat otisao
+    // u punu obradu: 119 kamera, splat 7.1 dB losiji nego jutros, kad je ista snimka bila odbijena
+    // (83 st) i pretraga nasla 53 st. Ispravljen objektiv ima ispod jednog posto, C0257 0.67 %.
+    // Procjena se ne baca: ide u pretragu kao jedan od kandidata, pa se bira po istoj mjeri
+    //=====================================================================================
+    const double distortionLimit = 0.03;
+    bool distortionImplausible = false;
+    if(automatic.determined && !focalOutsideLens && distortionShare > distortionLimit){
+        distortionImplausible = true;
+        std::printf("  SAMOKALIBRACIJA ODBIJENA: distorzija pomice kut za %.1f %% polumjera (ispravljen "
+                    "objektiv ispod 1 %%, granica %.0f %%).\n",
+                    100.0 * distortionShare, 100.0 * distortionLimit);
+        std::printf("             Geometrija je bila preslaba za f i k1; njeno vidno polje ide u "
+                    "pretragu kao kandidat.\n");
+    }
+
     //OPAZANJA SE ISPRAVE JEDNOM, na ulazu. Ista fizicka leca kasnije ispravlja i izlazne slike;
     //inace bi cameras.txt tvrdio PINHOLE dok bi PNG-ovi ostali zakrivljeni.
-    const bool automaticallyCalibrated = automatic.determined && !focalOutsideLens;
+    const bool automaticallyCalibrated = automatic.determined && !focalOutsideLens && !distortionImplausible;
     const bool havePhysicalLens = calibrated || automaticallyCalibrated;
     const Engine::Intrinsics physicalLens = calibrated ? measured : automatic.measuredIntrinsics;
     std::vector<Engine::Observation> solveObservations = automaticallyCalibrated
@@ -1296,6 +1318,25 @@ int main(int realArgc, char** realArgv){
             candidates.push_back(lowest + (highest - lowest) * double(step) / 6.0);
         }
         std::printf("  vidno polje ograniceno objektivom na %.0f-%.0f st\n", lowest, highest);
+        //Uz mrezu jos dva kandidata koja nesto znaju: odbijena samokalibracija (ako je unutar
+        //objektiva) i ekvivalent iz metapodataka. Na C0257 je ekvivalent 8 % preuzak, ali kao
+        //kandidat u pretrazi ne odlucuje sam nego se mjeri s ostalima
+        std::vector<double> extra;
+        if(distortionImplausible){
+            extra.push_back(2.0 * std::atan(0.5 * double(info.width) /
+                                            double(automatic.measuredIntrinsics.fx)) * 180.0 / 3.14159265358979);
+        }
+        const Spool::CameraMetadata camera = Spool::readCameraMetadata(path);
+        if(camera.equivalentFocalMillimetres > 0.0){
+            extra.push_back(2.0 * std::atan(18.0 / camera.equivalentFocalMillimetres) * 180.0 / 3.14159265358979);
+        }
+        for(double fov : extra){
+            if(fov >= lowest && fov <= highest){
+                candidates.push_back(fov);
+                std::printf("  dodatni kandidat vidnog polja %.1f st\n", fov);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
     }else{
         candidates = {40.0, 50.0, 60.0, 70.0, 78.0, 86.0, 94.0, 102.0, 110.0};
     }
@@ -1333,9 +1374,17 @@ int main(int realArgc, char** realArgv){
                         state.solvedPoints, state.medianReprojection);
             printReconstructTiming(state);
 
-            const bool better = state.posedCameras > best.posedCameras ||
-                                (state.posedCameras == best.posedCameras &&
-                                 state.medianReprojection < best.medianReprojection);
+            //KAMERE PA TOCKE, uz toleranciju od dva posto kamera. Na C0255 je 26.4 st (120 kamera,
+            //22446 tocaka) pobijedilo 53 st (119 kamera, 26644 tocaka) za jednu kameru, a jutros je
+            //isti izbor s 53 st dao splat 7 dB bolji. Jedna kamera je sum; broj objasnjenih tocaka je
+            //mjera slaganja s grafom (isto pravilo kao za pocetne parove, Reconstruct.cpp keepIfBetter).
+            //Reprojekcija je zadnja jer se s krivom zarisnom trguje
+            const uint32_t tolerance = std::max(2u, cameraCount / 50u);
+            const bool better = state.posedCameras > best.posedCameras + tolerance ||
+                                (state.posedCameras + tolerance >= best.posedCameras &&
+                                 (state.solvedPoints > best.solvedPoints ||
+                                  (state.solvedPoints == best.solvedPoints &&
+                                   state.medianReprojection < best.medianReprojection)));
             if(!best.ok || better){
                 best = state;
                 bestIntrinsics = result.second;
