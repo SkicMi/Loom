@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (201 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (212 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -40,6 +40,8 @@ Iz `benchmarks/mjerenja.jsonl` (201 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 02:06 | C0257 | --coarse-weight 1.0 (60 kadrova iz cachea, f 4259) | 60 |  |  |  |  | 2.888 | 2.420 |  |  |  |  |  |  | polaziste | prostor_mjerila_medijan_px=0.877 |
 | 2026-09-25 02:06 | C0257 | --coarse-weight 0.5 (60 kadrova iz cachea, f 4259) | 60 |  |  |  |  | 2.845 | 2.110 |  |  |  |  |  |  | izdvojeni -1.5 %, omjer bolji; provjera splatom na cijeloj snimci (E10) | prostor_mjerila_medijan_px=0.868 |
 | 2026-09-25 02:06 | C0257 | --coarse-weight 0.3 (60 kadrova iz cachea, f 4259) | 60 |  |  |  |  | 2.843 | 2.140 |  |  |  |  |  |  | izdvojeni -1.5 %, omjer bolji; provjera splatom na cijeloj snimci (E10) | prostor_mjerila_medijan_px=0.865 |
+| 2026-09-25 02:24 | C0257 | E10 cijela snimka, f 4259, --coarse-weight 0.5 | 231 | 1089 | 229/229 | 267086 | 1.367 | 2.948 | 2.200 | 4259 |  | 82.80 | 165.80 | 1384 | 352.80 | omjer 2.53 -> 2.20; precizne 0.876 -> 0.867 px | zapisano_px=1.639, izlaz=e_w05, faze_s=pracenje i graf 265.5, brzi kandidat 110.0, puna obrada 277.9, provjere 0.0, slike kadrova 81.5, pune slicice i USD 352.9, COLMAP i provjera 1.0, prostor_mjerila_medijan_px=0.867 |
+| 2026-09-25 02:33 | C0257 | analiza: izoblicenje po kadru na ostatku preciznih znacajki |  |  |  |  |  |  |  |  |  |  |  |  |  | stabilizacija/RS objasne ~0.1 px; vecina je sum polozaja znacajki - 0.5 px nije dostizno podesavanjem | prostor_mjerila_medijan_px=0.844, nakon_afinog_px=0.806, nakon_kvadratnog_px=0.751 |
 
 ## trening
 
@@ -75,6 +77,7 @@ Iz `benchmarks/mjerenja.jsonl` (201 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 01:33 | C0257 | E7 f 4259, poze iz RS bundlea (sredina kadra), obicno crtanje, 7000 koraka | 7000 | 1920x1080 | 1500000 | 586 | 26.03 | 21.92 | 0.795 |  | kamera=rsmid, izlaz=e_rsmid.ply, izdvojenih=39 |
 | 2026-09-25 01:56 | C0257 | E8 f 4259, 7000 koraka 1080p + 3000 na 4K | 10000 | 3840x2160 | 1500000 | 1000 | 25.16 | 21.88 | 0.827 |  | kamera=classic, izlaz=e_fine.ply, izdvojenih=39 |
 | 2026-09-25 02:05 | C0257 | E9 f 4259, ekspozicija po kadru, 7000 koraka | 7000 | 1920x1080 | 1500000 | 468 | 25.60 | 20.68 | 0.809 |  | kamera=classic, izlaz=e_exp.ply, izdvojenih=39 |
+| 2026-09-25 02:33 | C0257 | E10 f 4259, coarse 0.5, 7000 koraka | 7000 | 1920x1080 | 1500000 | 477 | 25.29 | 21.33 | 0.805 |  | kamera=classic, izlaz=e_w05.ply, izdvojenih=39 |
 
 ## ocjena
 
@@ -111,6 +114,8 @@ Iz `benchmarks/mjerenja.jsonl` (201 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 01:57 | C0257 | E8 grubo pa fino | 3840x2160 | 25.31 | 0.826 | 0.091 | 39 |  |  | psnr_medijan=25.16, splat=e_fine.ply |
 | 2026-09-25 02:05 | C0257 | E9 ekspozicija | 1920x1080 | 25.57 | 0.802 | 0.322 | 39 |  |  | psnr_medijan=25.60, splat=e_exp.ply |
 | 2026-09-25 02:05 | C0257 | E9 ekspozicija | 3840x2160 | 25.48 | 0.827 | 0.104 | 39 |  |  | psnr_medijan=25.53, splat=e_exp.ply |
+| 2026-09-25 02:33 | C0257 | E10 coarse 0.5 | 1920x1080 | 25.39 | 0.800 | 0.320 | 39 |  |  | psnr_medijan=25.29, splat=e_w05.ply |
+| 2026-09-25 02:33 | C0257 | E10 coarse 0.5 | 3840x2160 | 25.32 | 0.825 | 0.102 | 39 |  |  | psnr_medijan=25.23, splat=e_w05.ply |
 
 ## usporedba
 
@@ -214,6 +219,12 @@ Iz `benchmarks/mjerenja.jsonl` (201 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 02:05 | C0257 | ekspozicija po kadru prema bez, f 4259 (d1) | PSNR dB | 0.321 | 0.071 | 31/39 | zadano: +0.33 dB (4.5 pogreske), SSIM bolji, ostrina ista, vrijeme isto | a=q_e_f4259_d1, b=q_e_exp_d1 |
 | 2026-09-25 02:05 | C0257 | ekspozicija po kadru prema bez, f 4259 (d1) | SSIM | 0.001 | 0.000 | 26/39 | zadano: +0.33 dB (4.5 pogreske), SSIM bolji, ostrina ista, vrijeme isto | a=q_e_f4259_d1, b=q_e_exp_d1 |
 | 2026-09-25 02:05 | C0257 | ekspozicija po kadru prema bez, f 4259 (d1) | ostrina | 0.000 | 0.002 | 18/39 | zadano: +0.33 dB (4.5 pogreske), SSIM bolji, ostrina ista, vrijeme isto | a=q_e_f4259_d1, b=q_e_exp_d1 |
+| 2026-09-25 02:33 | C0257 | coarse-weight 0.5 prema 1.0, f 4259 (d2) | PSNR dB | 0.153 | 0.050 | 27/39 | zadano 0.5: PSNR +0.15 (3 pogreske), SSIM -0.001, ostrina ista | a=q_e_f4259_d2, b=q_e_w05_d2 |
+| 2026-09-25 02:33 | C0257 | coarse-weight 0.5 prema 1.0, f 4259 (d2) | SSIM | -0.001 | 0.001 | 15/39 | zadano 0.5: PSNR +0.15 (3 pogreske), SSIM -0.001, ostrina ista | a=q_e_f4259_d2, b=q_e_w05_d2 |
+| 2026-09-25 02:33 | C0257 | coarse-weight 0.5 prema 1.0, f 4259 (d2) | ostrina | -0.004 | 0.004 | 18/39 | zadano 0.5: PSNR +0.15 (3 pogreske), SSIM -0.001, ostrina ista | a=q_e_f4259_d2, b=q_e_w05_d2 |
+| 2026-09-25 02:33 | C0257 | coarse-weight 0.5 prema 1.0, f 4259 (d1) | PSNR dB | 0.152 | 0.049 | 27/39 | zadano 0.5: PSNR +0.15 (3 pogreske), SSIM -0.001, ostrina ista | a=q_e_f4259_d1, b=q_e_w05_d1 |
+| 2026-09-25 02:33 | C0257 | coarse-weight 0.5 prema 1.0, f 4259 (d1) | SSIM | -0.001 | 0.000 | 17/39 | zadano 0.5: PSNR +0.15 (3 pogreske), SSIM -0.001, ostrina ista | a=q_e_f4259_d1, b=q_e_w05_d1 |
+| 2026-09-25 02:33 | C0257 | coarse-weight 0.5 prema 1.0, f 4259 (d1) | ostrina | -0.001 | 0.001 | 18/39 | zadano 0.5: PSNR +0.15 (3 pogreske), SSIM -0.001, ostrina ista | a=q_e_f4259_d1, b=q_e_w05_d1 |
 
 ## dekodiranje
 

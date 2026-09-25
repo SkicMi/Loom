@@ -534,7 +534,9 @@ int main(int realArgc, char** realArgv){
     std::string thenCommand;
     //--coarse-weight W: tezina opazanja uglova (graf na smanjenoj slici) u bundleu prema
     //opazanjima prostora mjerila; --precise-points-from N za cache grafa koji granicu ne pamti
-    double coarseWeight = 1.0;
+    //ZADANO 0.5: na cijeloj C0257 izdvojeni splat PSNR +0.15 +- 0.05 dB, omjer izdvojenih opazanja
+    //2.53 -> 2.20, ostrina ista, vrijeme isto
+    double coarseWeight = 0.5;
     int64_t precisePointsOverride = -1;
     std::thread thenWorker;
     int thenStatus = 0;
