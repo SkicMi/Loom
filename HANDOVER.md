@@ -684,6 +684,34 @@ vlastitim BVH-om, ne ray query: radi na svakoj kartici i na llvmpipeu (testira s
 
 Filtrirana slika je ista (RMSE prema referenci 0.0262 prije i poslije).
 
+**Post processing (27.9.)** — `Tracer/Post.h`: bloom (piramida pola-pola pa natrag, prosjek
+razina = mekano zvono s dugim repom, **čuva energiju**), kromatska aberacija, vinjeta, balans
+bijele (crno tijelo, Kelvin + tint, luminancija ostaje ista), kontrast oko 0.18, zasićenje, zrno
+(relativni šum ~1/√svjetla, sjeme po kadru). Fizikalni redoslijed: leća → obrada → senzor, na
+linearnoj slici prije Standard/AgX. Ide u **PNG i prozor; EXR ostaje sirov**. Zadnji gotov kadar
+ostaje u memoriji, pa se post/prikaz/ekspozicija mijenjaju **poslije rendera** bez ponovnog
+računanja (`RenderSession::restyle`, gumb *Save PNG With This Look*; 3 ms na 80×45). Panel:
+sekcija POST; CLI: `--post`, `--bloom`, `--vinjeta`, `--aberacija`, `--zrno`, `--temperatura`...
+`test_post` 9/9: isključeno = identitet bit po bit, bloom zbroj 1219.95 → 1216.94 (<1 %, rub),
+monotono rasipanje, prag ne dira tamno, vinjeta u kutu 0.606 (0.6), zrno srednja 0.1799 i σ 0.0498
+(0.05), zasićenje 0 = luminancija, 3200 K toplije uz luminanciju 0.5000, aberacija crveno van.
+Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta, gotov kadar s njim.
+
+**Što dalje, po redu isplativosti (prijedlog):**
+1. **Distorzija leće u renderu** — solve procjenjuje `k1`, ali Warp::Camera ga ne nosi i render je
+   čisti pinhole preko distorzirane snimke: CG na rubu kadra klizi. Spremiti k1 u kameru i CG slojeve
+   distorzirati istim modelom (plus ST-map u EXR za Nuke). Najveći dobitak za matchmove.
+2. **Izmjeriti karticu** i dodati ray query (RTX) + filtar šuma na kartici; OIDN kao opcija.
+3. **Svjetla kao entiteti** (UsdLux: sunce, sfera, reflektor, pravokutnik) i **svjetlo iz snimke**
+   (Relight već uči sunce + nebo) — CG osvijetljen kao ploča bez ručnog namještanja.
+4. **Motion blur** (otvor zatvarača, kamera i objekti između kadrova) — snimka ga ima, CG bez njega
+   odskače više nego bez zrna.
+5. **Adaptivno uzorkovanje** (stati gdje je šum pod pragom) i **path guiding** / MNEE za kaustike i
+   svjetlije sjene stakla.
+6. Mipmape / diferencijali zraka za teksture (oštrije, bez treperenja u sekvenci), dubinska
+   oštrina u panelu (fokus klikom), holdout iz splata/dubine za zaklanjanje CG-a pravom scenom.
+7. Post na kartici (bloom piramida kao compute) da i progresivni prikaz ima isti izgled.
+
 **Poznata ograničenja — ne skrivati:**
 - Kartica koristi compute nad BVH2; hardverske zrake (ray query) i širi BVH su sljedeći korak za
   RTX — mijenjaju samo obilazak. Filtar šuma je još na procesoru.

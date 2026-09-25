@@ -38,6 +38,7 @@ add_library(Tracer STATIC
     src/Tracer/Renderer.cpp
     src/Tracer/Denoise.cpp
     src/Tracer/Film.cpp
+    src/Tracer/Post.cpp
 )
 
 target_include_directories(Tracer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

@@ -2827,10 +2827,39 @@ int main(int argc, char** argv){
             ui.separator();
             ui.label("OUTPUT");
             if(renderOptions.pathTraced){
+                //Prikaz, ekspozicija i post mijenjaju samo slaganje: gotov render se ponovno slozi bez
+                //ponovnog racunanja (RenderSession::restyle)
+                bool lookChanged = false;
                 int viewTransform = renderOptions.view == Tracer::ViewTransform::AgX ? 1 : 0;
-                if(ui.choice("View", {"Standard", "AgX"}, &viewTransform))
+                if(ui.choice("View", {"Standard", "AgX"}, &viewTransform)){
                     renderOptions.view = viewTransform == 1 ? Tracer::ViewTransform::AgX : Tracer::ViewTransform::Standard;
-                ui.slider("Exposure", &renderOptions.exposure, -5.0f, 5.0f, "EV");
+                    lookChanged = true;
+                }
+                lookChanged |= ui.slider("Exposure", &renderOptions.exposure, -5.0f, 5.0f, "EV");
+
+                ui.separator();
+                ui.label("POST (PNG + window; EXR stays raw)");
+                Tracer::PostSettings& post = renderOptions.post;
+                lookChanged |= ui.checkbox("Post Processing", &post.enabled);
+                if(post.enabled){
+                    lookChanged |= ui.slider("Bloom", &post.bloom, 0.0f, 0.3f);
+                    lookChanged |= ui.slider("Bloom Radius", &post.bloomRadius, 0.01f, 0.3f);
+                    lookChanged |= ui.slider("Bloom Threshold", &post.bloomThreshold, 0.0f, 10.0f);
+                    lookChanged |= ui.slider("Vignette", &post.vignette, 0.0f, 1.0f);
+                    lookChanged |= ui.slider("Chromatic Aberr.", &post.chromaticAberration, 0.0f, 10.0f, "px");
+                    lookChanged |= ui.slider("Temperature", &post.temperature, 2000.0f, 12000.0f, "K");
+                    lookChanged |= ui.slider("Tint", &post.tint, -1.0f, 1.0f);
+                    lookChanged |= ui.slider("Contrast", &post.contrast, 0.5f, 1.5f);
+                    lookChanged |= ui.slider("Saturation", &post.saturation, 0.0f, 2.0f);
+                    lookChanged |= ui.slider("Grain", &post.grain, 0.0f, 0.2f);
+                    if(ui.button("Reset Post")){ const bool on = post.enabled; post = Tracer::PostSettings{}; post.enabled = on; lookChanged = true; }
+                }
+                if(lookChanged && renderSession.hasResult()) renderSession.restyle(renderOptions);
+                if(renderSession.hasResult() && ui.button("Save PNG With This Look")){
+                    std::string problem;
+                    const std::string path = renderSession.rewritePng(renderOptions, problem);
+                    message = path.empty() ? "Could not save: " + problem : "Saved " + path;
+                }
                 ui.checkbox("Write EXR (linear, all layers)", &renderOptions.writeExr);
                 ui.checkbox("Write PNG", &renderOptions.writePng);
             }

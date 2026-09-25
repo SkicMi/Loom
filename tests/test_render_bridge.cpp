@@ -224,6 +224,22 @@ int main(){
         const Spool::Image half = named ? Spool::loadImage((work / "sequence" / "render_0002.png").string()) : Spool::Image{};
         report.check("sekvenca", state.finished && named && half.width == PlateWidth / 2,
                      fmt("%s, %zu poruka, sirina %u", state.status.c_str(), state.log.size(), half.width));
+
+        //Post poslije rendera: isti film, drugi izgled, bez ponovnog racunanja
+        Loom::RenderOptions styled = sequence;
+        styled.post.enabled = true;
+        styled.post.vignette = 0.8f;
+        styled.post.bloom = 0.1f;
+        std::string problem;
+        const auto start = std::chrono::steady_clock::now();
+        const std::string path = session.rewritePng(styled, problem);
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        const Spool::Image restyled = path.empty() ? Spool::Image{} : Spool::loadImage(path);
+        const Spool::Image plain = named ? Spool::loadImage((work / "sequence" / "render_0001.png").string()) : Spool::Image{};
+        //Kutni piksel: vinjeta 0.8 ga mora bitno potamniti; sredina ostaje priblizno ista
+        const int cornerBefore = plain.isValid() ? plain.pixels[1] : 0, cornerAfter = restyled.isValid() ? restyled.pixels[1] : 0;
+        report.check("post poslije rendera", session.hasResult() && restyled.isValid() && cornerAfter < cornerBefore * 0.8,
+                     fmt("%s, kut %d -> %d, %.3f s", path.c_str(), cornerBefore, cornerAfter, seconds));
     }
 
     //-- 7. isti render kroz GPU pogon (kartica bez prozora): posao iz sesije, isti zapis --------------

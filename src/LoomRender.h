@@ -29,6 +29,7 @@
 #include <Spool/ImageFile.h>
 #include <Spool/VideoFile.h>
 #include <Tracer/Denoise.h>
+#include <Tracer/Post.h>
 #include <Tracer/Renderer.h>
 #include <Warp/Stage.h>
 
@@ -101,6 +102,16 @@ struct RenderOptions{
     //Prikaz i zapis
     Tracer::ViewTransform view = Tracer::ViewTransform::Standard;
     float exposure = 0.0f;                  //blende
+
+    //Post processing (bloom, vinjeta, aberacija, balans bijele, zrno) - samo PNG i prozor; EXR je
+    //sirovo svjetlo za kompozitora. Ekspozicija gore vrijedi i za post
+    Tracer::PostSettings post = []{
+        Tracer::PostSettings p;
+        p.enabled = false;
+        p.bloom = 0.04f;
+        p.vignette = 0.15f;
+        return p;
+    }();
     std::string outputFolder;               //prazno: mapa projekta / render
     std::string name = "render";
     bool writeExr = true;
@@ -493,6 +504,21 @@ inline Tracer::Backdrop backdropFor(const RenderOptions& options, bool plateLoad
     return Tracer::Backdrop::Environment;
 }
 
+//SLIKA KAKO SE VIDI: slozeno (snimka/nebo/prozirno), post, pa prikaz. Ekspozicija ide u post kad
+//je post ukljucen (bloom i prag moraju vidjeti eksponirano svjetlo), inace u prikaz
+inline std::vector<uint8_t> displayImage(const Tracer::Frame& frame, const Tracer::Texture* plate, const RenderOptions& options,
+                                         bool plateLoaded, double frameNumber){
+    std::vector<float> beauty = Tracer::composite(frame, backdropFor(options, plateLoaded), plateLoaded ? plate : nullptr);
+    Tracer::PostSettings post = options.post;
+    post.exposure = options.exposure;
+    post.grainSeed = uint32_t(std::llround(frameNumber)) * 7919u + options.post.grainSeed;
+    if(post.active()){
+        Tracer::applyPost(beauty, frame.width, frame.height, post);
+        return Tracer::toDisplay(beauty, frame.width, frame.height, options.view, 0.0f);
+    }
+    return Tracer::toDisplay(beauty, frame.width, frame.height, options.view, options.exposure);
+}
+
 //Ime kadra u sekvenci: render_0042. Jedan kadar bez broja
 inline std::string frameStem(const RenderOptions& options, double frame){
     if(!options.sequence) return options.name;
@@ -504,7 +530,7 @@ inline std::string frameStem(const RenderOptions& options, double frame){
 //Zapis jednog kadra: PNG (kako se vidi), EXR (linearno, svi slojevi), i PNG-ovi slojeva
 inline std::vector<std::string> writeRender(const Tracer::Frame& frame, const Tracer::Scene& scene, const RenderOptions& options,
                                             bool plateLoaded, bool catchers, const std::string& folder, const std::string& stem,
-                                            std::string& error){
+                                            std::string& error, double frameNumber = 1.0){
     std::vector<std::string> written;
     namespace fs = std::filesystem;
     try{
@@ -524,7 +550,7 @@ inline std::vector<std::string> writeRender(const Tracer::Frame& frame, const Tr
             }));
         };
         const std::string base = (fs::path(folder) / stem).string();
-        if(options.writePng) save(base + ".png", [&]{ return Tracer::toDisplay(beauty, frame.width, frame.height, options.view, options.exposure); });
+        if(options.writePng) save(base + ".png", [&]{ return displayImage(frame, &scene.backplate, options, plateLoaded, frameNumber); });
         if(options.writePng && options.depth) save((fs::path(folder) / (stem + "_depth.png")).string(), [&]{ return Tracer::depthToDisplay(frame); });
         if(options.writePng && options.normal) save((fs::path(folder) / (stem + "_normal.png")).string(), [&]{ return Tracer::normalToDisplay(frame); });
         if(options.writePng && options.albedo) save((fs::path(folder) / (stem + "_albedo.png")).string(), [&]{ return Tracer::albedoToDisplay(frame); });
@@ -569,7 +595,7 @@ inline std::vector<std::string> writeRender(const Tracer::Frame& frame, const Tr
 //---------------------------------------------------------------------------------------------
 class RenderSession{
 public:
-    ~RenderSession(){ cancel(); join(); }
+    ~RenderSession(){ cancel(); join(); if(styler.joinable()) styler.join(); }
 
     //=========================================================================================
     // GPU POGON. Kartica se smije dirati samo iz niti koja crta (editor) - pa render nit ne racuna
@@ -630,6 +656,60 @@ public:
         gpuWake.notify_all();
     }
     bool cancelled() const {return stopFlag;}
+
+    //=========================================================================================
+    // POST POSLIJE RENDERA. Zadnji gotov kadar ostaje u memoriji (linearni film); promjena posta,
+    // prikaza ili ekspozicije ga samo ponovno slozi - milisekunde umjesto minuta rendera. Racuna
+    // se u svojoj niti, pa klizac ostaje glatak; novija promjena preskoci stariju
+    //=========================================================================================
+    bool hasResult() const{
+        std::lock_guard<std::mutex> guard(lock);
+        return last != nullptr && !state.running;
+    }
+    void restyle(const RenderOptions& options){
+        std::shared_ptr<Last> frame;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            if(!last || state.running) return;
+            frame = last;
+            pendingStyle = options;
+            if(styling) return;                     //nit koja radi uzet ce najnovije postavke
+            styling = true;
+        }
+        if(styler.joinable()) styler.join();
+        styler = std::thread([this, frame]{
+            while(true){
+                RenderOptions options;
+                {
+                    std::lock_guard<std::mutex> guard(lock);
+                    if(!pendingStyle){ styling = false; return; }
+                    options = *pendingStyle;
+                    pendingStyle.reset();
+                }
+                Tracer::Scene holder;
+                holder.backplate = frame->plate;
+                publish(frame->frame, holder, options, frame->plateLoaded, frame->frameNumber);
+            }
+        });
+    }
+    //Ponovno zapise PNG zadnjeg kadra s trenutnim postom. Vraca put ili prazno (razlog u error)
+    std::string rewritePng(const RenderOptions& options, std::string& error){
+        std::shared_ptr<Last> frame;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            frame = last;
+        }
+        if(!frame){ error = "No finished render to save."; return {}; }
+        try{
+            const std::vector<uint8_t> rgba = displayImage(frame->frame, &frame->plate, options, frame->plateLoaded, frame->frameNumber);
+            const std::string path = (std::filesystem::path(frame->folder) / (frame->stem + ".png")).string();
+            Spool::saveImage(path, Spool::imageFromPixels(rgba.data(), frame->frame.width, frame->frame.height));
+            return path;
+        }catch(const std::exception& e){
+            error = e.what();
+            return {};
+        }
+    }
 
     //Pocinje render. Scena se KOPIRA: umjetnik smije dalje uredjivati, render ostaje ono sto je bilo
     void start(const Warp::Stage& stage, const RenderOptions& options, const std::string& folder){
@@ -692,6 +772,17 @@ private:
     bool previewFresh = false;
     std::atomic<bool> stopFlag{false};
     std::thread worker;
+    struct Last{
+        Tracer::Frame frame;
+        Tracer::Texture plate;
+        bool plateLoaded = false;
+        double frameNumber = 1.0;
+        std::string folder, stem;
+    };
+    std::shared_ptr<Last> last;
+    std::optional<RenderOptions> pendingStyle;
+    bool styling = false;
+    std::thread styler;
     std::atomic<bool> gpuAttached{false};
     std::condition_variable gpuWake;
     std::optional<GpuJob> gpuPending;
@@ -723,10 +814,9 @@ private:
         state.status = line;
     }
 
-    void publish(const Tracer::Frame& frame, const Tracer::Scene& scene, const RenderOptions& options, bool plateLoaded){
-        const std::vector<float> beauty = Tracer::composite(frame, backdropFor(options, plateLoaded),
-                                                            plateLoaded ? &scene.backplate : nullptr);
-        std::vector<uint8_t> display = Tracer::toDisplay(beauty, frame.width, frame.height, options.view, options.exposure);
+    void publish(const Tracer::Frame& frame, const Tracer::Scene& scene, const RenderOptions& options, bool plateLoaded,
+                 double frameNumber = 1.0){
+        std::vector<uint8_t> display = displayImage(frame, &scene.backplate, options, plateLoaded, frameNumber);
         //Prozirno se u prozoru pokaze preko sahovnice, da se vidi sto je alfa
         for(uint32_t y = 0; y < frame.height; ++y) for(uint32_t x = 0; x < frame.width; ++x){
             uint8_t* p = display.data() + (size_t(y) * frame.width + x) * 4;
@@ -812,15 +902,26 @@ private:
                     const auto now = std::chrono::steady_clock::now();
                     if(now - lastPublish > std::chrono::milliseconds(500) || progress.samplesDone == progress.samplesTotal){
                         lastPublish = now;
-                        publish(renderer.frame(false), renderer.scene(), options, plateLoaded);
+                        publish(renderer.frame(false), renderer.scene(), options, plateLoaded, frame);
                     }
                 }, &stopFlag);
                 if(stopFlag){ say("Render cancelled."); break; }
                 result = renderer.frame(options.denoise);
             }
-            publish(result, compiled->world, options, plateLoaded);
+            publish(result, compiled->world, options, plateLoaded, frame);
             const std::vector<std::string> files = writeRender(result, compiled->world, options, plateLoaded, catchers, folder,
-                                                               frameStem(options, frame), error);
+                                                               frameStem(options, frame), error, frame);
+            {
+                //Zadnji kadar ostaje za post poslije rendera (restyle) - bez ponovnog racunanja
+                std::lock_guard<std::mutex> guard(lock);
+                last = std::make_shared<Last>();
+                last->frame = result;
+                last->plate = compiled->world.backplate;
+                last->plateLoaded = plateLoaded;
+                last->frameNumber = frame;
+                last->folder = folder;
+                last->stem = frameStem(options, frame);
+            }
             if(!error.empty()){ say("Could not write render: " + error); failed = true; break; }
             for(const std::string& file : files) say("Wrote " + file);
         }
