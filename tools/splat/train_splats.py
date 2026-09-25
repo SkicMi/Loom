@@ -269,7 +269,9 @@ def main():
                     help="ekspozicija u kadrovima (1/100 s pri 50 fps = 0.5); 0 cita camera_metadata.txt")
     ap.add_argument("--clean", action=argparse.BooleanOptionalAction, default=True,
                     help="na kraju makni floatere (floaters.py): nevidljive i mrlje uz kameru")
-    ap.add_argument("--exposure", action="store_true",
+    #ZADANO UKLJUCENO: na C0257 (auto-ISO 500-1250) izdvojeni PSNR +0.33 +- 0.07 dB, SSIM bolji na
+    #30/39, ostrina ista, vrijeme isto
+    ap.add_argument("--exposure", action=argparse.BooleanOptionalAction, default=True,
                     help="naucena korekcija boje po kadru (pojacanje i pomak po kanalu) za auto-ISO; "
                          "izdvojeni kadrovi dobiju interpoliranu od susjeda, zapise se u <izlaz>_exposure.json")
     ap.add_argument("--finish-full-res", type=int, default=0,

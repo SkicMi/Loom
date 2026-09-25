@@ -68,7 +68,8 @@ double costOf(const std::vector<Pose>& poses, const std::vector<glm::vec3>& poin
             continue;
         }
         const double length = std::sqrt(residual[0] * residual[0] + residual[1] * residual[1]);
-        cost += huberCost(length, delta);
+        const double scale = observation.point < config.precisePointsFrom ? config.coarseWeight : 1.0;
+        cost += huberCost(scale * length, delta);
         lengths.push_back(length);
     }
     median = medianOf(lengths);
@@ -324,8 +325,10 @@ BundleResult bundleAdjust(const std::vector<Observation>& observations,
                                     slot.residual, slot.pointPart, slot.cameraPart)) continue;
 
                 //Tezina pod Huberom mnozi i rezidual i jakobijan, pa ulazi u sve tri strane odjednom
-                const double weight = huberWeight(
-                    std::sqrt(slot.residual[0] * slot.residual[0] + slot.residual[1] * slot.residual[1]),
+                //Tezina po izvoru (vidi BundleConfig::coarseWeight) - kao izbijeljeni ostatak
+                const double scale = observation.point < config.precisePointsFrom ? config.coarseWeight : 1.0;
+                const double weight = scale * huberWeight(
+                    scale * std::sqrt(slot.residual[0] * slot.residual[0] + slot.residual[1] * slot.residual[1]),
                     config.huberPixels);
                 slot.weightSquared = weight * weight;
                 slot.valid = 1;

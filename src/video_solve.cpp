@@ -532,6 +532,10 @@ int main(int realArgc, char** realArgv){
     //oznakom [trening], a VideoSolve na kraju ceka da zavrsi. Editor tako trenira splat dok se
     //lokaliziraju medjukadrovi
     std::string thenCommand;
+    //--coarse-weight W: tezina opazanja uglova (graf na smanjenoj slici) u bundleu prema
+    //opazanjima prostora mjerila; --precise-points-from N za cache grafa koji granicu ne pamti
+    double coarseWeight = 1.0;
+    int64_t precisePointsOverride = -1;
     std::thread thenWorker;
     int thenStatus = 0;
     //--dense-two-way: pune slicice i od sljedeceg kljucnog natrag, pa spojene (localiseEveryFrame).
@@ -553,6 +557,8 @@ int main(int realArgc, char** realArgv){
         else if(std::string(realArgv[i]) == "--dense-one-way") denseOneWay = true;
         else if(std::string(realArgv[i]) == "--dense-two-way") denseOneWay = false;
         else if(std::string(realArgv[i]) == "--then" && i + 1 < realArgc) thenCommand = realArgv[++i];
+        else if(std::string(realArgv[i]) == "--coarse-weight" && i + 1 < realArgc) coarseWeight = std::atof(realArgv[++i]);
+        else if(std::string(realArgv[i]) == "--precise-points-from" && i + 1 < realArgc) precisePointsOverride = std::atoll(realArgv[++i]);
         else if(std::string(realArgv[i]) == "--dense-points" && i + 1 < realArgc) densePoints = uint32_t(std::max(0, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--initial-pairs" && i + 1 < realArgc) initialPairs = uint32_t(std::max(1, std::atoi(realArgv[++i])));
         else if(std::string(realArgv[i]) == "--track-scale" && i + 1 < realArgc) trackScale = std::max(1, std::atoi(realArgv[++i]));
@@ -626,6 +632,7 @@ int main(int realArgc, char** realArgv){
     std::vector<uint32_t> keyframeFrames;
     uint32_t cameraCount = 0;
     float featurePixels = 1.0f;
+    uint32_t cornerPointCount = 0;       //tocke grafa uglova (prve u spojenom grafu) - vidi --coarse-weight
     std::vector<Engine::Observation> observations;
     uint32_t pointCount = 0;
     bool cacheLoaded = false;
@@ -957,7 +964,10 @@ int main(int realArgc, char** realArgv){
                                 fine.descriptorBuildSeconds, fine.matchingSeconds,
                                 fine.geometrySeconds, fine.assemblySeconds);
 
-                    if(fine.pointCount > 0) graph = Engine::mergeGraphs(graph, fine);
+                    if(fine.pointCount > 0){
+                        cornerPointCount = graph.pointCount;
+                        graph = Engine::mergeGraphs(graph, fine);
+                    }
                 }
 
                 const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
@@ -1036,6 +1046,8 @@ int main(int realArgc, char** realArgv){
         Engine::ReconstructConfig config;
         config.huberPixels = 2.0;
         config.acceptPixels = std::max(6.0, 2.0 * double(featurePixels));
+        config.precisePointsFrom = precisePointsOverride >= 0 ? uint32_t(precisePointsOverride) : cornerPointCount;
+        config.coarseWeight = coarseWeight;
         config.minPointsForPose = 20;
 
         //NAJVECI ZDRAVI ODSJECAK UMJESTO SVE-ILI-NISTA. Rjesenje koje se proteze preko loma je

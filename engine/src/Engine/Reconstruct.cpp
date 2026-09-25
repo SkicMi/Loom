@@ -770,6 +770,8 @@ Reconstruction reconstructImpl(const std::vector<Observation>& observations,
         bundleConfig.huberPixels = config.huberPixels;
         bundleConfig.maxIterations = config.bundleIterations;
         bundleConfig.fixedCameras = std::move(fixedCameras);
+        bundleConfig.precisePointsFrom = config.precisePointsFrom;
+        bundleConfig.coarseWeight = config.coarseWeight;
 
         const BundleResult result = bundleAdjust(kept, state.poses, state.points, intrinsics, bundleConfig);
         state.timing.bundleCostSeconds += result.timing.costSeconds;

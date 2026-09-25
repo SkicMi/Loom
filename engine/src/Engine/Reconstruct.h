@@ -65,6 +65,10 @@ struct ReconstructConfig{
     //pair - so only the busiest are checked. See the comment next to the choice in Reconstruct.cpp
     uint32_t initialPairCandidates = 30;
 
+    //Tezina grubih opazanja u bundleu - vidi BundleConfig::coarseWeight
+    uint32_t precisePointsFrom = 0;
+    double coarseWeight = 1.0;
+
     //=========================================================================================
     // CANDIDATES ACROSS FRAME GAPS, not only the busiest.
     //

@@ -34,6 +34,16 @@ struct BundleConfig{
     bool fixFirstCamera = true;
 
     //=========================================================================================
+    // TEZINA PO IZVORU OPAZANJA. Graf spaja uglove nadjene na slici smanjenoj cetiri puta i
+    // znacajke prostora mjerila na punoj: na C0257 uglovi imaju medijan ostatka 1.97 px, a prostor
+    // mjerila 0.88 px - a uglova je dvaput vise, pa bez tezina upravo oni odredjuju poze. Tocke s
+    // indeksom ispod precisePointsFrom (mergeGraphs ih slaze prve) mnoze ostatak s coarseWeight,
+    // kao izbijeljeni ostatak (r / sigma). Pokrivenost ostaje od uglova, a tocnost od finih
+    //=========================================================================================
+    uint32_t precisePointsFrom = 0;
+    double coarseWeight = 1.0;
+
+    //=========================================================================================
     // KOJE SE KAMERE NE MICU, osim prve. Prazno znaci "sve su slobodne".
     //
     // ZASTO POSTOJI. U inkrementalnom rastu se bundle zove nakon svake prihvacene kamere, i svaki
