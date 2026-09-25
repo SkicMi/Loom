@@ -1,4 +1,4 @@
-// LoomPoseBlend: poza u dva kljuca, izmedju njih pretapanje poza - bez povratka na original.
+// LoomPoseBlend: ispravak poze u dva kljuca, izmedju njih se ispravak pretapa preko pokreta.
 //
 // Zglob se u originalu mice x = kadar. Kljucevi: kadar 40 -> x 100, kadar 60 -> x 200. Izmedju
 // njih rezultat mora ici od 100 do 200 (sredina 150), a NE vratiti se na original (x 50 u kadru
@@ -47,7 +47,7 @@ int main(){
         Loom::applyPoseKeys(stage, {key(arm, 60.0, 200.0f), key(arm, 40.0, 100.0f)}, 1.0, 100.0, settings);
         report.check("kljucevi drze tocno uredjenu pozu", xAt(stage, arm, 40.0) == 100.0f && xAt(stage, arm, 60.0) == 200.0f,
                      fmt("%.2f / %.2f", double(xAt(stage, arm, 40.0)), double(xAt(stage, arm, 60.0))));
-        report.check("izmedju kljuceva poza u pozu, bez originala", std::fabs(xAt(stage, arm, 50.0) - 150.0f) < 1e-3f &&
+        report.check("izmedju kljuceva ispravak A -> ispravak B, bez povratka na original", std::fabs(xAt(stage, arm, 50.0) - 150.0f) < 1e-3f &&
                      xAt(stage, arm, 45.0) > 100.0f && xAt(stage, arm, 45.0) < 150.0f,
                      fmt("kadar 45: %.2f, kadar 50: %.2f (original bi bio 50)", double(xAt(stage, arm, 45.0)), double(xAt(stage, arm, 50.0))));
         //Ulaz: kadar 32 je original, 36 je na pola puta prema pomaku (+60 u kljucu)
@@ -66,7 +66,8 @@ int main(){
         Loom::PoseKeySettings settings;
         settings.ending = Loom::PoseKeyEnding::Hold;
         Loom::applyPoseKeys(stage, {key(arm, 40.0, 100.0f), key(arm, 60.0, 200.0f)}, 1.0, 100.0, settings);
-        report.check("Hold: zadnja poza stoji do kraja klipa", xAt(stage, arm, 61.0) == 200.0f && xAt(stage, arm, 100.0) == 200.0f,
+        //Hold drzi ISPRAVAK (+140) preko pokreta do kraja klipa, ne zamrznutu pozu
+        report.check("Hold: ispravak ostaje do kraja klipa", xAt(stage, arm, 61.0) == 201.0f && xAt(stage, arm, 100.0) == 240.0f,
                      fmt("61: %.2f, 100: %.2f", double(xAt(stage, arm, 61.0)), double(xAt(stage, arm, 100.0))));
     }
 
@@ -103,6 +104,65 @@ int main(){
         Loom::applyPoseKeys(stage, {a, b}, 1.0, 100.0, Loom::PoseKeySettings{});
         const float angle = glm::degrees(glm::angle(stage.localAt(arm, 15.0).rotation));
         report.check("rotacija u sredini na pola kuta", std::fabs(angle - 45.0f) < 0.01f, fmt("%.3f st", double(angle)));
+    }
+    {
+        //GLITCH koji je korisnik vidio: nedirani zglob (noga koja hoda) mora izmedju kljuceva i dalje
+        //hodati. Kljucevi nose cijelu pozu (kao iz editora), a noga je u njima jednaka originalu
+        Warp::Id arm;
+        Warp::Stage stage = motionStage(arm);
+        const Warp::Id leg = stage.create("Leg");
+        for(int f = 1; f <= 100; ++f){
+            stage.get(leg)->translationKeys.set(double(f), glm::vec3(0.0f, 0.0f, 0.1f * float(f)));
+            stage.get(leg)->rotationKeys.set(double(f), glm::angleAxis(glm::radians(3.0f * float(f)), glm::vec3(1, 0, 0)));
+        }
+        Loom::PoseKey a = key(arm, 40.0, 100.0f), b = key(arm, 60.0, 200.0f);
+        a.pose.emplace_back(leg, stage.localAt(leg, 40.0));
+        b.pose.emplace_back(leg, stage.localAt(leg, 60.0));
+        const Warp::Transform before = stage.localAt(leg, 50.0);
+        const size_t corrected = Loom::applyPoseKeys(stage, {a, b}, 1.0, 100.0, Loom::PoseKeySettings{});
+        const Warp::Transform after = stage.localAt(leg, 50.0);
+        report.check("nedirani zglob nastavlja pokret izmedju kljuceva", corrected == 1 &&
+                     glm::length(after.translation - before.translation) < 1e-6f &&
+                     std::fabs(glm::dot(after.rotation, before.rotation)) > 0.999999f,
+                     fmt("ispravljeno %zu zglobova, noga z %.3f -> %.3f", corrected, double(before.translation.z), double(after.translation.z)));
+    }
+
+    {
+        //Ispravak rotacije ide PREKO pokreta: zglob koji se okrece nastavlja se okretati, samo pomaknut
+        Warp::Id arm;
+        Warp::Stage stage = motionStage(arm);
+        for(int f = 1; f <= 100; ++f)
+            stage.get(arm)->rotationKeys.set(double(f), glm::angleAxis(glm::radians(float(f)), glm::vec3(0, 1, 0)));
+        const glm::quat fix = glm::angleAxis(glm::radians(30.0f), glm::vec3(0, 1, 0));
+        Loom::PoseKey a{40.0, {{arm, stage.localAt(arm, 40.0)}}}, b{60.0, {{arm, stage.localAt(arm, 60.0)}}};
+        a.pose[0].second.rotation = a.pose[0].second.rotation * fix;
+        b.pose[0].second.rotation = b.pose[0].second.rotation * fix;
+        Loom::applyPoseKeys(stage, {a, b}, 1.0, 100.0, Loom::PoseKeySettings{});
+        const float at50 = glm::degrees(glm::angle(stage.localAt(arm, 50.0).rotation));
+        report.check("isti ispravak u oba kljuca: pokret + 30 st izmedju", std::fabs(at50 - 80.0f) < 0.01f,
+                     fmt("kadar 50: %.3f st (pokret 50 + 30)", double(at50)));
+    }
+    {
+        //Kljucevi na 30 Hz u sceni od 25 fps (korak 0.8333): ispravak mora uci i u kljuceve IZMEDJU
+        //cijelih kadrova, inace reprodukcija skace izmedju ispravljenog i originala
+        Warp::Stage stage;
+        const Warp::Id arm = stage.create("Arm");
+        const double step = 25.0 / 30.0;
+        for(int i = 0; i < 120; ++i){
+            const double t = 1.0 + step * double(i);
+            stage.get(arm)->translationKeys.set(t, glm::vec3(float(t), 0.0f, 0.0f));
+            stage.get(arm)->rotationKeys.set(t, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        }
+        Loom::applyPoseKeys(stage, {key(arm, 40.0, 100.0f), key(arm, 60.0, 200.0f)}, 1.0, 100.0, Loom::PoseKeySettings{});
+        //Izmedju kljuceva ispravak raste od +60 do +140; svaki kljuc izmedju mora biti ispravljen
+        bool allCorrected = true;
+        double worst = 0.0;
+        for(double t = 41.0; t < 59.0; t += 0.25){
+            const float correction = xAt(stage, arm, t) - float(t);
+            if(correction < 59.0f){ allCorrected = false; worst = t; }
+        }
+        report.check("ispravak u svakom kljucu izmedju cijelih kadrova (30 Hz u 25 fps)", allCorrected,
+                     allCorrected ? "nema skakanja" : fmt("original probija u kadru %.2f", worst));
     }
     return report.result();
 }

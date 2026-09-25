@@ -1,22 +1,27 @@
 #pragma once
 //=============================================================================================
-// POZE PO KLJUCEVIMA: umjetnik uredi pozu u dva ili vise kadrova, a IZMEDJU NJIH se poza pretapa iz
-// jedne u drugu.
+// ISPRAVAK POZE KAO SLOJ: umjetnik ispravi pozu u dva (ili vise) kadra, a izmedju njih se ISPRAVAK
+// pretapa preko pokreta - klasicni animacijski sloj.
 //
-// ZASTO. Prvi Smart Blend je imao jedan kadar: pomak poze se ulije, drzi pa ISCURI natrag u
-// originalni pokret. Za "podigne ruku u kadru 40 i drzi je do kadra 90 gdje je spusti drukcije"
-// trebalo je dvaput raditi Smart Blend, a izmedju dvaju ispravaka se svaki put vracao originalni
-// pokret iz Kimoda - bas ono sto je umjetnik htio zamijeniti.
+// Primjer zbog kojeg postoji: lik glumi da drzi pistolj, ruke su krive. Ispravi se ruke u kadru
+// 40 i u kadru 90; izmedju njih ruke idu od jednog ispravka do drugog, a noge, kukovi i hod
+// ostaju onakvi kakvi su bili.
 //
-//   PRIJE PRVOG KLJUCA   pomak prve poze (uredjeno - original u tom kadru) se ulije kroz "in"
-//                        kadrova, preko originalnog pokreta - ulaz iz snimljenog u uredjeno
-//   IZMEDJU KLJUCEVA     cista interpolacija poza, SVI zglobovi: kljuc A -> kljuc B, glatko
-//                        (smoothstep). Originalni pokret se ovdje ne vidi
-//   IZA ZADNJEG KLJUCA   Return: pomak zadnje poze se drzi "hold" kadrova i iscuri kroz "out"
-//                        natrag u pokret. Hold: zadnja poza stoji do kraja klipa
+// DVIJE ZAMKE KOJE SU OVDJE VEC PRODJENE:
 //
-// Jedan kljuc s Return je tocno stari Smart Blend. Poza se zadaje u lokalnom sustavu zgloba, pa
-// kljucevi ne ovise o tome gdje je lik u sceni.
+//   - PRVI Smart Blend je imao jedan kadar i ispravak je iza njega iscurio natrag u original, pa se
+//     izmedju dvaju ispravaka uvijek vracala kriva poza
+//   - DRUGI (caf5df8) je izmedju kljuceva interpolirao CIJELE POZE, svih zglobova. Noge i root
+//     motion su se izmedju dva kadra ukocili i klizali - korisnik je to vidio kao glitch
+//
+// Zato je ovo ADITIVNO i SAMO ZA DIRANE ZGLOBOVE: ispravak zgloba je d = original^-1 * uredjeno u
+// njegovom lokalnom sustavu (i razlika pomaka); rezultat je pokret(t) * d(t). Zglob koji ni u
+// jednom kljucu nije diran uopce se ne pise.
+//
+//   PRIJE PRVOG KLJUCA   ispravak prvog kljuca se ulije kroz "in" kadrova
+//   IZMEDJU KLJUCEVA     ispravak A -> ispravak B (smoothstep, slerp), preko pokreta koji tece
+//   IZA ZADNJEG KLJUCA   Return: ispravak se drzi "hold" kadrova i iscuri kroz "out".
+//                        Hold: ispravak ostaje do kraja klipa
 //=============================================================================================
 #include <Warp/Stage.h>
 
@@ -47,8 +52,26 @@ struct PoseKeySettings{
     bool blendBetween = true;       //false: samo kljucni kadrovi (stari "No Blend")
 };
 
-inline Warp::Transform mixTransforms(const Warp::Transform& a, const Warp::Transform& b, float t){
-    Warp::Transform out;
+struct PoseCorrection{
+    glm::vec3 translation{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};    //lokalno: original * rotation = uredjeno
+    glm::vec3 scale{0.0f};
+};
+
+inline PoseCorrection correctionOf(const Warp::Transform& original, const Warp::Transform& edited){
+    PoseCorrection c;
+    c.translation = edited.translation - original.translation;
+    c.rotation = glm::normalize(glm::inverse(original.rotation) * edited.rotation);
+    c.scale = edited.scale - original.scale;
+    return c;
+}
+
+inline bool correctionIsZero(const PoseCorrection& c){
+    return glm::length(c.translation) < 1e-5f && glm::length(c.scale) < 1e-5f && std::fabs(c.rotation.w) > 0.999999f;
+}
+
+inline PoseCorrection mixCorrections(const PoseCorrection& a, const PoseCorrection& b, float t){
+    PoseCorrection out;
     out.translation = a.translation + (b.translation - a.translation) * t;
     out.scale = a.scale + (b.scale - a.scale) * t;
     glm::quat to = b.rotation;
@@ -57,14 +80,12 @@ inline Warp::Transform mixTransforms(const Warp::Transform& a, const Warp::Trans
     return out;
 }
 
-//Original + tezina * (uredjeno - original u kljucu): pomak se nosi preko pokreta koji tece
-inline Warp::Transform addPoseOffset(const Warp::Transform& motion, const Warp::Transform& edited,
-                                     const Warp::Transform& originalAtKey, float weight){
+inline Warp::Transform applyCorrection(const Warp::Transform& motion, const PoseCorrection& c, float weight = 1.0f){
+    const PoseCorrection w = mixCorrections(PoseCorrection{}, c, weight);
     Warp::Transform out = motion;
-    out.translation += (edited.translation - originalAtKey.translation) * weight;
-    out.scale += (edited.scale - originalAtKey.scale) * weight;
-    const glm::quat delta = glm::normalize(edited.rotation * glm::inverse(originalAtKey.rotation));
-    out.rotation = glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), delta, weight) * motion.rotation);
+    out.translation += w.translation;
+    out.scale += w.scale;
+    out.rotation = glm::normalize(motion.rotation * w.rotation);
     return out;
 }
 
@@ -73,68 +94,94 @@ inline float easeInOut(float x){
     return x * x * (3.0f - 2.0f * x);
 }
 
-//Stage mora u trenutku poziva nositi ORIGINALNI klip (vraceni prije primjene): iz njega se citaju
-//pokret prije prvog i iza zadnjeg kljuca. Kljucevi ne moraju biti poredani. Vraca broj
-//zapisanih kadrova po zglobu (za poruku i test)
+//Stage mora u trenutku poziva nositi ORIGINALNI klip (vracen prije primjene): iz njega se citaju
+//pokret i ispravci. Kljucevi ne moraju biti poredani. Vraca broj ispravljenih zglobova
 inline size_t applyPoseKeys(Warp::Stage& stage, std::vector<PoseKey> keys, double clipStart, double clipEnd,
                             const PoseKeySettings& settings){
     if(keys.empty()) return 0;
     std::sort(keys.begin(), keys.end(), [](const PoseKey& a, const PoseKey& b){ return a.frame < b.frame; });
-    const PoseKey& firstKey = keys.front();
-    const PoseKey& lastKey = keys.back();
+    const double first = keys.front().frame, last = keys.back().frame;
 
-    //Cijeli plan se racuna PRIJE ijednog zapisa: setLocalAt mijenja klip, a pokret prije i poslije
-    //kljuceva se mora citati iz originala
+    //Svi zglobovi koji se pojavljuju u bilo kojem kljucu
+    std::vector<Warp::Id> joints;
+    for(const PoseKey& key : keys)
+        for(const auto& joint : key.pose)
+            if(std::find(joints.begin(), joints.end(), joint.first) == joints.end()) joints.push_back(joint.first);
+
+    //Cijeli plan PRIJE ijednog zapisa: setLocalAt mijenja klip, a pokret se cita iz originala
     struct Write{ Warp::Id id; double frame; Warp::Transform value; };
     std::vector<Write> writes;
-    auto poseOf = [](const PoseKey& key, Warp::Id id, Warp::Transform& out){
-        for(const auto& joint : key.pose) if(joint.first == id){ out = joint.second; return true; }
-        return false;
-    };
-
-    for(const auto& joint : firstKey.pose){
-        const Warp::Id id = joint.first;
+    size_t corrected = 0;
+    for(Warp::Id id : joints){
         if(!stage.get(id)) continue;
+        std::vector<PoseCorrection> perKey;
+        bool touched = false;
         for(const PoseKey& key : keys){
-            Warp::Transform value;
-            if(poseOf(key, id, value)) writes.push_back({id, key.frame, value});
+            PoseCorrection c;
+            for(const auto& joint : key.pose)
+                if(joint.first == id){ c = correctionOf(stage.localAt(id, key.frame), joint.second); break; }
+            touched = touched || !correctionIsZero(c);
+            perKey.push_back(c);
         }
-        if(!settings.blendBetween) continue;
+        if(!touched) continue;
+        ++corrected;
 
-        //-- izmedju kljuceva: poza u pozu --------------------------------------------------------
-        for(size_t k = 0; k + 1 < keys.size(); ++k){
-            Warp::Transform a, b;
-            if(!poseOf(keys[k], id, a) || !poseOf(keys[k + 1], id, b)) continue;
-            const double span = keys[k + 1].frame - keys[k].frame;
-            for(double t = std::floor(keys[k].frame) + 1.0; t < keys[k + 1].frame; t += 1.0)
-                writes.push_back({id, t, mixTransforms(a, b, easeInOut(float((t - keys[k].frame) / span)))});
-        }
+        auto correctionAt = [&](double t, float& weight) -> PoseCorrection{
+            weight = 1.0f;
+            if(t <= first){
+                const double inStart = std::max(clipStart, first - std::max(0.0, settings.inFrames));
+                weight = t >= first ? 1.0f : easeInOut(float((t - inStart) / std::max(1e-6, first - inStart)));
+                return perKey.front();
+            }
+            if(t >= last){
+                if(settings.ending == PoseKeyEnding::Hold) return perKey.back();
+                const double holdEnd = std::min(clipEnd, last + std::max(0.0, settings.holdFrames));
+                const double outEnd = std::min(clipEnd, holdEnd + std::max(1.0, settings.outFrames));
+                weight = t <= holdEnd ? 1.0f : easeInOut(float((outEnd - t) / std::max(1e-6, outEnd - holdEnd)));
+                return perKey.back();
+            }
+            size_t k = 0;
+            while(k + 1 < keys.size() && keys[k + 1].frame <= t) ++k;
+            if(!settings.blendBetween){ weight = 0.0f; return perKey[k]; }
+            const float s = easeInOut(float((t - keys[k].frame) / (keys[k + 1].frame - keys[k].frame)));
+            return mixCorrections(perKey[k], perKey[k + 1], s);
+        };
 
-        //-- ulaz: pomak prve poze preko pokreta --------------------------------------------------
-        const Warp::Transform originalFirst = stage.localAt(id, firstKey.frame);
-        const double inStart = std::max(clipStart, firstKey.frame - std::max(0.0, settings.inFrames));
-        for(double t = std::ceil(inStart); t < firstKey.frame; t += 1.0){
-            const float weight = easeInOut(float((t - inStart) / std::max(1e-6, firstKey.frame - inStart)));
-            writes.push_back({id, t, addPoseOffset(stage.localAt(id, t), joint.second, originalFirst, weight)});
+        const double from = settings.blendBetween ? std::max(clipStart, first - std::max(0.0, settings.inFrames)) : first;
+        double to = last;
+        if(settings.blendBetween){
+            to = settings.ending == PoseKeyEnding::Hold ? clipEnd
+               : std::min(clipEnd, last + std::max(0.0, settings.holdFrames) + std::max(1.0, settings.outFrames));
         }
-
-        //-- izlaz ----------------------------------------------------------------------------------
-        Warp::Transform lastPose;
-        if(!poseOf(lastKey, id, lastPose)) continue;
-        if(settings.ending == PoseKeyEnding::Hold){
-            for(double t = std::floor(lastKey.frame) + 1.0; t <= clipEnd; t += 1.0) writes.push_back({id, t, lastPose});
-            continue;
+        //ISPRAVAK IDE NA VREMENA KLJUCEVA KOJA ZGLOB VEC IMA. Kimodov klip je 30 Hz, a scena
+        //obicno 25: kljucevi stoje na 1, 1.83, 2.67... Prva verzija je pisala samo cijele kadrove,
+        //pa su izmedju njih ostali originalni kljucevi i ruka je u reprodukciji skakala izmedju
+        //ispravljene i krive poze - glitch koji je korisnik vidio. Zglob bez kljuceva dobije cijele
+        std::vector<double> frames;
+        std::vector<double> existing;
+        auto collect = [&](const auto& track){
+            for(double t : track.times) if(t >= from - 1e-9 && t <= to + 1e-9) existing.push_back(t);
+        };
+        if(const Warp::AnimatorTrack* track = stage.activeAnimatorTrack(id)){
+            collect(track->translationKeys); collect(track->rotationKeys); collect(track->scaleKeys);
+        }else if(const Warp::Entity* entity = stage.get(id)){
+            collect(entity->translationKeys); collect(entity->rotationKeys); collect(entity->scaleKeys);
         }
-        const Warp::Transform originalLast = stage.localAt(id, lastKey.frame);
-        const double holdEnd = std::min(clipEnd, lastKey.frame + std::max(0.0, settings.holdFrames));
-        const double outEnd = std::min(clipEnd, holdEnd + std::max(1.0, settings.outFrames));
-        for(double t = std::floor(lastKey.frame) + 1.0; t <= outEnd; t += 1.0){
-            const float weight = t <= holdEnd ? 1.0f : easeInOut(float((outEnd - t) / std::max(1e-6, outEnd - holdEnd)));
-            writes.push_back({id, t, addPoseOffset(stage.localAt(id, t), lastPose, originalLast, weight)});
+        if(existing.empty()) for(double t = std::ceil(from); t <= to; t += 1.0) frames.push_back(t);
+        else frames = existing;
+        for(const PoseKey& key : keys) frames.push_back(key.frame);
+        std::sort(frames.begin(), frames.end());
+        frames.erase(std::unique(frames.begin(), frames.end()), frames.end());
+        for(double t : frames){
+            const bool isKey = std::any_of(keys.begin(), keys.end(), [&](const PoseKey& k){ return k.frame == t; });
+            if(!settings.blendBetween && !isKey) continue;
+            float weight = 1.0f;
+            const PoseCorrection c = correctionAt(t, weight);
+            writes.push_back({id, t, applyCorrection(stage.localAt(id, t), c, isKey ? 1.0f : weight)});
         }
     }
     for(const Write& write : writes) stage.setLocalAt(write.id, write.frame, write.value);
-    return firstKey.pose.empty() ? 0 : writes.size() / firstKey.pose.size();
+    return corrected;
 }
 
 }

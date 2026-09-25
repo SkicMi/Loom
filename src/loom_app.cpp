@@ -356,7 +356,7 @@
             std::vector<Loom::PoseKey> keys;    //uredjene poze po kadrovima; izmedju njih pretapanje
         } poseEdit;
         int poseKeyEnding = 0;                  //0: povratak u pokret iza zadnjeg kljuca, 1: drzi pozu
-        int poseBlendStep = 0;                  //0 nista, 1-2 biranje kadrova, 3-4 poza svakog, 5 jedna poza
+        int poseBlendStep = 0;                  //0 nista, 3 prva poza, 4 druga poza
         double poseBlendFirst = -1.0, poseBlendSecond = -1.0;
         bool poseBlendOptionsOpen = false;
         float poseBlendInFrames = 8.0f;
@@ -2786,10 +2786,10 @@
                             ui.caption("POSE BLEND");
                             const double poseFrame = std::round(frame);
                             const bool frameInClip = poseFrame >= active.startFrame && poseFrame <= active.endFrame;
-                            //VODJENI TOK, korak po korak: Blend -> prvi kadar -> drugi kadar -> poza prvog ->
-                            //poza drugog -> Blend. Svaki korak ima jednu recenicu i jedan glavni gumb;
-                            //prva verzija je sve nudila odjednom (kljucevi, dodavanje, brisanje, klizaci)
-                            //pa se nije znalo sto je sljedece
+                            //TOK KAO U KLASICNOJ ANIMACIJI: ispravi pozu na kadru, pomakni playhead, ispravi
+                            //drugu, BLEND. Ispravak je sloj preko pokreta (LoomPoseBlend.h), samo za dirane
+                            //zglobove. Biranje kadrova unaprijed (c171e99) bilo je obrnutim redom od
+                            //onoga kako animator radi
                             auto storeCurrentKey = [&]{
                                 Loom::PoseKey key{poseEdit.frame, {}};
                                 for(const auto& joint : poseEdit.basePose)
@@ -2849,7 +2849,7 @@
                             };
                             //Sesiju smije zatvoriti i netko drugi (Escape, zatvaranje Animatora): tada
                             //koraci poze nemaju sto uredjivati i tok se vrati na pocetak
-                            if(poseBlendStep >= 3 && !poseEdit.active) poseBlendStep = 0;
+                            if(poseBlendStep != 0 && !poseEdit.active) poseBlendStep = 0;
                             const bool editTarget = !poseEdit.active || (poseEdit.rig == animatorRig &&
                                                                          poseEdit.animation == animator.activeAnimation);
                             const std::string here = std::to_string(int(poseFrame));
@@ -2857,85 +2857,61 @@
                                 ui.status("Go back to the clip you are editing to continue.", theme.warning);
                                 if(ui.button("Cancel pose blend")) cancelPoseBlend();
                             }else if(poseBlendStep == 0){
-                                if(ui.primaryButton("BLEND BETWEEN TWO POSES", frameInClip)){
-                                    poseBlendStep = 1;
-                                    poseBlendFirst = poseBlendSecond = -1.0;
-                                }
-                                if(ui.button("Edit pose at frame " + here + " only") && frameInClip){
+                                //Redoslijed kao u klasicnoj animaciji: ispravi pozu ovdje, pa dalje, pa blend
+                                if(ui.primaryButton("FIX POSE AT FRAME " + here, frameInClip)){
                                     beginPoseSession(poseFrame);
                                     goToPoseFrame(poseFrame);
-                                    poseBlendStep = 5;
+                                    poseBlendFirst = poseFrame;
+                                    poseBlendSecond = -1.0;
+                                    poseBlendStep = 3;
                                 }
-                                ui.hint(frameInClip ? "Blend: pick two frames, pose each one, and the motion between them blends from the first pose to the second."
+                                ui.hint(frameInClip ? "Fix the pose here, then fix it again further on. The correction blends between "
+                                                      "the two; the rest of the body keeps its motion."
                                                     : "Move the playhead inside the clip.");
-                            }else if(poseBlendStep == 1 || poseBlendStep == 2){
-                                const bool first = poseBlendStep == 1;
-                                ui.status(first ? "Step 1 of 4 - move the playhead to the FIRST frame"
-                                                : "Step 2 of 4 - move the playhead to the SECOND frame", theme.accent);
-                                if(!first) ui.value("First frame", std::to_string(int(poseBlendFirst)));
-                                const bool usable = frameInClip && (first || poseFrame != poseBlendFirst);
-                                if(ui.primaryButton("USE FRAME " + here, usable)){
-                                    if(first){
-                                        poseBlendFirst = poseFrame;
-                                        poseBlendStep = 2;
-                                    }else{
-                                        poseBlendSecond = poseFrame;
-                                        if(poseBlendSecond < poseBlendFirst) std::swap(poseBlendFirst, poseBlendSecond);
-                                        beginPoseSession(poseBlendFirst);
-                                        goToPoseFrame(poseBlendFirst);
-                                        poseBlendStep = 3;
-                                    }
-                                }
-                                if(!first && poseFrame == poseBlendFirst) ui.hint("Pick a different frame than the first one.");
-                                if(ui.button("Cancel")) cancelPoseBlend();
-                            }else if(poseBlendStep == 3 || poseBlendStep == 4){
-                                const bool first = poseBlendStep == 3;
-                                const double at = first ? poseBlendFirst : poseBlendSecond;
-                                ui.status((first ? "Step 3 of 4 - pose frame " : "Step 4 of 4 - pose frame ") +
-                                          std::to_string(int(at)) + " in the viewport", theme.accent);
-                                std::vector<std::string> frames{std::to_string(int(poseBlendFirst)), std::to_string(int(poseBlendSecond))};
-                                const int jump = ui.pills(frames, first ? 0 : 1);
-                                if(jump >= 0 && jump != (first ? 0 : 1)){
+                            }else if(poseBlendStep == 3){
+                                ui.status("Pose 1 - frame " + std::to_string(int(poseBlendFirst)) + ": fix it in the viewport", theme.accent);
+                                if(poseFrame == poseBlendFirst || !frameInClip){
+                                    ui.hint("Then move the playhead to where the second pose goes.");
+                                }else if(ui.primaryButton("SECOND POSE AT FRAME " + here)){
                                     storeCurrentKey();
-                                    poseBlendStep = jump == 0 ? 3 : 4;
+                                    poseBlendSecond = poseFrame;
+                                    goToPoseFrame(poseFrame);
+                                    poseBlendStep = 4;
+                                }
+                                if(poseFrame != poseBlendFirst && ui.button("Back to pose 1 (frame " + std::to_string(int(poseBlendFirst)) + ")"))
+                                    goToPoseFrame(poseBlendFirst);
+                                if(ui.button("Apply this pose only")){
+                                    applyPoseKeys(true);
+                                    message = "Pose fixed at frame " + std::to_string(int(poseBlendFirst)) + "; it blends back into the motion.";
+                                }
+                                if(ui.button("Cancel")) cancelPoseBlend();
+                            }else if(poseBlendStep == 4){
+                                ui.status("Pose 2 - frame " + std::to_string(int(poseBlendSecond)) + ": fix it in the viewport", theme.accent);
+                                //Oba kadra kao pilule: povratak na prvi da se jos dotjera, bez gubitka drugog
+                                std::vector<std::string> frames{std::to_string(int(poseBlendFirst)), std::to_string(int(poseBlendSecond))};
+                                const int showing = poseEdit.frame == poseBlendFirst ? 0 : 1;
+                                const int jump = ui.pills(frames, showing);
+                                if(jump >= 0 && jump != showing){
+                                    storeCurrentKey();
                                     goToPoseFrame(jump == 0 ? poseBlendFirst : poseBlendSecond);
                                 }
-                                if(poseFrame != at) ui.hint("The rig controls appear on frame " + std::to_string(int(at)) + ".");
-                                if(first){
-                                    if(ui.primaryButton("NEXT: POSE FRAME " + std::to_string(int(poseBlendSecond)))){
-                                        storeCurrentKey();
-                                        poseBlendStep = 4;
-                                        goToPoseFrame(poseBlendSecond);
-                                    }
-                                }else if(ui.primaryButton("BLEND")){
+                                const double low = std::min(poseBlendFirst, poseBlendSecond), high = std::max(poseBlendFirst, poseBlendSecond);
+                                if(ui.primaryButton("BLEND " + std::to_string(int(low)) + " -> " + std::to_string(int(high)))){
                                     applyPoseKeys(true);
-                                    message = "Blended frame " + std::to_string(int(poseBlendFirst)) + " into frame " +
-                                              std::to_string(int(poseBlendSecond)) + ".";
+                                    message = "Pose correction blends from frame " + std::to_string(int(low)) + " to frame " +
+                                              std::to_string(int(high)) + "; the rest of the body keeps its motion.";
                                 }
-                                if(ui.disclosure("Blend options", poseKeyEnding == 0 ? "return to motion" : "hold last pose", &poseBlendOptionsOpen)){
-                                    ui.slider("Blend in before first", &poseBlendInFrames, 0.0f, 30.0f, " fr");
-                                    ui.choice("After second frame", {"Return to motion", "Hold pose"}, &poseKeyEnding);
+                                if(ui.disclosure("Blend options", poseKeyEnding == 0 ? "fades out after" : "kept to clip end", &poseBlendOptionsOpen)){
+                                    ui.slider("Fade in before", &poseBlendInFrames, 0.0f, 30.0f, " fr");
+                                    ui.choice("After the second pose", {"Fade out", "Keep correction"}, &poseKeyEnding);
                                     if(poseKeyEnding == 0){
                                         ui.slider("Hold", &poseBlendHoldFrames, 0.0f, 180.0f, " fr");
-                                        ui.slider("Blend out", &poseBlendOutFrames, 1.0f, 60.0f, " fr");
+                                        ui.slider("Fade out", &poseBlendOutFrames, 1.0f, 60.0f, " fr");
                                     }
                                 }
                                 if(ui.button("Cancel")) cancelPoseBlend();
-                            }else if(poseBlendStep == 5){
-                                ui.status("Pose frame " + std::to_string(int(poseEdit.frame)) + " in the viewport", theme.accent);
-                                if(ui.primaryButton("APPLY POSE")){
-                                    applyPoseKeys(true);
-                                    message = "Pose applied at frame " + std::to_string(int(frame)) + ".";
-                                }
-                                if(ui.disclosure("Blend options", "", &poseBlendOptionsOpen)){
-                                    ui.slider("Blend in", &poseBlendInFrames, 0.0f, 30.0f, " fr");
-                                    ui.choice("After this frame", {"Return to motion", "Hold pose"}, &poseKeyEnding);
-                                    if(poseKeyEnding == 0){
-                                        ui.slider("Hold", &poseBlendHoldFrames, 0.0f, 180.0f, " fr");
-                                        ui.slider("Blend out", &poseBlendOutFrames, 1.0f, 60.0f, " fr");
-                                    }
-                                }
-                                if(ui.button("Cancel")) cancelPoseBlend();
+                            }else{
+                                poseBlendStep = 0;
                             }
                             poseBlendInFrames = std::round(poseBlendInFrames);
                             poseBlendHoldFrames = std::round(poseBlendHoldFrames);
