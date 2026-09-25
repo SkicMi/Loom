@@ -154,7 +154,7 @@ int main(){
     request.actions = {{"a person walks forward. slowly", 3.0f}, {"  ", 2.0f}, {"sits down on it's chair\n", 2.5f}};
     request.seed = 7;
     request.diffusionSteps = 60;
-    request.footCleanup = false;
+    request.kimodoPostprocess = false;   //footCleanup je preimenovan u kimodoPostprocess (isti --no-postprocess)
 
     //-- 1. prazne radnje ispadaju, tocka u opisu postaje zarez ------------------------------------
     const std::vector<Loom::MotionAction> filled = Loom::filledActions(request.actions);

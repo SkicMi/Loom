@@ -22,6 +22,8 @@
 //=============================================================================================
 #include "LoomViewport.h"
 
+#include <Engine/WeaverProcedura.h>
+
 #include "Core/Camera.h"
 #include "Core/Light.h"
 #include "Core/LoomInitializer.h"
@@ -114,6 +116,50 @@ inline std::vector<MeshChunkData> meshChunks(const Spool::GltfPrimitive& p){
         }
     }
     if(!indices.empty()) chunks.push_back({std::move(vertices), std::move(indices), std::move(sourceVertices)});
+    return chunks;
+}
+
+//Engine-generated geometry enters Loom as transient GPU chunks; it never enters Warp or project serialization.
+inline std::vector<MeshChunkData> meshChunks(const Engine::WeaverProcedura::MeshData& data){
+    if(data.indices.empty() || data.indices.size() % 3 != 0) return {};
+
+    std::vector<MeshChunkData> chunks;
+    std::unordered_map<uint32_t, uint16_t> local;
+    std::vector<Vertex> vertices;
+    std::vector<uint16_t> indices;
+    std::vector<uint32_t> sourceVertices;
+    auto flush = [&]{
+        if(indices.empty()) return;
+        chunks.push_back({std::move(vertices), std::move(indices), std::move(sourceVertices)});
+        vertices.clear();
+        indices.clear();
+        sourceVertices.clear();
+        local.clear();
+    };
+
+    for(size_t triangle = 0; triangle < data.indices.size(); triangle += 3){
+        const uint32_t source[3] = {data.indices[triangle], data.indices[triangle + 1], data.indices[triangle + 2]};
+        if(source[0] >= data.vertices.size() || source[1] >= data.vertices.size() || source[2] >= data.vertices.size()) return {};
+        if(vertices.size() + 3 > 65535) flush();
+        for(uint32_t original : source){
+            auto found = local.find(original);
+            if(found == local.end()){
+                const auto& generated = data.vertices[original];
+                Vertex vertex;
+                vertex.position = generated.position;
+                vertex.color = glm::vec3(1.0f);
+                vertex.texCoord = generated.uv;
+                vertex.normal = glm::dot(generated.normal, generated.normal) > 1e-20f
+                    ? glm::normalize(generated.normal) : glm::vec3(0.0f, 1.0f, 0.0f);
+                const uint16_t index = uint16_t(vertices.size());
+                found = local.emplace(original, index).first;
+                vertices.push_back(vertex);
+                sourceVertices.push_back(original);
+            }
+            indices.push_back(found->second);
+        }
+    }
+    flush();
     return chunks;
 }
 
@@ -232,9 +278,33 @@ public:
     float exposure = 1.0f;
     size_t drawnPrimitives = 0;
 
+    void setProceduralPreview(const Engine::WeaverProcedura::MeshData* data, uint64_t revision){
+        if(!data || data->empty()){
+            if(proceduralPreviewGpu){
+                loom.waitIdle();
+                proceduralPreviewGpu.reset();
+            }
+            return;
+        }
+        if(proceduralPreviewGpu && proceduralPreviewRevision == revision) return;
+
+        std::vector<MeshChunkData> chunks = meshChunks(*data);
+        if(proceduralPreviewGpu){
+            loom.waitIdle();
+            proceduralPreviewGpu.reset();
+        }
+        proceduralPreviewGpu.emplace();
+        proceduralPreviewRevision = revision;
+        for(const MeshChunkData& chunk : chunks)
+            proceduralPreviewGpu->chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices);
+    }
+
     //PRIJE beginFrame: modeli na karticu, meta velicine pogleda, kamera. false: nema sto crtati
     bool prepare(const Warp::Stage& stage, double frame, const ViewCamera& view, float pixelScale,
-                 float nearPlane, float farPlane){
+                 float nearPlane, float farPlane,
+                 const Engine::WeaverProcedura::MeshData* proceduralPreview = nullptr,
+                 uint64_t previewRevision = 0){
+        setProceduralPreview(proceduralPreview, previewRevision);
         items.clear();
         drawnPrimitives = 0;
         lastSkinningDebug.clear();
@@ -309,6 +379,10 @@ public:
                 }
             }
         });
+        if(proceduralPreview && proceduralPreviewGpu){
+            for(Mesh& mesh : proceduralPreviewGpu->chunks)
+                items.push_back({&mesh, glm::mat4(1.0f), -1, glm::vec3(0.18f, 0.58f, 0.82f), false});
+        }
         if(items.empty()) return false;
 
         const vk::Extent2D extent{uint32_t(std::max(16.0f, view.rect.width * pixelScale)),
@@ -680,7 +754,8 @@ private:
     std::map<Warp::Id, SkinningDebug> lastSkinningDebug;
     std::map<std::string, std::unique_ptr<Texture>> textures;
     std::set<std::string> failed;
-    std::optional<GpuPrimitive> cube, plane;
+    std::optional<GpuPrimitive> cube, plane, proceduralPreviewGpu;
+    uint64_t proceduralPreviewRevision = 0;
     std::vector<std::unique_ptr<VulkanGraphicsPipeline>> pipelines;
     std::unique_ptr<VulkanGraphicsPipeline> presentPipeline;
     std::optional<RenderTarget> target;

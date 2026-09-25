@@ -45,7 +45,10 @@ int main(){
                 covered += area(parts[i]);
                 for(int j = i + 1; j < 6; ++j) if(overlaps(parts[i], parts[j])) clean = false;
             }
-            const bool full = std::fabs(covered - size.x * size.y) < 1.0f;
+            //Stupci su odvojeni namjernim razmakom od 6 px (layoutEditor, panelGap), pa nepokriven
+            //smije ostati samo taj razmak po dva stupca - ne i rupa u rasporedu
+            const float gaps = 2.0f * 6.0f * l.viewport.height;
+            const bool full = covered <= size.x * size.y + 1.0f && size.x * size.y - covered <= gaps + 1.0f;
             const bool roomy = l.viewport.width >= size.x * 0.39f && l.viewport.height >= size.y * 0.5f;
             if(!(clean && full && roomy)) allGood = false;
             detail += fmt("%.0fx%.0f: pogled %.0fx%.0f; ", size.x, size.y, l.viewport.width, l.viewport.height);

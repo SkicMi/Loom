@@ -313,6 +313,7 @@ class Ui{
     Rect menuBuilding;            //ovaj kadar
     float menuWidestText = 0.0f;
     float menuX = 0.0f, menuY = 0.0f;
+    float menuAnimationStart = 0.0f;
     bool inMenu = false;
     bool menuItemClicked = false;
     DrawList overlay;             //izbornik, spojen na kraj popisa u end()

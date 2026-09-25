@@ -342,6 +342,9 @@
         //Pokret iz teksta (LoomMotionPanel.h): panel u pogledu s radnjama, postavkama i povijescu
         Loom::MotionPanelState motionPanel;
         Loom::WeaverProceduraPanelState proceduraPanel;
+        int proceduraCurveDragPoint = -1;
+        glm::vec3 proceduraDragPlanePoint{0.0f};
+        glm::vec3 proceduraDragPlaneNormal{0.0f, 0.0f, 1.0f};
         struct PoseEditSession{
             bool active = false;
             Warp::Id rig = Warp::None;
@@ -442,6 +445,7 @@
         Warp::Id generatedMotionTarget = Warp::None;
         std::vector<Loom::MotionCharacter> sceneMotionCharacters;
         std::chrono::steady_clock::time_point sceneMotionCharactersRead{};
+        Loom::PlateFloorWatch plateWatch;       //pod snimke pod likom i zakljucanost stopala (LoomPlateFloor.h)
         Loom::AutoRigState autoRig;
         float autoRigScroll = 0.0f;
     
@@ -1384,6 +1388,22 @@
             }
             ui.focusTextField("action" + std::to_string(motionPanel.activeAction));
         };
+
+        auto frameProceduraCurve = [&]{
+            namespace Panel = Loom::WeaverProceduraUi;
+            namespace Proc = Engine::WeaverProcedura;
+            Proc::Node* node = Panel::activeCurveNode(proceduraPanel);
+            if(!node) return false;
+            const Proc::Curve& curve = std::get<Proc::CurveNode>(node->payload).curve;
+            if(curve.points.empty()) return false;
+            glm::vec3 low = curve.points.front(), high = curve.points.front();
+            for(const glm::vec3& point : curve.points){ low = glm::min(low, point); high = glm::max(high, point); }
+            view.lookThrough = Warp::None;
+            view.orbit.target = (low + high) * 0.5f;
+            view.orbit.distance = std::clamp(std::max(0.5f, glm::length(high - low) * 0.5f) * 2.8f,
+                                             2.0f, 100000.0f);
+            return true;
+        };
     
         //-- projekt ----------------------------------------------------------------------------------
         //Projekt je .usda (vidi Warp/Project.h). Prvo spremanje ga stavi u mapu koju media prozor
@@ -2259,8 +2279,8 @@
                 canvas.rect(layout.rail, theme.panel);
                 ui.region("loom-rail-surface", layout.rail);
                 if(railReveal > 0.72f){
-                    canvas.marble(layout.rail, Treadle::Color{0.57f, 0.68f, 0.49f, 0.13f},
-                                  Treadle::Color{0.02f, 0.035f, 0.025f, 0.10f}, input.timeSeconds);
+                    canvas.marble(layout.rail, Treadle::Color{0.30f, 0.48f, 0.34f, 0.25f},
+                                  Treadle::Color{0.02f, 0.035f, 0.025f, 0.22f}, input.timeSeconds);
                     canvas.rect(layout.rail.x + layout.rail.width - 1.0f, layout.rail.y, 1.0f,
                                 layout.rail.height, theme.panelEdge);
                     auto railItem = [&](RailPane pane, const std::string& label, int row){
@@ -2299,6 +2319,7 @@
                                 motionPanel.open = false;
                                 autoRig.open = false;
                                 proceduraPanel.open = !proceduraPanel.open;
+                                if(proceduraPanel.open) frameProceduraCurve();
                                 activeRailPane = proceduraPanel.open ? RailPane::Procedura : RailPane::None;
                             }else if(pane == RailPane::Scene || pane == RailPane::Components){
                                 proceduraPanel.open = false;
@@ -3743,6 +3764,9 @@
                 sceneMotionCharactersRead = now;
             }
             motionStatus.characters = sceneMotionCharacters;
+            plateWatch.update(stage, frame, Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter),
+                              std::chrono::duration<double>(now.time_since_epoch()).count());
+            motionStatus.plate = &plateWatch;
             motionStatus.characterNote = "Detected from imported GLTF/GLB mesh + joint hierarchies.";
             const Loom::MotionPanelAction motionAction = Loom::drawMotionPanel(ui, motionPanel,
                 layout.motion, motionStatus, motionPanelScroll);
@@ -3762,6 +3786,18 @@
                     stage.framesPerSecond / Loom::kimodoMotionFps, stage.startFrame, stage.endFrame);
                 playing = false;
             }
+            if(motionAction.standOnPlateFloor){
+                std::string problem;
+                const Warp::Id rig = Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter);
+                if(Loom::standOnPlateFloor(stage, rig, frame, plateWatch.floor, motionPanel.cameraHeightMetres, &problem)){
+                    char text[160];
+                    std::snprintf(text, sizeof(text), "Character stands on the plate floor at %.2f m camera height (%.3f scene units per metre).",
+                                  double(motionPanel.cameraHeightMetres),
+                                  double(Loom::plateUnitsPerMetre(plateWatch.floor, motionPanel.cameraHeightMetres)));
+                    message = text;
+                    plateWatch.checkedAt = -1.0;
+                }else message = problem;
+            }
             if(motionAction.generate) startMotionGeneration();
             if(motionAction.generateMotionBricks) startMotionBricksGeneration();
             if(motionAction.startLiveRecording) startMotionBricksLive();
@@ -3776,8 +3812,55 @@
             if(motionAction.close) motionPanel.open = false;
         }
 
-        if(proceduraPanel.open)
+        if(proceduraPanel.open){
+            const size_t nodesBefore = proceduraPanel.graph.nodes.size();
             Loom::drawWeaverProceduraPanel(ui, proceduraPanel, layout.motion);
+            if(nodesBefore == 0 && !proceduraPanel.graph.nodes.empty()) frameProceduraCurve();
+
+            namespace Panel = Loom::WeaverProceduraUi;
+            namespace Proc = Engine::WeaverProcedura;
+            Proc::Node* curveNode = Panel::activeCurveNode(proceduraPanel);
+            if(curveNode){
+                const Proc::Curve& curve = std::get<Proc::CurveNode>(curveNode->payload).curve;
+                if(proceduraPanel.selectedControlPoint < 0 ||
+                   size_t(proceduraPanel.selectedControlPoint) >= curve.points.size())
+                    proceduraPanel.selectedControlPoint = curve.points.empty() ? -1 : 0;
+                const int pointIndex = proceduraPanel.selectedControlPoint;
+                if(pointIndex >= 0){
+                    const Loom::ViewCamera hudCamera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
+                    glm::vec2 hudPixel;
+                    if(Loom::project(hudCamera, curve.points[size_t(pointIndex)], hudPixel) &&
+                       layout.viewport.contains(hudPixel.x, hudPixel.y) &&
+                       layout.viewport.width > 310.0f && layout.viewport.height > 180.0f){
+                        constexpr float hudWidth = 282.0f, hudHeight = 94.0f;
+                        float hudX = hudPixel.x + 24.0f;
+                        if(hudX + hudWidth > layout.viewport.x + layout.viewport.width - 8.0f)
+                            hudX = hudPixel.x - hudWidth - 24.0f;
+                        hudX = std::clamp(hudX, layout.viewport.x + 8.0f,
+                                          layout.viewport.x + layout.viewport.width - hudWidth - 8.0f);
+                        float hudY = hudPixel.y - hudHeight - 18.0f;
+                        if(hudY < layout.viewport.y + 8.0f) hudY = hudPixel.y + 20.0f;
+                        hudY = std::clamp(hudY, layout.viewport.y + 8.0f,
+                                          layout.viewport.y + layout.viewport.height - hudHeight - 8.0f);
+                        ui.panel("CURVE POINT / P" + std::to_string(pointIndex + 1), hudX, hudY, hudWidth);
+                        ui.value("Position", Loom::vectorText(curve.points[size_t(pointIndex)]) + " m");
+                        ui.hint("Drag in viewport to move; right-click for point actions.");
+                        const int action = ui.buttonRow({"Frame", "Before", "After", "More"});
+                        if(action == 0) frameProceduraCurve();
+                        else if(action == 1) Panel::insertControlPoint(proceduraPanel, curveNode->id,
+                                                                       size_t(pointIndex));
+                        else if(action == 2) Panel::insertControlPoint(proceduraPanel, curveNode->id,
+                                                                       size_t(pointIndex + 1));
+                        if(action == 3 || ui.rightClicked()){
+                            proceduraPanel.contextCurveNodeId = curveNode->id;
+                            proceduraPanel.contextControlPoint = pointIndex;
+                            ui.openMenuAt("Procedura Point", float(cursorX), float(cursorY));
+                            menuPixel = glm::vec2(float(cursorX), float(cursorY));
+                        }
+                    }
+                }
+            }
+        }
 
         //== PLOHA IZ ODABIRA: sto je odabrano i sto se s tim moze ================================
         if(surfaceTool.active){
@@ -3804,7 +3887,8 @@
         }
 
         //== OBJECT HUD: contextual actions float beside the selected object ==================
-        if(focus == Focus::Entity && selected != Warp::None && !motionPanel.open && !autoRig.open && !importer.open &&
+        if(focus == Focus::Entity && selected != Warp::None && !motionPanel.open && !proceduraPanel.open &&
+           !autoRig.open && !importer.open &&
            !ui.menuOpen("Entity") && !ui.menuOpen("View") && activeRailPane != RailPane::Media){
             const Warp::Entity* hudEntity = stage.get(selected);
             if(hudEntity && hudEntity->visible && selected != view.lookThrough){
@@ -4035,9 +4119,40 @@
             if(nearestFrame >= 0.0f) motionPathContextFrame = std::clamp(
                 int(std::lround(nearestFrame)), 0, lastMotionFrame);
         }
-        //Desni klik izvan putanje zadrzava postojeci izbornik pogleda.
+        bool proceduraPointContextHit = ui.menuOpen("Procedura Point");
+        if(rightPressed && proceduraPanel.open && layout.viewport.contains(float(rightClickX), float(rightClickY)) &&
+           !ui.wantsMouse() && !compositor.open){
+            namespace Panel = Loom::WeaverProceduraUi;
+            namespace Proc = Engine::WeaverProcedura;
+            Proc::Node* curveNode = Panel::activeCurveNode(proceduraPanel);
+            if(curveNode){
+                const Proc::Curve& curve = std::get<Proc::CurveNode>(curveNode->payload).curve;
+                const Loom::ViewCamera contextCamera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
+                const glm::vec2 pointer{float(rightClickX), float(rightClickY)};
+                float closest = 18.0f;
+                int pointIndex = -1;
+                for(size_t i = 0; i < curve.points.size(); ++i){
+                    glm::vec2 pixel;
+                    if(!Loom::project(contextCamera, curve.points[i], pixel) ||
+                       !layout.viewport.contains(pixel.x, pixel.y)) continue;
+                    const float distance = glm::length(pixel - pointer);
+                    if(distance < closest){ closest = distance; pointIndex = int(i); }
+                }
+                if(pointIndex >= 0){
+                    proceduraPanel.selectedCurveNodeId = curveNode->id;
+                    proceduraPanel.selectedControlPoint = pointIndex;
+                    proceduraPanel.contextCurveNodeId = curveNode->id;
+                    proceduraPanel.contextControlPoint = pointIndex;
+                    ui.openMenuAt("Procedura Point", float(rightClickX), float(rightClickY));
+                    menuPixel = glm::vec2(float(rightClickX), float(rightClickY));
+                    proceduraPointContextHit = true;
+                }
+            }
+        }
+        //Desni klik izvan putanje ili control pointa zadrzava postojeci izbornik pogleda.
         if(rightPressed && layout.viewport.contains(float(rightClickX), float(rightClickY)) &&
-           !ui.wantsMouse() && !compositor.open && !ui.menuOpen("Media") && !ui.menuOpen("Entity") && !ui.menuOpen("Atlas")){
+           !ui.wantsMouse() && !compositor.open && !proceduraPointContextHit &&
+           !ui.menuOpen("Procedura Point") && !ui.menuOpen("Media") && !ui.menuOpen("Entity") && !ui.menuOpen("Atlas")){
             if(motionPathContextFrame >= 0){
                 motionPathMenuFrame = motionPathContextFrame;
                 ui.openMenuAt("Motion Path", float(rightClickX), float(rightClickY));
@@ -4117,6 +4232,47 @@
             if(motionPanel.poseConstraints.size() >= 20 && !requestedPoseExists)
                 ui.menuItem("Pose limit reached (20)", false);
             ui.menuItem("Cancel");
+            ui.endMenu();
+        }
+        if(ui.beginMenu("Procedura Point")){
+            namespace Panel = Loom::WeaverProceduraUi;
+            namespace Proc = Engine::WeaverProcedura;
+            Proc::Node* curveNode = Panel::findCurveNode(proceduraPanel,
+                                                          proceduraPanel.contextCurveNodeId);
+            const int index = proceduraPanel.contextControlPoint;
+            const bool pointValid = curveNode && index >= 0 &&
+                size_t(index) < std::get<Proc::CurveNode>(curveNode->payload).curve.points.size();
+            size_t pointCount = pointValid
+                ? std::get<Proc::CurveNode>(curveNode->payload).curve.points.size() : 0;
+            const bool canInsert = pointValid && pointCount < 64;
+            const bool canDelete = pointValid && pointCount >
+                (std::get<Proc::CurveNode>(curveNode->payload).curve.closed ? 3u : 2u);
+            if(pointValid) ui.menuItem("CURVE POINT  /  P" + std::to_string(index + 1), false);
+            else ui.menuItem("CURVE POINT", false);
+            ui.menuSeparator();
+            if(ui.menuItem("Insert before", canInsert))
+                Panel::insertControlPoint(proceduraPanel, curveNode->id, size_t(index));
+            if(ui.menuItem("Insert after", canInsert))
+                Panel::insertControlPoint(proceduraPanel, curveNode->id, size_t(index + 1));
+            if(ui.menuItem("Raise by 0.25 m", pointValid)){
+                auto& point = std::get<Proc::CurveNode>(curveNode->payload).curve.points[size_t(index)];
+                point.y += 0.25f;
+                Panel::markGraphChanged(proceduraPanel);
+            }
+            if(ui.menuItem("Lower by 0.25 m", pointValid)){
+                auto& point = std::get<Proc::CurveNode>(curveNode->payload).curve.points[size_t(index)];
+                point.y -= 0.25f;
+                Panel::markGraphChanged(proceduraPanel);
+            }
+            if(ui.menuItem("Set height to ground", pointValid)){
+                auto& point = std::get<Proc::CurveNode>(curveNode->payload).curve.points[size_t(index)];
+                point.y = 0.0f;
+                Panel::markGraphChanged(proceduraPanel);
+            }
+            if(ui.menuItem("Frame curve", pointValid)) frameProceduraCurve();
+            ui.menuSeparator();
+            if(ui.menuItem("Delete point", canDelete))
+                Panel::eraseControlPoint(proceduraPanel, curveNode->id, size_t(index));
             ui.endMenu();
         }
         //Otvaranje, nova scena i izlaz PITAJU kad ima nespremljenog - i nude spremanje prvo
@@ -5541,13 +5697,72 @@
         //Strelice odabranog: vide se i hvataju prije okretanja pogleda
         const Warp::Entity* chosen = stage.get(selected);
         Loom::Gizmo gizmo;
-        if(chosen && chosen->visible && selected != view.lookThrough && focus == Focus::Entity){
+        if(chosen && chosen->visible && selected != view.lookThrough && focus == Focus::Entity &&
+           !proceduraPanel.open){
             gizmo = Loom::gizmoFor(pickCamera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
         }
         const glm::vec2 mouse{float(cursorX), float(cursorY)};
         gizmoAxisHot = gizmoAxisHeld >= 0 ? gizmoAxisHeld
                      : !overViewport ? -1
                      : tool == Tool::Move ? Loom::gizmoAxisAt(pickCamera, gizmo, mouse) : Loom::ringAxisAt(pickCamera, gizmo, mouse);
+
+        bool proceduraPointGesture = false;
+        bool proceduraPointClicked = false;
+        int proceduraPointHot = -1;
+        if(proceduraPanel.open && !surfaceTool.active){
+            namespace Panel = Loom::WeaverProceduraUi;
+            namespace Proc = Engine::WeaverProcedura;
+            Proc::Node* curveNode = Panel::activeCurveNode(proceduraPanel);
+            if(curveNode){
+                Proc::Curve& curve = std::get<Proc::CurveNode>(curveNode->payload).curve;
+                float closest = 17.0f;
+                for(size_t i = 0; i < curve.points.size(); ++i){
+                    glm::vec2 pixel;
+                    if(!Loom::project(pickCamera, curve.points[i], pixel) ||
+                       !viewportRect.contains(pixel.x, pixel.y)) continue;
+                    const float distance = glm::length(pixel - mouse);
+                    if(distance < closest){ closest = distance; proceduraPointHot = int(i); }
+                }
+
+                if(leftPressed && overViewport && proceduraPointHot >= 0){
+                    proceduraPanel.selectedCurveNodeId = curveNode->id;
+                    proceduraPanel.selectedControlPoint = proceduraPointHot;
+                    proceduraCurveDragPoint = proceduraPointHot;
+                    proceduraDragPlanePoint = curve.points[size_t(proceduraPointHot)];
+                    const glm::vec3 toEye = pickCamera.eye - proceduraDragPlanePoint;
+                    const float toEyeLength2 = glm::dot(toEye, toEye);
+                    proceduraDragPlaneNormal = toEyeLength2 > 1e-8f
+                        ? toEye / std::sqrt(toEyeLength2) : glm::vec3(0.0f, 0.0f, 1.0f);
+                    proceduraPointClicked = true;
+                }
+
+                if(proceduraCurveDragPoint >= 0 && leftDown){
+                    proceduraPointGesture = true;
+                    if(size_t(proceduraCurveDragPoint) < curve.points.size()){
+                        const Loom::Ray ray = Loom::rayThrough(pickCamera, mouse);
+                        const float denominator = glm::dot(ray.direction, proceduraDragPlaneNormal);
+                        if(std::fabs(denominator) > 1e-5f){
+                            const float distance = glm::dot(proceduraDragPlanePoint - ray.origin,
+                                                           proceduraDragPlaneNormal) / denominator;
+                            if(distance > 0.0f){
+                                const glm::vec3 position = ray.origin + distance * ray.direction;
+                                glm::vec3& point = curve.points[size_t(proceduraCurveDragPoint)];
+                                const glm::vec3 delta = position - point;
+                                if(glm::dot(delta, delta) > 1e-10f){
+                                    point = position;
+                                    Panel::markGraphChanged(proceduraPanel);
+                                }
+                            }
+                        }
+                    }
+                }
+                if(leftReleased || !leftDown) proceduraCurveDragPoint = -1;
+            }
+        }else{
+            proceduraCurveDragPoint = -1;
+        }
+        if(proceduraPointHot >= 0 || proceduraPointGesture || proceduraPointClicked)
+            gizmoAxisHot = -1;
 
         const bool editingPath = motionPanel.open && motionPanel.flowMode != 2 && motionPanel.rootPathEnabled &&
                                  stage.contains(motionPanel.targetCharacter) &&
@@ -5653,7 +5868,8 @@
 
         //Lijevi: strelica pomice, klik bira, vucenje okrece
         if(leftPressed && !surfaceTool.active){
-            leftInViewport = overViewport && !pathGesture;
+            leftInViewport = overViewport && !pathGesture &&
+                             !proceduraPointGesture && !proceduraPointClicked;
             dragging = false;
             pressX = leftClickX; pressY = leftClickY;
             gizmoAxisHeld = leftInViewport ? gizmoAxisHot : -1;
@@ -5775,13 +5991,15 @@
         if(keys.pressed(window, GLFW_KEY_HOME)) frame = stage.startFrame;
         if(keys.pressed(window, GLFW_KEY_END)) frame = stage.endFrame;
         if(keys.pressed(window, GLFW_KEY_F)){
-            view.lookThrough = Warp::None;
-            const Warp::Entity* entity = stage.get(selected);
-            if(entity && (entity->mesh || entity->camera)){
-                view.orbit.target = glm::vec3(stage.worldMatrix(selected, frame)[3]);
-                view.orbit.distance = extent.radius * 0.8f;
-            }else{
-                Loom::frameAll(stage.size() ? stage : live, frame, view.orbit);
+            if(!(proceduraPanel.open && frameProceduraCurve())){
+                view.lookThrough = Warp::None;
+                const Warp::Entity* entity = stage.get(selected);
+                if(entity && (entity->mesh || entity->camera)){
+                    view.orbit.target = glm::vec3(stage.worldMatrix(selected, frame)[3]);
+                    view.orbit.distance = extent.radius * 0.8f;
+                }else{
+                    Loom::frameAll(stage.size() ? stage : live, frame, view.orbit);
+                }
             }
         }
         const bool zero = keys.pressed(window, GLFW_KEY_0);
@@ -5793,12 +6011,21 @@
                 view.lookThrough = entity && entity->camera ? selected : firstCamera();
             }
         }
-        if(keys.pressed(window, GLFW_KEY_DELETE) && selected != Warp::None && focus == Focus::Entity){
-            removeSelected(selected);
+        if(keys.pressed(window, GLFW_KEY_DELETE)){
+            namespace Panel = Loom::WeaverProceduraUi;
+            namespace Proc = Engine::WeaverProcedura;
+            if(proceduraPanel.open && proceduraPanel.selectedControlPoint >= 0){
+                Proc::Node* curveNode = Panel::activeCurveNode(proceduraPanel);
+                if(curveNode) Panel::eraseControlPoint(proceduraPanel, curveNode->id,
+                    size_t(proceduraPanel.selectedControlPoint));
+            }else if(selected != Warp::None && focus == Focus::Entity){
+                removeSelected(selected);
+            }
         }
         if(keys.pressed(window, GLFW_KEY_ESCAPE)){
-            if(ui.menuOpen("View") || ui.menuOpen("Media") || ui.menuOpen("Entity") || ui.menuOpen("Project") ||
-               ui.menuOpen("New") || ui.menuOpen("Autosave") || ui.menuOpen("Exit") || ui.menuOpen("Atlas") ||
+            if(ui.menuOpen("View") || ui.menuOpen("Media") || ui.menuOpen("Entity") || ui.menuOpen("Procedura Point") ||
+               ui.menuOpen("Project") || ui.menuOpen("New") || ui.menuOpen("Autosave") ||
+               ui.menuOpen("Exit") || ui.menuOpen("Atlas") ||
                ui.menuOpen("Entity Add") || ui.menuOpen("View Add")) ui.closeMenu();
             else if(importer.open) importer.open = false;
             else if(autoRig.open) autoRig.open = false;
@@ -6037,10 +6264,42 @@
                 }
             }
             const Warp::Entity* chosenNow = stage.get(selected);
-            if(!editingPath && chosenNow && chosenNow->visible && selected != view.lookThrough && focus == Focus::Entity){
+            if(!editingPath && !proceduraPanel.open && chosenNow && chosenNow->visible &&
+               selected != view.lookThrough && focus == Focus::Entity){
                 const Loom::Gizmo shown = Loom::gizmoFor(camera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
                 if(tool == Tool::Move) Loom::paintGizmo(overlay, camera, shown, gizmoAxisHot);
                 else Loom::paintRings(overlay, camera, shown, gizmoAxisHot);
+            }
+            if(proceduraPanel.open){
+                namespace Panel = Loom::WeaverProceduraUi;
+                namespace Proc = Engine::WeaverProcedura;
+                Proc::Node* curveNode = Panel::activeCurveNode(proceduraPanel);
+                if(curveNode){
+                    const Proc::Curve& curve = std::get<Proc::CurveNode>(curveNode->payload).curve;
+                    const Treadle::Color line{0.20f, 0.88f, 0.67f, 0.95f};
+                    for(size_t i = 1; i < curve.points.size(); ++i)
+                        Loom::segment(overlay, camera, curve.points[i - 1], curve.points[i], 2.6f, line);
+                    if(curve.closed && curve.points.size() > 2)
+                        Loom::segment(overlay, camera, curve.points.back(), curve.points.front(), 2.6f, line);
+                    for(size_t i = 0; i < curve.points.size(); ++i){
+                        glm::vec2 pixel;
+                        if(!Loom::project(camera, curve.points[i], pixel) ||
+                           !viewportRect.contains(pixel.x, pixel.y)) continue;
+                        const bool isSelected = int(i) == proceduraPanel.selectedControlPoint;
+                        const bool isHot = int(i) == proceduraPointHot;
+                        const Treadle::Color fill = isSelected ? Treadle::Color{1.0f, 0.72f, 0.26f, 1.0f}
+                            : isHot ? Treadle::Color{0.58f, 1.0f, 0.68f, 1.0f}
+                                    : Treadle::Color{0.22f, 0.94f, 0.72f, 0.96f};
+                        const float size = isSelected || isHot ? 15.0f : 11.0f;
+                        const Treadle::Rect marker{pixel.x - size * 0.5f, pixel.y - size * 0.5f, size, size};
+                        overlay.rect(marker, Treadle::Color{0.035f, 0.075f, 0.06f, 0.98f});
+                        overlay.outline(marker, isSelected ? 2.2f : 1.5f, fill);
+                        overlay.line(pixel.x - 3.0f, pixel.y, pixel.x + 3.0f, pixel.y, 1.2f, fill);
+                        overlay.line(pixel.x, pixel.y - 3.0f, pixel.x, pixel.y + 3.0f, 1.2f, fill);
+                        overlay.text(pixel.x + size * 0.5f + 4.0f, pixel.y - 5.0f,
+                                     "P" + std::to_string(i + 1), fill, 1.8f);
+                    }
+                }
             }
             if(live.size() > 0){
                 Loom::ViewportState liveView = view;
@@ -6124,7 +6383,10 @@
             const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewportRect, view);
             meshArea = camera.rect;
             const float nearPlane = std::max(1e-5f, extent.radius * 1e-3f);
-            meshesActive = viewportMeshes.prepare(stage, frame, camera, pixelScaleX, nearPlane, std::max(100.0f, extent.radius * 500.0f));
+            const Engine::WeaverProcedura::MeshData* proceduralPreview = proceduraPanel.open && proceduraPanel.previewReady
+                ? &proceduraPanel.previewMesh : nullptr;
+            meshesActive = viewportMeshes.prepare(stage, frame, camera, pixelScaleX, nearPlane,
+                std::max(100.0f, extent.radius * 500.0f), proceduralPreview, proceduraPanel.previewRevision);
             for(const std::string& problem : viewportMeshes.takeErrors()) message = "Could not read model: " + problem;
         }
 

@@ -246,11 +246,13 @@ inline WeaverMotionImportReport importWeaverMotionClip(Warp::Stage& stage,
 
     report.firstFrame = first;
     report.lastFrame = first + double(clip.frames.size() - 1) * step;
+    //Prazna scena preuzima raspon klipa; zadani kraj timelinea (100) nije nicija odluka i ne smije
+    //ostati iza klipa od tri sekunde. Scena koja vec ima sadrzaj samo se produlji
     if(adopt){
         stage.startFrame = report.firstFrame;
         stage.framesPerSecond = clip.framesPerSecond;
-    }
-    stage.endFrame = std::max(stage.endFrame, std::max(report.lastFrame, report.firstFrame + 1.0));
+        stage.endFrame = std::max(report.lastFrame, report.firstFrame + 1.0);
+    }else stage.endFrame = std::max(stage.endFrame, std::max(report.lastFrame, report.firstFrame + 1.0));
 
     report.group = group;
     report.root = ids.front();

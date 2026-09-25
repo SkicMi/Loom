@@ -18,6 +18,7 @@
 #include "LoomJob.h"
 #include "LoomMotionDirect.h"
 #include "LoomMotionQuality.h"
+#include "LoomPlateFloor.h"
 #include "LoomWeaverMotion.h"
 
 #include <Treadle/Ui.h>
@@ -882,6 +883,8 @@ struct MotionPanelState{
     int qualityCompareIndex = 0;
     bool qualityCompareOpen = false;
     MotionQualityCache qualityCache;        //ocjena varijanti, po datoteci i vremenu zapisa
+    bool plateFloorOpen = false;
+    float cameraHeightMetres = 1.5f;        //visina snimatelja; iz nje metar scene (LoomPlateFloor.h)
     bool targetListOpen = false;
     bool gesturesOpen = false;
     bool recipeOptionsOpen = false;
@@ -984,7 +987,11 @@ struct MotionPanelState{
         r.directedFlow = flowMode == 1;
         if(r.directedFlow) r.actions = {directedAction};
         if(r.directedFlow){ r.model = "Kimodo-SOMA-RP-v1.1"; r.poseConstraints = poseConstraints; }
-        if(rootPathEnabled){ r.rootWaypoints = rootWaypoints; r.constrainRootHeading = constrainRootHeading; r.smoothRootPath = smoothRootPath; }
+        //Vanjski constraints.json ima prednost: dvije putanje u istom zahtjevu Kimodo ne zna
+        //pomiriti, a panel je dosad slao obje (test_motion_panel to brani)
+        if(rootPathEnabled && r.constraints.empty()){
+            r.rootWaypoints = rootWaypoints; r.constrainRootHeading = constrainRootHeading; r.smoothRootPath = smoothRootPath;
+        }
         r.allowFastPath = allowFastPath;
         r.targetCharacter = targetCharacter;
         r.kimodoPostprocess = effectiveKimodoPostprocess();
@@ -1031,6 +1038,7 @@ struct MotionPanelAction{
     bool startLiveRecording = false;
     bool stopLiveRecording = false;
     int jumpPoseFrame = -1;
+    bool standOnPlateFloor = false;
     std::filesystem::path importPath;
     bool close = false;
 };
@@ -1054,7 +1062,41 @@ struct MotionPanelStatus{
     std::filesystem::path historyDirectory; //gdje su generirani BVH-ovi
     std::string characterNote;              //sto je s rigged likom (WeaverMascott)
     std::vector<MotionCharacter> characters;
+    const PlateFloorWatch* plate = nullptr;  //pod snimke i zakljucanost lika; null izvan scene solvea
 };
+
+inline Treadle::Color motionStatusOk(){ return {0.36f, 0.95f, 0.61f, 0.95f}; }
+
+//Lik na podu snimke: pod, metar i koliko stopala klize po snimci. Sekcija postoji samo u sceni sa
+//riješenom kamerom i oblakom - bez njih nema ni poda ni mjerila
+inline void drawMotionPlateFloor(Treadle::Ui& ui, MotionPanelState& state, const MotionPanelStatus& status,
+                                 MotionPanelAction& action){
+    if(!status.plate || !status.plate->floor.valid || status.plate->floor.camera == Warp::None) return;
+    const PlateFloorWatch& plate = *status.plate;
+    const Treadle::Theme& theme = ui.style();
+    char text[128];
+    std::string summary = "floor found";
+    if(plate.lock.valid){
+        std::snprintf(text, sizeof(text), "feet slide %.1f px", double(plate.lock.medianPixels));
+        summary = text;
+    }
+    if(!ui.disclosure("Plate floor", summary, &state.plateFloorOpen)) return;
+    ui.slider("Camera height", &state.cameraHeightMetres, 0.3f, 3.0f, " m");
+    ui.hint("Handheld is about 1.5 m. The solve has no metres; this height sets them.");
+    const float metre = plateUnitsPerMetre(plate.floor, state.cameraHeightMetres);
+    std::snprintf(text, sizeof(text), "%zu points, %.1f cm thick", plate.floor.support,
+                  double(metre > 0.0f ? plate.floor.spread / metre * 100.0f : 0.0f));
+    ui.value("Floor", text);
+    if(ui.button("Stand character on plate floor")) action.standOnPlateFloor = true;
+    if(plate.lock.valid){
+        //1 px je granica koju oko na kompozitu jos ne vidi kao klizanje
+        const bool locked = plate.lock.medianPixels <= 1.0f;
+        std::snprintf(text, sizeof(text), "Feet on plate: median %.1f px, worst %.1f px over %zu contacts",
+                      double(plate.lock.medianPixels), double(plate.lock.worstPixels), plate.lock.contacts);
+        ui.status(text, locked ? motionStatusOk() : theme.warning);
+        if(!locked) ui.hint("Planted feet slide on the plate. Rig foot IK (Contacts) pins them; the variant score shows how much the source skates.");
+    }else if(!plate.lock.problem.empty()) ui.hint(plate.lock.problem);
+}
 
 //=============================================================================================
 // IZGLED PANELA: tri razine vaznosti, ne jedna.
@@ -1070,7 +1112,6 @@ struct MotionPanelStatus{
 //   3  OBJASNJENJA sitan sivi tekst koji se prelama, a ne redak koji se reze na rubu
 //=============================================================================================
 
-inline Treadle::Color motionStatusOk(){ return {0.36f, 0.95f, 0.61f, 0.95f}; }
 
 //Sto podnozje kaze i nudi. Tekst stanja je jedan redak - ono sto korisnik treba prije klika
 struct MotionFooterState{
@@ -1372,6 +1413,7 @@ inline MotionPanelAction drawMotionDirectedFlow(Treadle::Ui& ui, MotionPanelStat
             }
         }
     }
+    drawMotionPlateFloor(ui, state, status, action);
     const std::string qualitySummary = std::to_string(int(std::lround(state.quality))) + " steps  /  " +
                                        std::to_string(int(std::lround(state.samples))) + " variants";
     if(ui.disclosure("Quality & contact", qualitySummary, &state.directedQualityOpen)){
@@ -1655,6 +1697,8 @@ inline void drawMotionCreate(Treadle::Ui& ui, MotionPanelState& state, const Tre
             }
         }
     }
+
+    drawMotionPlateFloor(ui, state, status, action);
 
     constexpr int presetCount = int(sizeof(motionPresets) / sizeof(motionPresets[0]));
     if(ui.disclosure("Gestures", "append to prompt", &state.gesturesOpen)){

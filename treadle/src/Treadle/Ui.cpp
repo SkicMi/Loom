@@ -160,7 +160,7 @@ void Ui::dock(const std::string& title, const Rect& box, float* scroll){
     panelVertexBase = list.vertices.size();
     list.rect(panelBox, Color{theme.panel.r, theme.panel.g, theme.panel.b, 0.97f});
 
-    list.marble(box, Color{0.57f, 0.68f, 0.49f, 0.13f}, Color{0.02f, 0.035f, 0.025f, 0.10f}, input.timeSeconds);
+    list.marble(box, Color{0.30f, 0.48f, 0.34f, 0.25f}, Color{0.02f, 0.035f, 0.025f, 0.22f}, input.timeSeconds);
     const Color headerWash{theme.panelEdge.r, theme.panelEdge.g, theme.panelEdge.b, 0.10f};
     list.rect(box.x + 1.0f, box.y + 1.0f, std::max(0.0f, box.width - 2.0f),
               textHeight(theme.textScale) + theme.padding * 1.15f, headerWash);
@@ -952,6 +952,7 @@ void Ui::openMenu(const std::string& id){
     menuOpenedFrame = frameNumber;
     menuX = input.mouseX;
     menuY = input.mouseY;
+    menuAnimationStart = input.timeSeconds;
     menuBox = Rect{};
 }
 
@@ -1042,29 +1043,78 @@ int Ui::orbitMenu(const std::string& id, const std::vector<std::string>& labels,
     const float radiusLimit = std::max(48.0f, std::min(screenWidth, screenHeight) * 0.29f);
     const float requestedRadius = std::max(58.0f + 7.5f * float(labels.size()), cardWidth * 0.60f + 4.0f);
     const float orbitRadius = std::min(requestedRadius, radiusLimit);
-    const float reach = orbitRadius + cardWidth * 0.5f + 16.0f;
-    const float cx = screenWidth >= reach * 2.0f ? std::clamp(menuX, reach, screenWidth - reach) : screenWidth * 0.5f;
-    const float cy = screenHeight >= reach * 2.0f ? std::clamp(menuY, reach, screenHeight - reach) : screenHeight * 0.5f;
-    menuBox = Rect{cx - reach, cy - reach, reach * 2.0f, reach * 2.0f};
+    float orbitRadiusX = orbitRadius;
+    float orbitRadiusY = orbitRadius;
+    const float cardGap = 10.0f;
+    const auto cardsOverlap = [&](float radiusX, float radiusY){
+        for(size_t a = 0; a < order.size(); ++a){
+            const float angleA = -1.57079632679f + 6.28318530718f * float(a) / float(order.size());
+            const float ax = std::cos(angleA) * radiusX;
+            const float ay = std::sin(angleA) * radiusY;
+            for(size_t b = a + 1; b < order.size(); ++b){
+                const float angleB = -1.57079632679f + 6.28318530718f * float(b) / float(order.size());
+                const float bx = std::cos(angleB) * radiusX;
+                const float by = std::sin(angleB) * radiusY;
+                if(std::abs(ax - bx) < cardWidth + cardGap &&
+                   std::abs(ay - by) < cardHeight + cardGap) return true;
+            }
+        }
+        return false;
+    };
+    const float maxRadiusX = std::max(orbitRadiusX, screenWidth * 0.5f - cardWidth * 0.5f - 24.0f);
+    while(cardsOverlap(orbitRadiusX, orbitRadiusY) && orbitRadiusX < maxRadiusX)
+        orbitRadiusX = std::min(maxRadiusX, orbitRadiusX + 2.0f);
+    const float maxRadiusY = std::max(orbitRadiusY, screenHeight * 0.5f - cardHeight * 0.5f - 36.0f);
+    while(cardsOverlap(orbitRadiusX, orbitRadiusY) && orbitRadiusY < maxRadiusY)
+        orbitRadiusY = std::min(maxRadiusY, orbitRadiusY + 2.0f);
+
+    const float reachX = orbitRadiusX + cardWidth * 0.5f + 16.0f;
+    const float reachY = orbitRadiusY + cardHeight * 0.5f + 28.0f;
+    const float cx = screenWidth >= reachX * 2.0f ? std::clamp(menuX, reachX, screenWidth - reachX) : screenWidth * 0.5f;
+    const float cy = screenHeight >= reachY * 2.0f ? std::clamp(menuY, reachY, screenHeight - reachY) : screenHeight * 0.5f;
+    menuBox = Rect{cx - reachX, cy - reachY, reachX * 2.0f, reachY * 2.0f};
     if(menuBox.contains(input.mouseX, input.mouseY)) pointerOverUi = true;
 
-    const Color ring{theme.accent.r, theme.accent.g, theme.accent.b, 0.30f};
+    //Kartice krenu iz kompaktnog prstena oko klika, naprave jedan okret i izadju u
+    //ravnomjeran krug. Vrijeme nula znaci staticki ulaz (npr. alatni test bez sata).
+    const float animationAge = std::max(0.0f, input.timeSeconds - menuAnimationStart);
+    const float progress = input.timeSeconds <= 0.0f
+        ? 1.0f : std::clamp(animationAge / 0.60f, 0.0f, 1.0f);
+    const float eased = 1.0f - std::pow(1.0f - progress, 3.0f);
+    const float ringScale = 0.18f + 0.82f * eased;
+    const Color ring{theme.accent.r, theme.accent.g, theme.accent.b, 0.12f + 0.16f * eased};
     constexpr int segments = 48;
     for(int segment = 0; segment < segments; ++segment){
         const float a = 6.28318530718f * float(segment) / float(segments);
         const float b = 6.28318530718f * float(segment + 1) / float(segments);
-        list.line(cx + std::cos(a) * orbitRadius, cy + std::sin(a) * orbitRadius,
-                  cx + std::cos(b) * orbitRadius, cy + std::sin(b) * orbitRadius, 1.0f, ring);
+        list.line(cx + std::cos(a) * orbitRadiusX * ringScale,
+                  cy + std::sin(a) * orbitRadiusY * ringScale,
+                  cx + std::cos(b) * orbitRadiusX * ringScale,
+                  cy + std::sin(b) * orbitRadiusY * ringScale, 1.0f, ring);
     }
 
     int selected = -1;
     bool pinnedThisFrame = false;
     for(size_t slot = 0; slot < order.size(); ++slot){
         const int action = order[slot];
-        const float angle = -1.57079632679f + 6.28318530718f * float(slot) / float(order.size());
-        const float ix = cx + std::cos(angle) * orbitRadius;
-        const float iy = cy + std::sin(angle) * orbitRadius;
-        const Rect box{ix - cardWidth * 0.5f, iy - cardHeight * 0.5f, cardWidth, cardHeight};
+        const float delay = float(slot) * 0.022f;
+        const float itemProgress = input.timeSeconds <= 0.0f
+            ? 1.0f : std::clamp((animationAge - delay) / 0.48f, 0.0f, 1.0f);
+        const float itemEase = 1.0f - std::pow(1.0f - itemProgress, 3.0f);
+        const float settle = std::min(1.035f, itemEase + 0.035f *
+            std::sin(itemProgress * 3.14159265f) * (1.0f - itemProgress));
+        const float itemRadiusX = orbitRadiusX * (0.18f + 0.82f * settle);
+        const float itemRadiusY = orbitRadiusY * (0.18f + 0.82f * settle);
+        const float spin = (1.0f - itemEase) * 2.25f * 3.14159265f;
+        const float angle = -1.57079632679f + 6.28318530718f * float(slot) / float(order.size()) + spin;
+        const float ix = cx + std::cos(angle) * itemRadiusX;
+        const float iy = cy + std::sin(angle) * itemRadiusY;
+        const float itemScale = 0.88f + 0.12f * itemEase;
+        const float itemWidth = cardWidth * itemScale;
+        const float itemHeight = cardHeight * itemScale;
+        const float itemTextScale = scale * (0.90f + 0.10f * itemEase);
+        const float itemKeyScale = itemTextScale * 0.68f;
+        const Rect box{ix - itemWidth * 0.5f, iy - itemHeight * 0.5f, itemWidth, itemHeight};
         const bool hot = box.contains(input.mouseX, input.mouseY);
         const bool active = enabled.empty() || (size_t(action) < enabled.size() && enabled[size_t(action)]);
         const bool favorite = favorites && (*favorites)[size_t(action)];
@@ -1077,16 +1127,16 @@ int Ui::orbitMenu(const std::string& id, const std::vector<std::string>& labels,
                          : (hot && active ? theme.active : theme.panelEdge);
         list.outline(box, hot ? 1.8f : 1.0f, edge);
 
-        const float labelLeft = box.x + (favorite ? 22.0f : 11.0f);
+        const float labelLeft = box.x + (favorite ? 22.0f : 11.0f) * itemScale;
         const bool hasShortcut = active && size_t(action) < shortcuts.size() && !shortcuts[size_t(action)].empty();
-        const float keyWidth = hasShortcut ? textWidth(shortcuts[size_t(action)], keyScale) + 10.0f : 0.0f;
+        const float keyWidth = hasShortcut ? textWidth(shortcuts[size_t(action)], itemKeyScale) + 10.0f * itemScale : 0.0f;
         const float labelRight = hasShortcut ? box.x + box.width - keyWidth - 12.0f : box.x + box.width - 10.0f;
         const float labelRoom = std::max(20.0f, labelRight - labelLeft);
-        const std::string display = fitText(labels[size_t(action)], labelRoom, scale);
+        const std::string display = fitText(labels[size_t(action)], labelRoom, itemTextScale);
         const Color ink = !active ? theme.dim : hot ? theme.title : theme.text;
-        list.text(labelLeft, box.y + (box.height - textHeight(scale)) * 0.5f, display, ink, scale);
+        list.text(labelLeft, box.y + (box.height - textHeight(itemTextScale)) * 0.5f, display, ink, itemTextScale);
         if(favorite){
-            const float fx = box.x + 10.0f, fy = box.y + box.height * 0.5f;
+            const float fx = box.x + 10.0f * itemScale, fy = box.y + box.height * 0.5f;
             const Color gold{theme.active.r, theme.active.g, theme.active.b, 0.96f};
             list.line(fx, fy - 4.0f, fx + 4.0f, fy, 1.2f, gold);
             list.line(fx + 4.0f, fy, fx, fy + 4.0f, 1.2f, gold);
@@ -1094,14 +1144,14 @@ int Ui::orbitMenu(const std::string& id, const std::vector<std::string>& labels,
             list.line(fx - 4.0f, fy, fx, fy - 4.0f, 1.2f, gold);
         }
         if(hasShortcut){
-            const float keyHeight = 16.0f;
-            const Rect key{box.x + box.width - keyWidth - 7.0f,
+            const float keyHeight = 16.0f * itemScale;
+            const Rect key{box.x + box.width - keyWidth - 7.0f * itemScale,
                            box.y + (box.height - keyHeight) * 0.5f, keyWidth, keyHeight};
             list.rect(key, Color{theme.active.r, theme.active.g, theme.active.b, 0.10f});
             list.outline(key, 0.8f, Color{theme.active.r, theme.active.g, theme.active.b, 0.42f});
-            list.text(key.x + (key.width - textWidth(shortcuts[size_t(action)], keyScale)) * 0.5f,
-                      key.y + (key.height - textHeight(keyScale)) * 0.5f,
-                      shortcuts[size_t(action)], theme.active, keyScale);
+            list.text(key.x + (key.width - textWidth(shortcuts[size_t(action)], itemKeyScale)) * 0.5f,
+                      key.y + (key.height - textHeight(itemKeyScale)) * 0.5f,
+                      shortcuts[size_t(action)], theme.active, itemKeyScale);
         }
         if(active && hot && menuPressed[uint32_t(MouseButton::Left)]){
             if(input.shift && favorites){
@@ -1113,18 +1163,21 @@ int Ui::orbitMenu(const std::string& id, const std::vector<std::string>& labels,
         }
     }
 
-    const Rect hub{cx - 31.0f, cy - 20.0f, 62.0f, 36.0f};
+    const float hubScale = 0.90f + 0.10f * eased;
+    const Rect hub{cx - 31.0f * hubScale, cy - 20.0f * hubScale,
+                   62.0f * hubScale, 36.0f * hubScale};
     list.rect(hub, theme.control);
     list.outline(hub, 1.5f, theme.accent);
     const std::string brand = "LOOM";
-    const float markScale = scale * 0.70f;
+    const float markScale = scale * 0.70f * hubScale;
     list.text(cx - textWidth(brand, markScale) * 0.5f,
               cy - textHeight(markScale) * 0.5f, brand, theme.title, markScale);
     const std::string hint = pinnedThisFrame ? "PINNED" : "SHIFT-CLICK TO PIN";
     const float hintScale = 1.45f;
-    const float hintY = cy + orbitRadius + cardHeight * 0.5f + 8.0f;
+    const float hintY = cy + orbitRadiusY + cardHeight * 0.5f + 8.0f;
+    const Color hintInk{theme.dim.r, theme.dim.g, theme.dim.b, eased};
     list.text(cx - textWidth(hint, hintScale) * 0.5f, hintY, hint,
-              pinnedThisFrame ? theme.active : theme.dim, hintScale);
+              pinnedThisFrame ? theme.active : hintInk, hintScale);
 
     std::swap(list, overlay);
     if(selected >= 0) openMenuId = 0;

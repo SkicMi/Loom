@@ -65,7 +65,7 @@ struct DrawList{
     //Pravokutnik; zaobljen ako je cornerRadius veci od nule
     void rect(const Rect& box, const Color& color);
 
-    //Zeleni mramorni uzorak s razgranatim zilama i vremenski promjenjivim svjetlosnim pulsom.
+    //Tekuci zeleni mramor pod staklom; shader nacrta fugirane tileove iz jednog quada.
     void marble(const Rect& box, const Color& vein, const Color& shadow, float timeSeconds = 0.0f);
     void rect(float x, float y, float width, float height, const Color& color);
 
@@ -101,7 +101,7 @@ struct DrawList{
     //Uvijek ISTI oblik, razlikuje se samo rezim: sve ostalo oblikuje fragment shader
     void emitQuad(float x, float y, float width, float height, const Color& color,
                   float mode, float thickness, float radius,
-                  float u0, float v0, float u1, float v1);
+                  float u0, float v0, float u1, float v1, float profilePadding = 0.0f);
 };
 
 }
