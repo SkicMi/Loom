@@ -125,7 +125,7 @@ glatka putanja. **Ali žarišna nije određena** — vidi zadatak 2.
 
 ## 5. Kako se testira — četiri razine
 
-### a) Jedinični testovi — 88 u `ctest`
+### a) Jedinični testovi — 118 u `ctest`
 
 ```bash
 cmake --build build -j8 && cd build && ctest --output-on-failure -j1
@@ -697,33 +697,53 @@ monotono rasipanje, prag ne dira tamno, vinjeta u kutu 0.606 (0.6), zrno srednja
 (0.05), zasićenje 0 = luminancija, 3200 K toplije uz luminanciju 0.5000, aberacija crveno van.
 Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta, gotov kadar s njim.
 
-**Što dalje, po redu isplativosti (prijedlog):**
-1. **Distorzija leće u renderu** — solve procjenjuje `k1`, ali Warp::Camera ga ne nosi i render je
-   čisti pinhole preko distorzirane snimke: CG na rubu kadra klizi. Spremiti k1 u kameru i CG slojeve
-   distorzirati istim modelom (plus ST-map u EXR za Nuke). Najveći dobitak za matchmove.
-2. **Izmjeriti karticu** i dodati ray query (RTX) + filtar šuma na kartici; OIDN kao opcija.
-3. **Svjetla kao entiteti** (UsdLux: sunce, sfera, reflektor, pravokutnik) i **svjetlo iz snimke**
-   (Relight već uči sunce + nebo) — CG osvijetljen kao ploča bez ručnog namještanja.
-4. **Motion blur** (otvor zatvarača, kamera i objekti između kadrova) — snimka ga ima, CG bez njega
-   odskače više nego bez zrna.
-5. **Adaptivno uzorkovanje** (stati gdje je šum pod pragom) i **path guiding** / MNEE za kaustike i
-   svjetlije sjene stakla.
-6. Mipmape / diferencijali zraka za teksture (oštrije, bez treperenja u sekvenci), dubinska
-   oštrina u panelu (fokus klikom), holdout iz splata/dubine za zaklanjanje CG-a pravom scenom.
-7. Post na kartici (bloom piramida kao compute) da i progresivni prikaz ima isti izgled.
+**Nadogradnje 27.9. (prijedlozi 1, 3, 4, 5, 6 — napravljeno redom):**
+- **Distorzija leće.** VideoSolve piše `lens.txt` (Brown k1, k2 i objektiv), Warp::Camera ga nosi
+  (`loom:distortionLens`, `loom:radialDistortion` u USD-u), tracer zraku puca kroz ispravljeni
+  piksel (`Camera::undistortPixel`, 8 koraka), snimka i odrazi se projiciraju istom lećom. EXR
+  dobiva ST-mapu (`<ime>_stmap.exr`, R/G undistort + `redistort.R/G`) za Nuke.
+- **Svjetla kao entiteti** (`Warp::Light`, UsdLux: Distant, Sphere, Spot, Rect, Dome) — izbornik
+  Add, komponenta LIGHT, gizmo u pogledu, pogled PBR slijedi prvo sunce. Nebo *Scene* = samo
+  kupola i svjetla scene. **Light From Footage** pretvori `relight.py` JSON u sunce + kupolu.
+  `test_render_lights` 8/8 (sunce a·E/π pod zakrenutom grupom, lampa, pravokutnik jednostran...).
+- **Motion blur** — scena u `motionSteps` trenutaka unutar otvora (shutter u kadrovima, sredinom
+  na kadru), uzorci podijeljeni, filmovi prosječeni, dubina iz srednjeg; snimka ostaje ona kadra.
+  Kartica i procesor. `test_render_motion` 7/7 (razmaz 0.5 jedinice, linearna rampa, mirno = isto).
+- **Prilagodljivo uzorkovanje** (Noise Threshold, 0.01): piksel stane kad je sqrt(var/n)/sqrt(L)
+  ispod praga, provjera svakih 8 od 32 uzorka, isto pravilo u shaderu. **Staklene sjene**: zraka
+  sjene prolazi kroz staklo oslabljena bojom i Fresnelom, kaustike putanjama se tada ne broje (MIS
+  težina 1 kroz staklo) — umjesto path guidinga/MNEE, bez šuma. *Caustics* vraća točne kaustike.
+  `test_tracer_adaptive` 11/11 (ploča stakla 0.9216 = (1−F0)², ravnoparalelna ploča = prava
+  kaustika, 169/512 uzoraka uz RMSE 0.0133 prema 0.0189, svjetlina −0.35 %).
+- **Mipmape po stošcu zrake** (ray cones): razine linearno usrednjene, stožac = kut piksela × put /
+  cos, × gustoća teksela trokuta. `test_tracer_textures` 6/6 (daleki šah bez treperenja).
+- **Dubinska oštrina u panelu**: f-broj → otvor iz žarišne (1 jedinica = 1 m, senzor 36 mm),
+  fokus klikom na sliku rendera (dubina pod mišem, medijan 5×5) ili *Focus On Selection*.
+  `test_tracer_dof` 8/8 (razmaz ruba 4.249 px prema analitičkih 4R/3π = 4.244).
+- **Holdout iz splata**: splat projiciran kroz kameru (gaussiani α ≥ 0.4, krug jedne sigme,
+  z-buffer, rupe medijanom) → `Scene::holdout`; uzorak koji pogodi CG iza stvarne plohe je
+  pozadina (snimka). *Holdout from splat*, `--holdout`. `test_render_holdout` 8/8 (1 M gaussiana
+  u 1080p za 0.15 s).
+
+**Što dalje:**
+1. **Izmjeriti karticu** (samo lavapipe dosad) i dodati ray query (RTX) + filtar šuma na kartici;
+   OIDN kao opcija.
+2. Post na kartici (bloom piramida kao compute) da i progresivni prikaz ima isti izgled.
+3. Holdout iz procijenjene dubine snimke (`tools/depth`, treba kalibraciju mjerila) i sjene CG-a
+   na splat (normala iz dubine) — sada sjenu hvataju samo catcheri.
 
 **Poznata ograničenja — ne skrivati:**
 - Kartica koristi compute nad BVH2; hardverske zrake (ray query) i širi BVH su sljedeći korak za
   RTX — mijenjaju samo obilazak. Filtar šuma je još na procesoru.
-- Staklo baca **tamnu sjenu** (zraka sjene ne prolazi kroz lom; kaustike dolaze samo BSDF putem i
-  šumne su) — isto kao Cycles bez caustics trikova.
-- Warp još **nema svjetala kao entiteta** (UsdLux); svjetlo je sunce/nebo/HDRI iz postavki rendera
-  i emisijski materijali. Kugle/reflektori postoje u traceru, nisu spojeni na scenu.
+- Staklene sjene su pristrane (nema fokusiranja svjetla iza leće); s *Caustics* su točne, ali
+  šumne — kao Cycles bez caustics trikova.
+- Prilagodljivo uzorkovanje zaustavlja po procijenjenoj varijanci: piksel s vrlo rijetkim svijetlim
+  događajem može stati prerano (izmjereno −0.35 % svjetline na testnoj sceni).
 - Filtar nije OIDN: na 64+ uzoraka čisti, na 4–16 ostavlja mrlje; sirovi CG je uvijek u EXR-u.
 - Catcher pod u neizravnom svjetlu uzima albedo ≈ linearni piksel snimke (pretpostavka jedinične
   rasvjete poda) — boja se prelije ispravno, jakost je približna.
-- Splat i oblak točaka se ne traceaju; iza CG-a je snimka. Dubinska oštrina postoji u traceru
-  (`Camera::apertureRadius`), još nije u panelu.
+- Splat se ne tracea (samo holdout i relight); iza CG-a je snimka. Holdout splata ne baca sjene.
+- Motion blur gradi scenu po odsječku (16 × BVH po kadru): za teške scene sporo.
 - Engine `Viewport` crta ravnine neprozirno (raster nema catcher).
 - Samo prvi UV skup; glTF `occlusion` mapa se namjerno ignorira (tracer zaklanjanje računa).
 
