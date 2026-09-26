@@ -48,10 +48,13 @@ struct RenderSettings{
     uint32_t threads = 0;                   //0 = sve jezgre
     uint32_t seed = 0;                      //drugi seed, drugi (jednako dobar) sum
 
-    //PRILAGODLJIVO UZORKOVANJE. Piksel stane kad mu je standardna greska procjene, mjerena
+    //PRILAGODLJIVO UZORKOVANJE. Piksel je "gotov" kad mu je standardna greska procjene, mjerena
     //kao na zaslonu (sqrt(var/n) / sqrt(srednja luminancija)), ispod praga. Provjera svakih 8
-    //uzoraka od adaptiveMinSamples; samo iz vlastitog stanja piksela, pa je odluka ista na
-    //procesoru i kartici i ne ovisi o broju dretvi. 0 = iskljuceno
+    //uzoraka od adaptiveMinSamples. Piksel STANE tek kad je gotov sad i na prosloj provjeri, i
+    //kad je svih 8 susjeda bilo gotovo na prosloj provjeri: sam piksel ne razlikuje crno od
+    //rijetkog dogadjaja (magla u kojoj 32 uzorka nista ne pogode ima varijancu 0), susjedi da.
+    //Susjedi se citaju s PROSLE provjere, pa je odluka ista na procesoru i kartici i ne ovisi
+    //o redoslijedu ni broju dretvi. 0 = iskljuceno
     float adaptiveThreshold = 0.0f;
     uint32_t adaptiveMinSamples = 32;
 
@@ -74,8 +77,8 @@ struct RenderProgress{
     uint64_t rays = 0;
 };
 
-//Isto pravilo zaustavljanja na procesoru i kartici (shaders/tracer.slang, adaptiveConverged)
-bool adaptiveConverged(double luminanceSum, double luminance2Sum, double samples, float threshold, uint32_t minSamples);
+//Je li procjena piksela ispod praga suma (isto u shaders/tracer.slang, adaptiveConverged)
+bool adaptiveConverged(double luminanceSum, double luminance2Sum, double samples, float threshold);
 
 class Renderer{
 public:
@@ -113,6 +116,9 @@ private:
     std::vector<Accumulator> pixels;
     std::atomic<uint64_t> rayCount{0};
     bool glass = false, mipmaps = true;
+    //Prilagodljivo: po pikselu bit 1 i 2 = gotov na parnoj / neparnoj provjeri, 4 = stao
+    std::vector<uint8_t> adaptiveState;
+    void adaptiveCheckpoint(uint32_t samples);
     float adaptiveThreshold = 0.0f;
     uint32_t adaptiveMinSamples = 32;
 

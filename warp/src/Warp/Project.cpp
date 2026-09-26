@@ -186,6 +186,12 @@ public:
                 indent(in); out << "custom color3f loom:skyBottom = "; vector(l.skyBottom); out << '\n';
             }
         }
+        if(entity.volume){
+            //Nema standardnog USD tipa za jednoliku maglu u kutiji: Xform s loom: atributima
+            indent(in); out << "custom color3f loom:volumeColor = "; vector(entity.volume->color); out << '\n';
+            indent(in); out << "custom float loom:volumeDensity = "; number(entity.volume->density); out << '\n';
+            indent(in); out << "custom float loom:volumeAnisotropy = "; number(entity.volume->anisotropy); out << '\n';
+        }
         if(entity.points){
             const Points& points = *entity.points;
             indent(in); out << "point3f[] points = [";
@@ -427,6 +433,13 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
         if(const usda::Attribute* t = prim.find("loom:skyTop")) l.skyTop = asVector(t->value, l.skyTop);
         if(const usda::Attribute* b = prim.find("loom:skyBottom")) l.skyBottom = asVector(b->value, l.skyBottom);
         entity.light = l;
+    }
+    if(prim.find("loom:volumeDensity")){
+        Volume v;
+        if(const usda::Attribute* c = prim.find("loom:volumeColor")) v.color = asVector(c->value, v.color);
+        v.density = float(numberOf(prim, "loom:volumeDensity", v.density));
+        v.anisotropy = float(numberOf(prim, "loom:volumeAnisotropy", v.anisotropy));
+        entity.volume = v;
     }
     if(prim.type == "Points"){
         Points points;

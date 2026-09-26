@@ -45,7 +45,7 @@ struct Params{
     float4 values;          // indirectClamp, k1, k2, prag prilagodljivog uzorkovanja (0 iskljuceno)
     uint4 extra;            // seed, conditionalOffset, bitovi (1 staklene sjene, 2 bez mipmapa), najmanje uzoraka prije zaustavljanja
     float4 distortion;      // fx, fy, cx, cy objektiva (fx 0: ravna leca)
-    float4 holdout;         // tekstura dubine stvarne scene (bitovi, NONE), bias, 0, 0
+    float4 holdout;         // tekstura dubine stvarne scene (bitovi, NONE), bias, broj kutija magle (bitovi), 0
 };
 
 struct Material{
@@ -93,6 +93,8 @@ struct Push{
 [[vk::binding(17,0)]] RWStructuredBuffer<float4> accAlbedo;   // rgb, zbroj luminancije
 [[vk::binding(18,0)]] RWStructuredBuffer<float4> accNormal;   // xyz, zbroj kvadrata luminancije
 [[vk::binding(19,0)]] RWStructuredBuffer<float> accDepth;
+[[vk::binding(20,0)]] StructuredBuffer<float4> volumes;
+[[vk::binding(21,0)]] RWStructuredBuffer<uint> adaptive;     // stanje prilagodljivog uzorkovanja po pikselu     // 5 po kutiji: 3 retka svijet -> kutija, (albedo, gustoca), (g, 0, 0, 0)
 
 //=============================================================================================
 // POMOCNO
@@ -449,8 +451,8 @@ bool traverse(float3 origin, float3 direction, float tMax, uint mode, bool anyHi
 
 // Propusnost zrake sjene (Tracer::Renderer shadowTransmittance): 0 kad je zaklonjena, inace
 // umnozak propusnosti stakala na putu (samo uz staklene sjene). crossed: prosla kroz staklo
-float3 shadowTransmittance(float3 origin, float3 direction, float tMax, uint mode, bool glass,
-                           uint pixelSeed, uint sampleIndex, uint salt, out bool crossed){
+float3 surfaceTransmittance(float3 origin, float3 direction, float tMax, uint mode, bool glass,
+                            uint pixelSeed, uint sampleIndex, uint salt, out bool crossed){
     crossed = false;
     float3 through = float3(1.0);
     float3 d = direction;
@@ -491,6 +493,113 @@ float3 shadowTransmittance(float3 origin, float3 direction, float tMax, uint mod
         if(hitLeft) stack[top++] = left;
         if(hitRight) stack[top++] = right;
     }
+    return through;
+}
+
+//=============================================================================================
+// MAGLA - Tracer/Volume.h
+//=============================================================================================
+static const uint MAX_VOLUME_SPANS = 8;
+
+bool boxInterval(uint v, float3 o, float3 d, float tMax, out float t0, out float t1){
+    const float4 r0 = volumes[v * 5], r1 = volumes[v * 5 + 1], r2 = volumes[v * 5 + 2];
+    const float3 lo = float3(dot(r0.xyz, o) + r0.w, dot(r1.xyz, o) + r1.w, dot(r2.xyz, o) + r2.w);
+    const float3 ld = float3(dot(r0.xyz, d), dot(r1.xyz, d), dot(r2.xyz, d));
+    t0 = 0.0;
+    t1 = tMax;
+    for(int k = 0; k < 3; ++k){
+        if(abs(ld[k]) < 1e-20){
+            if(lo[k] < -0.5 || lo[k] > 0.5) return false;
+            continue;
+        }
+        const float a = (-0.5 - lo[k]) / ld[k], b = (0.5 - lo[k]) / ld[k];
+        t0 = max(t0, min(a, b));
+        t1 = min(t1, max(a, b));
+    }
+    return t1 > t0;
+}
+
+float opticalDepth(uint count, float3 o, float3 d, float tMax){
+    float tau = 0.0;
+    uint n = 0;
+    for(uint v = 0; v < count && n < MAX_VOLUME_SPANS; ++v){
+        const float density = volumes[v * 5 + 3].w;
+        if(!(density > 0.0)) continue;
+        float t0, t1;
+        if(boxInterval(v, o, d, tMax, t0, t1)){ tau += density * (t1 - t0); ++n; }
+    }
+    return tau;
+}
+
+bool sampleVolume(uint count, float3 o, float3 d, float tMax, float2 u, out float t, out uint which){
+    t = 0.0; which = 0;
+    float s0[MAX_VOLUME_SPANS], s1[MAX_VOLUME_SPANS];
+    uint index[MAX_VOLUME_SPANS];
+    uint n = 0;
+    for(uint v = 0; v < count && n < MAX_VOLUME_SPANS; ++v){
+        if(!(volumes[v * 5 + 3].w > 0.0)) continue;
+        float t0, t1;
+        if(boxInterval(v, o, d, tMax, t0, t1)){ s0[n] = t0; s1[n] = t1; index[n] = v; ++n; }
+    }
+    if(n == 0) return false;
+    float edges[2 * MAX_VOLUME_SPANS];
+    for(uint i = 0; i < n; ++i){ edges[2 * i] = s0[i]; edges[2 * i + 1] = s1[i]; }
+    for(uint i = 1; i < 2 * n; ++i){
+        const float key = edges[i];
+        int j = int(i) - 1;
+        while(j >= 0 && edges[j] > key){ edges[j + 1] = edges[j]; --j; }
+        edges[j + 1] = key;
+    }
+    float tau = -log(max(1e-12, 1.0 - u.x));
+    for(uint e = 0; e + 1 < 2 * n; ++e){
+        const float a = edges[e], b = edges[e + 1];
+        if(!(b > a)) continue;
+        const float middle = 0.5 * (a + b);
+        float sigma = 0.0;
+        for(uint i = 0; i < n; ++i) if(s0[i] <= middle && middle <= s1[i]) sigma += volumes[index[i] * 5 + 3].w;
+        if(sigma <= 0.0) continue;
+        if(tau <= sigma * (b - a)){
+            t = a + tau / sigma;
+            float pick = u.y * sigma;
+            which = index[0];
+            for(uint i = 0; i < n; ++i){
+                if(!(s0[i] <= middle && middle <= s1[i])) continue;
+                which = index[i];
+                pick -= volumes[index[i] * 5 + 3].w;
+                if(pick < 0.0) break;
+            }
+            return true;
+        }
+        tau -= sigma * (b - a);
+    }
+    return false;
+}
+
+float phaseHG(float cosTheta, float g){
+    const float denominator = 1.0 + g * g - 2.0 * g * cosTheta;
+    return (1.0 - g * g) / (4.0 * PI * denominator * sqrt(max(denominator, 1e-12)));
+}
+
+float3 samplePhaseHG(float3 d, float g, float2 u, out float pdf){
+    float cosTheta;
+    if(abs(g) < 1e-3) cosTheta = 1.0 - 2.0 * u.x;
+    else{
+        const float s = (1.0 - g * g) / (1.0 - g + 2.0 * g * u.x);
+        cosTheta = clamp((1.0 + g * g - s * s) / (2.0 * g), -1.0, 1.0);
+    }
+    const float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    const float phi = 2.0 * PI * u.y;
+    const float3 a = normalize(abs(d.x) > 0.9 ? cross(d, float3(0, 1, 0)) : cross(d, float3(1, 0, 0)));
+    const float3 b = cross(d, a);
+    pdf = phaseHG(cosTheta, g);
+    return normalize(d * cosTheta + (a * cos(phi) + b * sin(phi)) * sinTheta);
+}
+
+// Zraka sjene: stakla na putu (surfaceTransmittance) puta prolaz kroz maglu
+float3 shadowTransmittance(float3 origin, float3 direction, float tMax, uint mode, bool glass,
+                           uint pixelSeed, uint sampleIndex, uint salt, uint volumeCount, out bool crossed){
+    float3 through = surfaceTransmittance(origin, direction, tMax, mode, glass, pixelSeed, sampleIndex, salt, crossed);
+    if(volumeCount > 0 && luminance(through) > 0.0) through *= exp(-opticalDepth(volumeCount, origin, direction, tMax));
     return through;
 }
 
@@ -963,6 +1072,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
     bool mirrorChain = true;
     float3 previousPoint = origin;
     const bool glass = (P.extra.z & 1u) != 0;
+    const uint volumeCount = asuint(P.holdout.z);
     bool sawRough = false, caustic = false;
 
     for(uint depth = 0;; ++depth){
@@ -981,6 +1091,54 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             float t;
             if(hitSphere(origin, direction, l.position.xyz, l.position.w, sphereT, t)){ sphereT = t; sphere = int(index); }
         }
+        // magla: dogadjaj rasprsenja prije plohe ili svjetla (Renderer.cpp)
+        if(volumeCount > 0){
+            const float2 free = sampler.next2D();
+            float t;
+            uint which;
+            const float end = sphere >= 0 ? sphereT : (valid ? hit.t : INF);
+            if(sampleVolume(volumeCount, origin, direction, end, free, t, which)){
+                const float4 medium = volumes[which * 5 + 3];
+                const float g = volumes[which * 5 + 4].x;
+                const float3 p = origin + direction * t;
+                if(depth == 0) result.object = true;
+                beta *= medium.rgb;
+                if(depth >= maxBounces || !(luminance(beta) > 0.0)) break;
+                {
+                    LightSample ls;
+                    const float2 choice = sampler.next2D();
+                    const float2 u = sampler.next2D();
+                    if(sampleLight(P, p, choice.x, u, ls)){
+                        const float phase = phaseHG(dot(direction, ls.wi), g);
+                        const float limit = ls.distance >= INF ? INF : ls.distance * (1.0 - 1e-4);
+                        bool crossed;
+                        const float3 through = shadowTransmittance(p, ls.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 307u,
+                                                                   volumeCount, crossed);
+                        if(luminance(through) > 0.0){
+                            const float w = ls.delta || crossed ? 1.0 : powerHeuristic(ls.pdf, phase);
+                            radiance += clampContribution(beta * ls.value * through * (phase * w / ls.pdf), depth > 0, clampValue);
+                        }
+                    }
+                }
+                float pdf;
+                const float3 next = samplePhaseHG(direction, g, sampler.next2D(), pdf);
+                const float2 roulette = sampler.next2D();
+                mirrorChain = false;
+                previousPdf = pdf;
+                previousPoint = p;
+                coneSpread += 0.2;
+                if(glass){ sawRough = true; caustic = false; }
+                if(depth >= 3){
+                    const float keep = clamp(max(max(beta.r, beta.g), beta.b), 0.05, 0.95);
+                    if(roulette.x >= keep) break;
+                    beta /= keep;
+                }
+                origin = p;
+                direction = next;
+                continue;
+            }
+        }
+
         if(sphere >= 0){
             const Light l = lights[uint(sphere)];
             const float3 p = origin + direction * sphereT;
@@ -1098,7 +1256,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 result.lit += c;
                 bool crossed;
                 result.shadowed += c * shadowTransmittance(from, ls.wi, ls.distance * (1.0 - 1e-4), 3u, glass,
-                                                           pixelSeed, sampleIndex, salt + 101u, crossed);
+                                                           pixelSeed, sampleIndex, salt + 101u, volumeCount, crossed);
             }
             break;
         }
@@ -1157,7 +1315,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                         const float limit = ls.distance >= INF ? INF : ls.distance * (1.0 - 1e-4);
                         bool crossed;
                         const float3 through = shadowTransmittance(offsetPoint(p, ng, geometricSide, epsilonScale), ls.wi, limit, 2u,
-                                                                   glass, pixelSeed, sampleIndex, salt + 211u, crossed);
+                                                                   glass, pixelSeed, sampleIndex, salt + 211u, volumeCount, crossed);
                         if(luminance(through) > 0.0){
                             const float w = ls.delta || crossed ? 1.0 : powerHeuristic(ls.pdf, bsdfPdf);
                             radiance += clampContribution(beta * f * ls.value * through * (w / ls.pdf), depth > 0, clampValue);
@@ -1245,8 +1403,8 @@ bool traverseDepth(float3 origin, float3 direction, inout Hit hit){
 }
 
 // Isto pravilo kao Tracer::adaptiveConverged
-bool adaptiveConverged(float luminanceSum, float luminance2Sum, float samples, float threshold, uint minSamples){
-    if(threshold <= 0.0 || samples < float(max(8u, minSamples)) || fmod(samples, 8.0) != 0.0) return false;
+bool adaptiveConverged(float luminanceSum, float luminance2Sum, float samples, float threshold){
+    if(threshold <= 0.0 || samples <= 0.0) return false;
     const float mean = luminanceSum / samples;
     const float var = max(0.0, luminance2Sum / samples - mean * mean);
     return sqrt(var / samples) < threshold * sqrt(mean + 1e-4);
@@ -1264,7 +1422,27 @@ void computeMain(uint3 id : SV_DispatchThreadID){
     if(x >= width || id.y >= push.rowCount || y >= height) return;
     const uint pixel = y * width + x;
     const uint pixelSeed = hash1(hash1(x * 0x9E3779B1u ^ y) ^ (y * 0x85EBCA77u)) ^ hash1(P.extra.x);
-    if(adaptiveConverged(accAlbedo[pixel].w, accNormal[pixel].w, accShadowed[pixel].w, P.values.w, P.extra.w)) return;
+    // prilagodljivo (Renderer::adaptiveCheckpoint): bitovi 1/2 gotov na parnoj/neparnoj provjeri, 4 stao.
+    // Susjedi se citaju s PROSLE provjere - taj bit u ovom dispatchu nitko ne pise
+    uint state = adaptive[pixel];
+    if((state & 4u) != 0) return;
+    const uint s = push.sampleIndex;
+    bool stop = false;
+    if(P.values.w > 0.0 && s % 8u == 0u && s >= max(8u, P.extra.w)){
+        const uint now = 1u << ((s / 8u) & 1u), before = now ^ 3u;
+        const bool own = adaptiveConverged(accAlbedo[pixel].w, accNormal[pixel].w, accShadowed[pixel].w, P.values.w);
+        state = own ? (state | now) : (state & ~now);
+        stop = own && (state & before) != 0;
+        for(uint k = 0; k < 9u; ++k){
+            const int nx = int(x) + int(k % 3u) - 1, ny = int(y) + int(k / 3u) - 1;
+            const bool inside = k != 4u && nx >= 0 && ny >= 0 && nx < int(width) && ny < int(height);
+            if(inside && stop) stop = (adaptive[uint(ny) * width + uint(nx)] & before) != 0;
+        }
+        if(stop) state |= 4u;
+    }
+    // upis uvijek, izvan grane: lavapipe (LLVM 20) rusi uvjetni upis u ovaj buffer
+    adaptive[pixel] = state;
+    if(stop) return;
 
     const PathResult r = trace(P, float2(float(x) + 0.5, float(y) + 0.5), push.sampleIndex, pixelSeed);
     float4 cg = accCg[pixel];

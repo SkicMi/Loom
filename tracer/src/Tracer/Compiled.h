@@ -60,6 +60,7 @@ struct CompiledScene{
     std::vector<uint8_t> triangleFlags;
     float sceneRadius = 1.0f;
     glm::mat4 cameraInverse{1.0f};      //svijet -> kamera
+    std::vector<glm::mat4> volumeInverse;   //svijet -> kutija, po Scene::volumes
     double buildSeconds = 0.0;
 
     CompiledScene() = default;

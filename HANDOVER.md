@@ -725,6 +725,21 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
   pozadina (snimka). *Holdout from splat*, `--holdout`. `test_render_holdout` 8/8 (1 M gaussiana
   u 1080p za 0.15 s).
 
+- **Volumetrijsko svjetlo — Volume Box** (`Warp::Volume`, izbornik Add → *Volume Box (fog)*,
+  komponenta VOLUME, isprekidana kutija u pogledu): jednolika magla u kutiji entiteta (gustoća po
+  jedinici scene, albedo raspršenja, Henyey-Greenstein g). Tracer (`Tracer/Volume.h` + shader):
+  slobodni put točno po dijelovima konstantne gustoće (kutije se smiju preklapati), izravno
+  svjetlo kroz fazu s MIS-om, **svaka zraka sjene oslabi za exp(−∫σ)** — zrake sunca/reflektora
+  i pruge sjena u magli. USD: Xform s `loom:volume*`. `test_tracer_volume` 10/10 (upijanje
+  exp(−0.8) = 0.4492, bijela peć 0.9986, jedno raspršenje 0.02263 = analitičko za g 0 i 0.6,
+  pruga sjene 0, kartica isto).
+- **Prilagodljivo uzorkovanje sa susjedima**: magla je pokazala da piksel kojem 32 uzorka ništa
+  ne pogode (varijanca 0) stane crn — točkice u magli. Sad piksel stane tek kad je gotov i na
+  prošloj provjeri i kad je svih 8 susjeda bilo gotovo na prošloj provjeri (bitovi po parnosti
+  provjere, pa isto na procesoru i kartici). Svjetlina −0.14 % (prije −0.35 %), RMSE kao pun
+  broj uzoraka uz 215/512 spp. Na lavapipeu uvjetni upis u buffer stanja ruši LLVM — upis je
+  zato bezuvjetan.
+
 **Što dalje:**
 1. **Izmjeriti karticu** (samo lavapipe dosad) i dodati ray query (RTX) + filtar šuma na kartici;
    OIDN kao opcija.
@@ -737,8 +752,9 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
   RTX — mijenjaju samo obilazak. Filtar šuma je još na procesoru.
 - Staklene sjene su pristrane (nema fokusiranja svjetla iza leće); s *Caustics* su točne, ali
   šumne — kao Cycles bez caustics trikova.
-- Prilagodljivo uzorkovanje zaustavlja po procijenjenoj varijanci: piksel s vrlo rijetkim svijetlim
-  događajem može stati prerano (izmjereno −0.35 % svjetline na testnoj sceni).
+- Prilagodljivo uzorkovanje zaustavlja po procijenjenoj varijanci (piksel i susjedi): područje u
+  kojem SVI pikseli rijetko pogode svijetli događaj još može stati malo pretamno (−0.14 %).
+- Magla je jednolika u kutiji (nema VDB-a ni šuma gustoće); u prozoru pogleda se vidi samo kutija.
 - Filtar nije OIDN: na 64+ uzoraka čisti, na 4–16 ostavlja mrlje; sirovi CG je uvijek u EXR-u.
 - Catcher pod u neizravnom svjetlu uzima albedo ≈ linearni piksel snimke (pretpostavka jedinične
   rasvjete poda) — boja se prelije ispravno, jakost je približna.

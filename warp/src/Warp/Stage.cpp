@@ -396,6 +396,8 @@ uint64_t Stage::fingerprint() const{
             h.add(int(l.type)); h.add(l.color); h.add(l.intensity); h.add(l.radius); h.add(l.angle); h.add(l.coneAngle);
             h.add(l.coneSoftness); h.add(l.width); h.add(l.height); h.text(l.texture); h.add(l.skyTop); h.add(l.skyBottom);
         }
+        h.add(e.volume.has_value());
+        if(e.volume){ h.add(e.volume->color); h.add(e.volume->density); h.add(e.volume->anisotropy); }
         h.add(e.points.has_value());
         if(e.points){
             h.add(e.points->positions.size()); h.add(e.points->colours.size());

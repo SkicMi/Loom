@@ -622,6 +622,15 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
     };
     stage.walk([&](const Warp::Entity& entity, int){
         if(!visible(entity)) return;
+        //Magla u kutiji: kutija entiteta (kao kocka) u svijetu u tom kadru
+        if(entity.volume && entity.volume->density > 0.0f){
+            Tracer::Volume v;
+            v.toWorld = stage.worldMatrix(entity.id, frame);
+            v.albedo = glm::clamp(entity.volume->color, glm::vec3(0.0f), glm::vec3(1.0f));
+            v.density = entity.volume->density;
+            v.anisotropy = std::clamp(entity.volume->anisotropy, -0.95f, 0.95f);
+            scene.volumes.push_back(v);
+        }
         if(entity.mesh){
             const glm::mat4 world = stage.worldMatrix(entity.id, frame);
             const Tracer::ObjectFlags flags = flagsFor(entity);
@@ -1293,8 +1302,8 @@ private:
                 if(slice == 0){
                     if(index == 0) for(const std::string& w : built.warnings) say("Warning: " + w);
                     char line[256];
-                    std::snprintf(line, sizeof(line), "Frame %.0f: %zu triangles, %zu objects (%zu shadow catchers), %ux%u%s",
-                                  frame, built.scene.triangles.size(), built.objects, built.catchers,
+                    std::snprintf(line, sizeof(line), "Frame %.0f: %zu triangles, %zu objects (%zu shadow catchers), %zu fog boxes, %ux%u%s",
+                                  frame, built.scene.triangles.size(), built.objects, built.catchers, built.scene.volumes.size(),
                                   built.scene.camera.width, built.scene.camera.height,
                                   blur ? (", motion blur " + std::to_string(slices) + " steps").c_str() : "");
                     say(line);

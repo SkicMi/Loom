@@ -22,7 +22,7 @@ namespace TracerGpu{
 namespace{
 
 constexpr uint32_t None = 0xFFFFFFFFu;
-constexpr uint32_t TraceBindings = 20;
+constexpr uint32_t TraceBindings = 22;
 constexpr uint32_t ResolveBindings = 7;
 
 //Raspored mora biti isti kao Params u shaders/tracer.slang: samo vec4 i uvec4, pa std430 nema
@@ -39,7 +39,7 @@ struct Params{
     glm::vec4 values;
     glm::uvec4 extra;
     glm::vec4 distortion;
-    glm::vec4 holdout;      //tekstura (bitovi, NONE), bias, 0, 0
+    glm::vec4 holdout;      //tekstura (bitovi, NONE), bias, broj kutija magle (bitovi), 0
 };
 static_assert(sizeof(Params) == 24 * 16, "Params mora odgovarati shaders/tracer.slang");
 
@@ -225,7 +225,16 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     p.values = glm::vec4(settings.indirectClamp, world.camera.distorted() ? world.camera.k1 : 0.0f,
                          world.camera.distorted() ? world.camera.k2 : 0.0f, settings.adaptiveThreshold);
     p.distortion = world.camera.distorted() ? world.camera.lens : glm::vec4(0.0f);
-    p.holdout = glm::vec4(bitsToFloat(holdoutTexture), world.holdoutBias, 0.0f, 0.0f);
+    p.holdout = glm::vec4(bitsToFloat(holdoutTexture), world.holdoutBias, bitsToFloat(uint32_t(world.volumes.size())), 0.0f);
+    //Magla: 3 retka svijet -> kutija, (albedo, gustoca), (g)
+    std::vector<glm::vec4> volumes;
+    for(size_t i = 0; i < world.volumes.size(); ++i){
+        const glm::mat4 m = glm::transpose(c.volumeInverse[i]);
+        volumes.push_back(m[0]); volumes.push_back(m[1]); volumes.push_back(m[2]);
+        volumes.push_back(glm::vec4(world.volumes[i].albedo, world.volumes[i].density));
+        volumes.push_back(glm::vec4(world.volumes[i].anisotropy, 0.0f, 0.0f, 0.0f));
+    }
+    if(volumes.empty()) volumes.push_back(glm::vec4(0.0f));
     p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), (settings.glassShadows ? 1u : 0u) | (settings.mipmaps ? 0u : 2u),
                          settings.adaptiveMinSamples);
 
@@ -274,6 +283,8 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     const vk::DeviceSize pixels = vk::DeviceSize(size[0]) * size[1];
     for(int k = 0; k < 6; ++k) zeroed(pixels * 16);                         //13..18
     zeroed(pixels * 4);                                                     //19
+    onCard(volumes.data(), volumes.size() * sizeof(glm::vec4));             //20
+    zeroed(pixels * 4);                                                     //21 prilagodljivo stanje
     buffers->display.emplace(device, std::max<vk::DeviceSize>(pixels * 4, 16), usage, MemoryUsage::GPU_ONLY);
 
     buffers->trace.emplace(device, loom.getDescriptorPool(), pipelines.state->trace);

@@ -374,6 +374,29 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
             }
             }
         });
+        //-- magla: bridovi kutije i dijagonale lica (da se razlikuje od kocke), boja magle
+        stage.walk([&](const Warp::Entity& entity, int){
+            if(!entity.visible || !entity.volume) return;
+            const glm::mat4 world = stage.worldMatrix(entity.id, frame);
+            const bool isSelected = entity.id == selected;
+            const glm::vec3 c = glm::mix(entity.volume->color, glm::vec3(0.7f, 0.85f, 1.0f), 0.5f);
+            const Treadle::Color colour = isSelected ? accent : Treadle::Color{c.r, c.g, c.b, 0.75f};
+            const float thickness = isSelected ? 2.0f : 1.2f;
+            glm::vec3 corner[8];
+            for(int i = 0; i < 8; ++i)
+                corner[i] = glm::vec3(world * glm::vec4((i & 1) ? 0.5f : -0.5f, (i & 2) ? 0.5f : -0.5f, (i & 4) ? 0.5f : -0.5f, 1.0f));
+            for(int i = 0; i < 8; ++i) for(int bit = 1; bit < 8; bit <<= 1)
+                if(!(i & bit)) segment(list, camera, corner[i], corner[i | bit], thickness, colour);
+            //Isprekidane vodoravne crte po sredini: "ovo je volumen, ne tijelo"
+            for(float h : {-0.25f, 0.0f, 0.25f}){
+                const glm::vec3 a(world * glm::vec4(-0.5f, h, -0.5f, 1.0f)), b(world * glm::vec4(0.5f, h, -0.5f, 1.0f));
+                const glm::vec3 d(world * glm::vec4(-0.5f, h, 0.5f, 1.0f)), e(world * glm::vec4(0.5f, h, 0.5f, 1.0f));
+                for(int k = 0; k < 8; k += 2){
+                    segment(list, camera, glm::mix(a, b, k / 8.0f), glm::mix(a, b, (k + 1) / 8.0f), 1.0f, colour);
+                    segment(list, camera, glm::mix(d, e, k / 8.0f), glm::mix(d, e, (k + 1) / 8.0f), 1.0f, colour);
+                }
+            }
+        });
     }
 
     //-- kosturi: kost od zgloba do roditeljskog zgloba, i tocka na zglobu --------------------

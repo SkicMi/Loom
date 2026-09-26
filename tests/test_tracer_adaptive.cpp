@@ -97,9 +97,10 @@ double meanOf(const Tracer::Frame& f){
 
 double rmse(const Tracer::Frame& a, const Tracer::Frame& b){
     double sum = 0.0;
-    //Na zaslonu ionako odrezano: rijetka krijesnica ne smije sama odluciti usporedbu
+    //Kao na zaslonu (x / (1 + x)): rijetka krijesnica ne smije sama odluciti usporedbu
     for(size_t i = 0; i < a.cg.size() && i < b.cg.size(); ++i){
-        const double d = std::min(double(a.cg[i]), 2.0) - std::min(double(b.cg[i]), 2.0);
+        const double x = std::max(0.0, double(a.cg[i])), y = std::max(0.0, double(b.cg[i]));
+        const double d = x / (1.0 + x) - y / (1.0 + y);
         sum += d * d;
     }
     return std::sqrt(sum / double(std::max<size_t>(1, a.cg.size())));

@@ -2,6 +2,7 @@
 #include "Tracer/Bsdf.h"
 #include "Tracer/Denoise.h"
 #include "Tracer/Sampler.h"
+#include "Tracer/Volume.h"
 
 #include <glm/gtc/constants.hpp>
 
@@ -165,7 +166,10 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             }
             return true;
         });
-        return blocked ? glm::vec3(0.0f) : through;
+        if(blocked) return glm::vec3(0.0f);
+        if(!world.volumes.empty())
+            through *= std::exp(-opticalDepth(world.volumes, C.volumeInverse, shadowRay.origin, shadowRay.direction, shadowRay.tMax));
+        return through;
     };
 
     //Uzorak svjetla iz tocke p: smjer, udaljenost, radijancija (ili ozracenost za delta), gustoca
@@ -353,7 +357,58 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         //Kugla svjetla ispred plohe
         float sphereT;
         const LightRecord* sphere = nullptr;
-        if(sphereOnRay(ray.origin, ray.direction, hit.valid() ? hit.t : Infinity, sphereT, sphere)){
+        const bool sphereHit = sphereOnRay(ray.origin, ray.direction, hit.valid() ? hit.t : Infinity, sphereT, sphere);
+
+        //-- magla: dogadjaj rasprsenja prije plohe ili svjetla -----------------------------------
+        if(!world.volumes.empty()){
+            const glm::vec2 free = sampler.next2D();
+            float t;
+            uint32_t which;
+            const float end = sphereHit ? sphereT : (hit.valid() ? hit.t : Infinity);
+            if(sampleVolume(world.volumes, C.volumeInverse, ray.origin, ray.direction, end, free, t, which)){
+                const Volume& medium = world.volumes[which];
+                const glm::vec3 p = ray.origin + ray.direction * t;
+                if(depth == 0) result.object = true;
+                beta *= medium.albedo;
+                if(depth >= maxBounces || !(luminance(beta) > 0.0f)) break;
+                //Izravno svjetlo kroz fazu (zrake sunca u magli, pruge sjena)
+                {
+                    LightSample ls;
+                    const glm::vec2 choice = sampler.next2D();
+                    const glm::vec2 u = sampler.next2D();
+                    if(sampleLight(p, choice.x, u, ls)){
+                        const float phase = phaseHG(glm::dot(ray.direction, ls.wi), medium.anisotropy);
+                        Ray shadowRay{p, ls.wi, 0.0f, std::isinf(ls.distance) ? Infinity : ls.distance * (1.0f - 1e-4f)};
+                        ++rays;
+                        bool crossed;
+                        const glm::vec3 through = shadowTransmittance(shadowRay, false, salt + 307u, crossed);
+                        if(luminance(through) > 0.0f){
+                            const float w = ls.delta || crossed ? 1.0f : powerHeuristic(ls.pdf, phase);
+                            radiance += clampContribution(beta * ls.value * through * (phase * w / ls.pdf), depth > 0);
+                        }
+                    }
+                }
+                //Novi smjer po fazi: tezina faza / pdf = 1
+                float pdf;
+                const glm::vec3 next = samplePhaseHG(ray.direction, medium.anisotropy, sampler.next2D(), pdf);
+                const glm::vec2 roulette = sampler.next2D();
+                mirrorChain = false;
+                previousPdf = pdf;
+                previousPoint = p;
+                coneSpread += 0.2f;
+                if(glass){ sawRough = true; caustic = false; }
+                if(depth >= 3){
+                    const float keep = std::clamp(std::max({beta.r, beta.g, beta.b}), 0.05f, 0.95f);
+                    if(roulette.x >= keep) break;
+                    beta /= keep;
+                }
+                ray.origin = p;
+                ray.direction = next;
+                continue;
+            }
+        }
+
+        if(sphereHit){
             const glm::vec3 p = ray.origin + ray.direction * sphereT;
             float falloff = 1.0f;
             if(sphere->spot) falloff = spotFalloff(glm::dot(glm::normalize(p - sphere->position), sphere->axis),
@@ -595,8 +650,8 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
 //---------------------------------------------------------------------------------------------
 // FILM
 //---------------------------------------------------------------------------------------------
-bool adaptiveConverged(double luminanceSum, double luminance2Sum, double samples, float threshold, uint32_t minSamples){
-    if(threshold <= 0.0f || samples < double(std::max(8u, minSamples)) || std::fmod(samples, 8.0) != 0.0) return false;
+bool adaptiveConverged(double luminanceSum, double luminance2Sum, double samples, float threshold){
+    if(threshold <= 0.0f || samples <= 0.0) return false;
     const double mean = luminanceSum / samples;
     const double var = std::max(0.0, luminance2Sum / samples - mean * mean);
     return std::sqrt(var / samples) < double(threshold) * std::sqrt(mean + 1e-4);
@@ -607,9 +662,8 @@ void Renderer::renderPixel(uint32_t x, uint32_t y, uint32_t firstSample, uint32_
     const uint32_t width = compiled->world.camera.width;
     Accumulator& a = pixels[size_t(y) * width + x];
     const uint32_t pixelSeed = sampling::hash(sampling::hash(x * 0x9E3779B1u ^ y) ^ (y * 0x85EBCA77u)) ^ sampling::hash(seed);
+    if(!adaptiveState.empty() && (adaptiveState[size_t(y) * width + x] & 4u)) return;
     for(uint32_t s = firstSample; s < lastSample; ++s){
-        //Odluka samo iz stanja piksela: kad stane, stanje se vise ne mijenja pa ostaje stao
-        if(adaptiveConverged(a.luminance, a.luminance2, double(a.samples), adaptiveThreshold, adaptiveMinSamples)) break;
         const PathResult r = trace(glm::vec2(float(x) + 0.5f, float(y) + 0.5f), s, pixelSeed, clampValue, maxBounces, rays);
         a.samples += 1;
         if(r.object){ a.cg += r.radiance; a.coverage += 1.0f; }
@@ -662,10 +716,14 @@ void Renderer::render(const RenderSettings& settings, const std::function<void(c
     mipmaps = settings.mipmaps;
     adaptiveThreshold = settings.adaptiveThreshold;
     adaptiveMinSamples = settings.adaptiveMinSamples;
+    if(adaptiveThreshold > 0.0f && adaptiveState.size() != pixels.size()) adaptiveState.assign(pixels.size(), 0);
 
     while(done < settings.samples){
         if(cancel && cancel->load()) break;
-        const uint32_t pass = std::clamp(done, 1u, 32u);
+        //Prilagodljivo: prolazi od po 8 uzoraka, provjera na pocetku prolaza (kao kartica prije uzorka)
+        const bool adaptive = adaptiveThreshold > 0.0f;
+        if(adaptive && done % 8 == 0 && done >= std::max(8u, adaptiveMinSamples)) adaptiveCheckpoint(done);
+        const uint32_t pass = adaptive ? std::clamp(done, 1u, 8u) : std::clamp(done, 1u, 32u);
         const uint32_t first = done, last = std::min(settings.samples, done + pass);
         std::atomic<uint32_t> next{0};
         std::atomic<bool> stopped{false};
@@ -697,6 +755,32 @@ void Renderer::render(const RenderSettings& settings, const std::function<void(c
             onPass(progress);
         }
     }
+}
+
+//Provjera na broju uzoraka `samples` (visekratnik od 8): prvo svaki piksel zapise je li gotov
+//(bit ove provjere), pa stane onaj koji je gotov sad i prosli put, sa svim susjedima gotovim
+//prosli put. Bit prosle provjere se ovdje ne mijenja, pa redoslijed piksela nije bitan
+void Renderer::adaptiveCheckpoint(uint32_t samples){
+    const uint32_t width = compiled->world.camera.width, height = compiled->world.camera.height;
+    const uint8_t now = uint8_t(1u << ((samples / 8u) & 1u)), before = uint8_t(now ^ 3u);
+    std::vector<uint8_t> stop(pixels.size(), 0);
+    for(size_t i = 0; i < pixels.size(); ++i){
+        uint8_t& s = adaptiveState[i];
+        if(s & 4u) continue;
+        const Accumulator& a = pixels[i];
+        const bool own = adaptiveConverged(a.luminance, a.luminance2, double(a.samples), adaptiveThreshold);
+        s = own ? uint8_t(s | now) : uint8_t(s & ~now);
+        if(!own || !(s & before)) continue;
+        const int x = int(i % width), y = int(i / width);
+        bool neighbours = true;
+        for(int dy = -1; dy <= 1 && neighbours; ++dy) for(int dx = -1; dx <= 1; ++dx){
+            const int nx = x + dx, ny = y + dy;
+            if((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= int(width) || ny >= int(height)) continue;
+            if(!(adaptiveState[size_t(ny) * width + size_t(nx)] & before)){ neighbours = false; break; }
+        }
+        stop[i] = neighbours;
+    }
+    for(size_t i = 0; i < pixels.size(); ++i) if(stop[i]) adaptiveState[i] |= 4u;
 }
 
 double Renderer::averageSamples() const{

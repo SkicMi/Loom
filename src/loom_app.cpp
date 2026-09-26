@@ -194,6 +194,7 @@ std::string kindOf(const Warp::Entity& entity){
         const char* names[] = {"Sun Light", "Point Light", "Spot Light", "Area Light", "Sky Dome"};
         return names[int(entity.light->type)];
     }
+    if(entity.volume) return "Volume Box";
     if(entity.splat) return "Gaussian Splat";
     if(entity.joint) return "Joint";
     if(entity.model) return "Model (glTF)";
@@ -203,6 +204,7 @@ std::string kindOf(const Warp::Entity& entity){
 Treadle::Color sceneAccent(const Warp::Entity& entity){
     if(entity.camera) return {0.18f, 0.88f, 1.0f, 1.0f};
     if(entity.light) return {1.0f, 0.86f, 0.35f, 1.0f};
+    if(entity.volume) return {0.62f, 0.80f, 1.0f, 1.0f};
     if(entity.splat) return {0.94f, 0.42f, 0.96f, 1.0f};
     if(entity.joint) return {1.0f, 0.55f, 0.23f, 1.0f};
     if(entity.points) return {0.40f, 0.94f, 0.56f, 1.0f};
@@ -214,6 +216,7 @@ Treadle::Color sceneAccent(const Warp::Entity& entity){
 std::string sceneTag(const Warp::Entity& entity){
     if(entity.camera) return "CAM";
     if(entity.light) return entity.light->type == Warp::Light::Type::Dome ? "SKY" : "LIGHT";
+    if(entity.volume) return "FOG";
     if(entity.splat) return "SPLAT";
     if(entity.joint) return "BONE";
     if(entity.points) return "POINTS";
@@ -354,7 +357,7 @@ int main(int argc, char** argv){
 
     float mediaScroll = 0.0f, hierarchyScroll = 0.0f, propertiesScroll = 0.0f;
     bool outlineVisible = true, componentsVisible = true, timelineVisible = true;
-    bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true, lightExpanded = true;
+    bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true, lightExpanded = true, volumeExpanded = true;
     bool pointsExpanded = true, splatExpanded = true, splatCutExpanded = true, materialExpanded = false;
     RailPane activeRailPane = RailPane::None;
     std::string message;                  //zadnja poruka korisniku, u alatnoj traci
@@ -1857,7 +1860,25 @@ int main(int argc, char** argv){
         focus = Focus::Entity;
         message = std::string("Added ") + names[int(type)] + (type == Warp::Light::Type::Dome ? " - Render > Sky 'Scene' uses it" : "");
     };
+    //MAGLA U KUTIJI: kutija oko sredine scene; gustoca tako da kroz nju prode pola svjetla
+    auto addVolume = [&](Warp::Id parent){
+        const Warp::Id id = stage.create("Volume Box", parent);
+        Warp::Entity& entity = *stage.get(id);
+        const float size = std::max(1e-3f, extent.radius * 1.2f);
+        Warp::Volume volume;
+        volume.density = 0.69f / size;
+        volume.color = glm::vec3(0.95f);
+        entity.volume = volume;
+        const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
+        entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(extent.centre, 1.0f));
+        const glm::mat3 inverse = glm::inverse(glm::mat3(parentWorld));
+        entity.local.scale = glm::vec3(size) * glm::vec3(glm::length(inverse[0]), glm::length(inverse[1]), glm::length(inverse[2]));
+        selected = id;
+        focus = Focus::Entity;
+        message = "Added Volume Box - light (sun, spot) through it shows as rays in the render";
+    };
     auto addLightMenu = [&](Warp::Id parent){
+        if(ui.menuItem("Volume Box (fog)")) addVolume(parent);
         if(ui.menuItem("Sun Light")) addLight(Warp::Light::Type::Distant, parent);
         if(ui.menuItem("Point Light")) addLight(Warp::Light::Type::Sphere, parent);
         if(ui.menuItem("Spot Light")) addLight(Warp::Light::Type::Spot, parent);
@@ -3617,6 +3638,22 @@ int main(int argc, char** argv){
                         if(ui.dragVector("Sky Bottom", bottom, 0.004f)) l.skyBottom = glm::max(glm::vec3(bottom[0], bottom[1], bottom[2]), glm::vec3(0.0f));
                         ui.label(Treadle::fitText("Used when Render > Sky is 'Scene'", layout.properties.width - 30.0f, theme.textScale * 0.8f));
                     }
+                }
+                if(entity->volume && ui.componentHeader("VOLUME", {0.62f, 0.80f, 1.0f, 1.0f}, &volumeExpanded)){
+                    //Gustoca po jedinici scene; ispod se vidi sto to znaci za OVU kutiju
+                    Warp::Volume& v = *entity->volume;
+                    if(ui.dragFloat("Density", &v.density, 0.002f * std::max(0.01f, v.density))) v.density = std::max(0.0f, v.density);
+                    float colour[3] = {v.color.r, v.color.g, v.color.b};
+                    if(ui.dragVector("Scatter Color", colour, 0.004f))
+                        v.color = glm::clamp(glm::vec3(colour[0], colour[1], colour[2]), glm::vec3(0.0f), glm::vec3(1.0f));
+                    ui.slider("Anisotropy", &v.anisotropy, -0.9f, 0.9f);
+                    const glm::mat4 world = stage.worldMatrix(entity->id, frame);
+                    const float across = std::min({glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2]))});
+                    char info[96];
+                    std::snprintf(info, sizeof(info), "%.0f%% of light passes the thinnest side", 100.0f * std::exp(-v.density * across));
+                    ui.value("Through", info);
+                    ui.label(Treadle::fitText("Anisotropy > 0: glow around the sun; < 0: back-lit. Rendered by LoomTracer.",
+                                              layout.properties.width - 30.0f, theme.textScale * 0.8f));
                 }
                 if(entity->points && ui.componentHeader("POINT CLOUD", {0.43f, 0.92f, 0.54f, 1.0f}, &pointsExpanded)){
                     ui.value("Points", std::to_string(entity->points->positions.size()));

@@ -187,6 +187,15 @@ struct Camera{
     bool project(const glm::vec3& world, glm::vec2& pixel) const;
 };
 
+//Jednolika magla u kutiji -0.5..0.5 lokalno (Volume.h): gustoca = gubitak po jedinici scene
+//(sivo), albedo = boja rasprsenja, anisotropy = Henyey-Greenstein g
+struct Volume{
+    glm::mat4 toWorld{1.0f};
+    glm::vec3 albedo{1.0f};
+    float density = 0.0f;
+    float anisotropy = 0.0f;
+};
+
 //---------------------------------------------------------------------------------------------
 // SCENA
 //---------------------------------------------------------------------------------------------
@@ -215,6 +224,10 @@ struct Scene{
     //se vidi, CG iza stvarnog zida se ne crta. Rub je po uzorku, pa je antialiasiran
     Texture holdout;
     float holdoutBias = 0.02f;
+
+    //VOLUMENI: magla u kutijama. Zraka koja kroz nju prolazi se rasprsi (vidljive zrake svjetla,
+    //pruge sjena), zraka sjene oslabi za exp(-gustoca * put)
+    std::vector<Volume> volumes;
 
     uint32_t addTexture(Texture texture);
     uint32_t addMaterial(Material material);

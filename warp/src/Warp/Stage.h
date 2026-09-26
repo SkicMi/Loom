@@ -221,6 +221,18 @@ struct Light{
     glm::vec3 skyTop{0.55f, 0.65f, 0.85f}, skyBottom{0.18f, 0.16f, 0.14f};
 };
 
+//VOLUMEN: jednolika magla (sumaglica, dim, prasina u zraci) u kutiji -0.5..0.5 lokalno - ista
+//kocka kao Shape::Cube, pa se pomice, okrece i skalira kao kocka. Svjetlo se u njoj rasprsi
+//(zrake sunca i reflektora postanu vidljive, sjene objekata ostave tamne pruge) i oslabi.
+//   density     gustoca: koliko se svjetla izgubi po jedinici scene (1 / density je srednji put)
+//   color       albedo rasprsenja: udio izgubljenog svjetla koji se rasprsi (ostatak se upije)
+//   anisotropy  Henyey-Greenstein g: 0 na sve strane, > 0 naprijed (sjaj oko sunca), < 0 natrag
+struct Volume{
+    glm::vec3 color{1.0f};
+    float density = 0.5f;
+    float anisotropy = 0.0f;
+};
+
 //Istrenirani gaussian splat, kao put do .ply
 struct Splat{
     std::string path;
@@ -247,6 +259,7 @@ struct Entity{
     std::optional<Model> model;
     std::optional<Animator> animator;
     std::optional<Light> light;
+    std::optional<Volume> volume;
 
     bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty() ||
                                   (animator && animator->enabled && !animator->animations.empty());}

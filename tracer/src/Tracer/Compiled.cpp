@@ -31,6 +31,7 @@ std::shared_ptr<const CompiledScene> compile(Scene scene){
     const auto start = std::chrono::steady_clock::now();
     if(world.materials.empty()) world.materials.push_back(Material{});
     for(Texture& t : world.textures) if(t.mips.empty()) t.buildMips();
+    for(const Volume& v : world.volumes) c.volumeInverse.push_back(glm::inverse(v.toWorld));
     for(Triangle& t : world.triangles) if(t.material >= world.materials.size()) t.material = 0;
     //Teksture koje ne postoje se odspoje - materijal radi s faktorima
     for(Material& m : world.materials){
