@@ -92,9 +92,27 @@ inline std::vector<TimelineRow> timelineBoneRows(const Warp::Stage& stage, Warp:
             addKeyTimes(row.keys, track.rotationKeys.times);
             addKeyTimes(row.keys, track.scaleKeys.times);
         }
+        //Sloj sprema cijelu pozu u kljucu; romb dobije samo kost koja je tu stvarno pomaknuta
+        //(drukcija od osnove klipa), inace bi svaki ispravak ruke oznacio i stopala
+        const std::vector<Warp::AnimatorTrack>& base = clip->baseTracks.empty() ? clip->tracks : clip->baseTracks;
+        const Warp::AnimatorTrack* baseTrack = nullptr;
+        for(const Warp::AnimatorTrack& track : base) if(track.target == id){ baseTrack = &track; break; }
         for(const Warp::AnimationLayer& layer : clip->layers)
-            for(const Warp::AnimatorTrack& track : layer.keys)
-                if(track.target == id) addKeyTimes(row.edits, track.rotationKeys.times);
+            for(const Warp::AnimatorTrack& track : layer.keys){
+                if(track.target != id) continue;
+                for(size_t k = 0; k < track.rotationKeys.size(); ++k){
+                    const double t = track.rotationKeys.times[k];
+                    //Kost bez tracka u klipu (npr. metakarpali) stoji u mirnoj pozi - usporedba s njom
+                    const glm::quat baseRotation = baseTrack && !baseTrack->rotationKeys.empty()
+                        ? baseTrack->rotationKeys.at(t) : entity->local.rotation;
+                    const glm::vec3 baseTranslation = baseTrack && !baseTrack->translationKeys.empty()
+                        ? baseTrack->translationKeys.at(t) : entity->local.translation;
+                    bool moved = 1.0f - std::fabs(glm::dot(baseRotation, track.rotationKeys.values[k])) > 2.4e-6f;
+                    if(k < track.translationKeys.size())
+                        moved = moved || glm::length(baseTranslation - track.translationKeys.values[k]) > 5e-4f;
+                    if(moved) row.edits.push_back(t);
+                }
+            }
         sortKeyTimes(row.keys);
         sortKeyTimes(row.edits);
         const bool driven = !row.keys.empty() || !row.edits.empty();

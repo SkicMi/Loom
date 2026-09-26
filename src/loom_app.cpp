@@ -356,6 +356,7 @@
             Warp::AnimationClip original;
             std::vector<std::pair<Warp::Id, Warp::Transform>> basePose;   //zglobovi riga (id), poza pri pocetku
             std::vector<Loom::PoseKey> keys;    //uredjene poze po kadrovima; izmedju njih pretapanje
+            std::vector<Warp::Transform> arrived;   //poza basePose zglobova kad je playhead stigao na frame
         } poseEdit;
         int poseKeyEnding = 0;                  //0: povratak u pokret iza zadnjeg kljuca, 1: drzi pozu
         //Odabir raspona na timelineu (LoomTimelineRange.h) i radnje iznad njega
@@ -371,8 +372,7 @@
         Loom::TimelinePoseStrip timelinePoses;
         struct{ Warp::Id rig = Warp::None; double first = -1.0, last = -1.0; } poseRangeRequest;
         double poseRangeEnd = -1.0;             //pose blend pokrenut iz raspona: druga poza je tu
-        int poseBlendStep = 0;                  //0 nista, 3 prva poza, 4 druga poza
-        double poseBlendFirst = -1.0, poseBlendSecond = -1.0;
+        int poseBlendStep = 0;                  //0 nista, 5 uredjivanje poze (auto key)
         bool poseBlendOptionsOpen = false;
         float poseBlendInFrames = 8.0f;
         float poseBlendHoldFrames = 24.0f;
@@ -1044,6 +1044,48 @@
                      outputDirectory.string(), Loom::Task::WeaverMotion, 0);
             message = "Regenerating frames " + std::to_string(first) + "-" + std::to_string(last) +
                       "; everything outside stays as it was.";
+        };
+
+        //AUTO KEY POZE (UX korak 2): u sesiji uredjivanja poze svaki kadar na kojem je poza DIRNUTA
+        //postane kljuc cim playhead ode s njega. Dirnuto = drukcije nego kad je playhead stigao, pa
+        //vrijedi za svaki nacin uredjivanja (rig kontrole, gizmo odabrane kosti). Nedirnuti kadar ne
+        //postaje kljuc - inace bi samo prolazak playheada vukao ispravak natrag na nulu
+        auto posePoseAt = [&](double at){
+            std::vector<Warp::Transform> pose;
+            for(const auto& joint : poseEdit.basePose) pose.push_back(stage.localAt(joint.first, at));
+            return pose;
+        };
+        auto poseKeyAt = [&](double at){
+            return std::find_if(poseEdit.keys.begin(), poseEdit.keys.end(), [&](const Loom::PoseKey& k){ return k.frame == at; });
+        };
+        auto poseTouchedHere = [&]{
+            if(poseKeyAt(poseEdit.frame) != poseEdit.keys.end()) return true;
+            const std::vector<Warp::Transform> now = posePoseAt(poseEdit.frame);
+            if(now.size() != poseEdit.arrived.size()) return false;
+            for(size_t i = 0; i < now.size(); ++i){
+                const Warp::Transform& a = now[i];
+                const Warp::Transform& b = poseEdit.arrived[i];
+                //Prag 0.25 st i 0.5 mm: rig kontrole pri prikazu same pomaknu vrat za ~0.06 st
+                //(1 - |dot| = 1.2e-7), a to nije ispravak i ne smije postati kljuc
+                if(glm::length(a.translation - b.translation) > 5e-4f || glm::length(a.scale - b.scale) > 1e-4f ||
+                   1.0f - std::fabs(glm::dot(a.rotation, b.rotation)) > 2.4e-6f) return true;
+            }
+            return false;
+        };
+        //Kljuc na trenutnom kadru sesije, samo ako je poza tu dirnuta
+        auto storeTouchedPoseKey = [&]{
+            if(!poseEdit.active || !poseTouchedHere()) return;
+            Loom::PoseKey key{poseEdit.frame, {}};
+            for(const auto& joint : poseEdit.basePose)
+                if(stage.get(joint.first)) key.pose.emplace_back(joint.first, stage.localAt(joint.first, poseEdit.frame));
+            if(auto found = poseKeyAt(poseEdit.frame); found != poseEdit.keys.end()) *found = key;
+            else poseEdit.keys.push_back(key);
+            std::sort(poseEdit.keys.begin(), poseEdit.keys.end(),
+                      [](const Loom::PoseKey& a, const Loom::PoseKey& b){ return a.frame < b.frame; });
+        };
+        auto arrivePoseFrame = [&](double at){
+            poseEdit.frame = at;
+            poseEdit.arrived = posePoseAt(at);
         };
 
         //Lik ciji se klip moze uredjivati s timelinea: odabrani (ili lik u Animatoru) s barem jednim klipom
@@ -2905,7 +2947,7 @@
                             ui.value("Frames", frameRange);
 
                             ui.separator();
-                            ui.caption("POSE BLEND");
+                            ui.caption("POSE");
                             const double poseFrame = std::round(frame);
                             const bool frameInClip = poseFrame >= active.startFrame && poseFrame <= active.endFrame;
                             //TOK KAO U KLASICNOJ ANIMACIJI: ispravi pozu na kadru, pomakni playhead, ispravi
@@ -2924,15 +2966,6 @@
                                                          limbIds[size_t(arm[2])], limbIds[3]});
                                 return limbs;
                             };
-                            auto storeCurrentKey = [&]{
-                                Loom::PoseKey key{poseEdit.frame, {}};
-                                for(const auto& joint : poseEdit.basePose)
-                                    if(stage.get(joint.first)) key.pose.emplace_back(joint.first, stage.localAt(joint.first, poseEdit.frame));
-                                auto found = std::find_if(poseEdit.keys.begin(), poseEdit.keys.end(),
-                                    [&](const Loom::PoseKey& k){ return k.frame == poseEdit.frame; });
-                                if(found != poseEdit.keys.end()) *found = key;
-                                else poseEdit.keys.push_back(key);
-                            };
                             auto beginPoseSession = [&](double at){
                                 poseEdit.active = true;
                                 poseEdit.rig = animatorRig;
@@ -2943,17 +2976,16 @@
                                 const Loom::MotionRigRestPose rigPose = Loom::motionRigRestPose(stage, animatorRig);
                                 for(const Loom::MotionRigJointRest& joint : rigPose.joints)
                                     if(stage.get(joint.id)) poseEdit.basePose.emplace_back(joint.id, stage.localAt(joint.id, at));
+                                arrivePoseFrame(at);
+                                frame = at;
+                                playing = false;
+                                animatorRigDrag.control = -1;
                                 selected = animatorRig;
                                 focus = Focus::Entity;
                                 motionPanel.open = false;
                                 motionPanel.controlRigMode = true;
                                 followAnimatorPreview = true;
-                            };
-                            auto goToPoseFrame = [&](double at){
-                                poseEdit.frame = at;
-                                frame = at;
-                                playing = false;
-                                animatorRigDrag.control = -1;
+                                poseBlendStep = 5;
                             };
                             auto cancelPoseBlend = [&]{
                                 poseRangeEnd = -1.0;
@@ -2964,8 +2996,9 @@
                                 poseEdit = PoseEditSession{};
                                 poseBlendStep = 0;
                             };
-                            auto applyPoseKeys = [&](bool blendBetween){
-                                storeCurrentKey();
+                            auto applyPoseKeys = [&]{
+                                storeTouchedPoseKey();
+                                if(poseEdit.keys.empty()){ cancelPoseBlend(); return; }
                                 const std::vector<Loom::PoseKey> keys = poseEdit.keys;
                                 //Kljucevi su procitani; klip se vrati na original pa se iz njega racuna
                                 //ulaz prije prvog i povratak iza zadnjeg kljuca (LoomPoseBlend.h)
@@ -2975,13 +3008,10 @@
                                 settings.holdFrames = poseBlendHoldFrames;
                                 settings.outFrames = poseBlendOutFrames;
                                 settings.ending = poseKeyEnding == 0 ? Loom::PoseKeyEnding::Return : Loom::PoseKeyEnding::Hold;
-                                settings.blendBetween = blendBetween;
+                                settings.blendBetween = true;
                                 //Ispravak postaje SLOJ preko netaknute osnove (LoomAnimLayers.h): moze se
                                 //iskljuciti, oslabiti ili obrisati bez diranja ostalih ispravaka
-                                const double firstKey = std::min_element(keys.begin(), keys.end(),
-                                    [](const Loom::PoseKey& a, const Loom::PoseKey& b){ return a.frame < b.frame; })->frame;
-                                const double lastKey = std::max_element(keys.begin(), keys.end(),
-                                    [](const Loom::PoseKey& a, const Loom::PoseKey& b){ return a.frame < b.frame; })->frame;
+                                const double firstKey = keys.front().frame, lastKey = keys.back().frame;
                                 const std::string layerName = keys.size() > 1
                                     ? "Pose fix " + std::to_string(int(firstKey)) + "-" + std::to_string(int(lastKey))
                                     : "Pose fix " + std::to_string(int(firstKey));
@@ -2991,20 +3021,21 @@
                                 playing = false;
                                 poseEdit = PoseEditSession{};
                                 poseBlendStep = 0;
+                                poseRangeEnd = -1.0;
+                                message = keys.size() > 1
+                                    ? "Pose correction blends through " + std::to_string(keys.size()) + " keys (" + layerName.substr(9) +
+                                      "); the rest of the body keeps its motion."
+                                    : "Pose fixed at frame " + std::to_string(int(firstKey)) + "; it blends back into the motion.";
                             };
                             //Sesiju smije zatvoriti i netko drugi (Escape, zatvaranje Animatora): tada
-                            //koraci poze nemaju sto uredjivati i tok se vrati na pocetak
+                            //nema sto uredjivati i tok se vrati na pocetak
                             if(poseBlendStep != 0 && !poseEdit.active){ poseBlendStep = 0; poseRangeEnd = -1.0; }
-                            //Radnja "Fix pose" s timelinea: sesija krece na pocetku raspona, a druga
-                            //poza je vec zadana krajem raspona - ne treba je trazeti playheadom
+                            //Radnja "Fix pose" s timelinea: sesija krece na pocetku raspona, a kraj raspona
+                            //je ponudjen kao sljedeci kadar za pozu
                             if(poseRangeRequest.rig == animatorRig && poseRangeRequest.first >= active.startFrame &&
                                poseRangeRequest.last <= active.endFrame && !poseEdit.active){
                                 beginPoseSession(poseRangeRequest.first);
-                                goToPoseFrame(poseRangeRequest.first);
-                                poseBlendFirst = poseRangeRequest.first;
-                                poseBlendSecond = -1.0;
                                 poseRangeEnd = poseRangeRequest.last;
-                                poseBlendStep = 3;
                                 poseRangeRequest = {};
                             }
                             const bool editTarget = !poseEdit.active || (poseEdit.rig == animatorRig &&
@@ -3012,71 +3043,48 @@
                             const std::string here = std::to_string(int(poseFrame));
                             if(!editTarget){
                                 ui.status("Go back to the clip you are editing to continue.", theme.warning);
-                                if(ui.button("Cancel pose blend")) cancelPoseBlend();
+                                if(ui.button("Cancel pose edit")) cancelPoseBlend();
                             }else if(poseBlendStep == 0){
-                                //Redoslijed kao u klasicnoj animaciji: ispravi pozu ovdje, pa dalje, pa blend
-                                if(ui.primaryButton("FIX POSE AT FRAME " + here, frameInClip)){
-                                    beginPoseSession(poseFrame);
-                                    goToPoseFrame(poseFrame);
-                                    poseBlendFirst = poseFrame;
-                                    poseBlendSecond = -1.0;
-                                    poseBlendStep = 3;
-                                }
-                                ui.hint(frameInClip ? "Fix the pose here, then fix it again further on. The correction blends between "
-                                                      "the two; the rest of the body keeps its motion."
+                                if(ui.primaryButton("EDIT POSE AT FRAME " + here, frameInClip)) beginPoseSession(poseFrame);
+                                ui.hint(frameInClip ? "Pose the character in the viewport. Every frame you pose becomes a key, "
+                                                      "and the motion blends between the keys."
                                                     : "Move the playhead inside the clip.");
-                            }else if(poseBlendStep == 3){
-                                ui.status("Pose 1 - frame " + std::to_string(int(poseBlendFirst)) + ": fix it in the viewport", theme.accent);
-                                if(poseRangeEnd >= 0.0){
-                                    if(ui.primaryButton("NEXT: POSE FRAME " + std::to_string(int(poseRangeEnd)))){
-                                        storeCurrentKey();
-                                        poseBlendSecond = poseRangeEnd;
-                                        goToPoseFrame(poseRangeEnd);
-                                        poseBlendStep = 4;
-                                        poseRangeEnd = -1.0;
+                            }else{
+                                //AUTO KEY: rig kontrole prate playhead, dirnuti kadar postane kljuc (storeTouchedPoseKey)
+                                const bool pending = poseTouchedHere() && poseKeyAt(poseEdit.frame) == poseEdit.keys.end();
+                                const size_t keyCount = poseEdit.keys.size() + (pending ? 1 : 0);
+                                ui.status("EDITING POSE  /  frame " + std::to_string(int(poseEdit.frame)), theme.accent);
+                                std::vector<double> jumps;
+                                for(const Loom::PoseKey& key : poseEdit.keys) jumps.push_back(key.frame);
+                                if(pending) jumps.push_back(poseEdit.frame);
+                                if(poseRangeEnd >= 0.0 && std::find(jumps.begin(), jumps.end(), poseRangeEnd) == jumps.end())
+                                    jumps.push_back(poseRangeEnd);
+                                std::sort(jumps.begin(), jumps.end());
+                                if(!jumps.empty()){
+                                    std::vector<std::string> labels;
+                                    int showing = -1;
+                                    for(size_t i = 0; i < jumps.size(); ++i){
+                                        labels.push_back(std::to_string(int(jumps[i])));
+                                        if(jumps[i] == poseEdit.frame) showing = int(i);
                                     }
-                                }else if(poseFrame == poseBlendFirst || !frameInClip){
-                                    ui.hint("Then move the playhead to where the second pose goes.");
-                                }else if(ui.primaryButton("SECOND POSE AT FRAME " + here)){
-                                    storeCurrentKey();
-                                    poseBlendSecond = poseFrame;
-                                    goToPoseFrame(poseFrame);
-                                    poseBlendStep = 4;
+                                    const int jump = ui.pills(labels, showing);
+                                    if(jump >= 0 && jump != showing){ frame = jumps[size_t(jump)]; playing = false; }
                                 }
-                                if(poseFrame != poseBlendFirst && ui.button("Back to pose 1 (frame " + std::to_string(int(poseBlendFirst)) + ")"))
-                                    goToPoseFrame(poseBlendFirst);
-                                if(ui.button("Apply this pose only")){
-                                    applyPoseKeys(true);
-                                    message = "Pose fixed at frame " + std::to_string(int(poseBlendFirst)) + "; it blends back into the motion.";
-                                }
-                                if(ui.button("Cancel")) cancelPoseBlend();
-                            }else if(poseBlendStep == 4){
-                                ui.status("Pose 2 - frame " + std::to_string(int(poseBlendSecond)) + ": fix it in the viewport", theme.accent);
-                                //Oba kadra kao pilule: povratak na prvi da se jos dotjera, bez gubitka drugog
-                                std::vector<std::string> frames{std::to_string(int(poseBlendFirst)), std::to_string(int(poseBlendSecond))};
-                                const int showing = poseEdit.frame == poseBlendFirst ? 0 : 1;
-                                const int jump = ui.pills(frames, showing);
-                                if(jump >= 0 && jump != showing){
-                                    storeCurrentKey();
-                                    goToPoseFrame(jump == 0 ? poseBlendFirst : poseBlendSecond);
-                                }
-                                const double low = std::min(poseBlendFirst, poseBlendSecond), high = std::max(poseBlendFirst, poseBlendSecond);
-                                if(ui.primaryButton("BLEND " + std::to_string(int(low)) + " -> " + std::to_string(int(high)))){
-                                    applyPoseKeys(true);
-                                    message = "Pose correction blends from frame " + std::to_string(int(low)) + " to frame " +
-                                              std::to_string(int(high)) + "; the rest of the body keeps its motion.";
-                                }
+                                ui.hint(keyCount == 0 ? "Pose the rig in the viewport. Then move the playhead and pose again - "
+                                                        "each frame you pose becomes a key."
+                                                      : "Move the playhead to pose another frame, or apply. The correction "
+                                                        "blends between the keys.");
+                                const std::string applyLabel = keyCount == 1 ? "APPLY 1 POSE KEY" : "APPLY " + std::to_string(keyCount) + " POSE KEYS";
+                                if(ui.primaryButton(applyLabel, keyCount > 0)) applyPoseKeys();
                                 if(ui.disclosure("Blend options", poseKeyEnding == 0 ? "fades out after" : "kept to clip end", &poseBlendOptionsOpen)){
                                     ui.slider("Fade in before", &poseBlendInFrames, 0.0f, 30.0f, " fr");
-                                    ui.choice("After the second pose", {"Fade out", "Keep correction"}, &poseKeyEnding);
+                                    ui.choice("After the last key", {"Fade out", "Keep correction"}, &poseKeyEnding);
                                     if(poseKeyEnding == 0){
                                         ui.slider("Hold", &poseBlendHoldFrames, 0.0f, 180.0f, " fr");
                                         ui.slider("Fade out", &poseBlendOutFrames, 1.0f, 60.0f, " fr");
                                     }
                                 }
                                 if(ui.button("Cancel")) cancelPoseBlend();
-                            }else{
-                                poseBlendStep = 0;
                             }
                             poseBlendInFrames = std::round(poseBlendInFrames);
                             poseBlendHoldFrames = std::round(poseBlendHoldFrames);
@@ -3703,6 +3711,18 @@
                         const float x = xOf(t);
                         if(x >= contentTrack.x && x <= contentTrack.x + contentTrack.width) diamond(x, mid, 7.0f, editColour);
                     }
+                    //Kljucevi sesije uredjivanja poze (auto key) - jos nisu sloj, pa svijetli s obrubom
+                    if(poseEdit.active && poseEdit.rig == rowsRig){
+                        std::vector<double> sessionKeys;
+                        for(const Loom::PoseKey& key : poseEdit.keys) sessionKeys.push_back(key.frame);
+                        if(poseBlendStep == 5 && poseTouchedHere()) sessionKeys.push_back(poseEdit.frame);
+                        for(double t : sessionKeys){
+                            const float x = xOf(t);
+                            if(x < contentTrack.x || x > contentTrack.x + contentTrack.width) continue;
+                            diamond(x, mid, 8.0f, editColour);
+                            diamond(x, mid, 5.0f, Treadle::Color{1.0f, 1.0f, 1.0f, 1.0f});
+                        }
+                    }
                     rowTop += objectRowHeight + 2.0f;
                 }
                 //RED PO KOSTI (ili P/R/S): samo kad je objekt otvoren. Gusti kljucevi su traka
@@ -4060,7 +4080,7 @@
                     focus = Focus::Entity;
                     timelineRange.clear();
                     timelineRegenOpen = false;
-                    message = "Fix the pose at the first frame in the viewport, then press NEXT in the Inspector.";
+                    message = "Pose the character here; move the playhead and pose again - each posed frame becomes a key.";
                 }
                 if(picked == 1) timelineRegenOpen = !timelineRegenOpen;
                 if(picked == 2){ timelineRange.clear(); timelineRegenOpen = false; }
@@ -5729,6 +5749,17 @@
             const float helpX = motionPanel.rootPathEnabled ? v.x + v.width - helpWidth - 10.0f : v.x + 10.0f;
             Loom::drawMotionHelp(ui, motionPanel, Treadle::Rect{helpX, v.y + 10.0f, helpWidth, helpHeight});
         }
+        //AUTO KEY: rig kontrole prate playhead. Kad playhead ode s kadra, dirnuta poza tamo postane kljuc
+        if(poseEdit.active && poseBlendStep == 5 && !playing && animatorRigDrag.control < 0)
+            if(const Warp::Entity* owner = stage.get(poseEdit.rig); owner && owner->animator &&
+               poseEdit.animation < owner->animator->animations.size() && poseEdit.animation == owner->animator->activeAnimation){
+                const Warp::AnimationClip& clip = owner->animator->animations[poseEdit.animation];
+                const double at = std::round(frame);
+                if(at != poseEdit.frame && at >= clip.startFrame && at <= clip.endFrame){
+                    storeTouchedPoseKey();
+                    arrivePoseFrame(at);
+                }
+            }
         const Warp::Entity* poseRigEntity = stage.get(poseEdit.rig);
         const bool showAnimatorPoseRig = poseEdit.active && poseRigEntity && poseRigEntity->animator &&
             poseEdit.animation == poseRigEntity->animator->activeAnimation &&

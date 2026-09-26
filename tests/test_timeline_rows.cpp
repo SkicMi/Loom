@@ -13,6 +13,8 @@
 
 #include <cmath>
 
+#include <glm/gtc/quaternion.hpp>
+
 namespace{
 
 struct Scene{ Warp::Stage stage; Warp::Id rig = Warp::None, hips = Warp::None, spine = Warp::None, head = Warp::None; };
@@ -45,8 +47,8 @@ Scene makeScene(){
     layer.name = "fix";
     Warp::AnimatorTrack edit;
     edit.target = s.spine;
-    edit.rotationKeys.set(40.0, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-    edit.rotationKeys.set(60.0, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    edit.rotationKeys.set(40.0, glm::angleAxis(0.3f, glm::vec3(1.0f, 0.0f, 0.0f)));
+    edit.rotationKeys.set(60.0, glm::angleAxis(0.3f, glm::vec3(1.0f, 0.0f, 0.0f)));
     layer.keys.push_back(edit);
     clip.layers.push_back(layer);
     Warp::Animator animator;
@@ -73,6 +75,22 @@ int main(){
                  fmt("%zu redova", rows.size()));
     report.check("ispravak sloja je na svojoj kosti",
                  rows.size() == 2 && rows[0].edits.empty() && rows[1].edits == std::vector<double>{40.0, 60.0}, "");
+
+    //Sloj sprema cijelu pozu: Hips u kljucu 40 jednak osnovi nije romb, pomaknut u 60 jest
+    {
+        Scene full = makeScene();
+        Warp::AnimationClip& clip = full.stage.get(full.rig)->animator->animations[0];
+        clip.baseTracks = clip.tracks;
+        Warp::AnimatorTrack hipsKey;
+        hipsKey.target = full.hips;
+        hipsKey.rotationKeys.set(40.0, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        hipsKey.rotationKeys.set(60.0, glm::angleAxis(0.2f, glm::vec3(0.0f, 1.0f, 0.0f)));
+        clip.layers[0].keys.push_back(hipsKey);
+        const auto fullRows = Loom::timelineBoneRows(full.stage, full.rig);
+        report.check("romb samo gdje je kost pomaknuta prema osnovi",
+                     fullRows.size() == 2 && fullRows[0].edits == std::vector<double>{60.0},
+                     fmt("%zu rombova na Hips", fullRows.empty() ? size_t(0) : fullRows[0].edits.size()));
+    }
 
     s.stage.get(s.rig)->translationKeys.set(5.0, glm::vec3(0.0f));
     const Loom::TimelineObjectRow object = Loom::timelineObjectRow(s.stage, s.spine, s.rig);
