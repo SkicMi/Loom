@@ -36,6 +36,18 @@ float powerHeuristic(float a, float b){
     const float a2 = a * a, b2 = b * b;
     return a2 + b2 > 0.0f ? a2 / (a2 + b2) : 0.0f;
 }
+//Tri strategije (magla: slobodni put + svjetlo, slobodni put + faza, ekviangularno + svjetlo).
+//Mjerilo po najvecoj da kvadrati ne preliju
+float powerHeuristic(float mine, float a, float b){
+    const float top = std::max({mine, a, b});
+    if(!(top > 0.0f) || !std::isfinite(top)) return std::isinf(mine) ? 1.0f : 0.0f;
+    mine /= top; a /= top; b /= top;
+    return mine * mine / (mine * mine + a * a + b * b);
+}
+
+//Odsjecak zrake kroz medij: o + t d, medij je u [a, b]; svjetlo se bira za [a, far] (b ili
+//konacni kraj kad je b beskonacan - magla po visini do neba)
+struct MediumSegment{ glm::vec3 o{0.0f}, d{0.0f}; float a = 0.0f, b = 0.0f, far = 0.0f; };
 
 //Jednoliko u stoscu oko osi `axis` s kosinusom polukuta cosMax
 glm::vec3 sampleCone(const glm::vec3& axis, float cosMax, const glm::vec2& u){
@@ -93,6 +105,9 @@ struct Renderer::Accumulator{
 struct Renderer::PathResult{
     glm::vec3 radiance{0.0f};           //cg, kad je pogodjen objekt
     glm::vec3 background{0.0f};
+    //Svjetlo magle rasprseno s kamerine zrake (ekviangularno) - ide u cg bez pokrivenosti: dodaje
+    //se i uzorku koji prode kroz maglu do neba ili snimke (premultiplicirano, kao sjaj)
+    glm::vec3 inscatter{0.0f};
     bool object = false, catcher = false, miss = false;
     glm::vec3 lit{0.0f}, shadowed{0.0f};
     glm::vec3 albedo{0.0f}, normal{0.0f};
@@ -194,14 +209,21 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
 
     //Uzorak svjetla iz tocke p: smjer, udaljenost, radijancija (ili ozracenost za delta), gustoca
     //po prostornom kutu UKLJUCUJUCI vjerojatnost izbora svjetla
-    struct LightSample{ glm::vec3 wi{0.0f}; float distance = Infinity; glm::vec3 value{0.0f}; float pdf = 0.0f; bool delta = false; };
-    //n: normala primatelja za stablo svjetala (nula: bez tog uvjeta - staklo, magla)
-    auto sampleLight = [&](const glm::vec3& p, const glm::vec3& n, float choice, const glm::vec2& u, LightSample& out){
-        if(lights.empty()) return false;
-        uint32_t index;
-        float pick;
-        if(!C.chooseLight(choice, p, n, index, pick, useLightTree)) return false;
+    //light/pick: koje je svjetlo i s kojom vjerojatnoscu izabrano (pdf / pick = gustoca samog svjetla)
+    struct LightSample{ glm::vec3 wi{0.0f}; float distance = Infinity; glm::vec3 value{0.0f}; float pdf = 0.0f; bool delta = false;
+                        uint32_t light = 0; float pick = 1.0f; };
+    //Tocka na trokutu-svjetlu za uzorak u (jednoliko po povrsini)
+    auto trianglePoint = [&](const LightRecord& light, const glm::vec2& u, float& b1, float& b2){
+        const Triangle& t = world.triangles[light.triangle];
+        const float su = std::sqrt(u.x);
+        b1 = 1.0f - su; b2 = u.y * su;
+        return world.positions[t.v[0]] * (1.0f - b1 - b2) + world.positions[t.v[1]] * b1 + world.positions[t.v[2]] * b2;
+    };
+    //Uzorak zadanog svjetla (vec izabranog s vjerojatnoscu pick)
+    auto sampleLightIndex = [&](uint32_t index, float pick, const glm::vec3& p, const glm::vec2& u, LightSample& out){
         const LightRecord& light = lights[index];
+        out.light = index;
+        out.pick = pick;
         switch(light.kind){
         case LightRecord::Sky:{
             float pdf = 0.0f;
@@ -245,12 +267,11 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         }
         case LightRecord::Triangle:{
             const Triangle& t = world.triangles[light.triangle];
-            const float su = std::sqrt(u.x);
-            const float b1 = 1.0f - su, b2 = u.y * su;
+            float b1, b2;
+            const glm::vec3 q = trianglePoint(light, u, b1, b2);
             const glm::vec3& a = world.positions[t.v[0]];
             const glm::vec3& b = world.positions[t.v[1]];
             const glm::vec3& c = world.positions[t.v[2]];
-            const glm::vec3 q = a * (1.0f - b1 - b2) + b * b1 + c * b2;
             const glm::vec3 toLight = q - p;
             const float dist2 = glm::dot(toLight, toLight);
             if(dist2 <= 0.0f) return false;
@@ -272,10 +293,26 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         }
         return false;
     };
+    //n: normala primatelja za stablo svjetala (nula: bez tog uvjeta - staklo, magla)
+    auto sampleLight = [&](const glm::vec3& p, const glm::vec3& n, float choice, const glm::vec2& u, LightSample& out){
+        if(lights.empty()) return false;
+        uint32_t index;
+        float pick;
+        if(!C.chooseLight(choice, p, n, index, pick, useLightTree)) return false;
+        return sampleLightIndex(index, pick, p, u, out);
+    };
     //Gustoca kojom bi sampleLight izabrao smjer koji je BSDF vec izabrao - za MIS
     auto skyPdf = [&](const glm::vec3& d){
         if(!sky.active() || lights.empty() || lights.back().kind != LightRecord::Sky) return 0.0f;
         return sky.pdf(d) * lightCdf.back();
+    };
+    //Gustoca kojom bi ekviangularna strategija na odsjecku s dala tocku t prema svjetlu index
+    //(sredisnja tocka centre) - bez gustoce samog svjetla, koja je ista kao u izravnom svjetlu
+    auto equiangularDensity = [&](const MediumSegment& segment, uint32_t index, const glm::vec3& centre, float t){
+        const LightRecord& light = lights[index];
+        if(light.kind != LightRecord::Sphere && light.kind != LightRecord::Triangle) return 0.0f;
+        return equiangularPdf(equiangular(segment.o, segment.d, centre, segment.a, segment.b), t) *
+               C.choiceProbabilityOnSegment(index, segment.o, segment.d, segment.a, segment.far, useLightTree);
     };
     auto clampContribution = [&](glm::vec3 c, bool indirect){
         if(!indirect || clampValue <= 0.0f) return c;
@@ -360,6 +397,16 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     //Staklene sjene: poslije hrapave plohe putanja koja prode kroz staklo je kaustika - svjetlo
     //koje pogodi ne broji se (vec ga je donijela zraka sjene s te plohe)
     bool sawRough = false, caustic = false;
+    //EKVIANGULARNO U MAGLI. Na svakom odsjecku kroz medij (dok ima odbijanja) jedno svjetlo se
+    //bira stablom za cijeli odsjecak (CompiledScene::chooseLightOnSegment), a tocka rasprsenja ekviangularno prema njemu (kod trokuta
+    //prema tocki na trokutu). S izravnim svjetlom u tocki slobodnog puta i fazom koja pogodi
+    //svjetlo to su tri procjene istog integrala; tezine su power heuristika nad gustocama koje
+    //se sve mogu izracunati u svakoj tocki, pa je zbroj nepristran. Za pogodak fazom treba
+    //odsjecak s kojeg je put rasprsio - zato se pamti
+    const bool equiangularOn = equiangularSampling && C.localPick > 0.0f && !lights.empty();
+    bool previousMedium = false;
+    MediumSegment previousSegment;
+    float previousT = 0.0f, previousEvent = 0.0f;
 
     for(uint32_t depth = 0;; ++depth){
         Hit hit;
@@ -398,8 +445,55 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 const float forward = -glm::dot(ray.direction, glm::vec3(camera.cameraToWorld[2]));
                 if(forward > 1e-6f) end = std::min(end, realDepth * (1.0f + world.holdoutBias) / forward);
             }
-            if(sampleVolume(world.volumes, C.volumeInverse, ray.origin, ray.direction, end, free, t, which)){
+            const MediaOnRay media = mediaOnRay(world.volumes, C.volumeInverse, ray.origin, ray.direction, end);
+            MediumSegment segment;
+            const bool inMedium = media.extent(end, segment.a, segment.b);
+            if(inMedium){
+                segment.o = ray.origin;
+                segment.d = ray.direction;
+                segment.far = std::isinf(segment.b) ? segment.a + 2.0f * C.sceneRadius : segment.b;
+            }
+            //Ekviangularno: jednostruko rasprsenje s ovog odsjecka, neovisno o tome gdje put rasprsi
+            if(inMedium && equiangularOn && depth < maxBounces){
+                const glm::vec2 choice = sampler.next2D(), u = sampler.next2D(), v = sampler.next2D();
+                uint32_t index;
+                float pick;
+                if(C.chooseLightOnSegment(choice.x, segment.o, segment.d, segment.a, segment.far, index, pick, useLightTree) &&
+                   (lights[index].kind == LightRecord::Sphere || lights[index].kind == LightRecord::Triangle)){
+                    const LightRecord& light = lights[index];
+                    float b1, b2;
+                    const glm::vec3 centre = light.kind == LightRecord::Triangle ? trianglePoint(light, u, b1, b2) : light.position;
+                    const Equiangular e = equiangular(segment.o, segment.d, centre, segment.a, segment.b);
+                    const float te = equiangularSample(e, v.x);
+                    const float pe = equiangularPdf(e, te);
+                    const float event = std::isfinite(te) && te >= segment.a && te <= segment.b ? media.eventPdf(world.volumes, te) : 0.0f;
+                    const glm::vec3 p = ray.origin + ray.direction * te;
+                    LightSample ls;
+                    if(pe > 0.0f && event > 0.0f && sampleLightIndex(index, pick, p, u, ls)){
+                        const Volume& medium = world.volumes[media.pick(world.volumes, te, v.y)];
+                        const float phase = phaseOf(medium, glm::dot(ray.direction, ls.wi));
+                        if(phase > 0.0f && luminance(medium.albedo * ls.value) > 0.0f){
+                            Ray shadowRay{p, ls.wi, 0.0f, std::isinf(ls.distance) ? Infinity : ls.distance * (1.0f - 1e-4f)};
+                            ++rays;
+                            bool crossed;
+                            const glm::vec3 through = shadowTransmittance(shadowRay, false, salt + 419u, crossed);
+                            if(luminance(through) > 0.0f){
+                                const float own = ls.pdf / pick;
+                                const float w = powerHeuristic(pe * ls.pdf,
+                                                               event * C.choiceProbability(index, p, glm::vec3(0.0f), useLightTree) * own,
+                                                               ls.delta || crossed ? 0.0f : event * phase);
+                                const glm::vec3 c = clampContribution(beta * medium.albedo * ls.value * through * (phase * event * w / (pe * ls.pdf)),
+                                                                      depth > 0);
+                                //S kamerine zrake: sjaj magle i kad put ne rasprsi (ne pokriva piksel)
+                                if(depth == 0) result.inscatter += c; else radiance += c;
+                            }
+                        }
+                    }
+                }
+            }
+            if(inMedium && sampleVolume(world.volumes, media, end, free, t, which)){
                 const Volume& medium = world.volumes[which];
+                const float event = media.eventPdf(world.volumes, t);
                 const glm::vec3 p = ray.origin + ray.direction * t;
                 if(depth == 0) result.object = true;
                 beta *= medium.albedo;
@@ -425,7 +519,13 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                         bool crossed;
                         const glm::vec3 through = shadowTransmittance(shadowRay, false, salt + 307u, crossed);
                         if(luminance(through) > 0.0f){
-                            const float w = chosen.delta || crossed ? 1.0f : powerHeuristic(chosen.pdf, chosenPhase);
+                            float equi = 0.0f;
+                            if(equiangularOn){
+                                const LightRecord& light = lights[chosen.light];
+                                const glm::vec3 centre = light.kind == LightRecord::Triangle ? p + chosen.wi * chosen.distance : light.position;
+                                equi = equiangularDensity(segment, chosen.light, centre, t) * (chosen.pdf / chosen.pick);
+                            }
+                            const float w = powerHeuristic(event * chosen.pdf, chosen.delta || crossed ? 0.0f : event * chosenPhase, equi);
                             radiance += clampContribution(beta * chosen.value * through * (chosenPhase * w * weightSum / (float(candidates) * chosenTarget)),
                                                           depth > 0);
                         }
@@ -438,6 +538,10 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 mirrorChain = false;
                 previousPdf = pdf;
                 previousPoint = p;
+                previousMedium = true;
+                previousSegment = segment;
+                previousT = t;
+                previousEvent = event;
                 previousNormal = glm::vec3(0.0f);
                 coneSpread += 0.2f;
                 if(glass){ sawRough = true; caustic = false; }
@@ -463,7 +567,11 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 const float sin2 = std::min(1.0f, sphere->radius * sphere->radius / std::max(d2, 1e-20f));
                 const float lightPdf = C.choiceProbability(uint32_t(sphere->index), previousPoint, previousNormal, useLightTree) /
                                        (2.0f * Pi * oneMinusCosFromSin2(sin2));
-                le *= powerHeuristic(previousPdf, lightPdf);
+                if(previousMedium && equiangularOn){
+                    const float equi = equiangularDensity(previousSegment, uint32_t(sphere->index), sphere->position, previousT) /
+                                       (2.0f * Pi * oneMinusCosFromSin2(sin2));
+                    le *= powerHeuristic(previousEvent * previousPdf, previousEvent * lightPdf, equi);
+                }else le *= powerHeuristic(previousPdf, lightPdf);
             }
             if(!caustic) radiance += clampContribution(beta * le, depth > 1);
             if(depth == 0){ result.object = true; result.depth = -(worldToCamera * glm::vec4(p, 1.0f)).z; }
@@ -618,7 +726,11 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 const float cosLight = std::abs(glm::dot(ng, ray.direction));
                 const float lightPdf = cosLight > 0.0f ? C.choiceProbability(uint32_t(light.index), previousPoint, previousNormal, useLightTree) *
                                                          dist2 / (cosLight * light.area) : 0.0f;
-                w = powerHeuristic(previousPdf, lightPdf);
+                if(previousMedium && equiangularOn){
+                    const float equi = cosLight > 0.0f ? equiangularDensity(previousSegment, uint32_t(light.index), ray.origin + ray.direction * hit.t,
+                                                                            previousT) * dist2 / (cosLight * light.area) : 0.0f;
+                    w = powerHeuristic(previousEvent * previousPdf, previousEvent * lightPdf, equi);
+                }else w = powerHeuristic(previousPdf, lightPdf);
             }
             radiance += clampContribution(beta * emitted * w, depth > 1);
         }
@@ -692,6 +804,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             else if(!geometricSide && sawRough && (triangleFlags[hit.triangle] & Transmissive)) caustic = true;
         }
         previousPdf = bs.pdf;
+        previousMedium = false;
         previousPoint = p;
         previousNormal = receiver;
 
@@ -729,6 +842,7 @@ void Renderer::renderPixel(uint32_t x, uint32_t y, uint32_t firstSample, uint32_
         const PathResult r = trace(glm::vec2(float(x) + 0.5f, float(y) + 0.5f), s, pixelSeed, clampValue, maxBounces, rays);
         a.samples += 1;
         if(r.object){ a.cg += r.radiance; a.coverage += 1.0f; }
+        a.cg += r.inscatter;
         if(r.miss){ a.background += r.background; a.missSamples += 1; }
         if(r.catcher){
             a.background += r.background;
@@ -738,7 +852,7 @@ void Renderer::renderPixel(uint32_t x, uint32_t y, uint32_t firstSample, uint32_
         }
         a.albedo += r.albedo;
         a.normal += r.normal;
-        const double lum = double(luminance(r.radiance + r.background));
+        const double lum = double(luminance(r.radiance + r.background + r.inscatter));
         a.luminance += lum;
         a.luminance2 += lum * lum;
         //Dubina se NE prosjecuje: prosjek prednje i straznje plohe na rubu je dubina na kojoj nista
@@ -778,6 +892,7 @@ void Renderer::render(const RenderSettings& settings, const std::function<void(c
     mipmaps = settings.mipmaps;
     candidates = lightCandidatesFor(settings, *compiled);
     useLightTree = settings.lightTree;
+    equiangularSampling = settings.equiangular;
     adaptiveThreshold = settings.adaptiveThreshold;
     adaptiveMinSamples = settings.adaptiveMinSamples;
     if(adaptiveThreshold > 0.0f && adaptiveState.size() != pixels.size()) adaptiveState.assign(pixels.size(), 0);
@@ -907,7 +1022,7 @@ Frame Renderer::frame(bool denoise) const{
 glm::vec3 Renderer::tracePixel(glm::vec2 pixel, uint32_t sampleIndex) const{
     uint64_t rays = 0;
     const PathResult r = trace(pixel, sampleIndex, sampling::hash(uint32_t(pixel.x) * 7919u + uint32_t(pixel.y)), 0.0f, 12, rays);
-    return r.radiance + r.background;
+    return r.radiance + r.background + r.inscatter;
 }
 
 }

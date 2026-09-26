@@ -8,6 +8,10 @@
 //   PRILAGODLJIVO  rijetka magla: piksel kojem 32 uzorka nista ne pogode ima varijancu 0 - ne smije
 //                stati crn (susjedi nisu gotovi), srednja vrijednost ista kao bez prilagodbe
 //   ZRAKE        ploca iznad lijeve polovice magle: lijevo tamno, desno svijetlo (pruga sjene)
+//   EKVIANGULARNO  tockasto svjetlo 0.2 iznad zrake kamere u kutiji magle: jednostruko rasprsenje
+//                prema numerickom integralu, i to sa i bez ekviangularnog uzorkovanja; sum po
+//                pikselu s njim nekoliko puta manji. Kugla, reflektor i trokut-svjetlo s vise
+//                odbijanja: MIS triju strategija daje isti prosjek kao sam slobodni put
 //   KARTICA      isti brojevi na Vulkanu
 //   MOST, USD    Warp::Volume -> Tracer::Volume (kutija entiteta u svijetu), kroz .usda i natrag
 #include "TestHarness.h"
@@ -154,6 +158,65 @@ double heightSingle(float g, float g2, float mix){
     return p * glm::pi<double>() * std::exp(-sigma / k);
 }
 
+//Tockasto svjetlo (intenzitet 1) na (0, 0.2, 0) u kutiji 4x4x4 gustoce 0.3, albedo 1; kamera
+//s z = 6 gleda niz -Z, vrlo uski kut (svi pikseli su prakticki ista zraka)
+Tracer::Scene lampInFog(float g){
+    Tracer::Scene s;
+    s.volumes.push_back(box({0, 0, 0}, {4, 4, 4}, glm::vec3(1.0f), 0.3f, g));
+    Tracer::Light lamp; lamp.type = Tracer::Light::Type::Sphere; lamp.position = glm::vec3(0.0f, 0.2f, 0.0f);
+    lamp.intensity = 1.0f; lamp.radius = 0.0f;
+    s.lights.push_back(lamp);
+    s.camera = lookAt({0, 0, 6}, {0, 0, 0}, 16, 16, 100000.0f);
+    return s;
+}
+//L = int_4^8 sigma p(cos) I/r^2 e^(-sigma (t - 4)) e^(-sigma r) dt, Simpson
+double lampSingle(float g){
+    const double sigma = 0.3, D = 0.2;
+    auto hg = [&](double c){ const double den = 1.0 + g * g - 2.0 * g * c; return (1.0 - g * g) / (4.0 * glm::pi<double>() * den * std::sqrt(den)); };
+    auto f = [&](double t){
+        const double r = std::sqrt(D * D + (t - 6.0) * (t - 6.0));
+        return sigma * hg((6.0 - t) / r) / (r * r) * std::exp(-sigma * (t - 4.0)) * std::exp(-sigma * r);
+    };
+    const int n = 400000;
+    const double h = 4.0 / n;
+    double sum = f(4.0) + f(8.0);
+    for(int i = 1; i < n; ++i) sum += f(4.0 + i * h) * (i % 2 ? 4.0 : 2.0);
+    return sum * h / 3.0;
+}
+//Relativni sum piksela: standardna devijacija / srednja vrijednost zelene
+double pixelNoise(const Tracer::Frame& f){
+    double sum = 0.0, sum2 = 0.0;
+    const size_t n = f.pixelCount();
+    for(size_t i = 0; i < n; ++i){ const double v = f.cg[i * 4 + 1]; sum += v; sum2 += v * v; }
+    const double mean = sum / double(n);
+    return std::sqrt(std::max(0.0, sum2 / double(n) - mean * mean)) / std::max(mean, 1e-12);
+}
+//Kugla s polumjerom, reflektor i svijetleci pravokutnik u magli, pod i vise odbijanja: MIS
+//ekviangularnog, slobodnog puta i faze mora dati isti prosjek kao sam slobodni put
+Tracer::Scene lampsInFog(){
+    Tracer::Scene s;
+    s.volumes.push_back(box({0, 1, 0}, {6, 3, 6}, glm::vec3(0.8f, 0.9f, 1.0f), 0.35f, 0.4f));
+    Tracer::Material floor; floor.baseColor = glm::vec3(0.5f);
+    s.addMesh(Tracer::unitPlane(), glm::scale(glm::mat4(1.0f), glm::vec3(8.0f)), s.addMaterial(floor));
+    Tracer::Light ball; ball.type = Tracer::Light::Type::Sphere; ball.position = glm::vec3(-1.2f, 1.2f, 0.0f);
+    ball.radius = 0.15f; ball.intensity = 2.0f; ball.color = glm::vec3(1.0f, 0.8f, 0.6f);
+    s.lights.push_back(ball);
+    Tracer::Light spot; spot.type = Tracer::Light::Type::Spot; spot.position = glm::vec3(1.2f, 2.2f, 0.0f);
+    spot.direction = glm::normalize(glm::vec3(0.1f, -1.0f, 0.0f)); spot.intensity = 3.0f; spot.spotAngle = 0.4f;
+    s.lights.push_back(spot);
+    Tracer::Material glow; glow.baseColor = glm::vec3(0.0f); glow.emission = glm::vec3(0.6f, 0.8f, 1.0f); glow.emissionStrength = 4.0f;
+    s.addMesh(Tracer::unitPlane(), glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 2.3f, -1.5f)) *
+                                   glm::rotate(glm::mat4(1.0f), glm::pi<float>(), glm::vec3(1, 0, 0)) *
+                                   glm::scale(glm::mat4(1.0f), glm::vec3(0.6f)), s.addMaterial(glow));
+    s.camera = lookAt({0, 1.2f, 5.5f}, {0, 1.0f, 0}, 24, 16, 20.0f);
+    return s;
+}
+double meanAll(const Tracer::Frame& f){
+    double sum = 0.0;
+    for(size_t i = 0; i < f.pixelCount(); ++i) sum += f.cg[i * 4] + f.cg[i * 4 + 1] + f.cg[i * 4 + 2];
+    return sum / double(f.pixelCount());
+}
+
 double single(float g){
     const double sigma = 0.05, E = glm::pi<double>();
     const double p = (1.0 - g * g) / (4.0 * glm::pi<double>() * std::pow(1.0 + g * g, 1.5));
@@ -223,6 +286,32 @@ int main(){
                      fmt("pokrivenost bez %.3f (%.3f), s holdoutom %.3f (%.3f)", open, expectOpen, cut, expectCut));
     }
 
+    //-- ekviangularno -------------------------------------------------------------------------------
+    double lampsMixed = 0.0;
+    {
+        Tracer::RenderSettings off = settingsFor(4096, 1);
+        off.equiangular = false;
+        const double truth0 = lampSingle(0.0f), truth5 = lampSingle(0.5f);
+        const double eq0 = meanCg(onCpu(lampInFog(0.0f), settingsFor(1024, 1)), 0, 16);
+        const double eq5 = meanCg(onCpu(lampInFog(0.5f), settingsFor(1024, 1)), 0, 16);
+        const double ff0 = meanCg(onCpu(lampInFog(0.0f), off), 0, 16);
+        report.check("ekviangularno: tockasto svjetlo", std::abs(eq0 / truth0 - 1.0) < 0.02 && std::abs(eq5 / truth5 - 1.0) < 0.02 &&
+                     std::abs(ff0 / truth0 - 1.0) < 0.03,
+                     fmt("g 0 %.5f, g 0.5 %.5f, bez %.5f (ocekivano %.5f / %.5f)", eq0, eq5, ff0, truth0, truth5));
+        Tracer::RenderSettings fewOff = settingsFor(16, 1);
+        fewOff.equiangular = false;
+        const double noiseEq = pixelNoise(onCpu(lampInFog(0.0f), settingsFor(16, 1)));
+        const double noiseFf = pixelNoise(onCpu(lampInFog(0.0f), fewOff));
+        report.check("ekviangularno: manje suma", noiseEq * 8.0 < noiseFf, fmt("sum 16 uzoraka %.4f, bez %.4f (%.1fx)", noiseEq, noiseFf, noiseFf / noiseEq));
+        Tracer::RenderSettings manyOff = settingsFor(4096, 6);
+        manyOff.equiangular = false;
+        const double mixed = meanAll(onCpu(lampsInFog(), settingsFor(4096, 6)));
+        const double plain = meanAll(onCpu(lampsInFog(), manyOff));
+        lampsMixed = mixed;
+        report.check("ekviangularno: kugla, reflektor, trokut", std::abs(mixed / plain - 1.0) < 0.015,
+                     fmt("%.5f, sam slobodni put %.5f", mixed, plain));
+    }
+
     {
         LoomConfig config;
         config.width = 64; config.height = 64; config.headless = true;
@@ -241,6 +330,10 @@ int main(){
         const double hAcross = meanCg(card(heightAbsorber(false), settingsFor(64, 4)), 0, 16);
         const double hWhite = meanComposite(card(heightFurnace(), settingsFor(512, 256)));
         const double hSingle = meanCg(card(heightSunlit(0.5f, -0.3f, 0.4f), settingsFor(1024, 1)), 0, 16);
+        const double cardLamp = meanCg(card(lampInFog(0.5f), settingsFor(1024, 1)), 0, 16);
+        const double cardLamps = meanAll(card(lampsInFog(), settingsFor(4096, 6)));
+        report.check("kartica: ekviangularno", std::abs(cardLamp / lampSingle(0.5f) - 1.0) < 0.02 && std::abs(cardLamps / lampsMixed - 1.0) < 0.015,
+                     fmt("tockasto %.5f (%.5f), tri svjetla %.5f (procesor %.5f)", cardLamp, lampSingle(0.5f), cardLamps, lampsMixed));
         report.check("kartica: magla po visini", std::abs(hAcross / acrossTruth - 1.0) < 0.01 && std::abs(hWhite - 1.0) < 0.015 &&
                      std::abs(hSingle / heightSingle(0.5f, -0.3f, 0.4f) - 1.0) < 0.02,
                      fmt("vodoravno %.4f, pec %.4f, rasprsenje %.5f", hAcross, hWhite, hSingle));

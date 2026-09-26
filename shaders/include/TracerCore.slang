@@ -46,7 +46,7 @@ struct Params{
     float4 fromMap0, fromMap1, fromMap2; // mapa -> svijet, stupci
     uint4 flags;            // skyActive, skyVisibleToCamera, backplateTexture (NONE), skyLightIndex (NONE)
     float4 values;          // indirectClamp, k1, k2, prag prilagodljivog uzorkovanja (0 iskljuceno)
-    uint4 extra;            // seed, conditionalOffset, bitovi (1 staklene sjene, 2 bez mipmapa), najmanje uzoraka prije zaustavljanja
+    uint4 extra;            // seed, conditionalOffset, bitovi (1 staklene sjene, 2 bez mipmapa, 4 bez ekviangularnog), najmanje uzoraka prije zaustavljanja
     float4 distortion;      // fx, fy, cx, cy objektiva (fx 0: ravna leca)
     float4 holdout;         // tekstura dubine stvarne scene (bitovi, NONE), bias, broj kutija magle (bitovi), neprozirnih trokuta u BLAS-u (bitovi, ray query)
     uint4 motion;           // kljucevi geometrije, kljucevi kamere, slotova, vrhova (Scene::motion)
@@ -195,6 +195,12 @@ void basis(float3 n, out float3 t, out float3 b){
     b = float3(c, s + n.y * n.y * a, -n.y);
 }
 
+float powerHeuristic3(float mine, float a, float b){
+    const float top = max(mine, max(a, b));
+    if(!(top > 0.0) || top >= INF) return top >= INF && mine >= top ? 1.0 : 0.0;
+    mine /= top; a /= top; b /= top;
+    return mine * mine / (mine * mine + a * a + b * b);
+}
 float powerHeuristic(float a, float b){
     const float a2 = a * a, b2 = b * b;
     return a2 + b2 > 0.0 ? a2 / (a2 + b2) : 0.0;
@@ -683,6 +689,31 @@ struct MediaOnRay{
         for(uint i = 0; i < heightCount; ++i) sum += heightSigma(heights[i], t);
         return sum;
     }
+    bool empty(){ return spanCount == 0 && heightCount == 0; }
+    // dio zrake s medijem (Tracer::MediaOnRay::extent)
+    bool extent(float tMax, out float a, out float b){
+        a = heightCount > 0 ? 0.0 : INF;
+        b = heightCount > 0 ? tMax : 0.0;
+        for(uint i = 0; i < spanCount; ++i){ a = min(a, s0[i]); b = max(b, s1[i]); }
+        return !empty() && b > a;
+    }
+    float eventPdf(float t){ return sigma(t) * exp(-tau(t)); }
+    uint pick(float t, float u){
+        float left = u * sigma(t);
+        uint which = spanCount > 0 ? spanIndex[0] : heightIndex[0];
+        for(uint i = 0; i < spanCount; ++i){
+            if(!(s0[i] <= t && t <= s1[i])) continue;
+            which = spanIndex[i];
+            left -= volumeDensity(spanIndex[i]);
+            if(left < 0.0) return which;
+        }
+        for(uint i = 0; i < heightCount; ++i){
+            which = heightIndex[i];
+            left -= heightSigma(heights[i], t);
+            if(left < 0.0) return which;
+        }
+        return which;
+    }
 };
 
 MediaOnRay mediaOnRay(uint count, float3 o, float3 d, float tMax){
@@ -701,15 +732,18 @@ MediaOnRay mediaOnRay(uint count, float3 o, float3 d, float tMax){
     return m;
 }
 
+bool sampleVolume(uint count, float3 o, float3 d, float tMax, float2 u, out float t, out uint which){
+    return sampleVolume(mediaOnRay(count, o, d, tMax), tMax, u, t, which);
+}
+
 float opticalDepth(uint count, float3 o, float3 d, float tMax){
     MediaOnRay m = mediaOnRay(count, o, d, tMax);
     return m.tau(tMax);
 }
 
-bool sampleVolume(uint count, float3 o, float3 d, float tMax, float2 u, out float t, out uint which){
+bool sampleVolume(MediaOnRay m, float tMax, float2 u, out float t, out uint which){
     t = 0.0; which = 0;
-    MediaOnRay m = mediaOnRay(count, o, d, tMax);
-    if(m.spanCount == 0 && m.heightCount == 0) return false;
+    if(m.empty()) return false;
     const float target = -log(max(1e-12, 1.0 - u.x));
     if(m.heightCount == 0){
         uint n = m.spanCount;
@@ -753,21 +787,26 @@ bool sampleVolume(uint count, float3 o, float3 d, float tMax, float2 u, out floa
         }
         t = x;
     }
-    const float total = m.sigma(t);
-    float pick = u.y * total;
-    which = m.spanCount > 0 ? m.spanIndex[0] : m.heightIndex[0];
-    for(uint i = 0; i < m.spanCount; ++i){
-        if(!(m.s0[i] <= t && t <= m.s1[i])) continue;
-        which = m.spanIndex[i];
-        pick -= volumeDensity(m.spanIndex[i]);
-        if(pick < 0.0) return true;
-    }
-    for(uint i = 0; i < m.heightCount; ++i){
-        which = m.heightIndex[i];
-        pick -= heightSigma(m.heights[i], t);
-        if(pick < 0.0) return true;
-    }
+    which = m.pick(t, u.y);
     return true;
+}
+
+// ekviangularno (Kulla & Fajardo 2012) - Tracer/Volume.h
+struct Equiangular{ float delta; float D; float thetaA; float thetaB; };
+Equiangular equiangular(float3 o, float3 d, float3 c, float a, float b){
+    Equiangular e;
+    e.delta = dot(c - o, d);
+    e.D = max(length(c - (o + d * e.delta)), 1e-5 * (1.0 + abs(e.delta)));
+    e.thetaA = atan((a - e.delta) / e.D);
+    e.thetaB = b >= INF ? 0.5 * PI : atan((b - e.delta) / e.D);
+    return e;
+}
+float equiangularSample(Equiangular e, float u){ return e.delta + e.D * tan(e.thetaA + (e.thetaB - e.thetaA) * u); }
+float equiangularPdf(Equiangular e, float t){
+    const float span = e.thetaB - e.thetaA;
+    if(!(span > 0.0)) return 0.0;
+    const float x = t - e.delta;
+    return e.D / (span * (e.D * e.D + x * x));
 }
 
 float phaseHG(float cosTheta, float g){
@@ -1058,6 +1097,8 @@ struct LightSample{
     float3 value;
     float pdf;
     bool delta;
+    uint light;         // izabrano svjetlo i vjerojatnost izbora (pdf / pick = gustoca svjetla)
+    float pick;
 };
 
 uint pickLight(uint count, float choice){
@@ -1091,7 +1132,25 @@ float lightTreeImportance(uint node, float3 p, float3 n){
     }
     return max(importance, 0.0);
 }
-bool chooseLight(Params P, float choice, float3 p, float3 n, out uint light, out float probability){
+// upit stablu: tocka (p, n) ili odsjecak zrake o + t d, t u [a, b] (CompiledScene::chooseLightOnSegment)
+struct LightQuery{ float3 p; float3 n; float3 d; float a; float b; bool segment; };
+LightQuery pointQuery(float3 p, float3 n){
+    LightQuery q; q.p = p; q.n = n; q.d = float3(0.0); q.a = 0.0; q.b = 0.0; q.segment = false;
+    return q;
+}
+LightQuery segmentQuery(float3 o, float3 d, float a, float b){
+    LightQuery q; q.p = o; q.n = float3(0.0); q.d = d; q.a = a; q.b = b; q.segment = true;
+    return q;
+}
+float nodeImportance(uint node, LightQuery q){
+    if(!q.segment) return lightTreeImportance(node, q.p, q.n);
+    const float4 lo = lightTreeNodes[node * 4], hi = lightTreeNodes[node * 4 + 1];
+    const float3 centre = 0.5 * (lo.xyz + hi.xyz);
+    const float r = 0.5 * length(hi.xyz - lo.xyz);
+    const float3 p = q.p + q.d * clamp(dot(centre - q.p, q.d), q.a, q.b);
+    return lightTreeImportance(node, p, float3(0.0)) * max(length(centre - p), max(r, 1e-4));
+}
+bool chooseLight(Params P, float choice, LightQuery q, out uint light, out float probability){
     light = 0; probability = 0.0;
     const float localPick = P.lightTree.x;
     if(choice < localPick && asuint(P.lightTree.w) > 0){
@@ -1101,7 +1160,7 @@ bool chooseLight(Params P, float choice, float3 p, float3 n, out uint light, out
         for(uint guard = 0; guard < 64; ++guard){
             const uint4 info = asuint(lightTreeNodes[node * 4 + 3]);
             if(info.z != 0){ light = info.x; probability = prob; return prob > 0.0; }
-            const float a = lightTreeImportance(info.x, p, n), b = lightTreeImportance(info.y, p, n);
+            const float a = nodeImportance(info.x, q), b = nodeImportance(info.y, q);
             const float total = a + b;
             if(!(total > 0.0)) return false;
             const float pl = a / total;
@@ -1122,7 +1181,10 @@ bool chooseLight(Params P, float choice, float3 p, float3 n, out uint light, out
     probability = lights[light].pick.x;
     return probability > 0.0;
 }
-float choiceProbability(Params P, uint light, float3 p, float3 n){
+bool chooseLight(Params P, float choice, float3 p, float3 n, out uint light, out float probability){
+    return chooseLight(P, choice, pointQuery(p, n), light, probability);
+}
+float choiceProbability(Params P, uint light, LightQuery q){
     const uint leaf = lightTreeLeaf[light];
     if(leaf == NONE) return lights[light].pick.x;
     float prob = P.lightTree.x;
@@ -1132,7 +1194,7 @@ float choiceProbability(Params P, uint light, float3 p, float3 n){
         if(parent == NONE) break;
         const uint4 info = asuint(lightTreeNodes[parent * 4 + 3]);
         const uint sibling = info.x == node ? info.y : info.x;
-        const float mine = lightTreeImportance(node, p, n), other = lightTreeImportance(sibling, p, n);
+        const float mine = nodeImportance(node, q), other = nodeImportance(sibling, q);
         const float total = mine + other;
         if(!(total > 0.0)) return 0.0;
         prob *= mine / total;
@@ -1140,14 +1202,19 @@ float choiceProbability(Params P, uint light, float3 p, float3 n){
     }
     return prob;
 }
+float choiceProbability(Params P, uint light, float3 p, float3 n){ return choiceProbability(P, light, pointQuery(p, n)); }
 
-bool sampleLight(Params P, float3 p, float3 n, float choice, float2 u, out LightSample ls){
+// tocka na trokutu-svjetlu (jednoliko po povrsini)
+float3 trianglePoint(Light light, float2 u, out float b1, out float b2){
+    const uint slot = asuint(light.pick.z);
+    const float su = sqrt(u.x);
+    b1 = 1.0 - su; b2 = u.y * su;
+    return triangles[slot * 3].xyz + triangles[slot * 3 + 1].xyz * b1 + triangles[slot * 3 + 2].xyz * b2;
+}
+
+bool sampleLightIndex(Params P, uint index, float pick, float3 p, float2 u, out LightSample ls){
     ls.wi = float3(0.0, 1.0, 0.0); ls.distance = INF; ls.value = float3(0.0); ls.pdf = 0.0; ls.delta = false;
-    const uint count = P.counts.x;
-    if(count == 0) return false;
-    uint index;
-    float pick;
-    if(!chooseLight(P, choice, p, n, index, pick)) return false;
+    ls.light = index; ls.pick = pick;
     const Light light = lights[index];
     const uint kind = asuint(light.radiance.w);
     const uint lightFlags = asuint(light.cone.w);
@@ -1194,10 +1261,9 @@ bool sampleLight(Params P, float3 p, float3 n, float choice, float2 u, out Light
     }
     // trokut: vrhovi iz polja trokuta (redom BVH-a) - svjetlo pamti svoje mjesto
     const uint slot = asuint(light.pick.z);
-    const float3 a = triangles[slot * 3].xyz, e1 = triangles[slot * 3 + 1].xyz, e2 = triangles[slot * 3 + 2].xyz;
-    const float su = sqrt(u.x);
-    const float b1 = 1.0 - su, b2 = u.y * su;
-    const float3 q = a + e1 * b1 + e2 * b2;
+    const float3 e1 = triangles[slot * 3 + 1].xyz, e2 = triangles[slot * 3 + 2].xyz;
+    float b1, b2;
+    const float3 q = trianglePoint(light, u, b1, b2);
     const float3 toLight = q - p;
     const float dist2 = dot(toLight, toLight);
     if(dist2 <= 0.0) return false;
@@ -1214,6 +1280,25 @@ bool sampleLight(Params P, float3 p, float3 n, float choice, float2 u, out Light
     ls.distance = dist;
     ls.pdf = pick * dist2 / (cosLight * light.pick.w);
     return true;
+}
+
+bool sampleLight(Params P, float3 p, float3 n, float choice, float2 u, out LightSample ls){
+    ls.wi = float3(0.0, 1.0, 0.0); ls.distance = INF; ls.value = float3(0.0); ls.pdf = 0.0; ls.delta = false;
+    ls.light = 0; ls.pick = 1.0;
+    if(P.counts.x == 0) return false;
+    uint index;
+    float pick;
+    if(!chooseLight(P, choice, p, n, index, pick)) return false;
+    return sampleLightIndex(P, index, pick, p, u, ls);
+}
+
+// odsjecak zrake kroz medij (Renderer.cpp MediumSegment) i gustoca ekviangularne strategije
+struct MediumSegment{ float3 o; float3 d; float a; float b; float far; };
+float equiangularDensity(Params P, MediumSegment segment, uint index, float3 centre, float t){
+    const uint kind = asuint(lights[index].radiance.w);
+    if(kind != LIGHT_SPHERE && kind != LIGHT_TRIANGLE) return 0.0;
+    return equiangularPdf(equiangular(segment.o, segment.d, centre, segment.a, segment.b), t) *
+           choiceProbability(P, index, segmentQuery(segment.o, segment.d, segment.a, segment.far));
 }
 
 float skyLightDensity(Params P, float3 d){
@@ -1316,6 +1401,7 @@ void cameraRay(Params P, float2 pixelIn, float2 lens, out float3 origin, out flo
 struct PathResult{
     float3 radiance;
     float3 background;
+    float3 inscatter;       // magla s kamerine zrake, u cg bez pokrivenosti (Renderer.cpp)
     bool object, catcher, miss;
     float3 lit, shadowed;
     float3 albedo, normal;
@@ -1323,7 +1409,7 @@ struct PathResult{
 
 PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
     PathResult result;
-    result.radiance = float3(0.0); result.background = float3(0.0);
+    result.radiance = float3(0.0); result.background = float3(0.0); result.inscatter = float3(0.0);
     result.object = false; result.catcher = false; result.miss = false;
     result.lit = float3(0.0); result.shadowed = float3(0.0);
     result.albedo = float3(0.0); result.normal = float3(0.0);
@@ -1377,6 +1463,13 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
     const bool glass = (P.extra.z & 1u) != 0;
     const uint volumeCount = asuint(P.holdout.z);
     bool sawRough = false, caustic = false;
+    // ekviangularno u magli (Renderer.cpp)
+    const bool equiangularOn = (P.extra.z & 4u) == 0 && P.lightTree.x > 0.0 && P.counts.x > 0;
+    bool previousMedium = false;
+    MediumSegment previousSegment;
+    previousSegment.o = float3(0.0); previousSegment.d = float3(0.0);
+    previousSegment.a = 0.0; previousSegment.b = 0.0; previousSegment.far = 0.0;
+    float previousT = 0.0, previousEvent = 0.0;
 
     for(uint depth = 0;; ++depth){
         Hit hit;
@@ -1406,8 +1499,52 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 const float forward = -dot(direction, P.cameraZ.xyz);
                 if(forward > 1e-6) end = min(end, realDepth * (1.0 + P.holdout.y) / forward);
             }
-            if(sampleVolume(volumeCount, origin, direction, end, free, t, which)){
+            MediaOnRay media = mediaOnRay(volumeCount, origin, direction, end);
+            MediumSegment segment;
+            segment.o = origin; segment.d = direction;
+            const bool inMedium = media.extent(end, segment.a, segment.b);
+            segment.far = segment.b >= INF ? segment.a + 2.0 * sceneRadius : segment.b;
+            if(inMedium && equiangularOn && depth < maxBounces){
+                const float2 choice = sampler.next2D(), u = sampler.next2D(), v = sampler.next2D();
+                uint index;
+                float pick;
+                if(chooseLight(P, choice.x, segmentQuery(origin, direction, segment.a, segment.far), index, pick)){
+                    const Light light = lights[index];
+                    const uint kind = asuint(light.radiance.w);
+                    if(kind == LIGHT_SPHERE || kind == LIGHT_TRIANGLE){
+                        float b1, b2;
+                        const float3 centre = kind == LIGHT_TRIANGLE ? trianglePoint(light, u, b1, b2) : light.position.xyz;
+                        const Equiangular e = equiangular(origin, direction, centre, segment.a, segment.b);
+                        const float te = equiangularSample(e, v.x);
+                        const float pe = equiangularPdf(e, te);
+                        const float event = (te >= segment.a && te <= segment.b) ? media.eventPdf(te) : 0.0;
+                        const float3 p = origin + direction * te;
+                        LightSample ls;
+                        if(pe > 0.0 && event > 0.0 && sampleLightIndex(P, index, pick, p, u, ls)){
+                            const uint scatterer = media.pick(te, v.y);
+                            const float3 albedo = volumes[scatterer * VOLUME_STRIDE + 3].rgb;
+                            const float phase = phaseOf(scatterer, dot(direction, ls.wi));
+                            if(phase > 0.0 && luminance(albedo * ls.value) > 0.0){
+                                const float limit = ls.distance >= INF ? INF : ls.distance * (1.0 - 1e-4);
+                                bool crossed;
+                                const float3 through = shadowTransmittance(p, ls.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 419u,
+                                                                           volumeCount, crossed);
+                                if(luminance(through) > 0.0){
+                                    const float own = ls.pdf / pick;
+                                    const float w = powerHeuristic3(pe * ls.pdf, event * choiceProbability(P, index, p, float3(0.0)) * own,
+                                                                    ls.delta || crossed ? 0.0 : event * phase);
+                                    const float3 c = clampContribution(beta * albedo * ls.value * through * (phase * event * w / (pe * ls.pdf)),
+                                                                       depth > 0, clampValue);
+                                    if(depth == 0) result.inscatter += c; else radiance += c;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if(inMedium && sampleVolume(media, end, free, t, which)){
                 const float4 medium = volumes[which * VOLUME_STRIDE + 3];
+                const float event = media.eventPdf(t);
                 const float3 p = origin + direction * t;
                 if(depth == 0) result.object = true;
                 beta *= medium.rgb;
@@ -1416,6 +1553,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                     // RIS kao na plohi (Renderer.cpp)
                     LightSample chosen;
                     chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
+                    chosen.light = 0; chosen.pick = 1.0;
                     float chosenPhase = 0.0, chosenTarget = 0.0, weightSum = 0.0;
                     for(uint k = 0; k < candidates; ++k){
                         LightSample ls;
@@ -1434,7 +1572,13 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                         const float3 through = shadowTransmittance(p, chosen.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 307u,
                                                                    volumeCount, crossed);
                         if(luminance(through) > 0.0){
-                            const float w = chosen.delta || crossed ? 1.0 : powerHeuristic(chosen.pdf, chosenPhase);
+                            float equi = 0.0;
+                            if(equiangularOn){
+                                const Light light = lights[chosen.light];
+                                const float3 centre = asuint(light.radiance.w) == LIGHT_TRIANGLE ? p + chosen.wi * chosen.distance : light.position.xyz;
+                                equi = equiangularDensity(P, segment, chosen.light, centre, t) * (chosen.pdf / chosen.pick);
+                            }
+                            const float w = powerHeuristic3(event * chosen.pdf, chosen.delta || crossed ? 0.0 : event * chosenPhase, equi);
                             radiance += clampContribution(beta * chosen.value * through * (chosenPhase * w * weightSum / (float(candidates) * chosenTarget)),
                                                           depth > 0, clampValue);
                         }
@@ -1447,6 +1591,10 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 previousPdf = pdf;
                 previousPoint = p;
                 previousNormal = float3(0.0);
+                previousMedium = true;
+                previousSegment = segment;
+                previousT = t;
+                previousEvent = event;
                 coneSpread += 0.2;
                 if(glass){ sawRough = true; caustic = false; }
                 if(depth >= 3){
@@ -1471,7 +1619,11 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 const float d2 = dot(toCentre, toCentre);
                 const float sin2 = min(1.0, l.position.w * l.position.w / max(d2, 1e-20));
                 const float lightPdf = choiceProbability(P, uint(sphere), previousPoint, previousNormal) / (2.0 * PI * oneMinusCosFromSin2(sin2));
-                le *= powerHeuristic(previousPdf, lightPdf);
+                if(previousMedium && equiangularOn){
+                    const float equi = equiangularDensity(P, previousSegment, uint(sphere), l.position.xyz, previousT) /
+                                       (2.0 * PI * oneMinusCosFromSin2(sin2));
+                    le *= powerHeuristic3(previousEvent * previousPdf, previousEvent * lightPdf, equi);
+                }else le *= powerHeuristic(previousPdf, lightPdf);
             }
             if(!caustic) radiance += clampContribution(beta * le, depth > 1, clampValue);
             if(depth == 0) result.object = true;
@@ -1610,7 +1762,11 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 const float dist2 = hit.t * hit.t;
                 const float cosLight = abs(dot(ng, direction));
                 const float lightPdf = cosLight > 0.0 ? choiceProbability(P, emitter, previousPoint, previousNormal) * dist2 / (cosLight * l.pick.w) : 0.0;
-                w = powerHeuristic(previousPdf, lightPdf);
+                if(previousMedium && equiangularOn){
+                    const float equi = cosLight > 0.0 ? equiangularDensity(P, previousSegment, emitter, origin + direction * hit.t, previousT) *
+                                                        dist2 / (cosLight * l.pick.w) : 0.0;
+                    w = powerHeuristic3(previousEvent * previousPdf, previousEvent * lightPdf, equi);
+                }else w = powerHeuristic(previousPdf, lightPdf);
             }
             radiance += clampContribution(beta * emitted * w, depth > 1, clampValue);
         }
@@ -1680,6 +1836,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             else if(!geometricSide && sawRough && (flags & TRANSMISSIVE) != 0) caustic = true;
         }
         previousPdf = pdf;
+        previousMedium = false;
         previousPoint = p;
         previousNormal = receiver;
         if(depth >= 3){
@@ -1782,6 +1939,7 @@ void tracePixel(uint3 id){
     const PathResult r = trace(P, float2(float(x) + 0.5, float(y) + 0.5), push.sampleIndex, pixelSeed);
     float4 cg = accCg[pixel];
     if(r.object){ cg.rgb += r.radiance; cg.w += 1.0; }
+    cg.rgb += r.inscatter;
     accCg[pixel] = cg;
     float4 background = accBackground[pixel];
     if(r.miss){ background.rgb += r.background; background.w += 1.0; }
@@ -1797,7 +1955,7 @@ void tracePixel(uint3 id){
     shadowed.rgb += r.shadowed;
     shadowed.w += 1.0;
     accShadowed[pixel] = shadowed;
-    const float lum = luminance(r.radiance + r.background);
+    const float lum = luminance(r.radiance + r.background + r.inscatter);
     accAlbedo[pixel] = accAlbedo[pixel] + float4(r.albedo, lum);
     accNormal[pixel] = accNormal[pixel] + float4(r.normal, lum * lum);
 

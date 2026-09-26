@@ -334,7 +334,7 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
         volumes.push_back(glm::vec4(v.noise, v.noiseScale, 0.0f, 0.0f));
     }
     if(volumes.empty()) volumes.push_back(glm::vec4(0.0f));
-    p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), (settings.glassShadows ? 1u : 0u) | (settings.mipmaps ? 0u : 2u),
+    p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), (settings.glassShadows ? 1u : 0u) | (settings.mipmaps ? 0u : 2u) | (settings.equiangular ? 0u : 4u),
                          settings.adaptiveMinSamples);
 
     //-- na karticu -------------------------------------------------------------------------------------

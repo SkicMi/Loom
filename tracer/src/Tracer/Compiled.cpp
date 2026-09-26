@@ -304,19 +304,14 @@ float CompiledScene::lightTreeImportance(uint32_t index, const glm::vec3& p, con
     return std::max(importance, 0.0f);
 }
 
-bool CompiledScene::chooseLight(float choice, const glm::vec3& p, const glm::vec3& n, uint32_t& light, float& probability, bool tree) const{
-    if(!tree){
-        if(lights.empty()) return false;
-        light = pickLight(choice);
-        probability = lightPick[light];
-        return probability > 0.0f;
-    }
+template<class Importance>
+bool CompiledScene::chooseWith(float choice, const Importance& importance, uint32_t& light, float& probability) const{
     if(choice < localPick && !lightTree.empty()){
         float u = std::min(choice / localPick, 0.99999994f);
         float prob = localPick;
         uint32_t node = 0;
         while(!lightTree[node].leaf){
-            const float a = lightTreeImportance(lightTree[node].left, p, n), b = lightTreeImportance(lightTree[node].right, p, n);
+            const float a = importance(lightTree[node].left), b = importance(lightTree[node].right);
             const float total = a + b;
             if(!(total > 0.0f)) return false;
             const float pl = a / total;
@@ -335,20 +330,54 @@ bool CompiledScene::chooseLight(float choice, const glm::vec3& p, const glm::vec
     return probability > 0.0f;
 }
 
-float CompiledScene::choiceProbability(uint32_t light, const glm::vec3& p, const glm::vec3& n, bool tree) const{
+template<class Importance>
+float CompiledScene::probabilityWith(uint32_t light, const Importance& importance) const{
     const uint32_t leaf = light < lightTreeLeaf.size() ? lightTreeLeaf[light] : ~0u;
-    if(!tree) return lightPick[light];
     if(leaf == ~0u) return lightPick[light];
     float prob = localPick;
     for(uint32_t node = leaf; lightTreeParent[node] != ~0u; node = lightTreeParent[node]){
         const LightTreeNode& parent = lightTree[lightTreeParent[node]];
         const uint32_t sibling = parent.left == node ? parent.right : parent.left;
-        const float mine = lightTreeImportance(node, p, n), other = lightTreeImportance(sibling, p, n);
+        const float mine = importance(node), other = importance(sibling);
         const float total = mine + other;
         if(!(total > 0.0f)) return 0.0f;
         prob *= mine / total;
     }
     return prob;
+}
+
+bool CompiledScene::chooseLight(float choice, const glm::vec3& p, const glm::vec3& n, uint32_t& light, float& probability, bool tree) const{
+    if(!tree){
+        if(lights.empty()) return false;
+        light = pickLight(choice);
+        probability = lightPick[light];
+        return probability > 0.0f;
+    }
+    return chooseWith(choice, [&](uint32_t node){ return lightTreeImportance(node, p, n); }, light, probability);
+}
+
+float CompiledScene::choiceProbability(uint32_t light, const glm::vec3& p, const glm::vec3& n, bool tree) const{
+    if(!tree) return lightPick[light];
+    return probabilityWith(light, [&](uint32_t node){ return lightTreeImportance(node, p, n); });
+}
+
+float CompiledScene::lightTreeImportanceOnSegment(uint32_t index, const glm::vec3& o, const glm::vec3& d, float a, float b) const{
+    const LightTreeNode& node = lightTree[index];
+    const glm::vec3 centre = 0.5f * (node.min + node.max);
+    const float r = 0.5f * glm::length(node.max - node.min);
+    const glm::vec3 p = o + d * std::clamp(glm::dot(centre - o, d), a, b);
+    return lightTreeImportance(index, p, glm::vec3(0.0f)) * std::max(glm::length(centre - p), std::max(r, 1e-4f));
+}
+
+bool CompiledScene::chooseLightOnSegment(float choice, const glm::vec3& o, const glm::vec3& d, float a, float b,
+                                         uint32_t& light, float& probability, bool tree) const{
+    if(!tree) return chooseLight(choice, o, glm::vec3(0.0f), light, probability, false);
+    return chooseWith(choice, [&](uint32_t node){ return lightTreeImportanceOnSegment(node, o, d, a, b); }, light, probability);
+}
+
+float CompiledScene::choiceProbabilityOnSegment(uint32_t light, const glm::vec3& o, const glm::vec3& d, float a, float b, bool tree) const{
+    if(!tree) return lightPick[light];
+    return probabilityWith(light, [&](uint32_t node){ return lightTreeImportanceOnSegment(node, o, d, a, b); });
 }
 
 uint32_t CompiledScene::pickLight(float choice) const{

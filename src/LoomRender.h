@@ -96,6 +96,8 @@ struct RenderOptions{
     //Kaustike putanjama (tocno, sumovito) ili staklene sjene (svjetlo kroz staklo zrakom sjene:
     //svijetla obojena sjena bez suma, bez fokusiranja iza lece) - vidi RenderSettings::glassShadows
     bool caustics = false;
+    //Ekviangularno uzorkovanje u magli prema lokalnim svjetlima (RenderSettings::equiangular)
+    bool equiangular = true;
     bool denoise = true;
     //Auto: Intel OIDN kad je ucitan (tools/oidn/fetch.sh), inace A-trous
     Tracer::Denoiser denoiser = Tracer::Denoiser::Auto;
@@ -1375,6 +1377,7 @@ private:
                 settings.indirectClamp = options.indirectClamp;
                 settings.adaptiveThreshold = std::max(0.0f, options.noiseThreshold);
                 settings.glassShadows = !options.caustics;
+                settings.equiangular = options.equiangular;
                 settings.threads = options.threads;
                 settings.seed = slice * 7919u;          //svaki odsjecak svoj sum, inace bi se isti uzorci ponovili
                 Tracer::Frame raw;

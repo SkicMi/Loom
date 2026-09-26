@@ -74,6 +74,10 @@ struct RenderSettings{
     uint32_t lightCandidates = 0;
     //Stablo svjetala (false: izbor samo po snazi, kao prije - za usporedbu; kartica uvijek stablo)
     bool lightTree = true;
+    //Ekviangularno uzorkovanje u magli prema lokalnim svjetlima, s MIS-om prema slobodnom putu
+    //(Kulla & Fajardo 2012): stozac reflektora i sjaj oko lampe bez tockastog suma. false: samo
+    //slobodni put (za usporedbu)
+    bool equiangular = true;
 };
 
 //Koliko kandidata stvarno (RenderSettings::lightCandidates, 0 = prema broju lokalnih svjetala)
@@ -127,6 +131,7 @@ private:
     bool glass = false, mipmaps = true;
     uint32_t candidates = 1;
     bool useLightTree = true;
+    bool equiangularSampling = true;
     //Prilagodljivo: po pikselu bit 1 i 2 = gotov na parnoj / neparnoj provjeri, 4 = stao
     std::vector<uint8_t> adaptiveState;
     void adaptiveCheckpoint(uint32_t samples);

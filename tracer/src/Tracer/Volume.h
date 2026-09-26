@@ -107,6 +107,36 @@ struct MediaOnRay{
         for(uint32_t i = 0; i < heightCount; ++i) sum += heightSigma(heights[i], t);
         return sum;
     }
+    bool empty() const{ return spanCount == 0 && heightCount == 0; }
+    //Dio zrake [a, b] u kojem ima medija (odsjeci su vec rezani na tMax; magla po visini je svuda)
+    bool extent(float tMax, float& a, float& b) const{
+        if(empty()) return false;
+        a = heightCount > 0 ? 0.0f : std::numeric_limits<float>::infinity();
+        b = heightCount > 0 ? tMax : 0.0f;
+        for(uint32_t i = 0; i < spanCount; ++i){ a = std::min(a, spans[i].t0); b = std::max(b, spans[i].t1); }
+        return b > a;
+    }
+    //Gustoca slobodnog puta u t: sigma(t) exp(-tau(t)) (gustoca dogadjaja rasprsenja, za MIS)
+    float eventPdf(const std::vector<Volume>& volumes, float t) const{
+        return sigma(volumes, t) * std::exp(-tau(volumes, t));
+    }
+    //Medij koji rasprsuje u t, razmjerno svojoj gustoci
+    uint32_t pick(const std::vector<Volume>& volumes, float t, float u) const{
+        float left = u * sigma(volumes, t);
+        uint32_t which = spanCount > 0 ? spans[0].index : heightIndex[0];
+        for(uint32_t i = 0; i < spanCount; ++i){
+            if(!(spans[i].t0 <= t && t <= spans[i].t1)) continue;
+            which = spans[i].index;
+            left -= volumes[spans[i].index].density;
+            if(left < 0.0f) return which;
+        }
+        for(uint32_t i = 0; i < heightCount; ++i){
+            which = heightIndex[i];
+            left -= heightSigma(heights[i], t);
+            if(left < 0.0f) return which;
+        }
+        return which;
+    }
 };
 
 inline MediaOnRay mediaOnRay(const std::vector<Volume>& volumes, const std::vector<glm::mat4>& inverses,
@@ -129,10 +159,8 @@ inline float opticalDepth(const std::vector<Volume>& volumes, const std::vector<
 
 //Slobodni put: false kad zraka prode do tMax bez dogadjaja. Inace t i medij koji rasprsuje
 //(razmjerno gustoci u tocki). u.x put, u.y izbor medija
-inline bool sampleVolume(const std::vector<Volume>& volumes, const std::vector<glm::mat4>& inverses,
-                         const glm::vec3& o, const glm::vec3& d, float tMax, glm::vec2 u, float& t, uint32_t& which){
-    const MediaOnRay m = mediaOnRay(volumes, inverses, o, d, tMax);
-    if(m.spanCount == 0 && m.heightCount == 0) return false;
+inline bool sampleVolume(const std::vector<Volume>& volumes, const MediaOnRay& m, float tMax, glm::vec2 u, float& t, uint32_t& which){
+    if(m.empty()) return false;
     const float target = -std::log(std::max(1e-12f, 1.0f - u.x));
     if(m.heightCount == 0){
         //Samo kutije: po dijelovima konstantno, tocno
@@ -171,22 +199,37 @@ inline bool sampleVolume(const std::vector<Volume>& volumes, const std::vector<g
         }
         t = x;
     }
-    //Medij razmjerno gustoci u t
-    const float total = m.sigma(volumes, t);
-    float pick = u.y * total;
-    which = m.spanCount > 0 ? m.spans[0].index : m.heightIndex[0];
-    for(uint32_t i = 0; i < m.spanCount; ++i){
-        if(!(m.spans[i].t0 <= t && t <= m.spans[i].t1)) continue;
-        which = m.spans[i].index;
-        pick -= volumes[m.spans[i].index].density;
-        if(pick < 0.0f) return true;
-    }
-    for(uint32_t i = 0; i < m.heightCount; ++i){
-        which = m.heightIndex[i];
-        pick -= heightSigma(m.heights[i], t);
-        if(pick < 0.0f) return true;
-    }
+    which = m.pick(volumes, t, u.y);
     return true;
+}
+inline bool sampleVolume(const std::vector<Volume>& volumes, const std::vector<glm::mat4>& inverses,
+                         const glm::vec3& o, const glm::vec3& d, float tMax, glm::vec2 u, float& t, uint32_t& which){
+    return sampleVolume(volumes, mediaOnRay(volumes, inverses, o, d, tMax), tMax, u, t, which);
+}
+
+//-- ekviangularno uzorkovanje (Kulla & Fajardo 2012) -------------------------------------------
+//Udaljenost na zraci o + t d, t u [a, b], s gustocom razmjernom 1/r^2 prema tocki c: kut prema c
+//je jednolik. Kod tockastih i malih svjetala u magli slobodni put vecinu uzoraka baci daleko od
+//svjetla - ovo ih stavi tamo gdje je jednostruko rasprsenje jako. D ima donju granicu (zraka kroz
+//samo svjetlo); ista je u uzorku i gustoci pa je gustoca tocna.
+struct Equiangular{ float delta = 0.0f, D = 1.0f, thetaA = 0.0f, thetaB = 0.0f; };
+
+inline Equiangular equiangular(const glm::vec3& o, const glm::vec3& d, const glm::vec3& c, float a, float b){
+    Equiangular e;
+    e.delta = glm::dot(c - o, d);
+    e.D = std::max(glm::length(c - (o + d * e.delta)), 1e-5f * (1.0f + std::abs(e.delta)));
+    e.thetaA = std::atan((a - e.delta) / e.D);
+    e.thetaB = std::isinf(b) ? 0.5f * glm::pi<float>() : std::atan((b - e.delta) / e.D);
+    return e;
+}
+inline float equiangularSample(const Equiangular& e, float u){
+    return e.delta + e.D * std::tan(e.thetaA + (e.thetaB - e.thetaA) * u);
+}
+inline float equiangularPdf(const Equiangular& e, float t){
+    const float span = e.thetaB - e.thetaA;
+    if(!(span > 0.0f)) return 0.0f;
+    const float x = t - e.delta;
+    return e.D / (span * (e.D * e.D + x * x));
 }
 
 //-- faza ----------------------------------------------------------------------------------------

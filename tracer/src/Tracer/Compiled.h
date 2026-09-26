@@ -101,6 +101,20 @@ struct CompiledScene{
     bool chooseLight(float choice, const glm::vec3& p, const glm::vec3& n, uint32_t& light, float& probability, bool tree = true) const;
     //Vjerojatnost da chooseLight u (p, n) izabere ovo svjetlo (za MIS kad ga pogodi BSDF)
     float choiceProbability(uint32_t light, const glm::vec3& p, const glm::vec3& n, bool tree = true) const;
+
+    //ZA ODSJECAK ZRAKE (o + t d, t u [a, b]) - ekviangularno u magli. Cvor se procjenjuje u tocki
+    //odsjecka najblizoj njegovom sredistu, a vaznost pada s 1/udaljenost umjesto 1/udaljenost^2:
+    //integral 1/r^2 duz pravca na udaljenosti D je pi/D. Zraka koja prolazi uz lampu tu lampu
+    //bira i kad joj je sredina daleko
+    float lightTreeImportanceOnSegment(uint32_t node, const glm::vec3& o, const glm::vec3& d, float a, float b) const;
+    bool chooseLightOnSegment(float choice, const glm::vec3& o, const glm::vec3& d, float a, float b,
+                              uint32_t& light, float& probability, bool tree = true) const;
+    float choiceProbabilityOnSegment(uint32_t light, const glm::vec3& o, const glm::vec3& d, float a, float b, bool tree = true) const;
+
+private:
+    //Jedan obilazak stabla za tocku ili odsjecak: importance(cvor) daje vaznost
+    template<class Importance> bool chooseWith(float choice, const Importance& importance, uint32_t& light, float& probability) const;
+    template<class Importance> float probabilityWith(uint32_t light, const Importance& importance) const;
 };
 
 //Scena se preuzima (move). Nikad ne vraca nullptr
