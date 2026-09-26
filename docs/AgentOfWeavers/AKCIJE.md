@@ -4,7 +4,30 @@ Najnovije gore. Svaka akcija: datum, što, zašto, kako je provjereno.
 
 ## Sadašnje
 
-### STAO SAM OVDJE (2026-09-26, noć) — namještaj, stilovi, alati/oružje/rekviziti gotovi
+### STAO SAM OVDJE (2026-09-26, ~22:40) — koraci 1 i 2 gotovi, sljedeći je ProceduraGen
+- **1. Export GLB** (`862f2a6`): gumb u Procedura panelu piše `Ime.glb` uz recept; ako recept završava jednim
+  Asset čvorom alata/oružja, datoteka nosi `extras.loom_tool` s hvatom za te parametre. Tablica boja premještena u
+  `src/LoomProceduraLook.h` (u tuđem `LoomPbr.h` samo include i brisanje funkcije). Test 26/26.
+- **2. Uvoz hvata iz recepta** (`aac7eef`): `readGlbTool` (LoomProceduraGlb.h); uvoz alata uzima hvat i vrstu iz
+  datoteke umjesto procjene iz oblika i postavlja svjetsko mjerilo 1 (uvoz inače pogađa metar iz visine kamere →
+  mač je bio 147 cm umjesto 98). Editor: `--recept X --izvezi Y.glb`. Provjera na Xvfb :78:
+  `--mascott --tool mac.glb --uhvati desna`: mač 98 cm u desnoj ruci, dlan na dršci (9.6 % duljine). Test 27/27.
+- Nezgoda bez štete: djelomični commit tuđeg `loom_app.cpp` s `git apply --unidiff-zero` stavio je umetanja na krive
+  retke; commit je složen iznova iz roditelja (samo mojih 34 retka), radna datoteka drugog agenta netaknuta.
+- Test 300 kuća i dalje 16/16 (286/300; padovi: 4 premalo za dom, 4 stubište, 5 skica s preuskom zonom, 1 vrata).
+
+**Sljedeće:** 3. ProceduraGen, 4. više oblika alata/rekvizita, 5. rekviziti u rasporedu. Korisnik je pitao što još
+treba na zgradama prije prvog modela — odgovor je u razgovoru i u "Prije prvog modela (zgrade)" dolje.
+
+### Prije prvog modela (zgrade) — popis, 2026-09-26
+Obavezno: (a) shema čvorova kao podatak (ime, tip, raspon, korak po parametru) za maskiranje i diskretizaciju;
+(b) kanonski niz akcija ↔ recept u oba smjera; (c) ProceduraGen s uzorkovanjem po predlošku kuće, JSONL + Fail → Why;
+(d) opisi hr/en iz parametara i iz izračunatog plana (broj soba, katova, tip krova, stil); (e) zamrznuti encoder
+(preuzimanje ~2 GB, uz odobrenje) i embeddinzi unaprijed; (f) ~200 ručnih promptova (korisnik).
+Dobro bi bilo: balkoni, terase/uvlačenje katova, garaža/nadstrešnica, dimnjak, fasada po katu, ograda i dvorište;
+proširiti vokabular tek poslije V0.
+
+### 2026-09-26, noć — stanje nakon namještaja, stilova i alata (bivši "STAO SAM OVDJE")
 **Napravljeno u ovoj sesiji** (detalji u Prošle, commitovi cf7115f → ddded43):
 - Namještaj po pravilima: asseti kao zasebni recepti (`procedura/assets`), `AssetLibrary`, `Furnish` → Placements
   (podatak), `PlaceAssets`, `Asset`, shema 8; vrata kupaonice prema van.
