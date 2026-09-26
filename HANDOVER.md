@@ -816,6 +816,15 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
      `test_tracer_temporal`: mirna kamera titranje 0.00329 → 0.00184 (56 %), greška 0.00765 →
      0.00654; kamera u pomaku greška 0.00771 → 0.00687; kutija u pokretu bez duhova (0.01277 =
      0.01277). Sekvence: zadano 0.5, `--stabilnost X` (0 = bez). Pristrano (vremenski prosjek).
+  5. **Render u nižoj razlučivosti + pametno povećanje — izmjereno, NE isplati se, nije u kodu.**
+     Isprobano: pola razlučivosti, OIDN, pa zajedničko bilateralno povećanje osvjetljenja (boja/albedo)
+     vođeno vodičima pune razlučivosti (albedo, normala, dubina, pokrivenost iz prolaza bez
+     odbijanja). Pod povećanja (čist ulaz) je oštri detalj svjetla manji od piksela niske
+     razlučivosti: 128×96 0.0154, 512×384 0.0071 — a puni render s OIDN-om već na 4 spp daje 0.0052
+     u istom vremenu (pola + 16 spp + povećanje 0.0077). I podjela izravno u punoj / neizravno u pola
+     razlučivosti (neizravno = puni − jednostruki put s istim sjemenom, točno) je samo izjednačena:
+     4 spp 0.0055 (0.21 s) prema 0.0052 (0.30 s), 16 spp 0.0034 (0.78 s) prema 0.0031 (0.64 s).
+     Za UHD je zato put: puna razlučivost, malo uzoraka, OIDN (na kartici) + ReSTIR do 16 spp.
 
 **Što dalje:**
 1. **Izmjeriti pravu karticu** (`loom-render projekt.usda --profil`) — sve dosad je lavapipe, gdje su
