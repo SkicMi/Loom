@@ -439,6 +439,13 @@ uint64_t Stage::fingerprint() const{
             h.text(contains(hold.hand) ? path(hold.hand) : hold.handPath);
             h.add(hold.onFrame); h.add(hold.offFrame); h.add(hold.offset); h.text(hold.grip);
         }
+        h.add(e.tool.has_value());
+        if(e.tool){
+            h.text(e.tool->kind); h.add(e.tool->grips.size());
+            for(const Grip& g : e.tool->grips){
+                h.text(g.name); h.add(g.point); h.add(g.axis); h.add(g.palm); h.add(g.thickness); h.text(g.preset); h.add(g.hand);
+            }
+        }
         h.add(e.animator.has_value());
         if(e.animator){
             h.add(e.animator->enabled); h.add(e.animator->activeAnimation); h.add(e.animator->relaxedUniRigPose); h.add(e.animator->animations.size());

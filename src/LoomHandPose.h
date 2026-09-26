@@ -19,6 +19,7 @@
 #include "LoomAnimLayers.h"
 #include "LoomPoseBlend.h"
 
+#include <Engine/Physics.h>
 #include <Warp/Stage.h>
 
 #include <glm/glm.hpp>
@@ -26,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -171,11 +173,97 @@ inline JointPose handPoseAt(const Warp::Stage& stage, const HandFingers& hand, c
     return pose;
 }
 
+//PRSTI OKO PREDMETA: svaki zglob, od baze prema vrhu, savija se dok kapsula njegovog clanka (ili
+//bilo kojeg clanka dalje prema vrhu, jos ravnog) ne dotakne collider - tada stane tik prije dodira.
+//Preset daje najvise savijanje (x1.3, da se tanka drska moze obuhvatiti), a pistol ostavlja
+//kaziprst uz okidac. collider je u sustavu predmeta; toolWorld je svijet predmeta u tom kadru
+inline JointPose conformedHandPoseAt(const Warp::Stage& stage, const HandFingers& hand, const GripPreset& preset, double frame,
+                                     const Engine::Physics::Collider& collider, const glm::mat4& toolWorld, int steps = 24){
+    JointPose pose;
+    if(!hand.valid()) return pose;
+    const glm::mat4 toTool = glm::inverse(toolWorld);
+    for(size_t f = 0; f < 5; ++f){
+        const std::vector<Warp::Id>& finger = hand.fingers[f];
+        const size_t count = std::min<size_t>(finger.size(), 3);
+        if(count == 0) continue;
+        //Lokalne transformacije i osi savijanja (u sustavu svakog zgloba) iz pokreta u ovom kadru
+        std::vector<Warp::Transform> locals(count);
+        std::vector<glm::vec3> axes(count, glm::vec3(0.0f));
+        std::vector<float> lengths(count, 0.0f);
+        const Warp::Entity* first = stage.get(finger[0]);
+        const glm::mat4 parentWorld = first && first->parent != Warp::None ? stage.worldMatrix(first->parent, frame) : glm::mat4(1.0f);
+        for(size_t j = 0; j < count; ++j){
+            locals[j] = stage.localAt(finger[j], frame);
+            const glm::vec3 from = handpose::at(stage, finger[j], frame);
+            const glm::vec3 to = j + 1 < finger.size() ? handpose::at(stage, finger[j + 1], frame)
+                                                      : from + (from - handpose::at(stage, finger[j > 0 ? j - 1 : 0], frame)) * 0.8f;
+            lengths[j] = glm::length(to - from);
+            const glm::vec3 axis = glm::cross(to - from, hand.palmNormal);
+            if(glm::length(axis) > 1e-8f)
+                axes[j] = glm::normalize(glm::inverse(handpose::worldRotation(stage, finger[j], frame)) * glm::normalize(axis));
+        }
+        std::vector<float> angles(count, 0.0f);
+        //Tocke clanaka (u sustavu predmeta) za zadane kutove: zglob j do j+1, zadnji produzen
+        auto segments = [&](const std::vector<float>& a){
+            std::vector<glm::vec3> points;
+            glm::mat4 world = parentWorld;
+            for(size_t j = 0; j < count; ++j){
+                Warp::Transform local = locals[j];
+                if(glm::length(axes[j]) > 0.5f) local.rotation = glm::normalize(local.rotation * glm::angleAxis(glm::radians(a[j]), axes[j]));
+                world = world * local.matrix();
+                points.push_back(glm::vec3(toTool * world[3]));
+            }
+            //Vrh: iz zadnjeg zgloba duz njegove kosti (smjer zadnjeg clanka)
+            const glm::vec3 last = points.back();
+            const glm::vec3 previous = count > 1 ? points[count - 2] : glm::vec3(toTool * glm::vec4(glm::vec3(parentWorld[3]), 1.0f));
+            const glm::vec3 direction = glm::length(last - previous) > 1e-6f ? glm::normalize(last - previous) : glm::vec3(0.0f);
+            const float tipScale = glm::length(glm::vec3(toTool[0]));
+            points.push_back(last + direction * lengths[count - 1] * tipScale);
+            return points;
+        };
+        const float toolScale = glm::length(glm::vec3(toTool[0]));
+        auto touches = [&](const std::vector<float>& a, size_t fromJoint){
+            const std::vector<glm::vec3> points = segments(a);
+            for(size_t j = fromJoint; j < count; ++j){
+                //Debljina clanka ~22 % njegove duljine (prst odrasle osobe: 4.5 cm clanak, ~1 cm polumjer)
+                const float radius = std::max(0.004f, 0.22f * lengths[j]) * toolScale;
+                if(collider.capsuleHits(points[j], points[j + 1], radius)) return true;
+            }
+            return false;
+        };
+        for(size_t j = 0; j < count; ++j){
+            const float maximum = std::min(115.0f, preset.curl[f][j] * 1.3f);
+            if(maximum <= 0.0f) continue;
+            //Vec u dodiru na nuli: ne savija se dalje (clanak je na drsci)
+            if(touches(angles, j)) break;
+            float low = 0.0f, high = maximum;
+            std::vector<float> trial = angles;
+            trial[j] = maximum;
+            if(!touches(trial, j)){ angles[j] = maximum; continue; }
+            for(int step = 0; step < steps; ++step){
+                const float mid = 0.5f * (low + high);
+                trial[j] = mid;
+                if(touches(trial, j)) high = mid; else low = mid;
+            }
+            angles[j] = low;
+        }
+        for(size_t j = 0; j < count; ++j){
+            Warp::Transform local = locals[j];
+            if(glm::length(axes[j]) > 0.5f) local.rotation = glm::normalize(local.rotation * glm::angleAxis(glm::radians(angles[j]), axes[j]));
+            pose.emplace_back(finger[j], local);
+        }
+    }
+    return pose;
+}
+
 //SLOJEVI HVATA: za lik se obrisu svi slojevi "Hold: ..." aktivnog klipa i izgrade iznova iz hvatova
 //u sceni cije su sake na tom liku. Zove se nakon svake promjene hvata (novi, rub, pusti, preset,
 //brisanje), pa sloj uvijek odgovara traci na timelineu. Vraca broj slojeva hvata
+//colliderFor: collider predmeta (u njegovom sustavu) ili nullptr - s njim se prsti omotaju oko
+//predmeta (conformedHandPoseAt), bez njega preset
 inline size_t syncHoldHandLayers(Warp::Stage& stage, Warp::Id rig, const std::vector<PoseLimb>& limbs,
-                                 double closeFrames = 6.0){
+                                 double closeFrames = 6.0,
+                                 const std::function<const Engine::Physics::Collider*(Warp::Id item)>& colliderFor = {}){
     Warp::Entity* rigEntity = stage.get(rig);
     if(!rigEntity || !rigEntity->animator || rigEntity->animator->animations.empty()) return 0;
     const size_t clipIndex = std::min(rigEntity->animator->activeAnimation, rigEntity->animator->animations.size() - 1);
@@ -206,8 +294,13 @@ inline size_t syncHoldHandLayers(Warp::Stage& stage, Warp::Id rig, const std::ve
             const HandFingers fingers = handFingersOf(stage, hold.hand, on);
             if(!fingers.valid()) continue;
             const GripPreset& preset = gripPreset(hold.grip);
-            std::vector<PoseKey> keys{{on, handPoseAt(stage, fingers, preset, on)}};
-            if(off > on) keys.push_back({off, handPoseAt(stage, fingers, preset, off)});
+            const Engine::Physics::Collider* collider = colliderFor ? colliderFor(item.id) : nullptr;
+            auto poseAt = [&](double frame){
+                return collider ? conformedHandPoseAt(stage, fingers, preset, frame, *collider, stage.worldMatrix(item.id, frame))
+                                : handPoseAt(stage, fingers, preset, frame);
+            };
+            std::vector<PoseKey> keys{{on, poseAt(on)}};
+            if(off > on) keys.push_back({off, poseAt(off)});
             PoseKeySettings settings;
             settings.inFrames = closeFrames;
             settings.outFrames = closeFrames;

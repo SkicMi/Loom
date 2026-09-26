@@ -211,6 +211,23 @@ struct Hold{
     std::string grip = "grip";          //preset poze prstiju (LoomHandPose.h): grip, pistol, cup...
 };
 
+//TOOL: predmet koji se moze drzati (oruzje, alat). Samo takvi predmeti imaju gripove - mjesta i
+//nacin na koji ih saka hvata, oznacena u tool editoru. Sve je u sustavu predmeta (entiteta s Toolom)
+struct Grip{
+    std::string name = "Main";
+    glm::vec3 point{0.0f};              //sredina drske pod dlanom
+    glm::vec3 axis{0.0f, 1.0f, 0.0f};   //smjer drske, od malog prsta prema palcu (prema ostrici/cijevi)
+    glm::vec3 palm{1.0f, 0.0f, 0.0f};   //od drske prema dlanu (dlan lezi na toj strani)
+    float thickness = 0.0f;             //polumjer drske; 0 = procijeni iz geometrije
+    std::string preset = "grip";        //poza prstiju (LoomHandPose.h)
+    int hand = 0;                       //0 bilo koja, 1 desna, 2 lijeva
+};
+
+struct Tool{
+    std::string kind = "tool";          //tool, weapon
+    std::vector<Grip> grips;
+};
+
 //Istrenirani gaussian splat, kao put do .ply
 struct Splat{
     std::string path;
@@ -237,6 +254,7 @@ struct Entity{
     std::optional<Model> model;
     std::optional<Animator> animator;
     std::vector<Hold> holds;            //uzlazno po onFrame, bez preklapanja
+    std::optional<Tool> tool;
 
     bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty() ||
                                   (animator && animator->enabled && !animator->animations.empty());}

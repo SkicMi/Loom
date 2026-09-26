@@ -202,6 +202,27 @@ public:
         }
         if(entity.splat){ indent(in); out << "custom asset loom:splat = "; asset(entity.splat->path); out << '\n'; }
         if(entity.joint){ indent(in); out << "custom color3f loom:joint = "; vector(entity.joint->colour); out << '\n'; }
+        if(entity.tool){
+            indent(in); out << "\ndef Scope \"LoomTool\"\n";
+            indent(in); out << "{\n";
+            indent(in + 1); out << "custom bool loom:tool = 1\n";
+            indent(in + 1); out << "custom string loom:kind = "; string(entity.tool->kind); out << '\n';
+            for(size_t gripIndex = 0; gripIndex < entity.tool->grips.size(); ++gripIndex){
+                const Grip& grip = entity.tool->grips[gripIndex];
+                indent(in + 1); out << "\ndef Scope "; string("Grip_" + std::to_string(gripIndex)); out << "\n";
+                indent(in + 1); out << "{\n";
+                indent(in + 2); out << "custom bool loom:grip = 1\n";
+                indent(in + 2); out << "custom string loom:name = "; string(grip.name); out << '\n';
+                indent(in + 2); out << "custom double3 loom:point = "; vector(grip.point); out << '\n';
+                indent(in + 2); out << "custom double3 loom:axis = "; vector(grip.axis); out << '\n';
+                indent(in + 2); out << "custom double3 loom:palm = "; vector(grip.palm); out << '\n';
+                indent(in + 2); out << "custom double loom:thickness = "; number(grip.thickness); out << '\n';
+                indent(in + 2); out << "custom string loom:preset = "; string(grip.preset); out << '\n';
+                indent(in + 2); out << "custom int loom:hand = " << grip.hand << '\n';
+                indent(in + 1); out << "}\n";
+            }
+            indent(in); out << "}\n";
+        }
         //Hvatovi kao zasebni Scopeovi uz predmet (tudji USD ih preskoci kao prazne Scopeove)
         for(size_t holdIndex = 0; holdIndex < entity.holds.size(); ++holdIndex){
             const Hold& hold = entity.holds[holdIndex];
@@ -471,6 +492,23 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
 
     for(const usda::Prim& child : prim.children){
         if(numberOf(child, "loom:animatorComponent", 0.0) != 0.0) entity.animator = readAnimator(child);
+        else if(numberOf(child, "loom:tool", 0.0) != 0.0){
+            Tool tool;
+            if(const std::string kind = textOf(child, "loom:kind"); !kind.empty()) tool.kind = kind;
+            for(const usda::Prim& gripPrim : child.children){
+                if(numberOf(gripPrim, "loom:grip", 0.0) == 0.0) continue;
+                Grip grip;
+                grip.name = textOf(gripPrim, "loom:name");
+                if(const usda::Attribute* a = gripPrim.find("loom:point")) grip.point = asVector(a->value, grip.point);
+                if(const usda::Attribute* a = gripPrim.find("loom:axis")) grip.axis = asVector(a->value, grip.axis);
+                if(const usda::Attribute* a = gripPrim.find("loom:palm")) grip.palm = asVector(a->value, grip.palm);
+                grip.thickness = float(numberOf(gripPrim, "loom:thickness", 0.0));
+                if(const std::string preset = textOf(gripPrim, "loom:preset"); !preset.empty()) grip.preset = preset;
+                grip.hand = int(numberOf(gripPrim, "loom:hand", 0.0));
+                tool.grips.push_back(grip);
+            }
+            stage.get(id)->tool = tool;
+        }
         else if(numberOf(child, "loom:hold", 0.0) != 0.0){
             Hold hold;
             hold.handPath = textOf(child, "loom:handPath");
