@@ -912,7 +912,9 @@ tool (šaka klizi po predmetu), Flip, Turn palm, Look at the hand. Kod: `loom_ap
   članaka; težine = najbliži segment kosti s uskim prijelazom, lijeva/desna strana odvojene. Izlaz je
   raspored UniRig-52 (`bone_N`, isto stablo roditelja) → postojeći `manny_rig.py` + `hand_rig.py` +
   `validate.py`.
-- `run.py --backend direct` (zadano je i dalje `unirig`, editorov Auto Rig gumb se nije mijenjao):
+- `run.py --backend direct` (od 26.9. zadano je `auto`: prvo direct, a ako padne i UniRig je instaliran,
+  UniRig u isti izlaz; direct izlaz ostaje u `<izlaz>-direct-failed`. Editorov Auto Rig gumb koristi `auto`
+  i treba samo `.venv` + `direct_rig.py`, `vendor/UniRig` više nije uvjet):
   `tools/autorig/.venv/bin/python tools/autorig/run.py --backend direct --input assets/characters/HumanoidMascott.glb --output tools/autorig/outputs/humanoid-mascott`
   → 49 s (UniRig ~4 min), prolazi Blender validaciju. Slika zglobova preko rendera: ramena/laktovi/koljena
   na zglobnim diskovima, svih 5 prstiju prati članke, lijevo = desno na mm.
@@ -963,8 +965,8 @@ tool (šaka klizi po predmetu), Flip, Turn palm, Look at the hand. Kod: `loom_ap
    korisnika hoće li u git.
 4. **Obrisati stari lik** (korisnik je tražio): `tools/autorig/outputs/mascot-manny`, `mascot-01..03`,
    `rig_*` (sve Clockwork Sentinel). Prije toga odlučiti o `test_unirig_fingers` (preskakat će se).
-5. Po želji: `direct` kao zadani backend editorovog Auto Rig gumba (sad radi samo za stojeći A/T-lik s
-   rukama odmaknutim od tijela; T-poza nije isprobana — horizontalni presjeci ruke tada ne rade).
+5. ~~`direct` kao zadani backend Auto Rig gumba~~ — GOTOVO 26.9. (`auto`, UniRig kao rezerva). Otvoreno:
+   T-poza nije isprobana na directu (horizontalni presjeci ruke) — ako padne, radi UniRig rezerva.
 6. UniRig-52 detalji pokreta i preset mirne poze s osima iz dlana umjesto svjetskih (vidi zamke).
 7. Stare stavke: veličina toola bez imena (514 m), pištolj (okidač, high grip, dvoručni), hvat kroz
    Kimodo klip, Right hand → Other hand na istom mjestu (dvoklik), Animator stavke (`animator-plan-2026-09`).

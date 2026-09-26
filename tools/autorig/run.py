@@ -228,19 +228,41 @@ def generate(source: Path, output: Path, seed: int) -> None:
                  {"backend": "UniRig", "revision": revision, "seed": seed}, started)
 
 
+def generate_auto(source: Path, output: Path, seed: int) -> None:
+    """Direct first (no GPU, exact hands); UniRig only when direct cannot rig the model."""
+    try:
+        generate_direct(source, output)
+        return
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        if not (VENDOR / "run.py").is_file():
+            raise
+        print(f"AutoRig: direct failed ({error}); trying UniRig", flush=True)
+        failed = output.resolve().with_name(output.resolve().name + "-direct-failed")
+        if failed.exists():
+            shutil.rmtree(failed)
+        if output.exists():
+            output.rename(failed)
+    generate(source, output, seed)
+    with (output.resolve() / "autorig.log").open("a", encoding="utf-8") as log:
+        log.write(f"Direct backend failed first; its log is in {failed.name}\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--backend", choices=("unirig", "direct"), default="unirig",
-                        help="direct: joints measured from a standing A/T-posed humanoid, no GPU")
+    parser.add_argument("--backend", choices=("auto", "unirig", "direct"), default="auto",
+                        help="direct: joints measured from a standing A/T-posed humanoid, no GPU; "
+                             "auto: direct first, UniRig when direct fails and UniRig is installed")
     args = parser.parse_args()
     try:
         if args.backend == "direct":
             generate_direct(args.input, args.output)
-        else:
+        elif args.backend == "unirig":
             generate(args.input, args.output, args.seed)
+        else:
+            generate_auto(args.input, args.output, args.seed)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         if args.output.is_dir():
             with (args.output / "autorig.log").open("a", encoding="utf-8") as log:

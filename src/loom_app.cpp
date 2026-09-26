@@ -2094,8 +2094,7 @@
         };
         auto autoRigBackendReady = [&](){
             const fs::path root(LOOM_ROOT_DIR);
-            return fs::is_regular_file(root / "tools/autorig/.venv/bin/python") &&
-                   fs::is_regular_file(root / "tools/autorig/vendor/UniRig/run.py");
+            return Loom::autoRigBackendReady(root);
         };
         auto importModelAsset = [&](const fs::path& path, const Treadle::Rect& viewport){
             const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewport, view);
@@ -5444,9 +5443,7 @@
                 std::lock_guard<std::mutex> guard(job.lock);
                 if(!job.lines.empty()) lastLine = job.lines.back();
             }
-            const fs::path backend = fs::path(LOOM_ROOT_DIR) / "tools/autorig";
-            const bool ready = fs::is_regular_file(backend / ".venv/bin/python") &&
-                               fs::is_regular_file(backend / "vendor/UniRig/run.py");
+            const bool ready = Loom::autoRigBackendReady(LOOM_ROOT_DIR);
             const Loom::AutoRigAction action = Loom::drawAutoRigPanel(ui, autoRig,
                 Treadle::Rect{v.x + v.width - width - 10.0f, v.y + 10.0f, width, v.height - 20.0f},
                 ready, job.running && job.task == Loom::Task::AutoRig, job.running, lastLine, autoRigScroll);

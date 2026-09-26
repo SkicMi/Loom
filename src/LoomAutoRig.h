@@ -1,5 +1,6 @@
 #pragma once
-// Local auto-rig orchestration and panel. UniRig runs in its own Python process/environment.
+// Local auto-rig orchestration and panel. run.py runs in its own Python process/environment:
+// joints are measured from the mesh (direct_rig.py); UniRig is the fallback when that fails.
 #include "LoomWeaverMotion.h"
 #include <Treadle/Ui.h>
 #include <filesystem>
@@ -21,6 +22,13 @@ inline std::string autoRigCommand(const std::filesystem::path& root,
            shellQuoteArgument(input.string()) + " --output " + shellQuoteArgument(output.string());
 }
 
+//Direct backend needs only the venv and Blender; UniRig (vendor/) is an optional fallback
+inline bool autoRigBackendReady(const std::filesystem::path& root){
+    std::error_code error;
+    return std::filesystem::is_regular_file(root / "tools/autorig/.venv/bin/python", error) &&
+           std::filesystem::is_regular_file(root / "tools/autorig/direct_rig.py", error);
+}
+
 struct AutoRigAction{ bool generate = false, preview = false, useSelected = false; };
 
 inline AutoRigAction drawAutoRigPanel(Treadle::Ui& ui, AutoRigState& state,
@@ -29,7 +37,8 @@ inline AutoRigAction drawAutoRigPanel(Treadle::Ui& ui, AutoRigState& state,
     AutoRigAction action;
     ui.dock("WEAVERMOTION / AUTO RIG", area, &scroll);
     ui.label("GLB/glTF -> UE5 Manny humanoid rig + skin weights");
-    ui.label("UniRig fits joints; Manny is the output skeleton. Original is preserved.");
+    ui.label("Joints measured from the mesh; UniRig if that fails.");
+    ui.label("Manny is the output skeleton. Original is preserved.");
     ui.separator();
     Treadle::Ui::TextFieldConfig field;
     field.lines = 2;
@@ -40,7 +49,7 @@ inline AutoRigAction drawAutoRigPanel(Treadle::Ui& ui, AutoRigState& state,
     ui.label("Right-click a Media model to import as humanoid.");
     ui.separator();
     ui.label("Best starting point: upright character, arms apart.");
-    ui.label("AI rig quality varies; inspect the result before animation.");
+    ui.label("Rig quality varies; inspect the result before animation.");
     if(!ready){
         ui.label("Install backend: bash tools/autorig/setup.sh");
     }
