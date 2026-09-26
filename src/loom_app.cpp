@@ -44,7 +44,7 @@
     #include "LoomMotionPanel.h"
     #include "LoomProcedura.h"
     #include "LoomMotionLive.h"
-    #include "LoomPoseBlend.h"
+    #include "LoomAnimLayers.h"
     #include "LoomMoodboard.h"
     #include "LoomAutoRig.h"
     
@@ -2875,6 +2875,18 @@
                             //drugu, BLEND. Ispravak je sloj preko pokreta (LoomPoseBlend.h), samo za dirane
                             //zglobove. Biranje kadrova unaprijed (c171e99) bilo je obrnutim redom od
                             //onoga kako animator radi
+                            //Sake se drze po POLOZAJU u sustavu prsa i rijese IK-om (LoomPoseBlend.h,
+                            //UDOVI): ispravak samih kutova je sake oko kljuca pomicao do 15 cm
+                            auto poseLimbsFor = [&](Warp::Id rig){
+                                std::vector<Loom::PoseLimb> limbs;
+                                const auto limbIds = motionDirectRigJointIds(rig);
+                                for(const std::array<int, 3> arm : {std::array<int, 3>{11, 12, 13}, std::array<int, 3>{17, 18, 19}})
+                                    if(limbIds[size_t(arm[0])] != Warp::None && limbIds[size_t(arm[1])] != Warp::None &&
+                                       limbIds[size_t(arm[2])] != Warp::None)
+                                        limbs.push_back({limbIds[size_t(arm[0])], limbIds[size_t(arm[1])],
+                                                         limbIds[size_t(arm[2])], limbIds[3]});
+                                return limbs;
+                            };
                             auto storeCurrentKey = [&]{
                                 Loom::PoseKey key{poseEdit.frame, {}};
                                 for(const auto& joint : poseEdit.basePose)
@@ -2926,16 +2938,18 @@
                                 settings.outFrames = poseBlendOutFrames;
                                 settings.ending = poseKeyEnding == 0 ? Loom::PoseKeyEnding::Return : Loom::PoseKeyEnding::Hold;
                                 settings.blendBetween = blendBetween;
-                                //Sake se drze po POLOZAJU u sustavu prsa i rijese IK-om (LoomPoseBlend.h,
-                                //UDOVI): ispravak samih kutova je sake oko kljuca pomicao do 15 cm
-                                const auto limbIds = motionDirectRigJointIds(poseEdit.rig);
-                                for(const std::array<int, 3> arm : {std::array<int, 3>{11, 12, 13}, std::array<int, 3>{17, 18, 19}})
-                                    if(limbIds[size_t(arm[0])] != Warp::None && limbIds[size_t(arm[1])] != Warp::None &&
-                                       limbIds[size_t(arm[2])] != Warp::None)
-                                        settings.limbs.push_back({limbIds[size_t(arm[0])], limbIds[size_t(arm[1])],
-                                                                  limbIds[size_t(arm[2])], limbIds[3]});
-                                Loom::applyPoseKeys(stage, keys, active.startFrame, active.endFrame, settings);
-                                frame = keys.front().frame;
+                                //Ispravak postaje SLOJ preko netaknute osnove (LoomAnimLayers.h): moze se
+                                //iskljuciti, oslabiti ili obrisati bez diranja ostalih ispravaka
+                                const double firstKey = std::min_element(keys.begin(), keys.end(),
+                                    [](const Loom::PoseKey& a, const Loom::PoseKey& b){ return a.frame < b.frame; })->frame;
+                                const double lastKey = std::max_element(keys.begin(), keys.end(),
+                                    [](const Loom::PoseKey& a, const Loom::PoseKey& b){ return a.frame < b.frame; })->frame;
+                                const std::string layerName = keys.size() > 1
+                                    ? "Pose fix " + std::to_string(int(firstKey)) + "-" + std::to_string(int(lastKey))
+                                    : "Pose fix " + std::to_string(int(firstKey));
+                                active.layers.push_back(Loom::layerFromPoseKeys(stage, layerName, keys, settings));
+                                Loom::bakeAnimationLayers(stage, poseEdit.rig, poseEdit.animation, poseLimbsFor(poseEdit.rig));
+                                frame = firstKey;
                                 playing = false;
                                 poseEdit = PoseEditSession{};
                                 poseBlendStep = 0;
@@ -3009,6 +3023,32 @@
                             poseBlendInFrames = std::round(poseBlendInFrames);
                             poseBlendHoldFrames = std::round(poseBlendHoldFrames);
                             poseBlendOutFrames = std::round(poseBlendOutFrames);
+
+                            //-- SLOJEVI klipa: svaki ispravak je sloj preko netaknute osnove ----------
+                            if(!poseEdit.active && !active.layers.empty()){
+                                ui.caption("LAYERS  /  " + std::to_string(active.layers.size()));
+                                bool changed = false;
+                                int removeLayer = -1;
+                                for(size_t i = 0; i < active.layers.size(); ++i){
+                                    Warp::AnimationLayer& layer = active.layers[i];
+                                    changed |= ui.checkbox(layer.name, &layer.enabled);
+                                    float percent = layer.weight * 100.0f;
+                                    if(ui.slider("Layer " + std::to_string(i + 1) + " weight", &percent, 0.0f, 100.0f, " %")){
+                                        layer.weight = std::round(percent) / 100.0f;
+                                        changed = true;
+                                    }
+                                    if(ui.button("Delete layer " + std::to_string(i + 1))) removeLayer = int(i);
+                                }
+                                if(removeLayer >= 0){
+                                    active.layers.erase(active.layers.begin() + removeLayer);
+                                    changed = true;
+                                }
+                                if(changed){
+                                    Loom::bakeAnimationLayers(stage, animatorRig, animator.activeAnimation, poseLimbsFor(animatorRig));
+                                    playing = false;
+                                }
+                                ui.hint("Layers sit on top of the untouched take: switch one off, lower its weight or delete it without redoing the others.");
+                            }
 
                             std::vector<MotionPlaybackCheckpoint> fallbackCheckpoints;
                             const std::vector<MotionPlaybackCheckpoint>* checkpoints = nullptr;

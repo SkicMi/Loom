@@ -409,10 +409,22 @@ uint64_t Stage::fingerprint() const{
             h.add(e.animator->enabled); h.add(e.animator->activeAnimation); h.add(e.animator->relaxedUniRigPose); h.add(e.animator->animations.size());
             for(const AnimationClip& clip : e.animator->animations){
                 h.text(clip.name); h.add(clip.startFrame); h.add(clip.endFrame); h.add(clip.loop); h.add(clip.inPlace); h.add(clip.tracks.size());
-                for(const AnimatorTrack& track : clip.tracks){
-                    h.text(contains(track.target) ? path(track.target) : track.targetPath);
-                    h.add(track.rootMotion);
-                    h.track(track.translationKeys); h.track(track.rotationKeys); h.track(track.scaleKeys);
+                auto tracks = [&](const std::vector<AnimatorTrack>& list){
+                    h.add(list.size());
+                    for(const AnimatorTrack& track : list){
+                        h.text(contains(track.target) ? path(track.target) : track.targetPath);
+                        h.add(track.rootMotion);
+                        h.track(track.translationKeys); h.track(track.rotationKeys); h.track(track.scaleKeys);
+                    }
+                };
+                tracks(clip.tracks);
+                tracks(clip.baseTracks);
+                h.add(clip.layers.size());
+                for(const AnimationLayer& layer : clip.layers){
+                    h.text(layer.name); h.add(layer.enabled); h.add(layer.weight);
+                    h.add(layer.inFrames); h.add(layer.holdFrames); h.add(layer.outFrames);
+                    h.add(layer.holdToEnd); h.add(layer.blendBetween);
+                    tracks(layer.keys);
                 }
             }
         }

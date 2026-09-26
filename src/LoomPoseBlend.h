@@ -58,6 +58,7 @@ struct PoseKeySettings{
     double outFrames = 12.0;
     PoseKeyEnding ending = PoseKeyEnding::Return;
     bool blendBetween = true;       //false: samo kljucni kadrovi (stari "No Blend")
+    float weight = 1.0f;            //tezina sloja: 0 je osnovni pokret, 1 puni ispravak
 };
 
 struct PoseCorrection{
@@ -138,6 +139,7 @@ inline glm::quat slerpShort(const glm::quat& a, glm::quat b, float t){
 inline size_t applyPoseKeys(Warp::Stage& stage, std::vector<PoseKey> keys, double clipStart, double clipEnd,
                             const PoseKeySettings& settings){
     if(keys.empty()) return 0;
+    const float layerWeight = std::clamp(settings.weight, 0.0f, 1.0f);
     std::sort(keys.begin(), keys.end(), [](const PoseKey& a, const PoseKey& b){ return a.frame < b.frame; });
     const double first = keys.front().frame, last = keys.back().frame;
 
@@ -237,7 +239,7 @@ inline size_t applyPoseKeys(Warp::Stage& stage, std::vector<PoseKey> keys, doubl
         const JointPlan* plan = planOf(id);
         if(!plan || !plan->touched) return motion;
         const Phase p = phaseAt(t);
-        return applyCorrection(motion, correctionAt(*plan, p), isKey(t) ? 1.0f : p.weight);
+        return applyCorrection(motion, correctionAt(*plan, p), (isKey(t) ? 1.0f : p.weight) * layerWeight);
     };
 
     //-- UDOVI: polozaj sake u sustavu prsa, pa IK ----------------------------------------------------
@@ -301,7 +303,7 @@ inline size_t applyPoseKeys(Warp::Stage& stage, std::vector<PoseKey> keys, doubl
         }
         for(double t : framesFor({limb.upper, limb.middle, limb.end})){
             const Phase p = phaseAt(t);
-            const float weight = isKey(t) ? 1.0f : p.weight;
+            const float weight = (isKey(t) ? 1.0f : p.weight) * layerWeight;
             const glm::mat4 P = parentMatrix([&](Warp::Id id){ return plannedLocal(id, t); });
             Warp::Transform u = stage.localAt(limb.upper, t), m = stage.localAt(limb.middle, t), e = stage.localAt(limb.end, t);
             //Original u sustavu reference - za ulaz i izlaz, gdje se cilj pretapa iz pokreta

@@ -76,6 +76,21 @@ struct AnimatorTrack{
     Track<glm::vec3> scaleKeys;
 };
 
+//SLOJ ANIMACIJE: ispravak poze preko osnovnog pokreta, bez prepisivanja osnove. Kljucevi su
+//uredjene poze (lokalno, po zglobu) u kljucnim kadrovima sloja - obicni trackovi s kljucem samo
+//u tim kadrovima, pa se spremaju i citaju istim kodom kao trackovi klipa. Kako se sloj primijeni
+//(ispravak kao razlika prema osnovi, pretapanje, IK saka) odlucuje Loom (LoomAnimLayers.h);
+//Warp samo cuva podatke
+struct AnimationLayer{
+    std::string name;
+    bool enabled = true;
+    float weight = 1.0f;
+    double inFrames = 8.0, holdFrames = 0.0, outFrames = 12.0;
+    bool holdToEnd = false;             //ispravak ostaje do kraja klipa umjesto da iscuri
+    bool blendBetween = true;           //false: mijenjaju se samo kljucni kadrovi
+    std::vector<AnimatorTrack> keys;
+};
+
 struct AnimationClip{
     std::string name;
     double startFrame = 1.0;
@@ -83,6 +98,10 @@ struct AnimationClip{
     bool loop = false;
     bool inPlace = false;
     std::vector<AnimatorTrack> tracks;
+    //Kad klip ima slojeve: baseTracks je netaknuti pokret, a tracks je rezultat osnove i
+    //ukljucenih slojeva (ono sto se reproducira). Bez slojeva baseTracks je prazan
+    std::vector<AnimatorTrack> baseTracks;
+    std::vector<AnimationLayer> layers;
 };
 
 struct Animator{

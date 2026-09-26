@@ -222,22 +222,51 @@ public:
                 indent(clipDepth); out << "custom double loom:endFrame = "; number(clip.endFrame); out << '\n';
                 indent(clipDepth); out << "custom bool loom:loop = " << (clip.loop ? 1 : 0) << '\n';
                 indent(clipDepth); out << "custom bool loom:inPlace = " << (clip.inPlace ? 1 : 0) << '\n';
-                for(size_t trackIndex = 0; trackIndex < clip.tracks.size(); ++trackIndex){
-                    const AnimatorTrack& track = clip.tracks[trackIndex];
-                    const std::string targetPath = stage.contains(track.target) ? stage.path(track.target) : track.targetPath;
-                    indent(clipDepth); out << "\ndef Xform "; string("Track_" + std::to_string(trackIndex)); out << "\n";
+                auto writeTracks = [&](int depth, const std::vector<AnimatorTrack>& tracks){
+                    for(size_t trackIndex = 0; trackIndex < tracks.size(); ++trackIndex){
+                        const AnimatorTrack& track = tracks[trackIndex];
+                        const std::string targetPath = stage.contains(track.target) ? stage.path(track.target) : track.targetPath;
+                        indent(depth); out << "\ndef Xform "; string("Track_" + std::to_string(trackIndex)); out << "\n";
+                        indent(depth); out << "{\n";
+                        const int trackDepth = depth + 1;
+                        indent(trackDepth); out << "custom bool loom:animationTrack = 1\n";
+                        indent(trackDepth); out << "custom string loom:targetPath = "; string(targetPath); out << '\n';
+                        if(track.rootMotion) { indent(trackDepth); out << "custom bool loom:rootMotionTrack = 1\n"; }
+                        attribute(trackDepth, "double3", "xformOp:translate", glm::vec3(0.0f), track.translationKeys,
+                                  [&](const glm::vec3& v){ vector(v); });
+                        attribute(trackDepth, "quatf", "xformOp:orient", glm::quat(1,0,0,0), track.rotationKeys,
+                                  [&](const glm::quat& q){ quaternion(q); });
+                        attribute(trackDepth, "float3", "xformOp:scale", glm::vec3(1.0f), track.scaleKeys,
+                                  [&](const glm::vec3& v){ vector(v); });
+                        indent(depth); out << "}\n";
+                    }
+                };
+                writeTracks(clipDepth, clip.tracks);
+                //Slojevi: osnova i svaki sloj kao zaseban Scope s istim trackovima, pa se projekt i
+                //dalje otvara kao obican USD (tracks je vec izracunat rezultat)
+                if(!clip.layers.empty()){
+                    indent(clipDepth); out << "\ndef Scope \"BaseMotion\"\n";
                     indent(clipDepth); out << "{\n";
-                    const int trackDepth = clipDepth + 1;
-                    indent(trackDepth); out << "custom bool loom:animationTrack = 1\n";
-                    indent(trackDepth); out << "custom string loom:targetPath = "; string(targetPath); out << '\n';
-                    if(track.rootMotion) { indent(trackDepth); out << "custom bool loom:rootMotionTrack = 1\n"; }
-                    attribute(trackDepth, "double3", "xformOp:translate", glm::vec3(0.0f), track.translationKeys,
-                              [&](const glm::vec3& v){ vector(v); });
-                    attribute(trackDepth, "quatf", "xformOp:orient", glm::quat(1,0,0,0), track.rotationKeys,
-                              [&](const glm::quat& q){ quaternion(q); });
-                    attribute(trackDepth, "float3", "xformOp:scale", glm::vec3(1.0f), track.scaleKeys,
-                              [&](const glm::vec3& v){ vector(v); });
+                    indent(clipDepth + 1); out << "custom bool loom:baseMotion = 1\n";
+                    writeTracks(clipDepth + 1, clip.baseTracks);
                     indent(clipDepth); out << "}\n";
+                    for(size_t layerIndex = 0; layerIndex < clip.layers.size(); ++layerIndex){
+                        const AnimationLayer& layer = clip.layers[layerIndex];
+                        indent(clipDepth); out << "\ndef Scope "; string("Layer_" + std::to_string(layerIndex)); out << "\n";
+                        indent(clipDepth); out << "{\n";
+                        const int layerDepth = clipDepth + 1;
+                        indent(layerDepth); out << "custom bool loom:animationLayer = 1\n";
+                        indent(layerDepth); out << "custom string loom:name = "; string(layer.name); out << '\n';
+                        indent(layerDepth); out << "custom bool loom:enabled = " << (layer.enabled ? 1 : 0) << '\n';
+                        indent(layerDepth); out << "custom double loom:weight = "; number(layer.weight); out << '\n';
+                        indent(layerDepth); out << "custom double loom:inFrames = "; number(layer.inFrames); out << '\n';
+                        indent(layerDepth); out << "custom double loom:holdFrames = "; number(layer.holdFrames); out << '\n';
+                        indent(layerDepth); out << "custom double loom:outFrames = "; number(layer.outFrames); out << '\n';
+                        indent(layerDepth); out << "custom bool loom:holdToEnd = " << (layer.holdToEnd ? 1 : 0) << '\n';
+                        indent(layerDepth); out << "custom bool loom:blendBetween = " << (layer.blendBetween ? 1 : 0) << '\n';
+                        writeTracks(layerDepth, layer.keys);
+                        indent(clipDepth); out << "}\n";
+                    }
                 }
                 indent(animatorDepth); out << "}\n";
             }
@@ -304,15 +333,33 @@ Animator readAnimator(const usda::Prim& prim){
         clip.endFrame = numberOf(clipPrim, "loom:endFrame", clip.startFrame);
         clip.loop = numberOf(clipPrim, "loom:loop", 0.0) != 0.0;
         clip.inPlace = numberOf(clipPrim, "loom:inPlace", 0.0) != 0.0;
-        for(const usda::Prim& trackPrim : clipPrim.children){
-            if(numberOf(trackPrim, "loom:animationTrack", 0.0) == 0.0) continue;
-            AnimatorTrack track;
-            track.targetPath = textOf(trackPrim, "loom:targetPath");
-            track.rootMotion = numberOf(trackPrim, "loom:rootMotionTrack", 0.0) != 0.0;
-            readTrack(trackPrim, "xformOp:translate", track.translationKeys);
-            readTrack(trackPrim, "xformOp:orient", track.rotationKeys);
-            readTrack(trackPrim, "xformOp:scale", track.scaleKeys);
-            clip.tracks.push_back(std::move(track));
+        auto readTracks = [](const usda::Prim& parent, std::vector<AnimatorTrack>& tracks){
+            for(const usda::Prim& trackPrim : parent.children){
+                if(numberOf(trackPrim, "loom:animationTrack", 0.0) == 0.0) continue;
+                AnimatorTrack track;
+                track.targetPath = textOf(trackPrim, "loom:targetPath");
+                track.rootMotion = numberOf(trackPrim, "loom:rootMotionTrack", 0.0) != 0.0;
+                readTrack(trackPrim, "xformOp:translate", track.translationKeys);
+                readTrack(trackPrim, "xformOp:orient", track.rotationKeys);
+                readTrack(trackPrim, "xformOp:scale", track.scaleKeys);
+                tracks.push_back(std::move(track));
+            }
+        };
+        readTracks(clipPrim, clip.tracks);
+        for(const usda::Prim& child : clipPrim.children){
+            if(numberOf(child, "loom:baseMotion", 0.0) != 0.0) readTracks(child, clip.baseTracks);
+            if(numberOf(child, "loom:animationLayer", 0.0) == 0.0) continue;
+            AnimationLayer layer;
+            layer.name = textOf(child, "loom:name");
+            layer.enabled = numberOf(child, "loom:enabled", 1.0) != 0.0;
+            layer.weight = float(numberOf(child, "loom:weight", 1.0));
+            layer.inFrames = numberOf(child, "loom:inFrames", 8.0);
+            layer.holdFrames = numberOf(child, "loom:holdFrames", 0.0);
+            layer.outFrames = numberOf(child, "loom:outFrames", 12.0);
+            layer.holdToEnd = numberOf(child, "loom:holdToEnd", 0.0) != 0.0;
+            layer.blendBetween = numberOf(child, "loom:blendBetween", 1.0) != 0.0;
+            readTracks(child, layer.keys);
+            clip.layers.push_back(std::move(layer));
         }
         animator.animations.push_back(std::move(clip));
     }
@@ -559,6 +606,9 @@ bool loadProject(const std::string& path, Stage& stage, std::string& error){
         Animator* animator = &loaded.get(entity.id)->animator.value();
         for(AnimationClip& clip : animator->animations){
             for(AnimatorTrack& track : clip.tracks) track.target = loaded.find(track.targetPath);
+            for(AnimatorTrack& track : clip.baseTracks) track.target = loaded.find(track.targetPath);
+            for(AnimationLayer& layer : clip.layers)
+                for(AnimatorTrack& track : layer.keys) track.target = loaded.find(track.targetPath);
         }
     });
     stage = std::move(loaded);
