@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (380 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (381 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -385,6 +385,12 @@ Iz `benchmarks/mjerenja.jsonl` (380 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-25 00:35 | C0257 | --dense-points 4000 (60 kljucnih, 532 medjukadra) | 38.30 | 0.049 | 0.120 | 2.350 | 10.73 | medijan isti, p90 +16 %; 2.7x brze - opcija |  |
 | 2026-09-25 00:35 | C0257 | --dense-points 2000 (60 kljucnih, 532 medjukadra) | 22.20 | 0.051 | 0.131 | 2.410 | 10.80 | p90 +27 % |  |
 | 2026-09-25 00:35 | C0257 | --dense-points 1000 (60 kljucnih, 532 medjukadra) | 13.40 | 0.062 | 0.146 | 3.600 | 12.78 | losije |  |
+
+## hvat
+
+| datum | snimka | opis | ostalo |
+|---|---|---|---|
+| 2026-09-26 22:30 | mascot-manny (1.80 m) + bastard_sword (115 cm) + desert eagle (27 cm) | hvat predmeta na liku iz desnog klika: tocka dlana, dijagonalni power grip, omatanje prstiju svi zglobovi zajedno, vrh nosen zadnjim zglobom, grip pistolja iz oblika, potraga polozaja na drsci | mjera=test_grab_real: os drske od dlana, kut prema osi sake, razmak vrhova od drske (linija kosti), omatanje srednjeg prsta oko osi, prodor, prije=mac: drska uz zapesce (tocka dlana je bila zapesce - Manny nema MiddleEnd), paralelno s podlakticom; bez animacije prsti se nisu ni savili; omatanje 47 st, vrhovi do 5.9 cm; pistolj drzan za zatvarac, poslije=mac: dlan 4.6 cm (ocekivano 4.6), dijagonala 20 st, vrhovi do 1.0 cm, omatanje 150 st, bez prodora, 39 ms; pistolj: rukohvat u dlanu, cijev naprijed, nagib rukohvata 26 st, bez prodora, 285 ms (collider iz mreze 2 mm, prije 2955 ms); mali prst pada ispod rukohvata (saka mascota veca od DE rukohvata), odluka=zadrzano |
 
 ## odluka
 

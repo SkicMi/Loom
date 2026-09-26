@@ -22,9 +22,11 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <limits>
 #include <array>
 #include <cmath>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -153,11 +155,70 @@ inline void toolExtentAlong(const ToolGeometry& geometry, const glm::vec3& origi
 //  - stitnik unutar predmeta (mac, noz): drska je KRACA strana od stitnika, grip na njenoj sredini
 //Os gripa gleda prema stitniku/glavi (od malog prsta prema palcu); tocka je na sredini presjeka
 //drske. Pistolj i cudni oblici se namjeste u tool editoru (Along the tool, Flip, Turn palm)
+//PISTOLJ: rukohvat strsi poprijeko na cijev (druga os oblika). Uz drugu os se gleda koliko je predmet
+//dug duz cijevi: kraj gdje je kratak je dno rukohvata, a gdje je dug je cijev/zatvarac. Rukohvat je od
+//dna do prve kriske duge preko 55 % cijevi; os mu ide od dna prema cijevi (s nagibom rukohvata, iz
+//sredista kriski na 20 % i 80 %), tocka na 50 %. Dlan je na bocnoj ploci (treca os); na koju stranu,
+//odluci se pri hvatu tako da cijev gleda naprijed (pointMuzzleForward)
+inline bool pistolGrip(const ToolGeometry& geometry, const ToolAxes& frame, Warp::Grip& grip){
+    const glm::vec3 barrel = frame.axes[0], up = frame.axes[1];
+    float low0 = 0.0f, high0 = 0.0f, low1 = 0.0f, high1 = 0.0f;
+    toolExtentAlong(geometry, frame.centre, barrel, low0, high0);
+    toolExtentAlong(geometry, frame.centre, up, low1, high1);
+    const float length = std::max(high0 - low0, 1e-9f), height = std::max(high1 - low1, 1e-9f);
+    constexpr int bins = 16;
+    std::array<float, bins> lo, hi;
+    lo.fill(std::numeric_limits<float>::max());
+    hi.fill(std::numeric_limits<float>::lowest());
+    auto binOf = [&](const glm::vec3& v){ return std::clamp(int((glm::dot(v - frame.centre, up) - low1) / height * float(bins)), 0, bins - 1); };
+    for(const glm::vec3& v : geometry.mesh.vertices){
+        const int b = binOf(v);
+        const float t = glm::dot(v - frame.centre, barrel);
+        lo[size_t(b)] = std::min(lo[size_t(b)], t);
+        hi[size_t(b)] = std::max(hi[size_t(b)], t);
+    }
+    auto extent = [&](int b){ return hi[size_t(b)] >= lo[size_t(b)] ? hi[size_t(b)] - lo[size_t(b)] : 0.0f; };
+    //Dno rukohvata: kraj druge osi s kracom kriskom
+    const bool bottomLow = extent(0) <= extent(bins - 1);
+    auto binAt = [&](int k){ return bottomLow ? k : bins - 1 - k; };      //k od dna prema cijevi
+    int top = -1;
+    for(int k = 0; k < bins; ++k) if(extent(binAt(k)) > 0.55f * length){ top = k; break; }
+    if(top < 2 || extent(binAt(0)) > 0.5f * length) return false;
+    //Rukohvat je na straznjem kraju cijevi: strana na kojoj su kriske rukohvata prema sredini predmeta
+    float handleMid = 0.0f;
+    for(int k = 0; k < top; ++k) handleMid += 0.5f * (lo[size_t(binAt(k))] + hi[size_t(binAt(k))]);
+    handleMid /= float(top);
+    const bool rearLow = handleMid < 0.5f * (low0 + high0);
+    //Sredista kriski rukohvata: samo vrhovi do 6 cm (22 % cijevi) od straznjeg ruba kriske - branik
+    //okidaca i okidac su ispred i inace nagnu os rukohvata prema naprijed
+    auto centreOf = [&](float fraction){
+        const int k = std::clamp(int(fraction * float(top)), 0, top - 1);
+        const int b = binAt(k);
+        const float rear = rearLow ? lo[size_t(b)] : hi[size_t(b)];
+        glm::vec3 sum(0.0f);
+        int count = 0;
+        for(const glm::vec3& v : geometry.mesh.vertices){
+            if(binOf(v) != b) continue;
+            if(std::fabs(glm::dot(v - frame.centre, barrel) - rear) > 0.22f * length) continue;
+            sum += v;
+            ++count;
+        }
+        return count ? sum / float(count) : frame.centre;
+    };
+    const glm::vec3 bottom = centreOf(0.15f), upper = centreOf(0.6f);
+    if(glm::length(upper - bottom) < 1e-9f) return false;
+    grip.point = centreOf(0.45f);
+    grip.axis = glm::normalize(upper - bottom);
+    grip.palm = frame.axes[2];
+    return true;
+}
+
 inline Warp::Grip defaultGrip(const ToolGeometry& geometry, const std::string& preset){
     Warp::Grip grip;
     grip.preset = preset;
     if(geometry.empty()) return grip;
     const ToolAxes frame = toolAxes(geometry);
+    if(preset == "pistol" && pistolGrip(geometry, frame, grip)) return grip;
     const glm::vec3 axis = frame.axes[0];
     float low = 0.0f, high = 0.0f;
     toolExtentAlong(geometry, frame.centre, axis, low, high);
@@ -195,24 +256,63 @@ inline Warp::Grip defaultGrip(const ToolGeometry& geometry, const std::string& p
 //Polumjer drske oko gripa: vrhovi u pojasu +-2 cm uz os, udaljenost od osi (80. centil, da stitnik ili
 //okidac ne napuhnu drsku). U jedinicama modela; unitsPerMetre = 1 / mjerilo toola (model s interneta
 //je cesto u centimetrima ili "koliko god" velik, a pojas i granice su u metrima scene)
+//Mjeri se PREMA DLANU (strana grip.palm): rukohvat pistolja nije okrugao, dlan lezi na bocnoj ploci
 inline float handleRadius(const ToolGeometry& geometry, const Warp::Grip& grip, float unitsPerMetre = 1.0f){
     if(grip.thickness > 0.0f) return grip.thickness;
     const float band = 0.02f * unitsPerMetre;
     const glm::vec3 axis = glm::normalize(grip.axis);
+    glm::vec3 palm = grip.palm - axis * glm::dot(grip.palm, axis);
+    const bool directed = glm::length(palm) > 1e-6f;
+    if(directed) palm = glm::normalize(palm);
     std::vector<float> distances;
     for(const glm::vec3& v : geometry.mesh.vertices){
         const glm::vec3 d = v - grip.point;
         const float along = glm::dot(d, axis);
         if(std::fabs(along) > band) continue;
-        distances.push_back(glm::length(d - axis * along));
+        const glm::vec3 across = d - axis * along;
+        //Na strani dlana: vrhovi unutar 20 st od smjera dlana (siri stozac na duguljastom rukohvatu
+        //uhvati kutove i napuse debljinu)
+        if(!directed || glm::dot(across, palm) > 0.9397f * glm::length(across)) distances.push_back(glm::length(across));
     }
     if(distances.empty()) return 0.015f * unitsPerMetre;
     std::sort(distances.begin(), distances.end());
     return std::max(0.004f * unitsPerMetre, distances[size_t(0.8f * float(distances.size() - 1))]);
 }
 
+//MREZA ZA PRSTE: modeli s interneta imaju i stotine tisuca trokuta (pistolj 460k), a prsti trebaju samo
+//oblik. Vrhovi se spoje na mrezi od cell (jedinice modela; ~2 mm), trokuti koji se tako izrode otpadnu.
+//Collider se gradi 100x brze, a upiti prstiju su jednako brzi za bilo koji model
+inline Engine::Physics::TriangleMesh handMesh(const Engine::Physics::TriangleMesh& mesh, float cell){
+    if(mesh.indices.size() / 3 < 20000 || cell <= 0.0f) return mesh;
+    Engine::Physics::TriangleMesh result;
+    std::map<std::array<int64_t, 3>, uint32_t> cells;
+    std::vector<uint32_t> remap(mesh.vertices.size());
+    std::vector<glm::vec3> sums;
+    std::vector<int> counts;
+    for(size_t i = 0; i < mesh.vertices.size(); ++i){
+        const glm::vec3& v = mesh.vertices[i];
+        const std::array<int64_t, 3> key{int64_t(std::floor(v.x / cell)), int64_t(std::floor(v.y / cell)), int64_t(std::floor(v.z / cell))};
+        auto [found, inserted] = cells.emplace(key, uint32_t(sums.size()));
+        if(inserted){ sums.push_back(glm::vec3(0.0f)); counts.push_back(0); }
+        remap[i] = found->second;
+        sums[found->second] += v;
+        ++counts[found->second];
+    }
+    for(size_t i = 0; i < sums.size(); ++i) result.vertices.push_back(sums[i] / float(counts[i]));
+    std::set<std::array<uint32_t, 3>> seen;
+    for(size_t t = 0; t + 2 < mesh.indices.size(); t += 3){
+        const uint32_t a = remap[mesh.indices[t]], b = remap[mesh.indices[t + 1]], c = remap[mesh.indices[t + 2]];
+        if(a == b || b == c || a == c) continue;
+        std::array<uint32_t, 3> key{a, b, c};
+        std::sort(key.begin(), key.end());
+        if(!seen.insert(key).second) continue;
+        result.indices.insert(result.indices.end(), {a, b, c});
+    }
+    return result;
+}
+
 //Okvir sake: dlan, normala dlana, os od malog prsta prema kaziprstu. false kad sake nema
-struct HandFrame{ glm::vec3 palm{0.0f}, normal{0.0f}, across{0.0f}; float palmDepth = 0.02f; };
+struct HandFrame{ glm::vec3 palm{0.0f}, normal{0.0f}, across{0.0f}, forward{0.0f}; float palmDepth = 0.02f; };
 inline bool handFrameAt(const Warp::Stage& stage, const HoldHand& hand, double frame, HandFrame& out){
     const HandFingers fingers = handFingersOf(stage, hand.hand, frame);
     if(!fingers.valid() || fingers.fingers[1].empty()) return false;
@@ -225,6 +325,15 @@ inline bool handFrameAt(const Warp::Stage& stage, const HoldHand& hand, double f
     across -= out.normal * glm::dot(across, out.normal);
     if(glm::length(across) < 1e-6f) return false;
     out.across = glm::normalize(across);
+    //POWER GRIP: drska ide dijagonalno kroz dlan - kraj uz kaziprst prema zglobovima, kraj uz mali prst
+    //prema zapescu (~20 st). Zato mac u saci gleda malo naprijed, a ne okomito na podlakticu
+    glm::vec3 forward = 0.5f * (index + little) - wrist;
+    forward -= out.normal * glm::dot(forward, out.normal);
+    if(glm::length(forward) > 1e-6f){
+        forward = glm::normalize(forward - out.across * glm::dot(forward, out.across));
+        out.forward = forward;
+        out.across = glm::normalize(out.across * std::cos(glm::radians(20.0f)) + forward * std::sin(glm::radians(20.0f)));
+    }
     out.palm = holdPalmPoint(stage, hand, frame);
     //Koza dlana je ispod linije kostiju; ~20 % duljine od zapesca do zglobova prstiju
     out.palmDepth = 0.2f * glm::length(0.5f * (index + little) - wrist);
@@ -247,6 +356,67 @@ inline glm::mat4 gripAlignedWorld(const glm::mat4& itemWorld, const Warp::Grip& 
     const glm::vec3 gripWorld(world * glm::vec4(grip.point, 1.0f));
     world[3] = glm::vec4(centre - gripWorld, 1.0f);
     return world;
+}
+
+//Smjer cijevi u sustavu predmeta: duz glavne osi prema strani koja je od gripa dalja (cijev je
+//ispred rukohvata)
+inline glm::vec3 muzzleDirection(const ToolGeometry& geometry, const Warp::Grip& grip){
+    const glm::vec3 barrel = toolAxes(geometry).axes[0];
+    float low = 0.0f, high = 0.0f;
+    toolExtentAlong(geometry, grip.point, barrel, low, high);
+    return high >= -low ? barrel : -barrel;
+}
+
+//Pistolj: dlan na onu bocnu plocu uz koju cijev gleda naprijed (smjer prstiju) - ista odluka za
+//lijevu i desnu saku. Vraca svijet predmeta
+inline glm::mat4 pointMuzzleForward(const glm::mat4& itemWorld, Warp::Grip& grip, float radius, const HandFrame& hand,
+                                    const glm::vec3& muzzle){
+    glm::mat4 world = gripAlignedWorld(itemWorld, grip, radius, hand);
+    if(glm::length(hand.forward) < 0.5f) return world;
+    if(glm::dot(glm::normalize(glm::vec3(world * glm::vec4(muzzle, 0.0f))), hand.forward) < 0.0f){
+        grip.palm = -grip.palm;
+        world = gripAlignedWorld(itemWorld, grip, radius, hand);
+    }
+    return world;
+}
+
+//SVIJET PREDMETA U SACI za grip (drska u dlanu; pistolj s cijevi naprijed - tada se grip.palm moze
+//okrenuti, pa ga pozivatelj spremi natrag u tool)
+//
+//S rukom (holdHand) se jos isproba odmak drske od dlana (0 ili 1 cm) i polozaj sake duz drske (-3..+1.5
+//cm), i uzme onaj gdje se prsti najbolje omotaju (ConformReport: nijedan zglob ne krece u predmetu, vrhovi najblize povrsini). Tako
+//srednji prst pistolja zavrsi ispod branika okidaca, a saka na macu ne sjedne na stitnik
+inline glm::mat4 heldWorld(const Warp::Stage& stage, Warp::Id item, Warp::Grip& grip, const HandFrame& hand, double frame,
+                           const HoldHand* holdHand = nullptr){
+    const glm::mat4 itemWorld = stage.worldMatrix(item, frame);
+    const float scale = glm::length(glm::vec3(itemWorld[0]));
+    const ToolGeometry geometry = toolGeometry(stage, item, frame);
+    const float radius = handleRadius(geometry, grip, 1.0f / std::max(scale, 1e-9f)) * scale;
+    const glm::mat4 world = grip.preset == "pistol" ? pointMuzzleForward(itemWorld, grip, radius, hand, muzzleDirection(geometry, grip))
+                                                    : gripAlignedWorld(itemWorld, grip, radius, hand);
+    if(!holdHand || geometry.empty()) return world;
+    const HandFingers fingers = handFingersOf(stage, holdHand->hand, frame);
+    if(!fingers.valid()) return world;
+    const Engine::Physics::Collider collider = Engine::Physics::Collider::fromMesh(handMesh(geometry.mesh, 0.002f / std::max(scale, 1e-9f)));
+    if(collider.empty()) return world;
+    const glm::vec3 axis = glm::normalize(glm::vec3(world * glm::vec4(grip.axis, 0.0f)));
+    const GripPreset& preset = gripPreset(grip.preset);
+    auto scoreAt = [&](float slide, float push, glm::mat4& candidate){
+        candidate = world;
+        candidate[3] += glm::vec4(axis * slide + hand.normal * push, 0.0f);
+        ConformReport report;
+        conformedHandPoseAt(stage, fingers, preset, frame, collider, candidate, 12, &report);
+        //Blaga prednost za polozaj iz gripa (i drsku uz dlan): medju jednako dobrima ostaje tamo
+        return report.score() + std::fabs(slide) * 0.1f + push * 0.5f;
+    };
+    glm::mat4 best = world, candidate;
+    float bestScore = std::numeric_limits<float>::max();
+    for(const float push : {0.0f, 0.01f})
+        for(const float slide : {0.0f, -0.015f, -0.03f, 0.015f}){
+            const float score = scoreAt(slide, push, candidate);
+            if(score < bestScore){ bestScore = score; best = candidate; }
+        }
+    return best;
 }
 
 //Stvarna velicina predmeta za uvoz (najdulja stranica, metri) iz imena i vrste; 0 = ne zna se
@@ -274,7 +444,8 @@ struct ToolColliders{
         if(geometry.empty()) return nullptr;
         Entry& entry = entries[root];
         if(entry.collider.empty() || entry.vertices != geometry.mesh.vertices.size()){
-            entry.collider = Engine::Physics::Collider::fromMesh(geometry.mesh);
+            const float scale = glm::length(glm::vec3(stage.worldMatrix(root, frame)[0]));
+            entry.collider = Engine::Physics::Collider::fromMesh(handMesh(geometry.mesh, 0.002f / std::max(scale, 1e-9f)));
             entry.vertices = geometry.mesh.vertices.size();
         }
         return entry.collider.empty() ? nullptr : &entry.collider;

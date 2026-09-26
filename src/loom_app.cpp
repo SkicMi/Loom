@@ -303,6 +303,10 @@
         std::string shotModel;                //--model: glTF na mjestu pogleda
         std::string shotRecipe;               //--recept: .loomrecipe.json u Procedura panel, preview uokviren
         bool shotMascott = false;             //--mascott: lik iz desnog klika (HumanoidMascott)
+        std::string shotCharacter;            //--lik <glb>: lik s rigom kao iz Auto Riga (1.80 m, Animator, mirne sake)
+        std::string shotGrab;                 //--uhvati desna|lijeva: zadnji tool u tu saku (kao pusten uz saku)
+        bool shotHandView = false;            //--pogled-saka yaw pitch: kamera izbliza na saku s hvatom
+        float shotHandYaw = 0.6f, shotHandPitch = 0.35f;
         std::vector<std::string> shotTools;   //--tool: model uvezen kao tool/weapon (velicina iz imena)
         std::vector<std::string> shotMotionText;  //--tekst: panel pokreta otvoren, jedna radnja po zastavici
         float shotSurface[4] = {0, 0, 0, 0};  //--ploha x y sirina visina: pravokutnik u pogledu, pa kocka na plohu
@@ -329,6 +333,13 @@
             //--mascott: isti lik kao desni klik > HumanoidMascott (addHumanoidMascott), s istim uvozom -
             //izvor istine za testove, a ne rucno odabrani .glb
             else if(argument == "--mascott") shotMascott = true;
+            else if(argument == "--uhvati" && i + 1 < argc) shotGrab = argv[++i];
+            else if(argument == "--lik" && i + 1 < argc) shotCharacter = argv[++i];
+            else if(argument == "--pogled-saka" && i + 2 < argc){
+                shotHandView = true;
+                shotHandYaw = float(std::atof(argv[++i]));
+                shotHandPitch = float(std::atof(argv[++i]));
+            }
             else if(argument == "--recept" && i + 1 < argc) shotRecipe = argv[++i];
             else if(argument == "--tool" && i + 1 < argc) shotTools.push_back(argv[++i]);   //kao Import as Tool / Weapon
             else if(argument == "--tekst" && i + 1 < argc) shotMotionText.push_back(argv[++i]);
@@ -1182,6 +1193,34 @@
                         return stage.get(item) && stage.get(item)->tool ? toolColliders.of(stage, item, frame) : nullptr;
                     });
             }
+        };
+        //HVAT: predmet u saku od kadra at do kraja klipa lika (ili scene). Drska gripa (tool editor) sjedne
+        //u dlan: os drske uz saku, dlan na strani gripa; prsti se omotaju oko collidera (syncHoldLayers)
+        auto grabWithHand = [&](Warp::Id item, const Loom::HoldHand& hand, double at){
+            double end = stage.endFrame;
+            if(const Warp::AnimationClip* clip = Loom::activeTimelineClip(stage, hand.rig)) end = std::max(clip->endFrame, at);
+            glm::mat4 world = stage.worldMatrix(item, at);
+            std::string preset = "grip";
+            Warp::Entity* toolEntity = stage.get(item);
+            Loom::HandFrame handFrame;
+            if(toolEntity && toolEntity->tool && !toolEntity->tool->grips.empty() && Loom::handFrameAt(stage, hand, at, handFrame)){
+                size_t chosen = 0;
+                for(size_t g = 0; g < toolEntity->tool->grips.size(); ++g){
+                    const int wants = toolEntity->tool->grips[g].hand;
+                    if(wants == 0 || (wants == 1) == hand.right){ chosen = g; break; }
+                }
+                Warp::Grip& grip = toolEntity->tool->grips[chosen];
+                world = Loom::heldWorld(stage, item, grip, handFrame, at, &hand);
+                preset = grip.preset;
+            }
+            if(!Loom::grabItemAt(stage, item, hand.hand, at, end, world)) return false;
+            for(Warp::Hold& hold : stage.get(item)->holds) if(hold.onFrame == at) hold.grip = preset;
+            syncHoldLayers();
+            message = stage.get(item)->name + " is in the " + Loom::holdHandLabel(hand) + " from frame " +
+                      std::to_string(int(at)) + ". Drag the ends of the hold on the timeline to change when.";
+            selected = item;
+            focus = Focus::Entity;
+            return true;
         };
         auto holdHandName = [&](Warp::Id hand){
             for(const Loom::HoldHand& candidate : holdHands) if(candidate.hand == hand) return Loom::holdHandLabel(candidate);
@@ -2352,6 +2391,10 @@
             }
             focus = Focus::Entity;
         }
+        if(!shotCharacter.empty()){
+            importAutoRigModel(shotCharacter);
+            std::printf("%s\n", message.c_str());
+        }
         if(shotMascott){
             addHumanoidMascott();
             std::printf("%s\n", message.c_str());
@@ -2380,6 +2423,25 @@
             importToolAsset(toolPath, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible,
                                                           (motionPanel.open || proceduraPanel.open), railReveal, timelineTall).viewport,
                             Loom::gripForItemName(stem) == "pistol" || metres >= 0.3f ? "weapon" : "tool", metres);
+            std::printf("%s\n", message.c_str());
+        }
+        if(!shotGrab.empty() || shotHandView){
+            holdHands = holdHandsInScene();
+            const bool right = shotGrab != "lijeva" && shotGrab != "left";
+            Warp::Id item = Warp::None;
+            stage.walk([&](const Warp::Entity& e, int){ if(e.tool) item = e.id; });
+            const Loom::HoldHand* hand = nullptr;
+            for(const Loom::HoldHand& candidate : holdHands) if(candidate.right == right) hand = &candidate;
+            if(hand && !shotGrab.empty() && item != Warp::None) grabWithHand(item, *hand, std::round(frame));
+            else if(!shotGrab.empty()) message = "--uhvati: no tool or no " + shotGrab + " hand in the scene.";
+            if(hand && shotHandView){
+                view.lookThrough = Warp::None;
+                view.orbit.target = Loom::holdPalmPoint(stage, *hand, frame);
+                view.orbit.distance = 0.45f;
+                view.orbit.yaw = shotHandYaw;
+                view.orbit.pitch = shotHandPitch;
+                selected = Warp::None;          //bez panela preko sake
+            }
             std::printf("%s\n", message.c_str());
         }
         if(!shotMotion.empty()){
@@ -5209,13 +5271,12 @@
             if(changed){
                 if(holdHands.empty()) holdHands = holdHandsInScene();
                 for(Warp::Hold& hold : toolEntity->holds){
-                    const Warp::Grip& used = tool.grips.front();
+                    Warp::Grip& used = tool.grips.front();
                     for(const Loom::HoldHand& hand : holdHands){
                         if(hand.hand != hold.hand) continue;
                         Loom::HandFrame handFrame;
                         if(!Loom::handFrameAt(stage, hand, hold.onFrame, handFrame)) break;
-                        const glm::mat4 world = Loom::gripAlignedWorld(stage.worldMatrix(toolRoot, hold.onFrame), used,
-                                                                       Loom::handleRadius(geometry, used, 1.0f / std::max(scale, 1e-9f)) * scale, handFrame);
+                        const glm::mat4 world = Loom::heldWorld(stage, toolRoot, used, handFrame, hold.onFrame, &hand);
                         hold.offset = glm::inverse(stage.worldMatrix(hold.hand, hold.onFrame)) * world;
                         hold.grip = used.preset;
                         break;
@@ -7924,37 +7985,8 @@
         }
         if(!leftDown){
             //HVAT: predmet pusten uz osvijetljenu saku. Hvat traje do kraja klipa lika (ili scene)
-            if(holdCandidate >= 0 && size_t(holdCandidate) < holdHands.size() && holdableItem(selected)){
-                const Loom::HoldHand hand = holdHands[size_t(holdCandidate)];
-                const Warp::Id item = Loom::toolRootOf(stage, selected);
-                const double at = std::round(frame);
-                double end = stage.endFrame;
-                if(const Warp::AnimationClip* clip = Loom::activeTimelineClip(stage, hand.rig)) end = std::max(clip->endFrame, at);
-                //Drska gripa (tool editor) sjedne u dlan: os drske uz saku, dlan na strani gripa
-                glm::mat4 world = stage.worldMatrix(item, at);
-                std::string preset = "grip";
-                const Warp::Entity* toolEntity = stage.get(item);
-                Loom::HandFrame handFrame;
-                if(toolEntity && toolEntity->tool && !toolEntity->tool->grips.empty() && Loom::handFrameAt(stage, hand, at, handFrame)){
-                    size_t chosen = 0;
-                    for(size_t g = 0; g < toolEntity->tool->grips.size(); ++g){
-                        const int wants = toolEntity->tool->grips[g].hand;
-                        if(wants == 0 || (wants == 1) == hand.right){ chosen = g; break; }
-                    }
-                    const Warp::Grip grip = toolEntity->tool->grips[chosen];
-                    const float scale = glm::length(glm::vec3(world[0]));
-                    world = Loom::gripAlignedWorld(world, grip, Loom::handleRadius(Loom::toolGeometry(stage, item, at), grip, 1.0f / scale) * scale, handFrame);
-                    preset = grip.preset;
-                }
-                if(Loom::grabItemAt(stage, item, hand.hand, at, end, world)){
-                    for(Warp::Hold& hold : stage.get(item)->holds) if(hold.onFrame == at) hold.grip = preset;
-                    syncHoldLayers();
-                    message = stage.get(item)->name + " is in the " + Loom::holdHandLabel(hand) + " from frame " +
-                              std::to_string(int(at)) + ". Drag the ends of the hold on the timeline to change when.";
-                    selected = item;
-                    focus = Focus::Entity;
-                }
-            }
+            if(holdCandidate >= 0 && size_t(holdCandidate) < holdHands.size() && holdableItem(selected))
+                grabWithHand(Loom::toolRootOf(stage, selected), holdHands[size_t(holdCandidate)], std::round(frame));
             holdCandidate = -1;
             gizmoAxisHeld = -1;
             gizmoAxisPointerHeld = -1;

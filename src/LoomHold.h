@@ -10,6 +10,7 @@
 // Warp::Hold cuva podatke i primijeni ih u Stage::worldMatrix, pa hvat vide pogled, render,
 // spremanje i undo bez ijednog posebnog puta. Ovdje je samo odluka: koja saka, kada, s kojim pomakom.
 //=============================================================================================
+#include "LoomHandPose.h"
 #include "Warp/Stage.h"
 
 #include <glm/glm.hpp>
@@ -39,8 +40,16 @@ inline float holdReach(const Warp::Stage& stage, const HoldHand& hand, double fr
     return forearm > 1e-6f ? forearm * 0.5f : fallback;
 }
 
+//TOCKA DLANA gdje lezi drska: ~70 % puta od zapesca prema zglobovima prstiju (kaziprst..mali iz
+//stabla, handFingersOf). Rig bez prstiju: 45 % prema vrhu srednjeg prsta, a bez njega zapesce
 inline glm::vec3 holdPalmPoint(const Warp::Stage& stage, const HoldHand& hand, double frame){
     const glm::vec3 wrist(stage.worldMatrix(hand.hand, frame)[3]);
+    const HandFingers fingers = handFingersOf(stage, hand.hand, frame);
+    glm::vec3 knuckles(0.0f);
+    int count = 0;
+    for(int f = 1; f < 5; ++f)
+        if(!fingers.fingers[size_t(f)].empty()){ knuckles += glm::vec3(stage.worldMatrix(fingers.fingers[size_t(f)].front(), frame)[3]); ++count; }
+    if(count >= 2) return wrist + (knuckles / float(count) - wrist) * 0.7f;
     if(hand.middleEnd == Warp::None || !stage.get(hand.middleEnd)) return wrist;
     const glm::vec3 tip(stage.worldMatrix(hand.middleEnd, frame)[3]);
     return wrist + (tip - wrist) * 0.45f;

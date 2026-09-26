@@ -195,12 +195,17 @@ inline JointPose handPoseAt(const Warp::Stage& stage, const HandFingers& hand, c
     return pose;
 }
 
-//PRSTI OKO PREDMETA: svaki zglob, od baze prema vrhu, savija se dok kapsula njegovog clanka (ili
-//bilo kojeg clanka dalje prema vrhu, jos ravnog) ne dotakne collider - tada stane tik prije dodira.
-//Preset daje najvise savijanje (x1.3, da se tanka drska moze obuhvatiti), a pistol ostavlja
-//kaziprst uz okidac. collider je u sustavu predmeta; toolWorld je svijet predmeta u tom kadru
+//PRSTI OKO PREDMETA: svi zglobovi prsta savijaju se zajedno u malim koracima; zglob stane tik prije
+//nego sto bi kapsula njegovog clanka (ili bilo kojeg dalje prema vrhu) usla u collider, ostali nastave.
+//Preset daje najvise savijanje (x1.6, do anatomske granice), a pistol ostavlja kaziprst uz okidac. collider je u sustavu predmeta; toolWorld je svijet predmeta u tom kadru
+//Koliko je hvat dobar (za biranje polozaja sake na drsci): zglobovi koji su vec na nuli bili u predmetu
+//pa su ispruzeni, i razmak vrhova od predmeta (m, svijet) za prste koji se trebaju omotati (najveci
+//kut baze u presetu preko 30 st - palac i kaziprst na okidacu pistolja se ne broje)
+struct ConformReport{ int opened = 0; float tipGap = 0.0f; float score() const { return float(opened) * 0.05f + tipGap; } };
+
 inline JointPose conformedHandPoseAt(const Warp::Stage& stage, const HandFingers& hand, const GripPreset& preset, double frame,
-                                     const Engine::Physics::Collider& collider, const glm::mat4& toolWorld, int steps = 24){
+                                     const Engine::Physics::Collider& collider, const glm::mat4& toolWorld, int steps = 24,
+                                     ConformReport* report = nullptr){
     JointPose pose;
     if(!hand.valid()) return pose;
     const glm::mat4 toTool = glm::inverse(toolWorld);
@@ -224,6 +229,15 @@ inline JointPose conformedHandPoseAt(const Warp::Stage& stage, const HandFingers
             if(glm::length(axis) > 1e-8f)
                 axes[j] = glm::normalize(glm::inverse(handpose::worldRotation(stage, finger[j], frame)) * glm::normalize(axis));
         }
+        //ZADNJI CLANAK (vrh prsta): rigovi obicno nemaju kost vrha. Clanak se uzme kao produzetak
+        //srednjeg u mirnom stanju, ali zapisan u sustavu zadnjeg zgloba - pa ga nosi rotacija zadnjeg
+        //zgloba (inace vrh ne prati savijanje zadnjeg zgloba i on uvijek ode do granice)
+        glm::vec3 tipLocal(0.0f);
+        {
+            const glm::vec3 last = handpose::at(stage, finger[count - 1], frame);
+            const glm::vec3 previous = count > 1 ? handpose::at(stage, finger[count - 2], frame) : glm::vec3(parentWorld[3]);
+            tipLocal = glm::inverse(glm::mat3(stage.worldMatrix(finger[count - 1], frame))) * ((last - previous) * 0.8f);
+        }
         std::vector<float> angles(count, 0.0f);
         //Tocke clanaka (u sustavu predmeta) za zadane kutove: zglob j do j+1, zadnji produzen
         auto segments = [&](const std::vector<float>& a){
@@ -235,12 +249,8 @@ inline JointPose conformedHandPoseAt(const Warp::Stage& stage, const HandFingers
                 world = world * local.matrix();
                 points.push_back(glm::vec3(toTool * world[3]));
             }
-            //Vrh: iz zadnjeg zgloba duz njegove kosti (smjer zadnjeg clanka)
-            const glm::vec3 last = points.back();
-            const glm::vec3 previous = count > 1 ? points[count - 2] : glm::vec3(toTool * glm::vec4(glm::vec3(parentWorld[3]), 1.0f));
-            const glm::vec3 direction = glm::length(last - previous) > 1e-6f ? glm::normalize(last - previous) : glm::vec3(0.0f);
-            const float tipScale = glm::length(glm::vec3(toTool[0]));
-            points.push_back(last + direction * lengths[count - 1] * tipScale);
+            //Vrh: zadnji clanak u sustavu zadnjeg zgloba (tipLocal)
+            points.push_back(glm::vec3(toTool * (world[3] + world * glm::vec4(tipLocal, 0.0f))));
             return points;
         };
         const float toolScale = glm::length(glm::vec3(toTool[0]));
@@ -253,39 +263,93 @@ inline JointPose conformedHandPoseAt(const Warp::Stage& stage, const HandFingers
             }
             return false;
         };
+        std::vector<float> maximum(count, 0.0f);
+        //Granica: preset x1.6 (da se drska moze obuhvatiti), ali ne preko anatomije - zglob sake 90,
+        //srednji 110, vrh 90 st; palac 50/60/80. Pistol (kaziprst 25/30/15) ostaje na okidacu
+        static constexpr float anatomy[2][3] = {{50.0f, 60.0f, 80.0f}, {90.0f, 110.0f, 90.0f}};
+        for(size_t j = 0; j < count; ++j) maximum[j] = std::min(anatomy[f == 0 ? 0 : 1][j], preset.curl[f][j] * 1.6f);
+        //1. Zglob koji vec dira drsku na nuli (palac u T-pozi lezi na strani dlana, tocno gdje sjeda
+        //drska) se ISPRUZI tek toliko da clanak izadje iz drske
         for(size_t j = 0; j < count; ++j){
-            const float maximum = std::min(115.0f, preset.curl[f][j] * 1.3f);
-            if(maximum <= 0.0f) continue;
-            //Vec u dodiru na nuli (palac u T-pozi lezi na strani dlana, tocno gdje sjeda drska):
-            //zglob se ISPRUZI tek toliko da clanak izadje iz drske, pa se nastavlja sa sljedecim
-            if(touches(angles, j)){
-                std::vector<float> trial = angles;
-                float free = 0.0f, stuck = 0.0f;
-                bool found = false;
-                for(float open = -5.0f; open >= -60.0f; open -= 5.0f){
-                    trial[j] = open;
-                    if(!touches(trial, j)){ free = open; found = true; break; }
-                    stuck = open;
-                }
-                if(!found) break;
-                for(int step = 0; step < steps; ++step){
-                    const float mid = 0.5f * (free + stuck);
-                    trial[j] = mid;
-                    if(touches(trial, j)) stuck = mid; else free = mid;
-                }
-                angles[j] = free;
-                continue;
-            }
-            float low = 0.0f, high = maximum;
+            if(maximum[j] <= 0.0f || !touches(angles, j)) continue;
             std::vector<float> trial = angles;
-            trial[j] = maximum;
-            if(!touches(trial, j)){ angles[j] = maximum; continue; }
-            for(int step = 0; step < steps; ++step){
-                const float mid = 0.5f * (low + high);
-                trial[j] = mid;
-                if(touches(trial, j)) high = mid; else low = mid;
+            float free = 0.0f, stuck = 0.0f;
+            bool found = false;
+            for(float open = -5.0f; open >= -60.0f; open -= 5.0f){
+                trial[j] = open;
+                if(!touches(trial, j)){ free = open; found = true; break; }
+                stuck = open;
             }
-            angles[j] = low;
+            if(!found) break;
+            for(int step = 0; step < steps; ++step){
+                const float mid = 0.5f * (free + stuck);
+                trial[j] = mid;
+                if(touches(trial, j)) stuck = mid; else free = mid;
+            }
+            angles[j] = free;
+        }
+        //2. SKLAPANJE KAO PRAVI PRST: svi zglobovi se savijaju zajedno u malim koracima (svaki prema
+        //svom najvecem kutu). Zglob stane kad bi neki clanak od njega prema vrhu usao u drsku, a
+        //ostali nastave - baza stane na drsci, srednji i vrh se omotaju oko nje. Savijanje jednog po
+        //jednog od baze to ne moze: dok se baza savija, ravan ostatak prsta prvi udari u drsku
+        const int increments = 48;
+        auto closeFrom = [&](std::vector<float> a){
+            for(int round = 0; round < increments * 4; ++round){
+                bool moved = false;
+                for(size_t j = 0; j < count; ++j){
+                    if(maximum[j] <= 0.0f || a[j] >= maximum[j]) continue;
+                    std::vector<float> trial = a;
+                    trial[j] = std::min(maximum[j], a[j] + maximum[j] / float(increments));
+                    if(touches(trial, j)) continue;
+                    a = trial;
+                    moved = true;
+                }
+                if(!moved) break;
+            }
+            //3. Dotjerivanje: svaki zglob jos do samog dodira (unutar zadnjeg koraka)
+            for(size_t j = 0; j < count; ++j){
+                if(maximum[j] <= 0.0f || a[j] >= maximum[j]) continue;
+                std::vector<float> trial = a;
+                float low = a[j], high = std::min(maximum[j], a[j] + maximum[j] / float(increments));
+                trial[j] = high;
+                if(!touches(trial, j)){ a[j] = high; continue; }
+                for(int step = 0; step < steps / 2; ++step){
+                    const float mid = 0.5f * (low + high);
+                    trial[j] = mid;
+                    if(touches(trial, j)) high = mid; else low = mid;
+                }
+                a[j] = low;
+            }
+            return a;
+        };
+        //Dobrota: ispruzeni zglobovi (krenuli u predmetu) i razmak vrha od predmeta
+        auto quality = [&](const std::vector<float>& a){
+            int opened = 0;
+            for(size_t j = 0; j < count; ++j) opened += a[j] < -1.0f ? 1 : 0;
+            const std::vector<glm::vec3> points = segments(a);
+            return float(opened) * 0.05f + collider.distance(points.back(), 0.2f * toolScale) / toolScale;
+        };
+        angles = closeFrom(angles);
+        //4. OD STISNUTE SAKE: prst koji je vec na pocetku u predmetu (ispruzen srednji prst kroz branik
+        //okidaca ispred rukohvata) ne moze se provuci savijanjem od otvorenog. Zato se isproba i obrnuto:
+        //od najveceg savijanja svi zglobovi se otvaraju zajedno dok prst ne izadje iz predmeta, pa opet
+        //sklapanje do dodira. Uzme se bolji od dva
+        {
+            std::vector<float> fromFist;
+            for(int k = increments; k >= 0; --k){
+                std::vector<float> trial(count);
+                for(size_t j = 0; j < count; ++j) trial[j] = std::max(0.0f, maximum[j]) * float(k) / float(increments);
+                if(!touches(trial, 0)){ fromFist = trial; break; }
+            }
+            if(!fromFist.empty()){
+                fromFist = closeFrom(fromFist);
+                if(quality(fromFist) < quality(angles) - 1e-4f) angles = fromFist;
+            }
+        }
+        if(report && preset.curl[f][0] > 30.0f){
+            for(size_t j = 0; j < count; ++j) report->opened += angles[j] < -1.0f ? 1 : 0;
+            const std::vector<glm::vec3> points = segments(angles);
+            report->tipGap += collider.distance(points.back(), 0.2f * toolScale) / toolScale;
         }
         for(size_t j = 0; j < count; ++j){
             Warp::Transform local = locals[j];
@@ -305,7 +369,28 @@ inline size_t syncHoldHandLayers(Warp::Stage& stage, Warp::Id rig, const std::ve
                                  double closeFrames = 6.0,
                                  const std::function<const Engine::Physics::Collider*(Warp::Id item)>& colliderFor = {}){
     Warp::Entity* rigEntity = stage.get(rig);
-    if(!rigEntity || !rigEntity->animator || rigEntity->animator->animations.empty()) return 0;
+    if(!rigEntity || !rigEntity->animator) return 0;
+    auto onRigBone = [&](Warp::Id bone){
+        for(Warp::Id walk = bone; walk != Warp::None;){
+            if(walk == rig) return true;
+            const Warp::Entity* e = stage.get(walk);
+            walk = e ? e->parent : Warp::None;
+        }
+        return false;
+    };
+    //Lik bez animacije (tek uvezen) ipak drzi predmet: prazan klip "Pose" preko scene nosi slojeve
+    //prstiju, osnova je mirna poza
+    if(rigEntity->animator->animations.empty()){
+        bool held = false;
+        stage.walk([&](const Warp::Entity& item, int){ for(const Warp::Hold& hold : item.holds) held = held || onRigBone(hold.hand); });
+        if(!held) return 0;
+        Warp::AnimationClip pose;
+        pose.name = "Pose";
+        pose.startFrame = stage.startFrame;
+        pose.endFrame = std::max(stage.endFrame, stage.startFrame + 1.0);
+        stage.get(rig)->animator->animations.push_back(pose);
+        stage.get(rig)->animator->activeAnimation = 0;
+    }
     const size_t clipIndex = std::min(rigEntity->animator->activeAnimation, rigEntity->animator->animations.size() - 1);
     auto isHoldLayer = [](const Warp::AnimationLayer& layer){ return layer.name.rfind("Hold: ", 0) == 0; };
     {

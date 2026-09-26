@@ -142,9 +142,13 @@ int main(){
                                                      glm::vec3(toTool * glm::vec4(at(stage, finger[j + 1]), 1.0f)), 0.004f)));
             }
         }
-        if(f > 0) farthest = std::max(farthest, collider.distance(glm::vec3(toTool * glm::vec4(at(held, finger.back()), 1.0f)), 0.3f));
+        //Vrh: zadnji clanak (produzetak srednjeg u mirnoj pozi) nosen rotacijom zadnjeg zgloba
+        const glm::vec3 restTip = (at(stage, finger.back()) - at(stage, finger[finger.size() - 2])) * 0.8f;
+        const glm::vec3 tip = at(held, finger.back()) + glm::mat3(held.worldMatrix(finger.back(), 1.0)) *
+                              (glm::inverse(glm::mat3(stage.worldMatrix(finger.back(), 1.0))) * restTip);
+        if(f > 0) farthest = std::max(farthest, collider.distance(glm::vec3(toTool * glm::vec4(tip, 1.0f)), 0.3f));
     }
-    report.check("drska u saci: prsti bez prodora, zadnji zglobovi uz drsku", framed && !penetrates && farthest < 0.025f,
+    report.check("drska u saci: prsti bez prodora, vrhovi uz drsku (linija kosti do 1.2 cm)", framed && !penetrates && farthest < 0.012f,
                  fmt("prodor %d, najdalji zglob %.1f cm", int(penetrates), farthest * 100.0f));
 
     //Mirne sake na Manny mascotu
