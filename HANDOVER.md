@@ -762,6 +762,25 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
      materijalu nego **regeneracija/kompakcija putanja** (traka koja završi počne novi uzorak) —
      sljedeći korak, potvrditi `--profil` brojkama na pravoj kartici.
 
+- **Magla — visina, ekviangularno, šum (26.9.):**
+  1. **Eksponencijalna magla po visini** (Add → *Height Fog*, `Volume::Shape::Height`, USD
+     `loom:volumeShape "height"`, `loom:volumeHeight`): σ = d0·e^(−h/visina) iznad ravnine entiteta
+     (os +Y entiteta), beskonačna u širinu. Optička debljina analitička (i za zrake do neba),
+     slobodni put Newton + bisekcija na zbroju svih medija. **Holdout magle**: na kameri magla staje
+     na stvarnoj plohi iz splata (bez magle "iza zida"). **Dvostruki HG** (g, g2, udio): sjaj oko
+     sunca i povratno raspršenje kapljica. Vodoravno 0.5459 / 0.5452, gore 0.7495 / 0.7496, peć 0.9997.
+  2. **Ekviangularno uzorkovanje** (Kulla & Fajardo) prema lokalnim svjetlima, **MIS triju
+     strategija** (ekviangularno + svjetlo, slobodni put + svjetlo/RIS, slobodni put + faza) —
+     sve gustoće izračunljive, nepristrano. Svjetlo za odsječak bira stablo po **cijelom odsječku**
+     (`chooseLightOnSegment`: čvor u najbližoj točki zrake, važnost ~1/D). Raspršenje s kamerine
+     zrake ide u cg **bez pokrivenosti** (`PathResult::inscatter`). Točkasto svjetlo u magli =
+     numerički integral (0.17277), **šum 12× manji** na 16 spp; `--bez-ekviangularnog` za usporedbu.
+  3. **Nehomogena kutija**: meki rub (`loom:volumeEdge`) i šum gustoće (`loom:volumeNoise`,
+     `loom:volumeNoiseScale`, 4 oktave vrijednosnog šuma u mjerilu kutije). **Delta tracking** po
+     majoranti (homogeno ostaje analitički), zrake sjene **ratio tracking** s ruskim ruletom. Meki
+     rub 0.5713 / e^−0.56 = 0.5712, ratio/delta = kvadratura (±0.003), peć sa šumom 0.9987.
+  `test_tracer_volume` 25/25 (procesor i kartica).
+
 **Što dalje:**
 1. **Izmjeriti pravu karticu** (`loom-render projekt.usda --profil`) — sve dosad je lavapipe, gdje su
    i "hardverske" zrake softverske (ray query 11.1 ms prema BVH 9.2 ms po uzorku).
@@ -776,7 +795,9 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
   šumne — kao Cycles bez caustics trikova.
 - Prilagodljivo uzorkovanje zaustavlja po procijenjenoj varijanci (piksel i susjedi): područje u
   kojem SVI pikseli rijetko pogode svijetli događaj još može stati malo pretamno (−0.14 %).
-- Magla je jednolika u kutiji (nema VDB-a ni šuma gustoće); u prozoru pogleda se vidi samo kutija.
+- Magla: nema VDB-a (šum je proceduralan); majoranta je jedna po kutiji (d·(1+šum)) — u rijetkom
+  šumu puno praznih koraka delta trackinga. U prozoru pogleda vidi se samo kutija / gizmo visinske
+  magle, ne sama magla (treba composite s dubinom preko splata i mreža).
 - Filtar nije OIDN: na 64+ uzoraka čisti, na 4–16 ostavlja mrlje; sirovi CG je uvijek u EXR-u.
 - Catcher pod u neizravnom svjetlu uzima albedo ≈ linearni piksel snimke (pretpostavka jedinične
   rasvjete poda) — boja se prelije ispravno, jakost je približna.
