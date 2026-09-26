@@ -26,7 +26,24 @@ Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
 3. **Faza 3: `ProceduraGen`** — headless C++ program: sampler recepata iz gramatike, evaluate, validatori pravila,
    petlja Pass / Fail → Why → Retry, JSONL zapis (prompt + akcije + metrike + seed + verzija), popravci kao primjeri.
 4. **Faza 4** — korisnik piše ~200 held-out promptova (hr/en).
-5. **Faza 5** — model 3–5M, zamrznuti višejezični encoder (kandidati: multilingual-e5, bge-m3), maskiranje akcija.
+5. **Faza 5** — mali modeli 3–5M, zamrznuti višejezični encoder (kandidati: multilingual-e5, bge-m3), maskiranje akcija.
+   **Arhitektura (dogovor s korisnikom 2026-09-26):** više malih specijaliziranih modela na zajedničkom zamrznutom
+   encoderu, podijeljenih po jeziku koji pišu, ne po kategoriji:
+   - **Zgrade**: Footprint, FloorStack, RoomSplit, Walls, Slab, Roof, Interior (čvorovi srednje razine).
+   - **Raspored**: bira stil, gustoću, parametre i iznimke za `Furnish` ("stol uz prozor", "bez TV-a"); položaje
+     i dalje daju pravila. Kasnije i ulica, dvorište, rekviziti po sceni.
+   - **Objekti (asseti)**: novi `.loomasset.json` iz primitiva s parametrima i `bounds`. Namještaj, alati i oružje
+     su isti jezik → jedan model s kategorijom kao ulazom; zaseban model za neku kategoriju samo ako held-out
+     pokaže da joj zajedničko učenje šteti.
+   - **Konektori su podaci, ne veze između mreža**: Footprint s planom (zgrade → raspored), Placements (raspored →
+     scena), zahtjev za asset (kategorija + bounds + stil → objekt). Validator provjerava svaku granicu, pa
+     Fail → Why → Retry radi i između modela; svaki model se trenira zasebno.
+   - **Stil** (npr. "rustikalno") putuje kroz konektor kao nekoliko parametara/tokena, da zgrada i namještaj budu
+     usklađeni.
+   - **Usmjerivač**: mali klasifikator na izlazu encodera (ili pravilo); za složene promptove planer koji rastavi
+     prompt na podzadatke ("kuća s mačem na zidu" → zgrada + raspored + objekt).
+   - **Provjera**: na istim podacima jedan zajednički model protiv specijaliziranih, na held-out promptovima iz
+     faze 4; mjeri se udio koji prolazi validatore i broj Retry pokušaja.
 6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
 
 ## Prošle
