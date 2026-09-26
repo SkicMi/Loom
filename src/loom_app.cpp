@@ -190,6 +190,10 @@ std::string kindOf(const Warp::Entity& entity){
     if(entity.camera) return "Camera";
     if(entity.points) return "Point Cloud";
     if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "Cube" : "Plane";
+    if(entity.light){
+        const char* names[] = {"Sun Light", "Point Light", "Spot Light", "Area Light", "Sky Dome"};
+        return names[int(entity.light->type)];
+    }
     if(entity.splat) return "Gaussian Splat";
     if(entity.joint) return "Joint";
     if(entity.model) return "Model (glTF)";
@@ -198,6 +202,7 @@ std::string kindOf(const Warp::Entity& entity){
 
 Treadle::Color sceneAccent(const Warp::Entity& entity){
     if(entity.camera) return {0.18f, 0.88f, 1.0f, 1.0f};
+    if(entity.light) return {1.0f, 0.86f, 0.35f, 1.0f};
     if(entity.splat) return {0.94f, 0.42f, 0.96f, 1.0f};
     if(entity.joint) return {1.0f, 0.55f, 0.23f, 1.0f};
     if(entity.points) return {0.40f, 0.94f, 0.56f, 1.0f};
@@ -208,6 +213,7 @@ Treadle::Color sceneAccent(const Warp::Entity& entity){
 
 std::string sceneTag(const Warp::Entity& entity){
     if(entity.camera) return "CAM";
+    if(entity.light) return entity.light->type == Warp::Light::Type::Dome ? "SKY" : "LIGHT";
     if(entity.splat) return "SPLAT";
     if(entity.joint) return "BONE";
     if(entity.points) return "POINTS";
@@ -348,7 +354,7 @@ int main(int argc, char** argv){
 
     float mediaScroll = 0.0f, hierarchyScroll = 0.0f, propertiesScroll = 0.0f;
     bool outlineVisible = true, componentsVisible = true, timelineVisible = true;
-    bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true;
+    bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true, lightExpanded = true;
     bool pointsExpanded = true, splatExpanded = true, splatCutExpanded = true, materialExpanded = false;
     RailPane activeRailPane = RailPane::None;
     std::string message;                  //zadnja poruka korisniku, u alatnoj traci
@@ -1807,6 +1813,56 @@ int main(int argc, char** argv){
         selected = id;
         focus = Focus::Entity;
     };
+    //SVJETLO u sceni (Warp::Light): iznad sredine scene, jakost iz velicine scene - solve nema metre,
+    //pa bi "1" bilo ili nevidljivo ili bijelo. Lampa daje ozracenost ~2 na sredini, sunce 3
+    auto addLight = [&](Warp::Light::Type type, Warp::Id parent){
+        const char* names[] = {"Sun", "Point Light", "Spot Light", "Area Light", "Sky Dome"};
+        const Warp::Id id = stage.create(names[int(type)], parent);
+        Warp::Entity& entity = *stage.get(id);
+        Warp::Light light;
+        light.type = type;
+        const float height = std::max(1e-3f, extent.radius * 0.8f);
+        glm::vec3 place = extent.centre + glm::vec3(0.0f, height, 0.0f);
+        glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
+        const glm::quat down = Loom::detail::rotationBetween(glm::vec3(0, 0, 1), glm::vec3(0, 1, 0));   //-Z prema dolje
+        switch(type){
+        case Warp::Light::Type::Distant:
+            light.intensity = 3.0f;
+            rotation = Loom::detail::rotationBetween(glm::vec3(0, 0, 1), Loom::sunDirection(50.0f, 135.0f));
+            break;
+        case Warp::Light::Type::Sphere:
+            light.intensity = 2.0f * height * height;
+            light.radius = extent.radius * 0.03f;
+            break;
+        case Warp::Light::Type::Spot:
+            light.intensity = 4.0f * height * height;
+            light.radius = extent.radius * 0.02f;
+            rotation = down;
+            break;
+        case Warp::Light::Type::Rect:
+            light.intensity = 4.0f;
+            light.width = light.height = extent.radius * 0.5f;
+            rotation = down;
+            break;
+        case Warp::Light::Type::Dome:
+            place = glm::vec3(0.0f);
+            break;
+        }
+        entity.light = light;
+        const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
+        entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(place, 1.0f));
+        entity.local.rotation = glm::normalize(glm::quat_cast(glm::inverse(glm::mat3(parentWorld))) * rotation);
+        selected = id;
+        focus = Focus::Entity;
+        message = std::string("Added ") + names[int(type)] + (type == Warp::Light::Type::Dome ? " - Render > Sky 'Scene' uses it" : "");
+    };
+    auto addLightMenu = [&](Warp::Id parent){
+        if(ui.menuItem("Sun Light")) addLight(Warp::Light::Type::Distant, parent);
+        if(ui.menuItem("Point Light")) addLight(Warp::Light::Type::Sphere, parent);
+        if(ui.menuItem("Spot Light")) addLight(Warp::Light::Type::Spot, parent);
+        if(ui.menuItem("Area Light")) addLight(Warp::Light::Type::Rect, parent);
+        if(ui.menuItem("Sky Dome")) addLight(Warp::Light::Type::Dome, parent);
+    };
     auto applyAiEngineAction = [&](const Loom::OpenCodeActionRequest& action, std::string& result){
         const auto& args = action.arguments;
         auto onlyKeys = [&](std::initializer_list<const char*> allowed){
@@ -2801,7 +2857,25 @@ int main(int argc, char** argv){
                 ui.separator();
                 ui.label("LIGHT");
                 int sky = int(renderOptions.sky);
-                if(ui.choice("Sky", {"Sun+Sky", "HDRI", "Flat"}, &sky)) renderOptions.sky = Loom::RenderOptions::Sky(sky);
+                if(ui.choice("Sky", {"Sun+Sky", "HDRI", "Flat", "Scene"}, &sky)) renderOptions.sky = Loom::RenderOptions::Sky(sky);
+                size_t sceneLights = 0;
+                stage.walk([&](const Warp::Entity& e, int){ if(e.visible && e.light) ++sceneLights; });
+                ui.value("Scene lights", std::to_string(sceneLights));
+                //SVJETLO IZ SNIMKE: relight.py uz splat nauci sunce i nebo; ovdje postanu entiteti scene
+                if(ui.button("Light From Footage")){
+                    const std::string json = Loom::findRelightJson(stage);
+                    if(json.empty()){
+                        message = "No <splat>_svjetlo.json next to the splat - run tools/splat/relight.py first";
+                    }else{
+                        const Warp::Entity* cameraEntity = stage.get(renderOptions.camera != Warp::None ? renderOptions.camera : firstCamera());
+                        const Loom::RelightImport imported = Loom::importRelight(stage, json, cameraEntity ? cameraEntity->parent : Warp::None);
+                        if(imported.problem.empty()){
+                            renderOptions.sky = Loom::RenderOptions::Sky::Scene;
+                            selected = imported.sun;
+                            message = "Sun and sky from footage added (Sky = Scene): " + fs::path(json).filename().string();
+                        }else message = imported.problem;
+                    }
+                }
                 if(renderOptions.sky == Loom::RenderOptions::Sky::Physical){
                     ui.slider("Sun Elevation", &renderOptions.sunElevation, -5.0f, 90.0f, "deg");
                     ui.slider("Sun Azimuth", &renderOptions.sunAzimuth, 0.0f, 360.0f, "deg");
@@ -3456,6 +3530,39 @@ int main(int argc, char** argv){
                         char plateText[64];
                         std::snprintf(plateText, sizeof(plateText), "%lld", (long long)plateShown);
                         if(view.lookThrough == entity->id && showPlate) ui.value("Plate Frame", plateText);
+                    }
+                }
+                if(entity->light && ui.componentHeader("LIGHT", {1.0f, 0.86f, 0.35f, 1.0f}, &lightExpanded)){
+                    Warp::Light& l = *entity->light;
+                    int type = int(l.type);
+                    if(ui.choice("Type", {"Sun", "Point", "Spot", "Area", "Dome"}, &type)) l.type = Warp::Light::Type(type);
+                    float colour[3] = {l.color.r, l.color.g, l.color.b};
+                    if(ui.dragVector("Color", colour, 0.004f))
+                        l.color = glm::clamp(glm::vec3(colour[0], colour[1], colour[2]), glm::vec3(0.0f), glm::vec3(10.0f));
+                    if(ui.dragFloat("Intensity", &l.intensity, 0.01f * std::max(1.0f, l.intensity))) l.intensity = std::max(0.0f, l.intensity);
+                    const char* unit = l.type == Warp::Light::Type::Distant ? "irradiance (sun strength)"
+                                     : l.type == Warp::Light::Type::Rect ? "surface radiance"
+                                     : l.type == Warp::Light::Type::Dome ? "sky multiplier" : "intensity: E = I / d^2";
+                    ui.label(Treadle::fitText(unit, layout.properties.width - 30.0f, theme.textScale * 0.8f));
+                    if(l.type == Warp::Light::Type::Distant) ui.slider("Angular Size", &l.angle, 0.0f, 10.0f, "deg");
+                    if(l.type == Warp::Light::Type::Sphere || l.type == Warp::Light::Type::Spot)
+                        if(ui.dragFloat("Radius", &l.radius, 0.001f * std::max(1e-3f, extent.radius))) l.radius = std::max(0.0f, l.radius);
+                    if(l.type == Warp::Light::Type::Spot){
+                        ui.slider("Cone Angle", &l.coneAngle, 1.0f, 90.0f, "deg");
+                        ui.slider("Softness", &l.coneSoftness, 0.0f, 1.0f);
+                    }
+                    if(l.type == Warp::Light::Type::Rect){
+                        if(ui.dragFloat("Width", &l.width, 0.002f * std::max(1e-3f, extent.radius))) l.width = std::max(1e-5f, l.width);
+                        if(ui.dragFloat("Height", &l.height, 0.002f * std::max(1e-3f, extent.radius))) l.height = std::max(1e-5f, l.height);
+                    }
+                    if(l.type == Warp::Light::Type::Dome){
+                        Treadle::Ui::TextFieldConfig hdri;
+                        hdri.placeholder = "HDRI path (empty: gradient)";
+                        ui.textField("dome-hdri-" + std::to_string(entity->id), &l.texture, hdri);
+                        float top[3] = {l.skyTop.r, l.skyTop.g, l.skyTop.b}, bottom[3] = {l.skyBottom.r, l.skyBottom.g, l.skyBottom.b};
+                        if(ui.dragVector("Sky Top", top, 0.004f)) l.skyTop = glm::max(glm::vec3(top[0], top[1], top[2]), glm::vec3(0.0f));
+                        if(ui.dragVector("Sky Bottom", bottom, 0.004f)) l.skyBottom = glm::max(glm::vec3(bottom[0], bottom[1], bottom[2]), glm::vec3(0.0f));
+                        ui.label(Treadle::fitText("Used when Render > Sky is 'Scene'", layout.properties.width - 30.0f, theme.textScale * 0.8f));
                     }
                 }
                 if(entity->points && ui.componentHeader("POINT CLOUD", {0.43f, 0.92f, 0.54f, 1.0f}, &pointsExpanded)){
@@ -4419,6 +4526,8 @@ int main(int argc, char** argv){
                 if(ui.menuItem("Camera from View")) addCameraHere(menuEntity);
                 if(ui.menuItem("Empty")) addEmpty(menuEntity);
                 ui.menuSeparator();
+                addLightMenu(menuEntity);
+                ui.menuSeparator();
                 if(ui.menuItem("Import...  (Ctrl+I)")) openImporter();
                 ui.endMenu();
             }
@@ -4431,6 +4540,8 @@ int main(int argc, char** argv){
                 if(ui.menuItem("Add Cube")) addMesh(Warp::Shape::Cube, Warp::None);
                 if(ui.menuItem("Add Plane")) addMesh(Warp::Shape::Plane, Warp::None);
                 if(ui.menuItem("Add Empty")) addEmpty(Warp::None);
+                ui.menuSeparator();
+                addLightMenu(Warp::None);
                 ui.endMenu();
             }
         }
@@ -4469,6 +4580,8 @@ int main(int argc, char** argv){
                 if(ui.menuItem("Cube Here")) addMeshAt(Warp::Shape::Cube, Warp::None, menuPixel, true);
                 if(ui.menuItem("Plane Here")) addMeshAt(Warp::Shape::Plane, Warp::None, menuPixel, true);
                 if(ui.menuItem("Camera from View")) addCameraHere(Warp::None);
+                ui.menuSeparator();
+                addLightMenu(Warp::None);
                 ui.menuSeparator();
                 if(ui.menuItem("Import...  (Ctrl+I)")) openImporter();
                 ui.endMenu();

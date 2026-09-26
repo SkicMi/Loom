@@ -44,6 +44,7 @@ void usage(){
         "  --dubina --bez-dubine --normale --albedo --bez-filtra\n"
         "  --sunce E A J  --velicina-sunca STUP  --zamucenost T  --nebo L\n"
         "  --hdri DATOTEKA --hdri-jakost J --hdri-rotacija STUP  --jednoliko\n"
+        "  --scena               nebo i svjetla samo iz scene (kupola, sunce, lampe)\n"
         "  --agx --ekspozicija EV --bez-exr --bez-png --dretve N\n"
         "  --procesor            racunaj na procesoru i kad kartica postoji\n"
         "  --post                post s zadanim (bloom 0.04, vinjeta 0.15); ili pojedinacno:\n"
@@ -95,6 +96,7 @@ int main(int argc, char** argv){
         else if(a == "--hdri-jakost") options.hdriIntensity = float(number(i));
         else if(a == "--hdri-rotacija") options.hdriRotation = float(number(i));
         else if(a == "--jednoliko") options.sky = Loom::RenderOptions::Sky::Uniform;
+        else if(a == "--scena") options.sky = Loom::RenderOptions::Sky::Scene;
         else if(a == "--agx") options.view = Tracer::ViewTransform::AgX;
         else if(a == "--ekspozicija") options.exposure = float(number(i));
         else if(a == "--bez-exr") options.writeExr = false;

@@ -198,6 +198,29 @@ struct Joint{
     glm::vec3 colour{0.35f, 0.75f, 1.0f};
 };
 
+//SVJETLO - isti oblik kao UsdLux, pa ga Blender/Houdini/Nuke procitaju kao svjetlo. Svijetli niz
+//lokalnu -Z os (sunce, reflektor, pravokutnik), kupola neba ima gore u lokalnoj +Y.
+//
+//JEDINICE su Loomove (LoomTracer, vidi tracer/Scene.h), ne UsdLuxove fotometrijske:
+//   Distant   intensity * color = ozracenost okomite plohe (Blenderova jakost sunca)
+//   Sphere    intenzitet: ozracenost na udaljenosti d je I / d^2; radius > 0 daje meke sjene
+//   Spot      kao Sphere, u stoscu coneAngle s mekim rubom coneSoftness
+//   Rect      radijancija svijetle plohe width x height (lokalno XY), svijetli samo prema -Z
+//   Dome      nebo: HDRI (texture) ili gradijent skyBottom -> skyTop, puta intensity
+struct Light{
+    enum class Type{ Distant, Sphere, Spot, Rect, Dome };
+    Type type = Type::Sphere;
+    glm::vec3 color{1.0f};
+    float intensity = 1.0f;
+    float radius = 0.0f;
+    float angle = 0.53f;                //Distant: kutni promjer u stupnjevima (sunce 0.53)
+    float coneAngle = 45.0f;            //Spot: polukut u stupnjevima
+    float coneSoftness = 0.15f;         //Spot: udio stosca u kojem svjetlo mekano pada
+    float width = 1.0f, height = 1.0f;  //Rect
+    std::string texture;                //Dome: HDRI; prazno = gradijent
+    glm::vec3 skyTop{0.55f, 0.65f, 0.85f}, skyBottom{0.18f, 0.16f, 0.14f};
+};
+
 //Istrenirani gaussian splat, kao put do .ply
 struct Splat{
     std::string path;
@@ -223,6 +246,7 @@ struct Entity{
     std::optional<Joint> joint;
     std::optional<Model> model;
     std::optional<Animator> animator;
+    std::optional<Light> light;
 
     bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty() ||
                                   (animator && animator->enabled && !animator->animations.empty());}

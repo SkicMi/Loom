@@ -52,7 +52,7 @@ struct Material{
     float4 layers;          // specular, transmission, clearcoat, clearcoatRoughness
     float4 emission;        // rgb * strength, alphaCutoff
     int4 textures;          // baseColor, metallicRoughness, normal, emission
-    uint4 mode;             // alphaMode (0 opaque, 1 mask, 2 blend)
+    uint4 mode;             // alphaMode (0 opaque, 1 mask, 2 blend), emisija s obje strane (1)
 };
 
 struct Light{
@@ -733,10 +733,10 @@ bool sampleLight(Params P, float3 p, float choice, float2 u, out LightSample ls)
     const float dist = sqrt(dist2);
     ls.wi = toLight / dist;
     const float3 nl = normalize(cross(e1, e2));
-    const float cosLight = abs(dot(nl, ls.wi));
-    if(cosLight < 1e-6) return false;
     const uint original = asuint(triangles[slot * 3].w);
     const Material m = materials[triangleInfo[original].w];
+    const float cosLight = m.mode.y != 0 ? abs(dot(nl, ls.wi)) : -dot(nl, ls.wi);
+    if(cosLight < 1e-6) return false;
     float3 emitted = m.emission.rgb;
     if(m.textures.w >= 0) emitted *= sampleTexture(uint(m.textures.w), uvOf(original, b1, b2)).rgb;
     ls.value = emitted;
@@ -1016,7 +1016,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             }
         }
 
-        if(luminance(emitted) > 0.0){
+        if(luminance(emitted) > 0.0 && (material.mode.y != 0 || outside)){
             float w = 1.0;
             if(depth > 0 && emitter != NONE){
                 const Light l = lights[emitter];

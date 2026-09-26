@@ -171,7 +171,8 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
         g.layers = glm::vec4(m.specular, m.transmission, m.clearcoat, m.clearcoatRoughness);
         g.emission = glm::vec4(m.emission * m.emissionStrength, m.alphaCutoff);
         g.textures = glm::ivec4(m.baseColorTexture, m.metallicRoughnessTexture, m.normalTexture, m.emissionTexture);
-        g.mode = glm::uvec4(m.alphaMode == Tracer::Material::Alpha::Mask ? 1u : m.alphaMode == Tracer::Material::Alpha::Blend ? 2u : 0u, 0, 0, 0);
+        g.mode = glm::uvec4(m.alphaMode == Tracer::Material::Alpha::Mask ? 1u : m.alphaMode == Tracer::Material::Alpha::Blend ? 2u : 0u,
+                            m.emissionTwoSided ? 1u : 0u, 0, 0);
         materials.push_back(g);
     }
 

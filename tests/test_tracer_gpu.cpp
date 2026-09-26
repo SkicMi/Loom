@@ -189,6 +189,30 @@ int main(){
         report.check("svijetli kvadrat", std::abs(v - expected) < expected * 0.015f, fmt("%.5f, ocekivano %.5f", v, expected));
     }
 
+    //-- 2b. jednostrani svijetli pravokutnik: licem daje faktor oblika, nalicjem nista ------------------
+    for(bool facing : {true, false}){
+        Tracer::Scene scene;
+        Tracer::Material floor; floor.baseColor = glm::vec3(1.0f); floor.specular = 0.0f;
+        scene.addMesh(Tracer::unitPlane(), glm::scale(glm::mat4(1.0f), glm::vec3(0.02f)), scene.addMaterial(floor));
+        Tracer::Material lamp; lamp.baseColor = glm::vec3(0.0f); lamp.specular = 0.0f; lamp.emission = glm::vec3(1.0f);
+        lamp.emissionTwoSided = false;
+        Tracer::ObjectFlags hidden; hidden.cameraVisible = false; hidden.castsShadows = false;
+        //unitPlane gleda +Y; zakret za pi oko X ga okrene dolje (licem prema podu)
+        scene.addMesh(Tracer::unitPlane(), glm::translate(glm::mat4(1.0f), glm::vec3(0, 1, 0)) *
+                      glm::rotate(glm::mat4(1.0f), facing ? glm::pi<float>() : 0.0f, glm::vec3(1, 0, 0)) * glm::scale(glm::mat4(1.0f), glm::vec3(2.0f)),
+                      scene.addMaterial(lamp), "lampa", hidden);
+        scene.camera = lookAt({0.3f, 0.4f, 0.0f}, {0, 0, 0}, 5, 5, 4000.0f);
+        const Tracer::Frame f = onCard(loom, pipelines, std::move(scene), facing ? 1024 : 64);
+        const float v = f.cg[(2 * 5 + 2) * 4 + 1];
+        auto corner = [](float x, float y){
+            const float sx = std::sqrt(1.0f + x * x), sy = std::sqrt(1.0f + y * y);
+            return (x / sx * std::atan(y / sx) + y / sy * std::atan(x / sy)) / (2.0f * glm::pi<float>());
+        };
+        const float expected = facing ? 4.0f * corner(1.0f, 1.0f) : 0.0f;
+        report.check(facing ? "jednostrano: lice" : "jednostrano: nalicje", std::abs(v - expected) < 0.015f * std::max(expected, 0.01f) + 1e-6f,
+                     fmt("%.5f, ocekivano %.5f", v, expected));
+    }
+
     //-- 3. projekcija i dubina -----------------------------------------------------------------------
     {
         Tracer::Scene scene;

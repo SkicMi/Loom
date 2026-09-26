@@ -217,9 +217,10 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             const float dist = std::sqrt(dist2);
             out.wi = toLight / dist;
             const glm::vec3 nl = glm::normalize(glm::cross(b - a, c - a));
-            const float cosLight = std::abs(glm::dot(nl, out.wi));
-            if(cosLight < 1e-6f) return false;
             const Material& m = world.materials[t.material];
+            //Jednostrano svjetlo (pravokutnik) svijetli samo prema svojoj prednjoj strani
+            const float cosLight = m.emissionTwoSided ? std::abs(glm::dot(nl, out.wi)) : -glm::dot(nl, out.wi);
+            if(cosLight < 1e-6f) return false;
             glm::vec3 emitted = m.emission * m.emissionStrength;
             if(m.emissionTexture >= 0)
                 emitted *= glm::vec3(world.textures[size_t(m.emissionTexture)].sample(uvAt(t, b1, b2)));
@@ -459,7 +460,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         }
 
         //Svijetleca ploha pogodjena izravno ili odbijanjem
-        if(luminance(emitted) > 0.0f){
+        if(luminance(emitted) > 0.0f && (material.emissionTwoSided || outside)){
             float w = 1.0f;
             if(depth > 0 && emitterOfTriangle[hit.triangle] >= 0){
                 const LightRecord& light = lights[size_t(emitterOfTriangle[hit.triangle])];

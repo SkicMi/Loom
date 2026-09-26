@@ -76,6 +76,7 @@ struct Material{
     glm::vec3 emission{0.0f};
     float emissionStrength = 1.0f;
     int emissionTexture = -1;
+    bool emissionTwoSided = true;               //false: svijetli samo prednja strana (normale vrhova)
     enum class Alpha{ Opaque, Mask, Blend };
     Alpha alphaMode = Alpha::Opaque;
     float alphaCutoff = 0.5f;

@@ -301,6 +301,81 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
         });
     }
 
+    //-- svjetla: sunce (krug i strelica), lampa (tri kruga), reflektor (stozac), panel (okvir i
+    //   normala), kupola (dva luka). Velicina iz scene, jer solve nema metre
+    if(state.showCameras){
+        stage.walk([&](const Warp::Entity& entity, int){
+            if(!entity.visible || !entity.light) return;
+            const glm::mat4 world = stage.worldMatrix(entity.id, frame);
+            const Warp::Light& l = *entity.light;
+            const bool isSelected = entity.id == selected;
+            const Treadle::Color colour = isSelected ? accent : Treadle::Color{1.0f, 0.86f, 0.35f, 0.9f};
+            const float thickness = isSelected ? 2.2f : 1.4f;
+            const glm::vec3 at(world[3]);
+            const glm::vec3 forward = glm::normalize(glm::mat3(world) * glm::vec3(0.0f, 0.0f, -1.0f));
+            const float size = std::max(1e-4f, extent.radius * 0.06f);
+            auto circle = [&](const glm::vec3& centre, const glm::vec3& axis, float radius){
+                const glm::vec3 a = glm::normalize(std::abs(axis.y) < 0.9f ? glm::cross(axis, glm::vec3(0, 1, 0)) : glm::cross(axis, glm::vec3(1, 0, 0)));
+                const glm::vec3 b = glm::cross(axis, a);
+                const int n = 20;
+                for(int i = 0; i < n; ++i){
+                    const float t0 = 6.2831853f * float(i) / float(n), t1 = 6.2831853f * float(i + 1) / float(n);
+                    segment(list, camera, centre + (a * std::cos(t0) + b * std::sin(t0)) * radius,
+                            centre + (a * std::cos(t1) + b * std::sin(t1)) * radius, thickness, colour);
+                }
+            };
+            switch(l.type){
+            case Warp::Light::Type::Distant:
+                circle(at, forward, size);
+                segment(list, camera, at, at + forward * size * 4.0f, thickness, colour);
+                for(int k = 0; k < 4; ++k){
+                    const glm::vec3 side = glm::normalize(glm::cross(forward, k % 2 ? glm::vec3(0, 1, 0.01f) : glm::vec3(1, 0.01f, 0)));
+                    const glm::vec3 offset = side * (k < 2 ? size : -size);
+                    segment(list, camera, at + offset, at + offset + forward * size * 2.0f, 1.0f, colour);
+                }
+                break;
+            case Warp::Light::Type::Sphere:{
+                const float r = std::max(size * 0.5f, l.radius * glm::length(glm::vec3(world[0])));
+                circle(at, glm::vec3(1, 0, 0), r); circle(at, glm::vec3(0, 1, 0), r); circle(at, glm::vec3(0, 0, 1), r);
+                break;
+            }
+            case Warp::Light::Type::Spot:{
+                const float length = size * 4.0f;
+                const float radius = length * std::tan(glm::radians(std::clamp(l.coneAngle, 1.0f, 85.0f)));
+                const glm::vec3 base = at + forward * length;
+                circle(base, forward, radius);
+                const glm::vec3 a = glm::normalize(std::abs(forward.y) < 0.9f ? glm::cross(forward, glm::vec3(0, 1, 0)) : glm::cross(forward, glm::vec3(1, 0, 0)));
+                const glm::vec3 b = glm::cross(forward, a);
+                for(const glm::vec3& d : {a, -a, b, -b}) segment(list, camera, at, base + d * radius, thickness, colour);
+                break;
+            }
+            case Warp::Light::Type::Rect:{
+                const float hw = 0.5f * l.width, hh = 0.5f * l.height;
+                const glm::vec3 c[4] = {glm::vec3(world * glm::vec4(-hw, -hh, 0, 1)), glm::vec3(world * glm::vec4(hw, -hh, 0, 1)),
+                                        glm::vec3(world * glm::vec4(hw, hh, 0, 1)), glm::vec3(world * glm::vec4(-hw, hh, 0, 1))};
+                for(int i = 0; i < 4; ++i) segment(list, camera, c[i], c[(i + 1) % 4], thickness, colour);
+                segment(list, camera, c[0], c[2], 1.0f, colour);
+                segment(list, camera, at, at + forward * size * 3.0f, thickness, colour);
+                break;
+            }
+            case Warp::Light::Type::Dome:{
+                const glm::vec3 up = glm::normalize(glm::mat3(world) * glm::vec3(0, 1, 0));
+                circle(at, up, size * 2.0f);
+                const glm::vec3 a = glm::normalize(std::abs(up.y) < 0.9f ? glm::cross(up, glm::vec3(0, 1, 0)) : glm::cross(up, glm::vec3(1, 0, 0)));
+                const glm::vec3 b = glm::cross(up, a);
+                for(const glm::vec3& side : {a, b}){
+                    for(int i = 0; i < 10; ++i){
+                        const float t0 = 3.14159265f * float(i) / 10.0f, t1 = 3.14159265f * float(i + 1) / 10.0f;
+                        segment(list, camera, at + (side * std::cos(t0) + up * std::sin(t0)) * size * 2.0f,
+                                at + (side * std::cos(t1) + up * std::sin(t1)) * size * 2.0f, thickness, colour);
+                    }
+                }
+                break;
+            }
+            }
+        });
+    }
+
     //-- kosturi: kost od zgloba do roditeljskog zgloba, i tocka na zglobu --------------------
     //Zglob je entitet s oznakom Joint (vidi Warp::Joint); kost se crta samo do roditelja koji je
     //i sam zglob - korijen visi o grupi, i do nje nema kosti

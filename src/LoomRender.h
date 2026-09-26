@@ -30,6 +30,7 @@
 #include <Spool/VideoFile.h>
 #include <Tracer/Denoise.h>
 #include <Tracer/Post.h>
+#include <Tracer/Environment.h>
 #include <Tracer/Renderer.h>
 #include <Warp/Stage.h>
 
@@ -39,10 +40,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <map>
 #include <memory>
@@ -86,7 +90,9 @@ struct RenderOptions{
     uint32_t threads = 0;                   //0 = sve jezgre
 
     //Svjetlo
-    enum class Sky{ Physical, Hdri, Uniform };
+    //Scene: nebo je kupola (Warp::Light Dome) iz scene, a svjetla samo ona iz scene. Svjetla scene
+    //(sunce, kugle, reflektori, pravokutnici) su u renderu UVIJEK, uz bilo koje nebo
+    enum class Sky{ Physical, Hdri, Uniform, Scene };
     Sky sky = Sky::Physical;
     float sunElevation = 40.0f;             //stupnjevi iznad horizonta
     float sunAzimuth = 135.0f;              //stupnjevi, 0 = prema -Z, 90 = prema +X
@@ -137,6 +143,100 @@ inline bool isRealSceneGeometry(const Warp::Entity& entity){
         if(contains(file, "_proxy") || contains(file, "_blocker")) return true;
     }
     return false;
+}
+
+//---------------------------------------------------------------------------------------------
+// SVJETLO IZ SNIMKE: tools/splat/relight.py nauci iz splata i snimke sunce (smjer, boja kao
+// ozracenost) i nebo s gradijentom gore-dolje, u sustavu solvea. Ovdje to postaje sunce i kupola
+// neba u sceni - pod istim roditeljem kao rijesena kamera, pa sjede u istom sustavu
+//---------------------------------------------------------------------------------------------
+namespace detail{
+//Brojevi iza kljuca u JSON-u (redom, preskacuci [ , : i razmake). Dovoljno za relight.py izlaz
+inline bool jsonNumbers(const std::string& text, const std::string& key, float* out, int count){
+    size_t at = text.find("\"" + key + "\"");
+    if(at == std::string::npos) return false;
+    at = text.find(':', at);
+    if(at == std::string::npos) return false;
+    ++at;
+    for(int i = 0; i < count; ++i){
+        while(at < text.size() && (std::isspace(static_cast<unsigned char>(text[at])) || text[at] == '[' || text[at] == ',')) ++at;
+        char* end = nullptr;
+        const float value = std::strtof(text.c_str() + at, &end);
+        if(end == text.c_str() + at) return false;
+        out[i] = value;
+        at = size_t(end - text.c_str());
+    }
+    return true;
+}
+//Rotacija koja os `from` okrene u `to` (i za suprotne vektore)
+inline glm::quat rotationBetween(glm::vec3 from, glm::vec3 to){
+    from = glm::normalize(from);
+    to = glm::normalize(to);
+    const float c = glm::dot(from, to);
+    if(c < -0.9999f){
+        glm::vec3 axis = glm::cross(glm::vec3(1.0f, 0.0f, 0.0f), from);
+        if(glm::dot(axis, axis) < 1e-6f) axis = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), from);
+        return glm::angleAxis(glm::pi<float>(), glm::normalize(axis));
+    }
+    const glm::vec3 axis = glm::cross(from, to);
+    const glm::quat q(1.0f + c, axis.x, axis.y, axis.z);
+    return glm::normalize(q);
+}
+}
+
+//relight.json uz splat scene (<splat>_svjetlo.json), prazno kad ga nema
+inline std::string findRelightJson(const Warp::Stage& stage){
+    std::string found;
+    stage.walk([&](const Warp::Entity& e, int){
+        if(!found.empty() || !e.splat) return;
+        std::filesystem::path p(e.splat->path);
+        const std::filesystem::path candidate = p.parent_path() / (p.stem().string() + "_svjetlo.json");
+        std::error_code error;
+        if(std::filesystem::exists(candidate, error)) found = candidate.string();
+    });
+    return found;
+}
+
+struct RelightImport{
+    Warp::Id sun = Warp::None, sky = Warp::None;
+    std::string problem;
+};
+
+inline RelightImport importRelight(Warp::Stage& stage, const std::string& path, Warp::Id parent){
+    RelightImport result;
+    std::ifstream file(path);
+    if(!file){ result.problem = "Cannot open " + path; return result; }
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    float toward[3], sun[3], up[3] = {0, 1, 0}, top[3], bottom[3];
+    if(!detail::jsonNumbers(text, "sunce_smjer_prema_svjetlu", toward, 3) || !detail::jsonNumbers(text, "sunce_boja", sun, 3) ||
+       !detail::jsonNumbers(text, "nebo_gore", top, 3) || !detail::jsonNumbers(text, "nebo_dolje", bottom, 3)){
+        result.problem = "Not a relight.py light file (missing sun or sky): " + path;
+        return result;
+    }
+    detail::jsonNumbers(text, "gore", up, 3);
+    //Sunce: boja kao ozracenost po kanalu -> boja jedinicne luminancije puta jakost
+    const glm::vec3 irradiance(sun[0], sun[1], sun[2]);
+    const float strength = 0.2126f * irradiance.r + 0.7152f * irradiance.g + 0.0722f * irradiance.b;
+    result.sun = stage.create("Sun (from footage)", parent);
+    Warp::Entity& sunEntity = *stage.get(result.sun);
+    Warp::Light light;
+    light.type = Warp::Light::Type::Distant;
+    light.intensity = strength;
+    light.color = strength > 0.0f ? irradiance / strength : glm::vec3(1.0f);
+    sunEntity.light = light;
+    //Svjetlo putuje niz lokalnu -Z, dakle lokalna +Z gleda prema suncu
+    sunEntity.local.rotation = detail::rotationBetween(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(toward[0], toward[1], toward[2]));
+
+    result.sky = stage.create("Sky (from footage)", parent);
+    Warp::Entity& skyEntity = *stage.get(result.sky);
+    Warp::Light dome;
+    dome.type = Warp::Light::Type::Dome;
+    dome.intensity = 1.0f;
+    dome.skyTop = glm::max(glm::vec3(top[0], top[1], top[2]), glm::vec3(0.0f));
+    dome.skyBottom = glm::max(glm::vec3(bottom[0], bottom[1], bottom[2]), glm::vec3(0.0f));
+    skyEntity.light = dome;
+    skyEntity.local.rotation = detail::rotationBetween(glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(up[0], up[1], up[2]));
+    return result;
 }
 
 //Kadar snimke (od nule) koji stoji iza kadra timelinea - isto pravilo kao ploca u pogledu
@@ -352,6 +452,8 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
     };
 
     //-- geometrija ------------------------------------------------------------------------------
+    const Warp::Entity* dome = nullptr;         //prva vidljiva kupola neba
+    glm::mat4 domeWorld(1.0f);
     auto flagsFor = [&](const Warp::Entity& entity){
         Tracer::ObjectFlags flags;
         if(catching && isRealSceneGeometry(entity)){ flags.shadowCatcher = true; ++out.catchers; }
@@ -374,6 +476,55 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
                 ? material(-1, glm::vec3(0.35f)) : material(entity.mesh->material, entity.mesh->colour);
             scene.addMesh(shapeMesh(entity.mesh->shape), world, m, entity.name, flags);
             ++out.objects;
+        }
+        if(entity.light){
+            const glm::mat4 world = stage.worldMatrix(entity.id, frame);
+            const Warp::Light& source = *entity.light;
+            const glm::vec3 forward = glm::normalize(glm::mat3(world) * glm::vec3(0.0f, 0.0f, -1.0f));
+            const float scale = std::max({glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2]))});
+            Tracer::Light light;
+            light.color = source.color;
+            light.intensity = source.intensity;
+            switch(source.type){
+            case Warp::Light::Type::Distant:
+                light.type = Tracer::Light::Type::Distant;
+                light.direction = forward;
+                light.angle = glm::radians(std::max(0.0f, source.angle));
+                scene.lights.push_back(light);
+                break;
+            case Warp::Light::Type::Sphere: case Warp::Light::Type::Spot:
+                light.type = source.type == Warp::Light::Type::Spot ? Tracer::Light::Type::Spot : Tracer::Light::Type::Sphere;
+                light.position = glm::vec3(world[3]);
+                light.radius = std::max(0.0f, source.radius) * scale;
+                light.direction = forward;
+                light.spotAngle = glm::radians(std::clamp(source.coneAngle, 0.1f, 180.0f));
+                light.spotBlend = std::clamp(source.coneSoftness, 0.0f, 1.0f);
+                scene.lights.push_back(light);
+                break;
+            case Warp::Light::Type::Rect:{
+                //Svijetla ploha u lokalnoj XY, lice (i normale vrhova) prema -Z: jednostrana emisija
+                Tracer::MeshData quad;
+                const float hw = 0.5f * source.width, hh = 0.5f * source.height;
+                quad.positions = {{-hw, -hh, 0.0f}, {hw, -hh, 0.0f}, {hw, hh, 0.0f}, {-hw, hh, 0.0f}};
+                quad.normals.assign(4, glm::vec3(0.0f, 0.0f, -1.0f));
+                quad.indices = {0, 2, 1, 0, 3, 2};
+                Tracer::Material m;
+                m.baseColor = glm::vec3(0.0f);
+                m.specular = 0.0f;
+                m.emission = source.color * source.intensity;
+                m.emissionTwoSided = false;
+                //Kamera ne vidi samu plohu svjetla (kao Arnold/Cycles zadano): nalicje bi bilo crna ploca
+                //usred kadra. U odrazima i lomu se vidi, a svjetli jednako
+                Tracer::ObjectFlags flags;
+                flags.castsShadows = false;
+                flags.cameraVisible = false;
+                scene.addMesh(quad, world, scene.addMaterial(m), entity.name, flags);
+                break;
+            }
+            case Warp::Light::Type::Dome:
+                if(!dome){ dome = &entity; domeWorld = world; }
+                break;
+            }
         }
         if(entity.model && entity.model->mesh >= 0){
             std::string problem;
@@ -495,6 +646,41 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
     case RenderOptions::Sky::Uniform:
         env.color = options.uniformColor;
         break;
+    case RenderOptions::Sky::Scene:{
+        if(!dome){
+            out.warnings.push_back("Sky 'Scene': the scene has no Sky Dome light - the sky is black.");
+            break;
+        }
+        const Warp::Light& d = *dome->light;
+        std::string problem;
+        const Spool::FloatImage* image = d.texture.empty() ? nullptr : assets.hdri(d.texture, problem);
+        if(image){
+            env.map.width = image->width;
+            env.map.height = image->height;
+            env.map.floats = image->pixels;
+            env.map.srgb = false;
+            env.intensity = d.intensity;
+            //Kupola zakrenuta oko Y: lokalna X os ode u (cos, 0, -sin)
+            const glm::vec3 x = glm::vec3(domeWorld[0]);
+            env.rotation = std::atan2(-x.z, x.x);
+        }else{
+            if(!d.texture.empty()) out.warnings.push_back("Sky Dome HDRI not read: " + problem + " - using its gradient.");
+            //Gradijent: od donje do gornje boje po kosinusu prema lokalnoj +Y kupole
+            const glm::vec3 up = glm::normalize(glm::mat3(domeWorld) * glm::vec3(0.0f, 1.0f, 0.0f));
+            const uint32_t w = 256, h = 128;
+            env.map.width = w;
+            env.map.height = h;
+            env.map.srgb = false;
+            env.map.floats.assign(size_t(w) * h * 4, 1.0f);
+            for(uint32_t y = 0; y < h; ++y) for(uint32_t x = 0; x < w; ++x){
+                const glm::vec3 dir = Tracer::latLongToDirection(glm::vec2((float(x) + 0.5f) / float(w), (float(y) + 0.5f) / float(h)));
+                const glm::vec3 c = glm::mix(d.skyBottom, d.skyTop, 0.5f * (glm::dot(dir, up) + 1.0f)) * d.intensity;
+                float* p = env.map.floats.data() + (size_t(y) * w + x) * 4;
+                p[0] = c.r; p[1] = c.g; p[2] = c.b;
+            }
+        }
+        break;
+    }
     }
     if(scene.triangles.empty()) out.warnings.push_back("Nothing to render in front of the camera: the scene has no meshes or models.");
     return true;
