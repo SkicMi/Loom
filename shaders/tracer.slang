@@ -23,6 +23,7 @@ static const uint ALPHA_TESTED = 1;
 static const uint CATCHER = 2;
 static const uint NO_CAMERA = 4;
 static const uint NO_SHADOW = 8;
+static const uint TRANSMISSIVE = 16;
 
 // vrste svjetla (Tracer::LightRecord::Kind)
 static const uint LIGHT_SUN = 0;
@@ -41,8 +42,8 @@ struct Params{
     float4 toMap0, toMap1, toMap2;       // svijet -> mapa, stupci
     float4 fromMap0, fromMap1, fromMap2; // mapa -> svijet, stupci
     uint4 flags;            // skyActive, skyVisibleToCamera, backplateTexture (NONE), skyLightIndex (NONE)
-    float4 values;          // indirectClamp, k1, k2, 0
-    uint4 extra;            // seed, conditionalOffset, 0, 0
+    float4 values;          // indirectClamp, k1, k2, prag prilagodljivog uzorkovanja (0 iskljuceno)
+    uint4 extra;            // seed, conditionalOffset, staklene sjene (1), najmanje uzoraka prije zaustavljanja
     float4 distortion;      // fx, fy, cx, cy objektiva (fx 0: ravna leca)
 };
 
@@ -415,6 +416,53 @@ bool traverse(float3 origin, float3 direction, float tMax, uint mode, bool anyHi
         else if(hitRight) stack[top++] = right;
     }
     return found;
+}
+
+// Propusnost zrake sjene (Tracer::Renderer shadowTransmittance): 0 kad je zaklonjena, inace
+// umnozak propusnosti stakala na putu (samo uz staklene sjene). crossed: prosla kroz staklo
+float3 shadowTransmittance(float3 origin, float3 direction, float tMax, uint mode, bool glass,
+                           uint pixelSeed, uint sampleIndex, uint salt, out bool crossed){
+    crossed = false;
+    float3 through = float3(1.0);
+    float3 d = direction;
+    d.x = abs(d.x) > 1e-20 ? d.x : (d.x < 0.0 ? -1e-20 : 1e-20);
+    d.y = abs(d.y) > 1e-20 ? d.y : (d.y < 0.0 ? -1e-20 : 1e-20);
+    d.z = abs(d.z) > 1e-20 ? d.z : (d.z < 0.0 ? -1e-20 : 1e-20);
+    const float3 inverse = 1.0 / d;
+    const float3 originScaled = origin * inverse;
+    uint stack[64];
+    int top = 0;
+    float entry;
+    if(!slab(0, originScaled, inverse, tMax, entry)) return through;
+    stack[top++] = 0;
+    while(top > 0){
+        const uint node = stack[--top];
+        const uint leftOrFirst = asuint(nodes[node * 2].w);
+        const uint count = asuint(nodes[node * 2 + 1].w);
+        if(count > 0){
+            for(uint i = 0; i < count; ++i){
+                const uint slot = leftOrFirst + i;
+                float t, u, v;
+                if(!triangleTest(slot, origin, direction, tMax, t, u, v)) continue;
+                if(!accept(slot, u, v, mode, pixelSeed, sampleIndex, salt)) continue;
+                const uint flags = asuint(triangles[slot * 3 + 1].w);
+                if(!glass || (flags & TRANSMISSIVE) == 0) return float3(0.0);
+                const Material m = materials[triangleInfo[asuint(triangles[slot * 3].w)].w];
+                const float3 n = normalize(cross(triangles[slot * 3 + 1].xyz, triangles[slot * 3 + 2].xyz));
+                const float F = fresnelDielectric(abs(dot(n, direction)), max(1.0001, m.surface.w));
+                through *= m.baseColor.rgb * (m.layers.y * (1.0 - m.surface.x) * (1.0 - F));
+                crossed = true;
+            }
+            continue;
+        }
+        const uint left = leftOrFirst, right = left + 1;
+        float entryLeft, entryRight;
+        const bool hitLeft = slab(left, originScaled, inverse, tMax, entryLeft);
+        const bool hitRight = slab(right, originScaled, inverse, tMax, entryRight);
+        if(hitLeft) stack[top++] = left;
+        if(hitRight) stack[top++] = right;
+    }
+    return through;
 }
 
 //=============================================================================================
@@ -874,6 +922,8 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
     float previousPdf = 0.0;
     bool mirrorChain = true;
     float3 previousPoint = origin;
+    const bool glass = P.extra.z != 0;
+    bool sawRough = false, caustic = false;
 
     for(uint depth = 0;; ++depth){
         Hit hit;
@@ -904,7 +954,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 const float lightPdf = l.pick.x / (2.0 * PI * oneMinusCosFromSin2(sin2));
                 le *= powerHeuristic(previousPdf, lightPdf);
             }
-            radiance += clampContribution(beta * le, depth > 1, clampValue);
+            if(!caustic) radiance += clampContribution(beta * le, depth > 1, clampValue);
             if(depth == 0) result.object = true;
             break;
         }
@@ -913,7 +963,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             if(depth == 0){
                 result.miss = true;
                 result.background = escaped(P, direction, 0.0, true, false, false);
-            }else{
+            }else if(!caustic){
                 radiance += clampContribution(beta * escaped(P, direction, previousPdf, false, mirrorChain, true), depth > 1, clampValue);
             }
             break;
@@ -988,10 +1038,9 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 if(cosine <= 0.0) continue;
                 const float3 c = ls.value * (cosine / PI) / ls.pdf;
                 result.lit += c;
-                Hit none;
-                none.t = INF; none.slot = NONE; none.u = 0.0; none.v = 0.0;
-                if(!traverse(from, ls.wi, ls.distance * (1.0 - 1e-4), 3u, true, pixelSeed, sampleIndex, salt + 101u, none))
-                    result.shadowed += c;
+                bool crossed;
+                result.shadowed += c * shadowTransmittance(from, ls.wi, ls.distance * (1.0 - 1e-4), 3u, glass,
+                                                           pixelSeed, sampleIndex, salt + 101u, crossed);
             }
             break;
         }
@@ -1016,7 +1065,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             }
         }
 
-        if(luminance(emitted) > 0.0 && (material.mode.y != 0 || outside)){
+        if(luminance(emitted) > 0.0 && (material.mode.y != 0 || outside) && !caustic){
             float w = 1.0;
             if(depth > 0 && emitter != NONE){
                 const Light l = lights[emitter];
@@ -1047,13 +1096,13 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                     float bsdfPdf;
                     const float3 f = evalBsdf(bsdf, wiLocal, bsdfPdf);
                     if(luminance(f) > 0.0){
-                        Hit none;
-                        none.t = INF; none.slot = NONE; none.u = 0.0; none.v = 0.0;
                         const float limit = ls.distance >= INF ? INF : ls.distance * (1.0 - 1e-4);
-                        if(!traverse(offsetPoint(p, ng, geometricSide, epsilonScale), ls.wi, limit, 2u, true,
-                                     pixelSeed, sampleIndex, salt + 211u, none)){
-                            const float w = ls.delta ? 1.0 : powerHeuristic(ls.pdf, bsdfPdf);
-                            radiance += clampContribution(beta * f * ls.value * (w / ls.pdf), depth > 0, clampValue);
+                        bool crossed;
+                        const float3 through = shadowTransmittance(offsetPoint(p, ng, geometricSide, epsilonScale), ls.wi, limit, 2u,
+                                                                   glass, pixelSeed, sampleIndex, salt + 211u, crossed);
+                        if(luminance(through) > 0.0){
+                            const float w = ls.delta || crossed ? 1.0 : powerHeuristic(ls.pdf, bsdfPdf);
+                            radiance += clampContribution(beta * f * ls.value * through * (w / ls.pdf), depth > 0, clampValue);
                         }
                     }
                 }
@@ -1074,6 +1123,10 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
         const float betaLum = luminance(beta);
         if(!(betaLum > 0.0) || isinf(betaLum) || isnan(betaLum)) break;
         mirrorChain = mirrorChain && glossy;
+        if(glass){
+            if(!glossy){ sawRough = true; caustic = false; }
+            else if(!geometricSide && sawRough && (flags & TRANSMISSIVE) != 0) caustic = true;
+        }
         previousPdf = pdf;
         previousPoint = p;
         if(depth >= 3){
@@ -1132,6 +1185,14 @@ bool traverseDepth(float3 origin, float3 direction, inout Hit hit){
     return found;
 }
 
+// Isto pravilo kao Tracer::adaptiveConverged
+bool adaptiveConverged(float luminanceSum, float luminance2Sum, float samples, float threshold, uint minSamples){
+    if(threshold <= 0.0 || samples < float(max(8u, minSamples)) || fmod(samples, 8.0) != 0.0) return false;
+    const float mean = luminanceSum / samples;
+    const float var = max(0.0, luminance2Sum / samples - mean * mean);
+    return sqrt(var / samples) < threshold * sqrt(mean + 1e-4);
+}
+
 //=============================================================================================
 // JEDAN UZORAK PO PIKSELU, POJAS REDAKA
 //=============================================================================================
@@ -1144,6 +1205,7 @@ void computeMain(uint3 id : SV_DispatchThreadID){
     if(x >= width || id.y >= push.rowCount || y >= height) return;
     const uint pixel = y * width + x;
     const uint pixelSeed = hash1(hash1(x * 0x9E3779B1u ^ y) ^ (y * 0x85EBCA77u)) ^ hash1(P.extra.x);
+    if(adaptiveConverged(accAlbedo[pixel].w, accNormal[pixel].w, accShadowed[pixel].w, P.values.w, P.extra.w)) return;
 
     const PathResult r = trace(P, float2(float(x) + 0.5, float(y) + 0.5), push.sampleIndex, pixelSeed);
     float4 cg = accCg[pixel];

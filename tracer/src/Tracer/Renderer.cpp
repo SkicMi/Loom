@@ -143,14 +143,29 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         if(m.alphaMode == Material::Alpha::Mask) return alpha >= m.alphaCutoff;
         return sampling::toUnit(sampling::hash(pixelSeed ^ sampling::hash(index, salt + sampleIndex * 977u))) < alpha;
     };
-    auto shadowFilter = [&](bool ignoreCatchers, uint32_t salt){
-        return [&, ignoreCatchers, salt](uint32_t index, float u, float v){
+    //Propusnost zrake sjene: 0 kad je zaklonjena, inace umnozak propusnosti stakala na putu.
+    //crossed: prosla je kroz barem jedno staklo (tada izravno svjetlo nema par u BSDF strategiji)
+    auto shadowTransmittance = [&](const Ray& shadowRay, bool ignoreCatchers, uint32_t salt, bool& crossed){
+        crossed = false;
+        glm::vec3 through(1.0f);
+        const bool blocked = tree.occluded(shadowRay, [&](uint32_t index, float u, float v){
             const uint8_t f = triangleFlags[index];
             if(f & NoShadow) return false;
             if(ignoreCatchers && (f & Catcher)) return false;
             if((f & AlphaTested) && !alphaPasses(index, u, v, salt)) return false;
+            if(glass && (f & Transmissive)){
+                const Triangle& t = world.triangles[index];
+                const Material& m = world.materials[t.material];
+                const glm::vec3& a = world.positions[t.v[0]];
+                const glm::vec3 n = glm::normalize(glm::cross(world.positions[t.v[1]] - a, world.positions[t.v[2]] - a));
+                const float F = fresnelDielectric(std::abs(glm::dot(n, shadowRay.direction)), std::max(1.0001f, m.ior));
+                through *= m.baseColor * (m.transmission * (1.0f - m.metallic) * (1.0f - F));
+                crossed = true;
+                return false;
+            }
             return true;
-        };
+        });
+        return blocked ? glm::vec3(0.0f) : through;
     };
 
     //Uzorak svjetla iz tocke p: smjer, udaljenost, radijancija (ili ozracenost za delta), gustoca
@@ -299,6 +314,9 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     float previousPdf = 0.0f;
     bool mirrorChain = true;
     glm::vec3 previousPoint = ray.origin;
+    //Staklene sjene: poslije hrapave plohe putanja koja prode kroz staklo je kaustika - svjetlo
+    //koje pogodi ne broji se (vec ga je donijela zraka sjene s te plohe)
+    bool sawRough = false, caustic = false;
 
     for(uint32_t depth = 0;; ++depth){
         Hit hit;
@@ -336,7 +354,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 const float lightPdf = lightCdf[size_t(sphere->index)] / (2.0f * Pi * oneMinusCosFromSin2(sin2));
                 le *= powerHeuristic(previousPdf, lightPdf);
             }
-            radiance += clampContribution(beta * le, depth > 1);
+            if(!caustic) radiance += clampContribution(beta * le, depth > 1);
             if(depth == 0){ result.object = true; result.depth = -(worldToCamera * glm::vec4(p, 1.0f)).z; }
             break;
         }
@@ -345,7 +363,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             if(depth == 0){
                 result.miss = true;
                 result.background = escaped(ray.origin, ray.direction, 0.0f, true, false, false);
-            }else{
+            }else if(!caustic){
                 radiance += clampContribution(beta * escaped(ray.origin, ray.direction, previousPdf, false, mirrorChain, true),
                                               depth > 1);
             }
@@ -428,7 +446,8 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 result.lit += c;
                 Ray shadowRay{origin, ls.wi, 0.0f, ls.distance * (1.0f - 1e-4f)};
                 ++rays;
-                if(!tree.occluded(shadowRay, shadowFilter(true, salt + 101u))) result.shadowed += c;
+                bool crossed;
+                result.shadowed += c * shadowTransmittance(shadowRay, true, salt + 101u, crossed);
             }
             break;
         }
@@ -460,7 +479,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         }
 
         //Svijetleca ploha pogodjena izravno ili odbijanjem
-        if(luminance(emitted) > 0.0f && (material.emissionTwoSided || outside)){
+        if(luminance(emitted) > 0.0f && (material.emissionTwoSided || outside) && !caustic){
             float w = 1.0f;
             if(depth > 0 && emitterOfTriangle[hit.triangle] >= 0){
                 const LightRecord& light = lights[size_t(emitterOfTriangle[hit.triangle])];
@@ -497,9 +516,12 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                         Ray shadowRay{offset(p, ng, geometricSide), ls.wi, 0.0f,
                                       std::isinf(ls.distance) ? Infinity : ls.distance * (1.0f - 1e-4f)};
                         ++rays;
-                        if(!tree.occluded(shadowRay, shadowFilter(false, salt + 211u))){
-                            const float w = ls.delta ? 1.0f : powerHeuristic(ls.pdf, bsdfPdf);
-                            radiance += clampContribution(beta * f * ls.value * (w / ls.pdf), depth > 0);
+                        bool crossed;
+                        const glm::vec3 through = shadowTransmittance(shadowRay, false, salt + 211u, crossed);
+                        if(luminance(through) > 0.0f){
+                            //Kroz staklo BSDF strategija ne moze pogoditi svjetlo ravno - tezina 1
+                            const float w = ls.delta || crossed ? 1.0f : powerHeuristic(ls.pdf, bsdfPdf);
+                            radiance += clampContribution(beta * f * ls.value * through * (w / ls.pdf), depth > 0);
                         }
                     }
                 }
@@ -517,6 +539,10 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         beta *= bs.weight;
         if(!(luminance(beta) > 0.0f) || !std::isfinite(luminance(beta))) break;
         mirrorChain = mirrorChain && bs.glossy;
+        if(glass){
+            if(!bs.glossy){ sawRough = true; caustic = false; }
+            else if(!geometricSide && sawRough && (triangleFlags[hit.triangle] & Transmissive)) caustic = true;
+        }
         previousPdf = bs.pdf;
         previousPoint = p;
 
@@ -537,12 +563,21 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
 //---------------------------------------------------------------------------------------------
 // FILM
 //---------------------------------------------------------------------------------------------
+bool adaptiveConverged(double luminanceSum, double luminance2Sum, double samples, float threshold, uint32_t minSamples){
+    if(threshold <= 0.0f || samples < double(std::max(8u, minSamples)) || std::fmod(samples, 8.0) != 0.0) return false;
+    const double mean = luminanceSum / samples;
+    const double var = std::max(0.0, luminance2Sum / samples - mean * mean);
+    return std::sqrt(var / samples) < double(threshold) * std::sqrt(mean + 1e-4);
+}
+
 void Renderer::renderPixel(uint32_t x, uint32_t y, uint32_t firstSample, uint32_t lastSample, uint32_t seed,
                            float clampValue, uint32_t maxBounces, uint64_t& rays){
     const uint32_t width = compiled->world.camera.width;
     Accumulator& a = pixels[size_t(y) * width + x];
     const uint32_t pixelSeed = sampling::hash(sampling::hash(x * 0x9E3779B1u ^ y) ^ (y * 0x85EBCA77u)) ^ sampling::hash(seed);
     for(uint32_t s = firstSample; s < lastSample; ++s){
+        //Odluka samo iz stanja piksela: kad stane, stanje se vise ne mijenja pa ostaje stao
+        if(adaptiveConverged(a.luminance, a.luminance2, double(a.samples), adaptiveThreshold, adaptiveMinSamples)) break;
         const PathResult r = trace(glm::vec2(float(x) + 0.5f, float(y) + 0.5f), s, pixelSeed, clampValue, maxBounces, rays);
         a.samples += 1;
         if(r.object){ a.cg += r.radiance; a.coverage += 1.0f; }
@@ -591,6 +626,9 @@ void Renderer::render(const RenderSettings& settings, const std::function<void(c
     const uint32_t tilesX = (width + tile - 1) / tile, tilesY = (height + tile - 1) / tile;
     const uint32_t tileCount = tilesX * tilesY;
     threadCount = std::min(threadCount, tileCount);
+    glass = settings.glassShadows;
+    adaptiveThreshold = settings.adaptiveThreshold;
+    adaptiveMinSamples = settings.adaptiveMinSamples;
 
     while(done < settings.samples){
         if(cancel && cancel->load()) break;
@@ -626,6 +664,13 @@ void Renderer::render(const RenderSettings& settings, const std::function<void(c
             onPass(progress);
         }
     }
+}
+
+double Renderer::averageSamples() const{
+    if(pixels.empty()) return 0.0;
+    double sum = 0.0;
+    for(const Accumulator& a : pixels) sum += a.samples;
+    return sum / double(pixels.size());
 }
 
 Frame Renderer::frame(bool denoise) const{

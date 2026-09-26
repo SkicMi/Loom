@@ -2853,6 +2853,10 @@ int main(int argc, char** argv){
                 if(ui.slider("Max Bounces", &bounces, 1.0f, 32.0f)) renderOptions.maxBounces = uint32_t(std::lround(bounces));
                 ui.slider("Clamp Indirect", &renderOptions.indirectClamp, 0.0f, 100.0f);
                 ui.checkbox("Denoise", &renderOptions.denoise);
+                //Prilagodljivo: 0 = svi pikseli sve uzorke
+                ui.slider("Noise Threshold", &renderOptions.noiseThreshold, 0.0f, 0.1f);
+                //Bez kaustika staklo baca svijetlu obojenu sjenu (bez suma); s njima tocno, ali sumovito
+                ui.checkbox("Caustics (slow, noisy)", &renderOptions.caustics);
 
                 //MOTION BLUR: scena se gradi u vise trenutaka unutar otvora; Shutter u kadrovima
                 //(0.5 = 180 st), sredinom na kadru. Snimka ostaje ona kadra - mutnoca je vec u njoj

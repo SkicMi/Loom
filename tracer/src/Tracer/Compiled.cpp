@@ -48,6 +48,7 @@ std::shared_ptr<const CompiledScene> compile(Scene scene){
         const Material& m = world.materials[t.material];
         uint8_t flags = 0;
         if(m.alphaMode != Material::Alpha::Opaque) flags |= AlphaTested;
+        if(m.transmission > 0.0f && m.metallic < 1.0f) flags |= Transmissive;
         if(t.object < world.objects.size()){
             const ObjectFlags& o = world.objects[t.object].flags;
             if(o.shadowCatcher) flags |= Catcher;

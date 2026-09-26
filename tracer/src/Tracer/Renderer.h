@@ -47,6 +47,20 @@ struct RenderSettings{
     float indirectClamp = 16.0f;            //najveca luminancija jednog neizravnog doprinosa; 0 = bez
     uint32_t threads = 0;                   //0 = sve jezgre
     uint32_t seed = 0;                      //drugi seed, drugi (jednako dobar) sum
+
+    //PRILAGODLJIVO UZORKOVANJE. Piksel stane kad mu je standardna greska procjene, mjerena
+    //kao na zaslonu (sqrt(var/n) / sqrt(srednja luminancija)), ispod praga. Provjera svakih 8
+    //uzoraka od adaptiveMinSamples; samo iz vlastitog stanja piksela, pa je odluka ista na
+    //procesoru i kartici i ne ovisi o broju dretvi. 0 = iskljuceno
+    float adaptiveThreshold = 0.0f;
+    uint32_t adaptiveMinSamples = 32;
+
+    //STAKLENE SJENE. Zraka sjene prolazi kroz prozirne materijale (transmission) oslabljena
+    //bojom i Fresnelom na svakoj plohi, pa staklo baca svijetlu obojenu sjenu umjesto crne.
+    //Kaustike (putanja plohe -> kroz staklo -> svjetlo) se tada NE broje - svjetlo kroz staklo
+    //je vec doslo zrakom sjene; bez toga bi se brojalo dvaput. Pristrano (nema fokusiranja
+    //svjetla iza lece), ali bez suma - kao "caustics off" u produkcijskim rendererima
+    bool glassShadows = false;
 };
 
 struct RenderProgress{
@@ -55,6 +69,9 @@ struct RenderProgress{
     double seconds = 0.0;
     uint64_t rays = 0;
 };
+
+//Isto pravilo zaustavljanja na procesoru i kartici (shaders/tracer.slang, adaptiveConverged)
+bool adaptiveConverged(double luminanceSum, double luminance2Sum, double samples, float threshold, uint32_t minSamples);
 
 class Renderer{
 public:
@@ -73,6 +90,8 @@ public:
     Frame frame(bool denoise = false) const;
 
     uint32_t samplesDone() const {return done;}
+    //Prosjecan broj uzoraka po pikselu (manji od samplesDone kad prilagodljivo uzorkovanje radi)
+    double averageSamples() const;
     const Scene& scene() const {return compiled->world;}
     const Bvh& bvh() const {return compiled->tree;}
     double buildSeconds() const {return compiled->buildSeconds;}
@@ -89,6 +108,9 @@ private:
     uint32_t done = 0;
     std::vector<Accumulator> pixels;
     std::atomic<uint64_t> rayCount{0};
+    bool glass = false;
+    float adaptiveThreshold = 0.0f;
+    uint32_t adaptiveMinSamples = 32;
 
     void renderPixel(uint32_t x, uint32_t y, uint32_t firstSample, uint32_t lastSample, uint32_t seed,
                      float clamp, uint32_t maxBounces, uint64_t& rays);

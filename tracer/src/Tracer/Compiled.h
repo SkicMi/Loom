@@ -26,6 +26,7 @@ enum TriangleFlag : uint8_t{
     Catcher = 2,
     NoCamera = 4,
     NoShadow = 8,
+    Transmissive = 16,          //staklo: zraka sjene kroz njega prolazi oslabljena (RenderSettings::glassShadows)
 };
 
 //Svjetlo spremno za uzorkovanje

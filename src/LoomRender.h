@@ -86,6 +86,12 @@ struct RenderOptions{
     uint32_t samples = 128;
     uint32_t maxBounces = 12;
     float indirectClamp = 16.0f;
+    //Prag suma za prilagodljivo uzorkovanje (Tracer::RenderSettings::adaptiveThreshold); 0 = svi
+    //pikseli dobiju sve uzorke. Mirni dijelovi kadra (nebo, snimka) stanu rano
+    float noiseThreshold = 0.01f;
+    //Kaustike putanjama (tocno, sumovito) ili staklene sjene (svjetlo kroz staklo zrakom sjene:
+    //svijetla obojena sjena bez suma, bez fokusiranja iza lece) - vidi RenderSettings::glassShadows
+    bool caustics = false;
     bool denoise = true;
     uint32_t threads = 0;                   //0 = sve jezgre
 
@@ -1134,6 +1140,8 @@ private:
                 settings.samples = perSlice;
                 settings.maxBounces = options.maxBounces;
                 settings.indirectClamp = options.indirectClamp;
+                settings.adaptiveThreshold = std::max(0.0f, options.noiseThreshold);
+                settings.glassShadows = !options.caustics;
                 settings.threads = options.threads;
                 settings.seed = slice * 7919u;          //svaki odsjecak svoj sum, inace bi se isti uzorci ponovili
                 Tracer::Frame raw;

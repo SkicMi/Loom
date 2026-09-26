@@ -215,9 +215,10 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     p.fromMap0 = glm::vec4(c.sky.mapToWorld()[0], 0.0f); p.fromMap1 = glm::vec4(c.sky.mapToWorld()[1], 0.0f); p.fromMap2 = glm::vec4(c.sky.mapToWorld()[2], 0.0f);
     p.flags = glm::uvec4(c.sky.active() ? 1u : 0u, world.environment.cameraVisible ? 1u : 0u, backplateTexture, skyLight);
     p.values = glm::vec4(settings.indirectClamp, world.camera.distorted() ? world.camera.k1 : 0.0f,
-                         world.camera.distorted() ? world.camera.k2 : 0.0f, 0.0f);
+                         world.camera.distorted() ? world.camera.k2 : 0.0f, settings.adaptiveThreshold);
     p.distortion = world.camera.distorted() ? world.camera.lens : glm::vec4(0.0f);
-    p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), 0u, 0u);
+    p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), settings.glassShadows ? 1u : 0u,
+                         settings.adaptiveMinSamples);
 
     //-- na karticu -------------------------------------------------------------------------------------
     const VulkanDevice& device = loom.device;
