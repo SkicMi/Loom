@@ -97,6 +97,8 @@ struct RenderOptions{
     //svijetla obojena sjena bez suma, bez fokusiranja iza lece) - vidi RenderSettings::glassShadows
     bool caustics = false;
     bool denoise = true;
+    //Auto: Intel OIDN kad je ucitan (tools/oidn/fetch.sh), inace A-trous
+    Tracer::Denoiser denoiser = Tracer::Denoiser::Auto;
     uint32_t threads = 0;                   //0 = sve jezgre
 
     //MOTION BLUR: zatvarac otvoren `shutter` kadra (0.5 = 180 st), sredinom na kadru. Scena se
@@ -1377,7 +1379,17 @@ private:
                 for(int k = 0; k < 3; ++k) result.normal[i * 3 + size_t(k)] = n[k];
             }
             result.samples = perSlice * slices;
-            if(options.denoise) Tracer::denoiseFrame(result);
+            if(options.denoise){
+                const auto denoiseStart = std::chrono::steady_clock::now();
+                Tracer::denoiseFrame(result, options.denoiser);
+                if(index == 0){
+                    const bool oidn = options.denoiser != Tracer::Denoiser::ATrous && Tracer::oidnAvailable();
+                    char line[128];
+                    std::snprintf(line, sizeof(line), "Denoised with %s in %.2f s", oidn ? "OIDN" : "A-trous",
+                                  std::chrono::duration<double>(std::chrono::steady_clock::now() - denoiseStart).count());
+                    say(line);
+                }
+            }
             publish(result, compiled->world, options, plateLoaded, frame);
             const std::vector<std::string> files = writeRender(result, compiled->world, options, plateLoaded, catchers, folder,
                                                                frameStem(options, frame), error, frame);

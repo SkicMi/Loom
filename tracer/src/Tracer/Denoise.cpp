@@ -4,18 +4,132 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
+#include <dlfcn.h>
+#include <filesystem>
+#include <mutex>
 #include <thread>
 #include <cmath>
 #include <vector>
+
+#ifndef TRACER_OIDN_DIR
+#define TRACER_OIDN_DIR ""
+#endif
 
 namespace Tracer{
 
 namespace{
 float luminance(const glm::vec3& c){ return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b; }
 const float Kernel[3] = {3.0f / 8.0f, 1.0f / 4.0f, 1.0f / 16.0f};
+
+//-- OIDN kroz dlopen: C sucelje oidn.h (2.x), samo ono sto treba -----------------------------
+using OidnHandle = void*;
+constexpr int OidnDeviceCpu = 1;            //OIDN_DEVICE_TYPE_CPU
+constexpr int OidnFloat3 = 3;               //OIDN_FORMAT_FLOAT3
+
+struct Oidn{
+    void* library = nullptr;
+    OidnHandle (*newDevice)(int) = nullptr;
+    void (*commitDevice)(OidnHandle) = nullptr;
+    int (*deviceError)(OidnHandle, const char**) = nullptr;
+    OidnHandle (*newFilter)(OidnHandle, const char*) = nullptr;
+    void (*sharedImage)(OidnHandle, const char*, void*, int, size_t, size_t, size_t, size_t, size_t) = nullptr;
+    void (*setBool)(OidnHandle, const char*, bool) = nullptr;
+    void (*commitFilter)(OidnHandle) = nullptr;
+    void (*executeFilter)(OidnHandle) = nullptr;
+    OidnHandle device = nullptr, filter = nullptr;
+    std::string where;
+    std::mutex lock;                        //jedan uredjaj i filtar, jedan posao u isto vrijeme
+    bool ready = false;
+
+    Oidn(){
+        std::vector<std::string> candidates;
+        if(const char* env = std::getenv("LOOM_OIDN")){
+            const std::filesystem::path p(env);
+            candidates.push_back(std::filesystem::is_directory(p) ? (p / "libOpenImageDenoise.so.2").string() : p.string());
+        }
+        if(*TRACER_OIDN_DIR) candidates.push_back(std::string(TRACER_OIDN_DIR) + "/libOpenImageDenoise.so.2");
+        candidates.push_back("libOpenImageDenoise.so.2");
+        for(const std::string& c : candidates){
+            library = dlopen(c.c_str(), RTLD_NOW | RTLD_LOCAL);
+            if(library){ where = c; break; }
+        }
+        if(!library){ where = "libOpenImageDenoise.so.2 not found (tools/oidn/fetch.sh or LOOM_OIDN)"; return; }
+        auto get = [&](auto& fn, const char* name){ fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(dlsym(library, name)); return fn != nullptr; };
+        if(!(get(newDevice, "oidnNewDevice") && get(commitDevice, "oidnCommitDevice") && get(deviceError, "oidnGetDeviceError") &&
+             get(newFilter, "oidnNewFilter") && get(sharedImage, "oidnSetSharedFilterImage") && get(setBool, "oidnSetFilterBool") &&
+             get(commitFilter, "oidnCommitFilter") && get(executeFilter, "oidnExecuteFilter"))){
+            where += ": missing functions (not OIDN 2?)";
+            return;
+        }
+        device = newDevice(OidnDeviceCpu);
+        if(!device){ where += ": no CPU device"; return; }
+        commitDevice(device);
+        const char* message = nullptr;
+        if(deviceError(device, &message) != 0){ where += std::string(": ") + (message ? message : "device error"); return; }
+        filter = newFilter(device, "RT");
+        ready = filter != nullptr;
+        if(!ready) where += ": no RT filter";
+    }
+
+    //Boja (HDR, premnozena) uz albedo i normale; false kad OIDN javi gresku
+    bool run(std::vector<float>& colour, std::vector<float>& albedo, std::vector<float>& normal,
+             std::vector<float>& output, uint32_t w, uint32_t h){
+        std::lock_guard<std::mutex> guard(lock);
+        const size_t stride = 3 * sizeof(float);
+        sharedImage(filter, "color", colour.data(), OidnFloat3, w, h, 0, stride, stride * w);
+        sharedImage(filter, "albedo", albedo.data(), OidnFloat3, w, h, 0, stride, stride * w);
+        sharedImage(filter, "normal", normal.data(), OidnFloat3, w, h, 0, stride, stride * w);
+        sharedImage(filter, "output", output.data(), OidnFloat3, w, h, 0, stride, stride * w);
+        setBool(filter, "hdr", true);
+        commitFilter(filter);
+        executeFilter(filter);
+        const char* message = nullptr;
+        return deviceError(device, &message) == 0;
+    }
+};
+
+Oidn& oidn(){
+    static Oidn instance;               //jednom: ucitavanje tezina mreze traje
+    return instance;
 }
 
-void denoiseFrame(Frame& frame){
+//OIDN na boji CG-a. false: nema ga ili je javio gresku (tada ide A-trous)
+bool oidnColour(Frame& frame){
+    Oidn& o = oidn();
+    if(!o.ready) return false;
+    const size_t n = frame.pixelCount();
+    std::vector<float> colour(n * 3), albedo(frame.albedo), normal(frame.normal), output(n * 3);
+    for(size_t i = 0; i < n; ++i) for(int k = 0; k < 3; ++k) colour[i * 3 + size_t(k)] = std::max(0.0f, frame.cg[i * 4 + size_t(k)]);
+    if(albedo.size() != n * 3) albedo.assign(n * 3, 0.0f);
+    if(normal.size() != n * 3) normal.assign(n * 3, 0.0f);
+    //Albedo mora biti u [0,1] (OIDN), a CG-a bez pogotka nema: tamo je albedo neba 0 - mreza ga
+    //tada cita kao sam izvor svjetla, sto je tocno za pozadinu
+    for(float& a : albedo) a = std::clamp(a, 0.0f, 1.0f);
+    if(!o.run(colour, albedo, normal, output, frame.width, frame.height)) return false;
+    for(size_t i = 0; i < n; ++i) for(int k = 0; k < 3; ++k) frame.cg[i * 4 + size_t(k)] = std::max(0.0f, output[i * 3 + size_t(k)]);
+    return true;
+}
+
+void aTrous(Frame& frame, bool colour);
+}
+
+bool oidnAvailable(std::string* where){
+    Oidn& o = oidn();
+    if(where) *where = o.where;
+    return o.ready;
+}
+
+void denoiseFrame(Frame& frame, Denoiser which){
+    if(frame.pixelCount() == 0) return;
+    const bool viaOidn = which != Denoiser::ATrous && oidnColour(frame);
+    aTrous(frame, !viaOidn);
+    frame.denoised = true;
+}
+
+namespace{
+//A-trous: boja CG-a (colour) i uvijek sjena catchera
+void aTrous(Frame& frame, bool colour){
     const int w = int(frame.width), h = int(frame.height);
     const size_t n = frame.pixelCount();
     if(n == 0) return;
@@ -102,14 +216,16 @@ void denoiseFrame(Frame& frame){
         });
     };
 
-    for(int i = 0; i < 5; ++i){
-        pass(1 << i, light, next, &variance, &nextVariance, true);
-        light.swap(next);
-        variance.swap(nextVariance);
-    }
-    for(size_t i = 0; i < n; ++i){
-        const glm::vec3 c = light[i] * modulation[i];
-        frame.cg[i * 4] = c.r; frame.cg[i * 4 + 1] = c.g; frame.cg[i * 4 + 2] = c.b;
+    if(colour){
+        for(int i = 0; i < 5; ++i){
+            pass(1 << i, light, next, &variance, &nextVariance, true);
+            light.swap(next);
+            variance.swap(nextVariance);
+        }
+        for(size_t i = 0; i < n; ++i){
+            const glm::vec3 c = light[i] * modulation[i];
+            frame.cg[i * 4] = c.r; frame.cg[i * 4 + 1] = c.g; frame.cg[i * 4 + 2] = c.b;
+        }
     }
 
     //Sjena na catcheru: bez albeda i bez mjere suma, samo ista ploha. Tri prolaza
@@ -126,7 +242,7 @@ void denoiseFrame(Frame& frame){
         }
         for(size_t i = 0; i < n; ++i) for(int k = 0; k < 3; ++k) frame.shadow[i * 3 + size_t(k)] = shadow[i][k];
     }
-    frame.denoised = true;
+}
 }
 
 }

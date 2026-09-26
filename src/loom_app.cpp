@@ -2877,6 +2877,15 @@ int main(int argc, char** argv){
                 if(ui.slider("Max Bounces", &bounces, 1.0f, 32.0f)) renderOptions.maxBounces = uint32_t(std::lround(bounces));
                 ui.slider("Clamp Indirect", &renderOptions.indirectClamp, 0.0f, 100.0f);
                 ui.checkbox("Denoise", &renderOptions.denoise);
+                if(renderOptions.denoise){
+                    //OIDN (Intel, neuronska mreza) cisti na cetvrtini uzoraka; bez biblioteke A-trous
+                    int denoiser = renderOptions.denoiser == Tracer::Denoiser::ATrous ? 1 : 0;
+                    if(ui.choice("Denoiser", {"OIDN", "A-trous"}, &denoiser))
+                        renderOptions.denoiser = denoiser == 1 ? Tracer::Denoiser::ATrous : Tracer::Denoiser::Auto;
+                    static const bool oidnLoaded = Tracer::oidnAvailable();
+                    if(!oidnLoaded && denoiser == 0) ui.label(Treadle::fitText("OIDN not found - run tools/oidn/fetch.sh (using A-trous)",
+                                                                                layout.properties.width - 30.0f, theme.textScale * 0.8f));
+                }
                 //Prilagodljivo: 0 = svi pikseli sve uzorke
                 ui.slider("Noise Threshold", &renderOptions.noiseThreshold, 0.0f, 0.1f);
                 //Bez kaustika staklo baca svijetlu obojenu sjenu (bez suma); s njima tocno, ali sumovito

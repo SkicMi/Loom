@@ -17,3 +17,6 @@ view*.png
 
 # Mape za gradnju s drugim postavkama (sanitizeri, release, tsan)
 build-*/
+
+# OIDN biblioteke (tools/oidn/fetch.sh)
+tools/oidn/lib/

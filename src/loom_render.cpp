@@ -52,6 +52,7 @@ void usage(){
         "  --ostrina N D         dubinska ostrina: f-broj N, ostro na udaljenosti D (1 jedinica = 1 m)\n"
         "  --senzor MM           sirina senzora za zarisnu u mm (36)\n"
         "  --holdout             splat scene zaklanja CG iza stvarnih ploha (snimka se vidi)\n"
+        "  --filtar oidn|atrous  filtar suma (zadano OIDN kad je ucitan, tools/oidn/fetch.sh)\n"
         "  --agx --ekspozicija EV --bez-exr --bez-png --dretve N\n"
         "  --procesor            racunaj na procesoru i kad kartica postoji\n"
         "  --post                post s zadanim (bloom 0.04, vinjeta 0.15); ili pojedinacno:\n"
@@ -127,6 +128,10 @@ int main(int argc, char** argv){
         else if(a == "--ostrina"){ options.depthOfField = true; options.fStop = float(number(i)); options.focusDistance = float(number(i)); }
         else if(a == "--senzor") options.sensorWidth = float(number(i));
         else if(a == "--holdout") options.splatHoldout = true;
+        else if(a == "--filtar" && i + 1 < argc){
+            const std::string which = argv[++i];
+            options.denoiser = which == "atrous" ? Tracer::Denoiser::ATrous : Tracer::Denoiser::Auto;
+        }
         else{ std::fprintf(stderr, "Nepoznata zastavica: %s\n", a.c_str()); usage(); return 1; }
     }
     Warp::Stage stage;

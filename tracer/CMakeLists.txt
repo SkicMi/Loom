@@ -42,7 +42,9 @@ add_library(Tracer STATIC
 )
 
 target_include_directories(Tracer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(Tracer PUBLIC glm::glm Threads::Threads)
+target_link_libraries(Tracer PUBLIC glm::glm Threads::Threads ${CMAKE_DL_LIBS})
+#OIDN se ucitava pri pokretanju (Denoise.cpp); tools/oidn/fetch.sh ga stavi ovamo
+target_compile_definitions(Tracer PRIVATE TRACER_OIDN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tools/oidn/lib")
 target_compile_definitions(Tracer PRIVATE GLM_FORCE_RADIANS)
 
 target_compile_options(Tracer PRIVATE
