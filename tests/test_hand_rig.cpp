@@ -1,6 +1,6 @@
 // Hand rig na pravom liku (tools/autorig/hand_rig.py + LoomHandPose.h + LoomTool.h).
 //
-// Lik iz desnog klika u Manny profilu (tools/autorig/outputs/mascot-manny/rigged.glb - lokalni izlaz
+// Lik iz desnog klika u Manny profilu (tools/autorig/outputs/humanoid-mascott/rigged.glb - lokalni izlaz
 // auto-riga, nije u gitu; bez njega se test preskace). Sto se brani:
 //   - Loom nade prste iz stabla (palac, kaziprst..mali, metakarpali preskoceni)
 //   - Loomova strana dlana = os Z hand riga (+X savija prste u dlan): editor i auto-rig govore isto
@@ -59,7 +59,7 @@ Engine::Physics::TriangleMesh cylinder(float radius, float height){
 int main(){
     TestReport report("hand_rig");
     const std::filesystem::path path = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                                       "tools/autorig/outputs/mascot-manny/rigged.glb";
+                                       "tools/autorig/outputs/humanoid-mascott/rigged.glb";
     if(!std::filesystem::is_regular_file(path)){
         std::printf("   preskoceno: nema %s (lokalni izlaz auto-riga)\n", path.string().c_str());
         return report.result();

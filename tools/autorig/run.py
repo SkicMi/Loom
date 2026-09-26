@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Local UniRig job. Never replaces the source asset or an existing output directory."""
+"""Local Auto Rig job (UniRig, or the direct geometric Manny fit in direct_rig.py).
+Never replaces the source asset or an existing output directory."""
 from __future__ import annotations
 
 import argparse
@@ -118,6 +119,54 @@ def verify_flash_attention() -> str:
 
 
 
+def finish_manny(source: Path, output: Path, work: Path, predicted: Path, log_path: Path,
+                 manifest: dict, started: float) -> None:
+    """UniRig-52 layout -> UE5 Manny (88 bones, hand rig) -> independent Blender validation."""
+    result = output / "rigged.glb"
+    print("AutoRig: Fit UE5 Manny skeleton to the 52 joints", flush=True)
+    run_process(["blender", "--background", "--factory-startup", "--python-exit-code", "1",
+                 "--python", str(ROOT / "manny_rig.py"), "--", str(predicted),
+                 str(result), str(ROOT / "manny_template.json")], work, os.environ.copy(), log_path)
+    require_file(result)
+    blender_command = ["blender", "--background", "--factory-startup", "--python-exit-code", "1",
+                       "--python", str(ROOT / "validate.py"), "--", str(result),
+                       "--report", str(output / "validation.json"),
+                       "--preview", str(output / "bend_preview.glb")]
+    print("AutoRig: independent Blender deformation validation", flush=True)
+    run_process(blender_command, work, os.environ.copy(), log_path)
+    require_file(output / "validation.json")
+    manifest.update({"source": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                     "rig_profile": "UE5 Manny", "seconds": round(time.monotonic() - started, 2),
+                     "result": str(result)})
+    # This marker is written only after all steps and independent deformation validation passed.
+    (output / "complete.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"AutoRig complete: {result}", flush=True)
+
+
+def generate_direct(source: Path, output: Path) -> None:
+    """Joints measured from the mesh (direct_rig.py), no neural network, no GPU."""
+    source = source.resolve(strict=True)
+    if source.suffix.lower() not in {".glb", ".gltf"}:
+        raise ValueError("Auto Rig accepts GLB or glTF models.")
+    if source.suffix.lower() == ".glb":
+        inspect_input(source)
+    output = output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    started = time.monotonic()
+    log_path = output / "autorig.log"
+    log_path.write_text(f"AutoRig start (direct)\nSource: {source}\n", encoding="utf-8")
+    work = output / "work"
+    work.mkdir()
+    predicted = output / "rigged_direct52.glb"
+    print("AutoRig: measure joints and bind the skin (direct)", flush=True)
+    run_process(["blender", "--background", "--factory-startup", "--python-exit-code", "1",
+                 "--python", str(ROOT / "direct_rig.py"), "--", str(source), str(predicted)],
+                work, os.environ.copy(), log_path)
+    require_file(predicted)
+    finish_manny(source, output, work, predicted, log_path,
+                 {"backend": "direct", "hand_rig": "hand_rig.py (+X curls into the palm)"}, started)
+
+
 def generate(source: Path, output: Path, seed: int) -> None:
 
     source = source.resolve(strict=True)
@@ -175,25 +224,8 @@ def generate(source: Path, output: Path, seed: int) -> None:
              "--require_suffix=glb,fbx", "--num_runs=1", "--id=0", "--source=skin.fbx",
              "--target=input.glb", f"--output={unirig_result}"], work)
     require_file(unirig_result)
-    result = output / "rigged.glb"
-    print("AutoRig: 6/6 Fit UE5 Manny skeleton to inferred joints", flush=True)
-    run_process(["blender", "--background", "--factory-startup", "--python-exit-code", "1",
-                 "--python", str(ROOT / "manny_rig.py"), "--", str(unirig_result),
-                 str(result), str(ROOT / "manny_template.json")], work, os.environ.copy(), log_path)
-    require_file(result)
-    blender_command = ["blender", "--background", "--factory-startup", "--python-exit-code", "1",
-                       "--python", str(ROOT / "validate.py"), "--", str(result),
-                       "--report", str(output / "validation.json"),
-                       "--preview", str(output / "bend_preview.glb")]
-    print("AutoRig: independent Blender deformation validation", flush=True)
-    run_process(blender_command, work, os.environ.copy(), log_path)
-    require_file(output / "validation.json")
-    manifest = {"source": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-                "backend": "UniRig", "rig_profile": "UE5 Manny", "revision": revision, "seed": seed,
-                "seconds": round(time.monotonic() - started, 2), "result": str(result)}
-    # This marker is written only after all steps and independent deformation validation passed.
-    (output / "complete.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"AutoRig complete: {result}", flush=True)
+    finish_manny(source, output, work, unirig_result, log_path,
+                 {"backend": "UniRig", "revision": revision, "seed": seed}, started)
 
 
 def main() -> int:
@@ -201,9 +233,14 @@ def main() -> int:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--backend", choices=("unirig", "direct"), default="unirig",
+                        help="direct: joints measured from a standing A/T-posed humanoid, no GPU")
     args = parser.parse_args()
     try:
-        generate(args.input, args.output, args.seed)
+        if args.backend == "direct":
+            generate_direct(args.input, args.output)
+        else:
+            generate(args.input, args.output, args.seed)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         if args.output.is_dir():
             with (args.output / "autorig.log").open("a", encoding="utf-8") as log:

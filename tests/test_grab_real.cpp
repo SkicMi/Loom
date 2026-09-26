@@ -1,6 +1,6 @@
 // Hvat na pravom liku: drska u dlanu, prsti omotani oko nje, palac s druge strane.
 //
-// Lik iz desnog klika (tools/autorig/outputs/mascot-manny/rigged.glb, 1.80 m, mirne sake) i isti put
+// Lik iz desnog klika (tools/autorig/outputs/humanoid-mascott/rigged.glb, 1.80 m, mirne sake) i isti put
 // kao editor (grabWithHand u loom_app): gripAlignedWorld -> grabItemAt -> syncHoldHandLayers s
 // colliderom toola. Predmet: ~/Downloads/bastard_sword__lowpoly.glb (mac 115 cm, grip iz oblika).
 // Bez lika ili maca se test preskace.
@@ -41,7 +41,7 @@ struct Result{ float palm = 0, palmExpected = 0, angle = 0, edge = 90, farthest 
 int main(){
     TestReport report("grab_real");
     const std::filesystem::path root = std::filesystem::path(__FILE__).parent_path().parent_path();
-    const std::filesystem::path character = root / "tools/autorig/outputs/mascot-manny/rigged.glb";
+    const std::filesystem::path character = root / "tools/autorig/outputs/humanoid-mascott/rigged.glb";
     if(!std::filesystem::is_regular_file(character)){
         std::printf("   preskoceno: nema %s\n", character.string().c_str());
         return report.result();

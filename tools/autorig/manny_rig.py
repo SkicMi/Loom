@@ -193,13 +193,25 @@ def convert(source: Path, output: Path, template_path: Path) -> None:
         correction = sum(weight * residuals[name] for weight, name in zip(weights, nearest))
         return Vector(scale * source_point + shift + correction)
 
+    def metacarpal(point, name):
+        # A metacarpal lies on the line from the wrist to the base of its own finger, as far along as
+        # in Manny. Residuals from the nearest joints fanned them across each other when the rest
+        # fingers are spread (HumanoidMascott: pinky metacarpal over the ring finger)
+        side = name[-2:]
+        finger = name.split("_")[0]
+        hand, base = reference("hand" + side), reference(f"{finger}_01{side}")
+        span = base - hand
+        t = float(np.dot(np.asarray(point, dtype=float) * 0.01 - hand, span) / np.dot(span, span))
+        return Vector(anchors["hand" + side] + t * (anchors[f"{finger}_01{side}"] - anchors["hand" + side]))
+
     for item in template_data["bones"]:
         name = item["name"]
         if name in anchors:
             continue
         bone = bones.new(name)
-        bone.head = fitted(item["head"], name)
-        bone.tail = fitted(item["tail"], name)
+        place = metacarpal if "_metacarpal_" in name else fitted
+        bone.head = place(item["head"], name)
+        bone.tail = place(item["tail"], name)
         if (bone.tail - bone.head).length < 0.001:
             bone.tail = bone.head + Vector((0.0, 0.0, 0.01))
 

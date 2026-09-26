@@ -2202,31 +2202,19 @@
         };
         auto addHumanoidMascott = [&](){
             const fs::path root(LOOM_ROOT_DIR);
-            //Manny profil s hand rigom (tools/autorig/hand_rig.py) ima prednost: UE5 imena i hijerarhija
-            //(retarget na Manny), prsti se savijaju cisto prema dlanu. Stari UniRig-52 mascot je rezerva
-            fs::path mascot = root / "tools/autorig/outputs/mascot-manny/rigged.glb";
-            if(std::error_code probe; !fs::is_regular_file(mascot, probe)) mascot = root / "tools/autorig/outputs/mascot-03/rigged.glb";
-            std::error_code error;
-            if(!fs::is_regular_file(mascot, error)){
-                mascot.clear();
-                const fs::path outputs = root / "tools/autorig/outputs";
-                for(const auto& entry : fs::directory_iterator(outputs, error)){
-                    if(error) break;
-                    if(!entry.is_directory(error) || entry.path().filename().string().rfind("mascot-", 0) != 0) continue;
-                    const fs::path candidate = entry.path() / "rigged.glb";
-                    if(fs::is_regular_file(candidate, error) && fs::is_regular_file(entry.path() / "complete.json", error))
-                        mascot = candidate;
-                }
-            }
-            if(mascot.empty()){
-                message = "HumanoidMascott is missing; run Auto Rig on the mascot model first.";
+            //Glavni mascot: assets/characters/HumanoidMascott.glb kroz Auto Rig (Manny profil + hand rig,
+            //tools/autorig/run.py). Rig je lokalni izlaz, nije u gitu
+            const fs::path mascot = root / "tools/autorig/outputs/humanoid-mascott/rigged.glb";
+            if(std::error_code error; !fs::is_regular_file(mascot, error)){
+                message = "HumanoidMascott is not rigged yet; run Auto Rig on assets/characters/HumanoidMascott.glb "
+                          "(output tools/autorig/outputs/humanoid-mascott).";
                 return;
             }
             const size_t before = stage.size();
             autoRig.open = false;
             motionPanel.open = false;
             importAutoRigModel(mascot);
-            if(stage.size() > before) message = "HumanoidMascott added with its Animator ready.";
+            if(stage.size() > before) message = "HumanoidMascott added at 1.80 m with its Animator ready.";
         };
         //== IMPORTER (LoomImporter.h): jedan prozor za sve sto editor zna uvesti ==================
         Loom::ImporterState importer;
