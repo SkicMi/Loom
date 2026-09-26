@@ -102,6 +102,14 @@ struct RenderOptions{
     float shutter = 0.5f;
     uint32_t motionSteps = 16;
 
+    //DUBINSKA OSTRINA: otvor iz zarisne i f-broja (promjer = zarisna / N), zarisna u mm iz kuta
+    //kamere i sirine senzora. Jedinica scene se uzima kao metar - solve bez mjerila treba grupu
+    //skalirati na metre (ili podesiti f-broj na oko). focusDistance duz -Z kamere
+    bool depthOfField = false;
+    float fStop = 2.8f;
+    float focusDistance = 5.0f;
+    float sensorWidth = 36.0f;              //mm, puni format
+
     //Svjetlo
     //Scene: nebo je kupola (Warp::Light Dome) iz scene, a svjetla samo ona iz scene. Svjetla scene
     //(sunce, kugle, reflektori, pravokutnici) su u renderu UVIJEK, uz bilo koje nebo
@@ -371,6 +379,30 @@ struct BuiltScene{
     std::vector<std::string> warnings;
 };
 
+//Polumjer otvora u jedinicama scene (1 = metar): zarisna f = focalPixels / sirina * senzor (mm),
+//promjer otvora f / N
+inline float apertureRadiusFor(const Warp::Camera& lens, float fStop, float sensorWidthMm){
+    if(lens.width == 0 || fStop <= 0.0f) return 0.0f;
+    const float focalMm = lens.focalPixels / float(lens.width) * sensorWidthMm;
+    return 0.5f * focalMm / fStop / 1000.0f;
+}
+
+//OSTRINA NA KLIK: dubina (duz -Z kamere) pod tockom (x, y) u pikselima rendera. Medijan 5x5
+//pogodaka, da klik na rub objekta ne uzme pozadinu; < 0 kad oko tocke nista nije pogodjeno
+inline float focusFromDepth(const Tracer::Frame& frame, float x, float y){
+    std::vector<float> found;
+    const int cx = int(std::floor(x)), cy = int(std::floor(y));
+    for(int dy = -2; dy <= 2; ++dy) for(int dx = -2; dx <= 2; ++dx){
+        const int px = cx + dx, py = cy + dy;
+        if(px < 0 || py < 0 || px >= int(frame.width) || py >= int(frame.height)) continue;
+        const size_t i = size_t(py) * frame.width + size_t(px);
+        if(i < frame.depth.size() && frame.depth[i] > 0.0f && frame.depth[i] < Tracer::NoDepth * 0.5f) found.push_back(frame.depth[i]);
+    }
+    if(found.empty()) return -1.0f;
+    std::nth_element(found.begin(), found.begin() + found.size() / 2, found.end());
+    return found[found.size() / 2];
+}
+
 //plateFrame: kadar ciju snimku uzeti (motion blur gradi scenu u trenucima izmedju kadrova, a
 //snimka je i dalje ona jednog kadra); < 0 znaci isti kao frame
 inline bool buildTracerScene(const Warp::Stage& stage, double frame, const RenderOptions& options, RenderAssets& assets,
@@ -405,6 +437,10 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
         const float sx = float(c.width) / float(lens.width), sy = float(c.height) / float(lens.height);
         c.focalPixels = lens.focalPixels * sx;
         c.centre = glm::vec2(lens.centreX * sx, lens.centreY * sy);
+        if(options.depthOfField){
+            c.apertureRadius = apertureRadiusFor(lens, options.fStop, options.sensorWidth);
+            c.focusDistance = std::max(1e-3f, options.focusDistance);
+        }
         if(lens.distorted()){
             c.lens = glm::vec4(lens.distortionFx * sx, lens.distortionFy * sy, lens.distortionCx * sx, lens.distortionCy * sy);
             c.k1 = lens.k1;

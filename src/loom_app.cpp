@@ -1576,6 +1576,7 @@ int main(int argc, char** argv){
     std::vector<uint8_t> renderPixels;
     bool renderPixelsFresh = false;
     Treadle::Rect renderWindowBox{}, renderImageBox{};
+    bool pickingFocus = false;             //sljedeci klik na sliku rendera bira ostrinu
     bool renderImageShown = false;
     //ENGINE "VIEWPORT": kadrovi pogleda kroz kameru u PNG. Pogled se za to vrijeme ocisti od
     //pomagala (mreza, tocke, kamere, gizmo) i vrati kakav je bio kad posao zavrsi
@@ -2865,6 +2866,43 @@ int main(int argc, char** argv){
                     ui.slider("Shutter", &renderOptions.shutter, 0.0f, 1.0f, "frame");
                     float steps = float(renderOptions.motionSteps);
                     if(ui.slider("Time Steps", &steps, 2.0f, 64.0f)) renderOptions.motionSteps = uint32_t(std::lround(steps));
+                }
+
+                //DUBINSKA OSTRINA: f-broj -> otvor iz zarisne kamere (1 jedinica = 1 m). Ostrina se
+                //bira klikom na sliku rendera (dubina pod klikom) ili na odabrani objekt
+                ui.separator();
+                ui.label("DEPTH OF FIELD");
+                ui.checkbox("Depth of Field", &renderOptions.depthOfField);
+                if(renderOptions.depthOfField){
+                    ui.slider("F-Stop", &renderOptions.fStop, 0.7f, 22.0f);
+                    ui.slider("Focus Distance", &renderOptions.focusDistance, 0.05f, 100.0f, "m");
+                    if(renderCamera && renderCamera->camera){
+                        char aperture[64];
+                        std::snprintf(aperture, sizeof(aperture), "%.1f mm lens, %.1f mm opening",
+                                      renderCamera->camera->focalPixels / float(std::max(1u, renderCamera->camera->width)) * renderOptions.sensorWidth,
+                                      2000.0f * Loom::apertureRadiusFor(*renderCamera->camera, renderOptions.fStop, renderOptions.sensorWidth));
+                        ui.value("Aperture", aperture);
+                    }
+                    if(ui.button(pickingFocus ? "Click the Render Image..." : "Pick Focus in Render")){
+                        pickingFocus = !pickingFocus;
+                        if(pickingFocus && !renderSession.hasResult()) message = "Render once (a few samples is enough), then click where it should be sharp.";
+                        if(pickingFocus) renderWindowOpen = true;
+                    }
+                    if(ui.button("Focus On Selection")){
+                        const Warp::Entity* target = stage.get(selected);
+                        if(!target || !renderCamera){
+                            message = "Select the object that should be sharp first.";
+                        }else{
+                            const glm::mat4 cameraWorld = stage.worldMatrix(renderCamera->id, frame);
+                            const glm::vec3 at(stage.worldMatrix(selected, frame)[3]);
+                            const glm::vec3 forward = -glm::normalize(glm::vec3(cameraWorld[2]));
+                            const float distance = glm::dot(at - glm::vec3(cameraWorld[3]), forward);
+                            if(distance > 0.0f){
+                                renderOptions.focusDistance = distance;
+                                message = "Focus " + std::to_string(distance).substr(0, 5) + " on " + target->name;
+                            }else message = target->name + " is behind the camera.";
+                        }
+                    }
                 }
 
                 ui.separator();
@@ -5103,6 +5141,23 @@ int main(int argc, char** argv){
                 const float w = float(renderTextureWidth) * fit, h = float(renderTextureHeight) * fit;
                 renderImageBox = Treadle::Rect{content.x + (content.width - w) * 0.5f, content.y + (content.height - h) * 0.5f, w, h};
                 renderImageShown = true;
+                //Ostrina na klik: dubina zadnjeg rendera pod misem
+                if(pickingFocus){
+                    const Treadle::Ui::Region image = ui.region("render-image", renderImageBox);
+                    canvas.outline(renderImageBox, 2.0f, theme.accent);
+                    if(image.pressed && renderSession.hasResult()){
+                        const Tracer::Frame last = renderSession.lastFrame();
+                        const float px = (image.mouseX - renderImageBox.x) / std::max(1.0f, renderImageBox.width) * float(last.width);
+                        const float py = (image.mouseY - renderImageBox.y) / std::max(1.0f, renderImageBox.height) * float(last.height);
+                        const float depth = Loom::focusFromDepth(last, px, py);
+                        if(depth > 0.0f){
+                            renderOptions.focusDistance = depth;
+                            renderOptions.depthOfField = true;
+                            message = "Focus " + std::to_string(depth).substr(0, 5) + " - render again to see it.";
+                        }else message = "Nothing there to focus on (sky or plate) - click on an object.";
+                        pickingFocus = false;
+                    }
+                }
             }else{
                 const std::string hint = rs.running ? "Preparing the scene..." : "No render yet. Press F12 or RENDER in the Render panel.";
                 canvas.text(content.x + 16.0f, content.y + 16.0f, hint, theme.dim, theme.textScale * 0.8f);
