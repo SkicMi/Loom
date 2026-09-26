@@ -301,6 +301,30 @@ int main(){
                      plantedThighTrack && plantedThighTrack->rotationKeys.size() == plantedClip.frames.size(),
                      fmt("contact frames %zu; thigh keys %zu", planted.footContactFrames,
                          plantedThighTrack ? plantedThighTrack->rotationKeys.size() : 0));
+
+        //SKOK: kukovi se polako dizu (0.5 cm po kadru, 0.15 m/s - sporije od praga brzine dodira) do 6 cm. Stari
+        //IK je to proglasio dodirom i stopalo drzao na podu - "noge se zalijepe za pod kad skace".
+        //IK smije zakljucati samo vodoravno; visina stopala mora pratiti pokret
+        Engine::WeaverMotion::Clip risingClip = plantedClip;
+        risingClip.frames.assign(16, plantedClip.frames.front());
+        for(size_t f = 0; f < risingClip.frames.size(); ++f)
+            risingClip.frames[f].translations[1].y = 0.005f * float(std::max<int>(0, int(f) - 3));   //kukovi; Kimodov Root ostaje na podu
+        Loom::MotionPlacement noIk = placement;
+        noIk.footContactIK = false;
+        Loom::importWeaverMotionClip(stage, risingClip, "RisingNoIk", noIk);
+        std::vector<float> freeHeights;
+        for(size_t f = 0; f < risingClip.frames.size(); ++f)
+            freeHeights.push_back(stage.worldMatrix(targetLeftFoot, 1.0 + double(f) * stage.framesPerSecond / risingClip.framesPerSecond)[3].y);
+        const Loom::WeaverMotionImportReport rising = Loom::importWeaverMotionClip(stage, risingClip, "RisingIk", placement);
+        float worstPull = 0.0f;
+        for(size_t f = 0; f < risingClip.frames.size(); ++f){
+            const float withIk = stage.worldMatrix(targetLeftFoot, 1.0 + double(f) * stage.framesPerSecond / risingClip.framesPerSecond)[3].y;
+            worstPull = std::max(worstPull, freeHeights[f] - withIk);
+        }
+        report.check("foot IK ne lijepi stopalo za pod dok se tijelo dize (skok)",
+                     rising.problem.empty() && rising.footContactFrames > 0 && worstPull < 1e-3f,
+                     fmt("kadrova dodira %zu; stopalo povuceno dolje najvise %.1f mm", rising.footContactFrames,
+                         double(worstPull) * 1000.0));
         std::filesystem::remove_all(floorFixture.directory);
     }
 

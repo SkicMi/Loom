@@ -834,7 +834,10 @@ inline std::vector<uint8_t> motionDetectFootContacts(const Engine::WeaverMotion:
         lowest = std::min(lowest, positions[frame].y);
     }
     const float height = std::max(0.5f, motionRestHeight(clip));
-    const float heightLimit = std::max(0.025f, height * 0.035f);
+    //Dodir je do 2 % visine tijela iznad najnize tocke (~3.4 cm na 1.7 m). Prvi prag (3.5 %, ~6 cm)
+    //brojao je petu koja se u odrazu vec dize kao dodir, pa je IK stopalo u skoku drzao na podu -
+    //izmjereno na motion_1790382707996: do 55 kadrova zalijepljeno do 10 cm ispod pokreta
+    const float heightLimit = std::max(0.02f, height * 0.02f);
     const float speedLimit = std::max(0.08f, height * 0.20f);
     for(size_t frame = 0; frame < frames; ++frame){
         const size_t before = frame == 0 ? 0 : frame - 1;
@@ -907,25 +910,42 @@ inline size_t motionApplyFootContactIk(Warp::Stage& stage, const Engine::WeaverM
         const float floorY = glm::vec3(rootAtStart * glm::vec4(0.0f, fit.floorY, 0.0f, 1.0f)).y;
         const glm::vec3 restFootWorld = glm::vec3(rootAtStart * glm::vec4(glm::vec3(leg.restFoot->matrix[3]), 1.0f));
         const float footClearance = std::max(0.0f, restFootWorld.y - floorY);
+        //ZAKLJUCAVA SE SAMO VODORAVNO. Stopalo u dodiru ne smije kliziti, ali visinu i dalje vodi
+        //pokret (nikad ispod poda). Prva verzija je u dodiru visinu uvijek stavljala na pod, pa je
+        //stopalo koje se u odrazu vec dizalo bilo povuceno dolje - "noge se zalijepe za pod kad
+        //skace". Na kraju dodira stopalo se pusti postupno kroz releaseFrames, bez skoka
+        constexpr size_t releaseFrames = 3;
         bool locked = false;
         glm::vec3 lockPosition(0.0f);
         size_t previousFrame = clip.frames.size();
+        size_t sinceRelease = releaseFrames + 1;
         for(size_t frame = 0; frame < clip.frames.size(); ++frame){
-            if(!contact[frame]){ locked = false; previousFrame = clip.frames.size(); continue; }
+            if(!contact[frame]){
+                if(locked){ locked = false; sinceRelease = 0; }
+                previousFrame = clip.frames.size();
+                if(++sinceRelease > releaseFrames) continue;
+            }
             const double time = firstFrame + double(frame) * frameStep;
             const glm::vec3 hip = glm::vec3(stage.worldMatrix(leg.hip, time)[3]);
             const glm::vec3 knee = glm::vec3(stage.worldMatrix(leg.knee, time)[3]);
             const glm::vec3 ankle = glm::vec3(stage.worldMatrix(leg.foot, time)[3]);
             const glm::mat4 rootWorld = stage.worldMatrix(rigRoot, time);
             const float contactFloorY = glm::vec3(rootWorld * glm::vec4(0.0f, fit.floorY, 0.0f, 1.0f)).y;
-            if(!locked || previousFrame + 1 != frame){
-                lockPosition = ankle;
-                locked = true;
+            glm::vec3 target;
+            if(contact[frame]){
+                if(!locked || previousFrame + 1 != frame){
+                    lockPosition = ankle;
+                    locked = true;
+                }
+                previousFrame = frame;
+                target = glm::vec3(lockPosition.x, std::max(ankle.y, contactFloorY + footClearance), lockPosition.z);
+            }else{
+                const float weight = float(sinceRelease) / float(releaseFrames + 1);
+                const glm::vec3 held(lockPosition.x, ankle.y, lockPosition.z);
+                target = held + (ankle - held) * weight;
             }
-            previousFrame = frame;
-            lockPosition.y = contactFloorY + footClearance;
 
-            glm::vec3 toTarget = lockPosition - hip;
+            glm::vec3 toTarget = target - hip;
             const float distance = glm::length(toTarget);
             const float upperLength = glm::length(knee - hip);
             const float lowerLength = glm::length(ankle - knee);
@@ -950,8 +970,8 @@ inline size_t motionApplyFootContactIk(Warp::Stage& stage, const Engine::WeaverM
             const glm::vec3 updatedAnkle = glm::vec3(stage.worldMatrix(leg.foot, time)[3]);
             motionSetWorldRotationKey(stage, leg.knee, time,
                                       motionFromToRotation(updatedAnkle - updatedKnee,
-                                                           lockPosition - updatedKnee));
-            ++contactFrames;
+                                                           target - updatedKnee));
+            if(contact[frame]) ++contactFrames;
         }
     }
     root->translationKeys = savedRootKeys;
