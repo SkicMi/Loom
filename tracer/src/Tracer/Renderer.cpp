@@ -195,12 +195,13 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     //Uzorak svjetla iz tocke p: smjer, udaljenost, radijancija (ili ozracenost za delta), gustoca
     //po prostornom kutu UKLJUCUJUCI vjerojatnost izbora svjetla
     struct LightSample{ glm::vec3 wi{0.0f}; float distance = Infinity; glm::vec3 value{0.0f}; float pdf = 0.0f; bool delta = false; };
-    auto sampleLight = [&](const glm::vec3& p, float choice, const glm::vec2& u, LightSample& out){
+    //n: normala primatelja za stablo svjetala (nula: bez tog uvjeta - staklo, magla)
+    auto sampleLight = [&](const glm::vec3& p, const glm::vec3& n, float choice, const glm::vec2& u, LightSample& out){
         if(lights.empty()) return false;
-        const uint32_t index = C.pickLight(choice);
+        uint32_t index;
+        float pick;
+        if(!C.chooseLight(choice, p, n, index, pick, useLightTree)) return false;
         const LightRecord& light = lights[index];
-        const float pick = lightCdf[index];
-        if(pick <= 0.0f) return false;
         switch(light.kind){
         case LightRecord::Sky:{
             float pdf = 0.0f;
@@ -353,6 +354,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     glm::vec3 beta(1.0f);
     glm::vec3 radiance(0.0f);
     float previousPdf = 0.0f;
+    glm::vec3 previousNormal(0.0f);     //normala primatelja s kojom je prosla tocka birala svjetlo
     bool mirrorChain = true;
     glm::vec3 previousPoint = ray.origin;
     //Staklene sjene: poslije hrapave plohe putanja koja prode kroz staklo je kaustika - svjetlo
@@ -397,20 +399,30 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 if(depth == 0) result.object = true;
                 beta *= medium.albedo;
                 if(depth >= maxBounces || !(luminance(beta) > 0.0f)) break;
-                //Izravno svjetlo kroz fazu (zrake sunca u magli, pruge sjena)
+                //Izravno svjetlo kroz fazu (zrake sunca u magli, pruge sjena); RIS kao na plohi
                 {
-                    LightSample ls;
-                    const glm::vec2 choice = sampler.next2D();
-                    const glm::vec2 u = sampler.next2D();
-                    if(sampleLight(p, choice.x, u, ls)){
+                    LightSample chosen;
+                    float chosenPhase = 0.0f, chosenTarget = 0.0f, weightSum = 0.0f;
+                    for(uint32_t k = 0; k < candidates; ++k){
+                        LightSample ls;
+                        const glm::vec2 choice = sampler.next2D();
+                        const glm::vec2 u = sampler.next2D();
+                        if(!sampleLight(p, glm::vec3(0.0f), choice.x, u, ls)) continue;
                         const float phase = phaseHG(glm::dot(ray.direction, ls.wi), medium.anisotropy);
-                        Ray shadowRay{p, ls.wi, 0.0f, std::isinf(ls.distance) ? Infinity : ls.distance * (1.0f - 1e-4f)};
+                        const float target = luminance(ls.value) * phase * (ls.delta ? 1.0f : powerHeuristic(ls.pdf, phase));
+                        if(!(target > 0.0f)) continue;
+                        weightSum += target / ls.pdf;
+                        if(choice.y * weightSum < target / ls.pdf){ chosen = ls; chosenPhase = phase; chosenTarget = target; }
+                    }
+                    if(chosenTarget > 0.0f){
+                        Ray shadowRay{p, chosen.wi, 0.0f, std::isinf(chosen.distance) ? Infinity : chosen.distance * (1.0f - 1e-4f)};
                         ++rays;
                         bool crossed;
                         const glm::vec3 through = shadowTransmittance(shadowRay, false, salt + 307u, crossed);
                         if(luminance(through) > 0.0f){
-                            const float w = ls.delta || crossed ? 1.0f : powerHeuristic(ls.pdf, phase);
-                            radiance += clampContribution(beta * ls.value * through * (phase * w / ls.pdf), depth > 0);
+                            const float w = chosen.delta || crossed ? 1.0f : powerHeuristic(chosen.pdf, chosenPhase);
+                            radiance += clampContribution(beta * chosen.value * through * (chosenPhase * w * weightSum / (float(candidates) * chosenTarget)),
+                                                          depth > 0);
                         }
                     }
                 }
@@ -421,6 +433,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 mirrorChain = false;
                 previousPdf = pdf;
                 previousPoint = p;
+                previousNormal = glm::vec3(0.0f);
                 coneSpread += 0.2f;
                 if(glass){ sawRough = true; caustic = false; }
                 if(depth >= 3){
@@ -443,7 +456,8 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             if(depth > 0){
                 const float d2 = glm::dot(sphere->position - previousPoint, sphere->position - previousPoint);
                 const float sin2 = std::min(1.0f, sphere->radius * sphere->radius / std::max(d2, 1e-20f));
-                const float lightPdf = lightCdf[size_t(sphere->index)] / (2.0f * Pi * oneMinusCosFromSin2(sin2));
+                const float lightPdf = C.choiceProbability(uint32_t(sphere->index), previousPoint, previousNormal, useLightTree) /
+                                       (2.0f * Pi * oneMinusCosFromSin2(sin2));
                 le *= powerHeuristic(previousPdf, lightPdf);
             }
             if(!caustic) radiance += clampContribution(beta * le, depth > 1);
@@ -550,7 +564,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             for(int k = 0; k < 2; ++k){
                 LightSample ls;
                 const glm::vec2 choice = sampler.next2D();
-                if(!sampleLight(p, choice.x, sampler.next2D(), ls)) continue;
+                if(!sampleLight(p, ng, choice.x, sampler.next2D(), ls)) continue;
                 const float cosine = glm::dot(ng, ls.wi);
                 if(cosine <= 0.0f) continue;
                 //Bijela Lambertova ploha: omjer sa sjenom i bez nje ne ovisi o boji poda
@@ -597,7 +611,8 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 const LightRecord& light = lights[size_t(emitterOfTriangle[hit.triangle])];
                 const float dist2 = hit.t * hit.t;
                 const float cosLight = std::abs(glm::dot(ng, ray.direction));
-                const float lightPdf = cosLight > 0.0f ? lightCdf[size_t(light.index)] * dist2 / (cosLight * light.area) : 0.0f;
+                const float lightPdf = cosLight > 0.0f ? C.choiceProbability(uint32_t(light.index), previousPoint, previousNormal, useLightTree) *
+                                                         dist2 / (cosLight * light.area) : 0.0f;
                 w = powerHeuristic(previousPdf, lightPdf);
             }
             radiance += clampContribution(beta * emitted * w, depth > 1);
@@ -613,29 +628,44 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         const Bsdf bsdf(surface, toLocal(wo), eta);
 
         //-- izravno svjetlo (NEE) ---------------------------------------------------------------
+        //RIS (jezgra ReSTIR-a, bez prostorne i vremenske ponovne upotrebe - nepristrano): od
+        //`candidates` svjetala iz stabla ostaje jedno razmjerno doprinosu bez sjene, i samo za
+        //njega ide zraka sjene. S jednim kandidatom je to obican odabir iz stabla
+        const glm::vec3 receiver = surface.transmission > 0.0f ? glm::vec3(0.0f) : ng;
         {
-            LightSample ls;
-            const glm::vec2 choice = sampler.next2D();
-            const glm::vec2 u = sampler.next2D();
-            if(sampleLight(p, choice.x, u, ls)){
+            LightSample chosen;
+            glm::vec3 chosenF(0.0f);
+            float chosenBsdfPdf = 0.0f, chosenTarget = 0.0f, weightSum = 0.0f;
+            bool chosenSide = false;
+            for(uint32_t k = 0; k < candidates; ++k){
+                LightSample ls;
+                const glm::vec2 choice = sampler.next2D();
+                const glm::vec2 u = sampler.next2D();
+                if(!sampleLight(p, receiver, choice.x, u, ls)) continue;
                 const glm::vec3 wiLocal = toLocal(ls.wi);
                 //Svjetlo s druge strane GEOMETRIJE ne smije stici kroz normalu mape
                 const bool geometricSide = glm::dot(ls.wi, ng) > 0.0f;
-                if(geometricSide == (wiLocal.z > 0.0f)){
-                    float bsdfPdf = 0.0f;
-                    const glm::vec3 f = bsdf.eval(wiLocal, bsdfPdf);
-                    if(luminance(f) > 0.0f){
-                        Ray shadowRay{offset(p, ng, geometricSide), ls.wi, 0.0f,
-                                      std::isinf(ls.distance) ? Infinity : ls.distance * (1.0f - 1e-4f)};
-                        ++rays;
-                        bool crossed;
-                        const glm::vec3 through = shadowTransmittance(shadowRay, false, salt + 211u, crossed);
-                        if(luminance(through) > 0.0f){
-                            //Kroz staklo BSDF strategija ne moze pogoditi svjetlo ravno - tezina 1
-                            const float w = ls.delta || crossed ? 1.0f : powerHeuristic(ls.pdf, bsdfPdf);
-                            radiance += clampContribution(beta * f * ls.value * through * (w / ls.pdf), depth > 0);
-                        }
-                    }
+                if(geometricSide != (wiLocal.z > 0.0f)) continue;
+                float bsdfPdf = 0.0f;
+                const glm::vec3 f = bsdf.eval(wiLocal, bsdfPdf);
+                const float target = luminance(f * ls.value) * (ls.delta ? 1.0f : powerHeuristic(ls.pdf, bsdfPdf));
+                if(!(target > 0.0f)) continue;
+                weightSum += target / ls.pdf;
+                if(choice.y * weightSum < target / ls.pdf){
+                    chosen = ls; chosenF = f; chosenBsdfPdf = bsdfPdf; chosenTarget = target; chosenSide = geometricSide;
+                }
+            }
+            if(chosenTarget > 0.0f){
+                Ray shadowRay{offset(p, ng, chosenSide), chosen.wi, 0.0f,
+                              std::isinf(chosen.distance) ? Infinity : chosen.distance * (1.0f - 1e-4f)};
+                ++rays;
+                bool crossed;
+                const glm::vec3 through = shadowTransmittance(shadowRay, false, salt + 211u, crossed);
+                if(luminance(through) > 0.0f){
+                    //Kroz staklo BSDF strategija ne moze pogoditi svjetlo ravno - tezina 1
+                    const float w = chosen.delta || crossed ? 1.0f : powerHeuristic(chosen.pdf, chosenBsdfPdf);
+                    radiance += clampContribution(beta * chosenF * chosen.value * through *
+                                                  (w * weightSum / (float(candidates) * chosenTarget)), depth > 0);
                 }
             }
         }
@@ -658,6 +688,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         }
         previousPdf = bs.pdf;
         previousPoint = p;
+        previousNormal = receiver;
 
         //Ruski rulet od treceg odbijanja: putanja koja malo nosi prekine se, a ona koja prezivi
         //nosi i udio prekinutih - ocekivanje ostaje isto
@@ -740,6 +771,8 @@ void Renderer::render(const RenderSettings& settings, const std::function<void(c
     threadCount = std::min(threadCount, tileCount);
     glass = settings.glassShadows;
     mipmaps = settings.mipmaps;
+    candidates = lightCandidatesFor(settings, *compiled);
+    useLightTree = settings.lightTree;
     adaptiveThreshold = settings.adaptiveThreshold;
     adaptiveMinSamples = settings.adaptiveMinSamples;
     if(adaptiveThreshold > 0.0f && adaptiveState.size() != pixels.size()) adaptiveState.assign(pixels.size(), 0);
@@ -807,6 +840,12 @@ void Renderer::adaptiveCheckpoint(uint32_t samples){
         stop[i] = neighbours;
     }
     for(size_t i = 0; i < pixels.size(); ++i) if(stop[i]) adaptiveState[i] |= 4u;
+}
+
+uint32_t lightCandidatesFor(const RenderSettings& settings, const CompiledScene& scene){
+    if(settings.lightCandidates > 0) return std::min(settings.lightCandidates, 64u);
+    const size_t local = (scene.lightTree.size() + 1) / 2;
+    return local >= 16 ? 8u : 1u;
 }
 
 double Renderer::averageSamples() const{

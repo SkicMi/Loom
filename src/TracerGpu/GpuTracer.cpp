@@ -22,7 +22,7 @@ namespace TracerGpu{
 namespace{
 
 constexpr uint32_t None = 0xFFFFFFFFu;
-constexpr uint32_t TraceBindings = 26;
+constexpr uint32_t TraceBindings = 29;
 constexpr uint32_t ResolveBindings = 7;
 constexpr uint32_t FinishBindings = 16;
 
@@ -42,8 +42,9 @@ struct Params{
     glm::vec4 distortion;
     glm::vec4 holdout;      //tekstura (bitovi, NONE), bias, broj kutija magle (bitovi), neprozirnih u BLAS-u
     glm::uvec4 motion;      //kljucevi geometrije, kljucevi kamere, slotova, vrhova
+    glm::vec4 lightTree;    //udio lokalnih, kandidata RIS-a (bitovi), beskonacnih (bitovi), cvorova (bitovi)
 };
-static_assert(sizeof(Params) == 25 * 16, "Params mora odgovarati shaders/tracer.slang");
+static_assert(sizeof(Params) == 26 * 16, "Params mora odgovarati shaders/tracer.slang");
 
 struct GpuMaterial{
     glm::vec4 baseColor, surface, layers, emission;
@@ -291,6 +292,26 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     if(motionData.empty()) motionData.push_back(glm::vec4(0.0f));
     if(motionNormals.empty()) motionNormals.push_back(glm::vec4(0.0f));
     p.motion = glm::uvec4(geometryKeys, cameraKeys, uint32_t(prepared.size()), uint32_t(world.positions.size()));
+    //-- stablo svjetala: cvorovi, list po svjetlu, beskonacna svjetla ---------------------------------
+    std::vector<glm::vec4> treeNodes;
+    for(size_t i = 0; i < c.lightTree.size(); ++i){
+        const Tracer::LightTreeNode& n = c.lightTree[i];
+        treeNodes.push_back(glm::vec4(n.min, n.power));
+        treeNodes.push_back(glm::vec4(n.max, n.thetaO));
+        treeNodes.push_back(glm::vec4(n.axis, n.thetaE));
+        treeNodes.push_back(glm::vec4(bitsToFloat(n.left), bitsToFloat(n.right), bitsToFloat(n.leaf ? 1u : 0u),
+                                      bitsToFloat(c.lightTreeParent[i] == ~0u ? None : c.lightTreeParent[i])));
+    }
+    if(treeNodes.empty()) treeNodes.push_back(glm::vec4(0.0f));
+    std::vector<uint32_t> treeLeaf;
+    for(uint32_t leaf : c.lightTreeLeaf) treeLeaf.push_back(leaf == ~0u ? None : leaf);
+    if(treeLeaf.empty()) treeLeaf.push_back(None);
+    std::vector<glm::vec4> infinite;
+    for(size_t i = 0; i < c.infiniteLights.size(); ++i)
+        infinite.push_back(glm::vec4(bitsToFloat(c.infiniteLights[i]), c.infiniteCumulative[i], 0.0f, 0.0f));
+    if(infinite.empty()) infinite.push_back(glm::vec4(0.0f));
+    p.lightTree = glm::vec4(c.localPick, bitsToFloat(Tracer::lightCandidatesFor(settings, c)),
+                            bitsToFloat(uint32_t(c.infiniteLights.size())), bitsToFloat(uint32_t(c.lightTree.size())));
     std::vector<uint32_t> geometrySlots;
     uint32_t opaqueCount = 0;
     if(rayQuery){
@@ -379,6 +400,9 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     onCard(motionNormals.data(), motionNormals.size() * sizeof(glm::vec4)); //23
     onCard(frameTexels.data(), frameTexels.size() * sizeof(uint32_t));      //24 snimka, holdout
     onCard(frameTexelsFloat.data(), frameTexelsFloat.size() * sizeof(glm::vec4)); //25
+    onCard(treeNodes.data(), treeNodes.size() * sizeof(glm::vec4), true);   //26 stablo svjetala
+    onCard(treeLeaf.data(), treeLeaf.size() * sizeof(uint32_t), true);      //27
+    onCard(infinite.data(), infinite.size() * sizeof(glm::vec4), true);     //28
     buffers->display.emplace(device, std::max<vk::DeviceSize>(pixels * 4, 16), usage, MemoryUsage::GPU_ONLY);
 
     if(rayQuery){

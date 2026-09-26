@@ -50,6 +50,7 @@ struct Params{
     float4 distortion;      // fx, fy, cx, cy objektiva (fx 0: ravna leca)
     float4 holdout;         // tekstura dubine stvarne scene (bitovi, NONE), bias, broj kutija magle (bitovi), neprozirnih trokuta u BLAS-u (bitovi, ray query)
     uint4 motion;           // kljucevi geometrije, kljucevi kamere, slotova, vrhova (Scene::motion)
+    float4 lightTree;       // udio lokalnih svjetala (stablo), kandidata za RIS (bitovi), beskonacnih svjetala (bitovi), cvorova (bitovi)
 };
 
 struct Material{
@@ -106,6 +107,12 @@ struct Push{
 // Teksture kadra (snimka, holdout): mijenjaju se svaki kadar, teksture scene ne (UploadCache)
 [[vk::binding(24,0)]] StructuredBuffer<uint> frameTexels;
 [[vk::binding(25,0)]] StructuredBuffer<float4> frameTexelsFloat;
+// STABLO SVJETALA (Tracer::CompiledScene): cvor = (min, snaga), (max, thetaO), (os, thetaE),
+// (lijevo, desno, list, roditelj - bitovi); po svjetlu njegov list (NONE: beskonacno); beskonacna
+// svjetla (indeks - bitovi, kumulativ)
+[[vk::binding(26,0)]] StructuredBuffer<float4> lightTreeNodes;
+[[vk::binding(27,0)]] StructuredBuffer<uint> lightTreeLeaf;
+[[vk::binding(28,0)]] StructuredBuffer<float4> infiniteLights;
 // trenutak zrake u otvoru zatvaraca - postavi ga trace() za cijelu putanju
 static float rayTime = 0.5;
 
@@ -139,8 +146,8 @@ float3 normalAt(uint vertex, float3 fallback){
 // Hardverske zrake: jedan BLAS s dvije geometrije - 0 obicni neprozirni trokuti, 1 trokuti sa
 // zastavicama (alfa, catcher, kamera, sjena, staklo) koje filtrira ista accept() kao BVH put.
 // slotOf: (geometrija, primitiv) -> slot BVH-a, pa se sve ostalo cita kao i prije
-[[vk::binding(26,0)]] RaytracingAccelerationStructure sceneAccel;
-[[vk::binding(27,0)]] StructuredBuffer<uint> slotOf;
+[[vk::binding(29,0)]] RaytracingAccelerationStructure sceneAccel;
+[[vk::binding(30,0)]] StructuredBuffer<uint> slotOf;
 // Hardverski test presjeka nije nas: s ishodistem tik uz plohu (pomak ~1e-6 scene) zna vratiti
 // samu plohu na t ~ 0. Najmanji t je zato malo veci od pomaka ishodista
 float rayQueryMinT(){ return 1e-5 * paramsBuffer[0].lens2.w; }
@@ -948,13 +955,86 @@ uint pickLight(uint count, float choice){
     return min(low, count - 1);
 }
 
-bool sampleLight(Params P, float3 p, float choice, float2 u, out LightSample ls){
+// Stablo svjetala - CompiledScene::lightTreeImportance / chooseLight / choiceProbability
+float lightTreeImportance(uint node, float3 p, float3 n){
+    const float4 a = lightTreeNodes[node * 4], b = lightTreeNodes[node * 4 + 1], c = lightTreeNodes[node * 4 + 2];
+    const float3 centre = 0.5 * (a.xyz + b.xyz);
+    const float r = 0.5 * length(b.xyz - a.xyz);
+    const float3 v = centre - p;
+    const float d2 = dot(v, v);
+    const float dist = sqrt(d2);
+    const float thetaU = dist > r ? asin(min(1.0, r / dist)) : PI;
+    const float3 toP = dist > 0.0 ? -v / dist : float3(0.0, 0.0, 1.0);
+    const float thetaI = acos(clamp(dot(c.xyz, toP), -1.0, 1.0));
+    const float thetaP = max(0.0, thetaI - b.w - thetaU);
+    if(thetaP >= c.w) return 0.0;
+    float importance = a.w * cos(thetaP) / max(d2, max(r * r, 1e-8));
+    if(dot(n, n) > 0.0){
+        const float thetaN = acos(clamp(dot(n, -toP), -1.0, 1.0));
+        const float thetaNP = max(0.0, thetaN - thetaU);
+        if(thetaNP >= 0.5 * PI) return 0.0;
+        importance *= cos(thetaNP);
+    }
+    return max(importance, 0.0);
+}
+bool chooseLight(Params P, float choice, float3 p, float3 n, out uint light, out float probability){
+    light = 0; probability = 0.0;
+    const float localPick = P.lightTree.x;
+    if(choice < localPick && asuint(P.lightTree.w) > 0){
+        float u = min(choice / localPick, 0.99999994);
+        float prob = localPick;
+        uint node = 0;
+        for(uint guard = 0; guard < 64; ++guard){
+            const uint4 info = asuint(lightTreeNodes[node * 4 + 3]);
+            if(info.z != 0){ light = info.x; probability = prob; return prob > 0.0; }
+            const float a = lightTreeImportance(info.x, p, n), b = lightTreeImportance(info.y, p, n);
+            const float total = a + b;
+            if(!(total > 0.0)) return false;
+            const float pl = a / total;
+            if(u < pl){ u = min(u / pl, 0.99999994); prob *= pl; node = info.x; }
+            else{ u = min((u - pl) / (1.0 - pl), 0.99999994); prob *= 1.0 - pl; node = info.y; }
+        }
+        return false;
+    }
+    const uint count = asuint(P.lightTree.z);
+    if(count == 0) return false;
+    const float u = localPick < 1.0 ? (choice - localPick) / (1.0 - localPick) : 0.0;
+    uint low = 0, high = count;
+    while(low < high){
+        const uint middle = (low + high) / 2;
+        if(infiniteLights[middle].y <= u) low = middle + 1; else high = middle;
+    }
+    light = asuint(infiniteLights[min(low, count - 1)].x);
+    probability = lights[light].pick.x;
+    return probability > 0.0;
+}
+float choiceProbability(Params P, uint light, float3 p, float3 n){
+    const uint leaf = lightTreeLeaf[light];
+    if(leaf == NONE) return lights[light].pick.x;
+    float prob = P.lightTree.x;
+    uint node = leaf;
+    for(uint guard = 0; guard < 64; ++guard){
+        const uint parent = asuint(lightTreeNodes[node * 4 + 3].w);
+        if(parent == NONE) break;
+        const uint4 info = asuint(lightTreeNodes[parent * 4 + 3]);
+        const uint sibling = info.x == node ? info.y : info.x;
+        const float mine = lightTreeImportance(node, p, n), other = lightTreeImportance(sibling, p, n);
+        const float total = mine + other;
+        if(!(total > 0.0)) return 0.0;
+        prob *= mine / total;
+        node = parent;
+    }
+    return prob;
+}
+
+bool sampleLight(Params P, float3 p, float3 n, float choice, float2 u, out LightSample ls){
     ls.wi = float3(0.0, 1.0, 0.0); ls.distance = INF; ls.value = float3(0.0); ls.pdf = 0.0; ls.delta = false;
     const uint count = P.counts.x;
     if(count == 0) return false;
-    const Light light = lights[pickLight(count, choice)];
-    const float pick = light.pick.x;
-    if(pick <= 0.0) return false;
+    uint index;
+    float pick;
+    if(!chooseLight(P, choice, p, n, index, pick)) return false;
+    const Light light = lights[index];
     const uint kind = asuint(light.radiance.w);
     const uint lightFlags = asuint(light.cone.w);
     const bool delta = (lightFlags & 1u) != 0, spot = (lightFlags & 2u) != 0;
@@ -1176,6 +1256,8 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
     float3 beta = float3(1.0);
     float3 radiance = float3(0.0);
     float previousPdf = 0.0;
+    float3 previousNormal = float3(0.0);
+    const uint candidates = max(1u, asuint(P.lightTree.y));
     bool mirrorChain = true;
     float3 previousPoint = origin;
     const bool glass = (P.extra.z & 1u) != 0;
@@ -1212,18 +1294,30 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 beta *= medium.rgb;
                 if(depth >= maxBounces || !(luminance(beta) > 0.0)) break;
                 {
-                    LightSample ls;
-                    const float2 choice = sampler.next2D();
-                    const float2 u = sampler.next2D();
-                    if(sampleLight(P, p, choice.x, u, ls)){
+                    // RIS kao na plohi (Renderer.cpp)
+                    LightSample chosen;
+                    chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
+                    float chosenPhase = 0.0, chosenTarget = 0.0, weightSum = 0.0;
+                    for(uint k = 0; k < candidates; ++k){
+                        LightSample ls;
+                        const float2 choice = sampler.next2D();
+                        const float2 u = sampler.next2D();
+                        if(!sampleLight(P, p, float3(0.0), choice.x, u, ls)) continue;
                         const float phase = phaseHG(dot(direction, ls.wi), g);
-                        const float limit = ls.distance >= INF ? INF : ls.distance * (1.0 - 1e-4);
+                        const float target = luminance(ls.value) * phase * (ls.delta ? 1.0 : powerHeuristic(ls.pdf, phase));
+                        if(!(target > 0.0)) continue;
+                        weightSum += target / ls.pdf;
+                        if(choice.y * weightSum < target / ls.pdf){ chosen = ls; chosenPhase = phase; chosenTarget = target; }
+                    }
+                    if(chosenTarget > 0.0){
+                        const float limit = chosen.distance >= INF ? INF : chosen.distance * (1.0 - 1e-4);
                         bool crossed;
-                        const float3 through = shadowTransmittance(p, ls.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 307u,
+                        const float3 through = shadowTransmittance(p, chosen.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 307u,
                                                                    volumeCount, crossed);
                         if(luminance(through) > 0.0){
-                            const float w = ls.delta || crossed ? 1.0 : powerHeuristic(ls.pdf, phase);
-                            radiance += clampContribution(beta * ls.value * through * (phase * w / ls.pdf), depth > 0, clampValue);
+                            const float w = chosen.delta || crossed ? 1.0 : powerHeuristic(chosen.pdf, chosenPhase);
+                            radiance += clampContribution(beta * chosen.value * through * (chosenPhase * w * weightSum / (float(candidates) * chosenTarget)),
+                                                          depth > 0, clampValue);
                         }
                     }
                 }
@@ -1233,6 +1327,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 mirrorChain = false;
                 previousPdf = pdf;
                 previousPoint = p;
+                previousNormal = float3(0.0);
                 coneSpread += 0.2;
                 if(glass){ sawRough = true; caustic = false; }
                 if(depth >= 3){
@@ -1256,7 +1351,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 const float3 toCentre = l.position.xyz - previousPoint;
                 const float d2 = dot(toCentre, toCentre);
                 const float sin2 = min(1.0, l.position.w * l.position.w / max(d2, 1e-20));
-                const float lightPdf = l.pick.x / (2.0 * PI * oneMinusCosFromSin2(sin2));
+                const float lightPdf = choiceProbability(P, uint(sphere), previousPoint, previousNormal) / (2.0 * PI * oneMinusCosFromSin2(sin2));
                 le *= powerHeuristic(previousPdf, lightPdf);
             }
             if(!caustic) radiance += clampContribution(beta * le, depth > 1, clampValue);
@@ -1357,7 +1452,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             for(int k = 0; k < 2; ++k){
                 LightSample ls;
                 const float2 choice = sampler.next2D();
-                if(!sampleLight(P, p, choice.x, sampler.next2D(), ls)) continue;
+                if(!sampleLight(P, p, ng, choice.x, sampler.next2D(), ls)) continue;
                 const float cosine = dot(ng, ls.wi);
                 if(cosine <= 0.0) continue;
                 const float3 c = ls.value * (cosine / PI) / ls.pdf;
@@ -1395,7 +1490,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                 const Light l = lights[emitter];
                 const float dist2 = hit.t * hit.t;
                 const float cosLight = abs(dot(ng, direction));
-                const float lightPdf = cosLight > 0.0 ? l.pick.x * dist2 / (cosLight * l.pick.w) : 0.0;
+                const float lightPdf = cosLight > 0.0 ? choiceProbability(P, emitter, previousPoint, previousNormal) * dist2 / (cosLight * l.pick.w) : 0.0;
                 w = powerHeuristic(previousPdf, lightPdf);
             }
             radiance += clampContribution(beta * emitted * w, depth > 1, clampValue);
@@ -1408,27 +1503,40 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
         const Bsdf bsdf = makeBsdf(baseColor, metallic, roughness, ior, material.layers.x, transmission, clearcoat,
                                    material.layers.w, float3(dot(wo, tangentX), dot(wo, tangentY), dot(wo, ns)), eta);
 
-        //-- izravno svjetlo ---------------------------------------------------------------------------
+        //-- izravno svjetlo (RIS, Renderer.cpp) ---------------------------------------------------------
+        const float3 receiver = transmission > 0.0 ? float3(0.0) : ng;
         {
-            LightSample ls;
-            const float2 choice = sampler.next2D();
-            const float2 u = sampler.next2D();
-            if(sampleLight(P, p, choice.x, u, ls)){
+            LightSample chosen;
+            chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
+            float3 chosenF = float3(0.0);
+            float chosenBsdfPdf = 0.0, chosenTarget = 0.0, weightSum = 0.0;
+            bool chosenSide = false;
+            for(uint k = 0; k < candidates; ++k){
+                LightSample ls;
+                const float2 choice = sampler.next2D();
+                const float2 u = sampler.next2D();
+                if(!sampleLight(P, p, receiver, choice.x, u, ls)) continue;
                 const float3 wiLocal = float3(dot(ls.wi, tangentX), dot(ls.wi, tangentY), dot(ls.wi, ns));
                 const bool geometricSide = dot(ls.wi, ng) > 0.0;
-                if(geometricSide == (wiLocal.z > 0.0)){
-                    float bsdfPdf;
-                    const float3 f = evalBsdf(bsdf, wiLocal, bsdfPdf);
-                    if(luminance(f) > 0.0){
-                        const float limit = ls.distance >= INF ? INF : ls.distance * (1.0 - 1e-4);
-                        bool crossed;
-                        const float3 through = shadowTransmittance(offsetPoint(p, ng, geometricSide, epsilonScale), ls.wi, limit, 2u,
-                                                                   glass, pixelSeed, sampleIndex, salt + 211u, volumeCount, crossed);
-                        if(luminance(through) > 0.0){
-                            const float w = ls.delta || crossed ? 1.0 : powerHeuristic(ls.pdf, bsdfPdf);
-                            radiance += clampContribution(beta * f * ls.value * through * (w / ls.pdf), depth > 0, clampValue);
-                        }
-                    }
+                if(geometricSide != (wiLocal.z > 0.0)) continue;
+                float bsdfPdf;
+                const float3 f = evalBsdf(bsdf, wiLocal, bsdfPdf);
+                const float target = luminance(f * ls.value) * (ls.delta ? 1.0 : powerHeuristic(ls.pdf, bsdfPdf));
+                if(!(target > 0.0)) continue;
+                weightSum += target / ls.pdf;
+                if(choice.y * weightSum < target / ls.pdf){
+                    chosen = ls; chosenF = f; chosenBsdfPdf = bsdfPdf; chosenTarget = target; chosenSide = geometricSide;
+                }
+            }
+            if(chosenTarget > 0.0){
+                const float limit = chosen.distance >= INF ? INF : chosen.distance * (1.0 - 1e-4);
+                bool crossed;
+                const float3 through = shadowTransmittance(offsetPoint(p, ng, chosenSide, epsilonScale), chosen.wi, limit, 2u,
+                                                           glass, pixelSeed, sampleIndex, salt + 211u, volumeCount, crossed);
+                if(luminance(through) > 0.0){
+                    const float w = chosen.delta || crossed ? 1.0 : powerHeuristic(chosen.pdf, chosenBsdfPdf);
+                    radiance += clampContribution(beta * chosenF * chosen.value * through * (w * weightSum / (float(candidates) * chosenTarget)),
+                                                  depth > 0, clampValue);
                 }
             }
         }
@@ -1454,6 +1562,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
         }
         previousPdf = pdf;
         previousPoint = p;
+        previousNormal = receiver;
         if(depth >= 3){
             const float keep = clamp(max(max(beta.r, beta.g), beta.b), 0.05, 0.95);
             if(choice.y >= keep) break;

@@ -47,6 +47,22 @@ struct LightRecord{
     int index = 0;                      //u lights
 };
 
+//STABLO SVJETALA (Conty & Kulla 2018) nad lokalnim svjetlima - kugle, reflektori, svijetleci
+//trokuti. Cvor: kutija, snaga (intenzitet prema osi), stozac osi (thetaO: koliko se osi
+//svjetala raspu) i stozac emisije (thetaE: dokle svjetlo svijetli oko osi). Vaznost cvora za
+//tocku p: snaga / udaljenost^2, puta koliko je p unutar stosca emisije (uz kut koji kutija
+//zauzima), puta koliko je kutija iznad plohe u p (normala n; nula = bez tog uvjeta). Izbor ide
+//od korijena, na svakom cvoru razmjerno vaznosti djece; pdf svjetla je umnozak tih udjela.
+//Uvjeti su konzervativni: vaznost 0 znaci da svjetlo u p stvarno ne moze doprinijeti
+struct LightTreeNode{
+    glm::vec3 min{0.0f}, max{0.0f};
+    glm::vec3 axis{0.0f, 0.0f, 1.0f};
+    float thetaO = 0.0f, thetaE = 0.0f;
+    float power = 0.0f;
+    uint32_t left = 0, right = 0;       //unutarnji: djeca; list: left = indeks svjetla
+    bool leaf = false;
+};
+
 struct CompiledScene{
     Scene world;
     Bvh tree;
@@ -70,6 +86,21 @@ struct CompiledScene{
 
     //Indeks svjetla za broj u [0,1)
     uint32_t pickLight(float choice) const;
+
+    //-- izbor svjetla za tocku: lokalna iz stabla, beskonacna (sunce, nebo) po snazi -------------
+    std::vector<LightTreeNode> lightTree;       //0 je korijen
+    std::vector<uint32_t> lightTreeParent;      //po cvoru
+    std::vector<uint32_t> lightTreeLeaf;        //po svjetlu: list u stablu ili ~0u (beskonacno)
+    std::vector<uint32_t> infiniteLights;       //sunca i nebo
+    std::vector<float> infiniteCumulative;
+    float localPick = 0.0f;                     //vjerojatnost da se bira iz stabla
+
+    float lightTreeImportance(uint32_t node, const glm::vec3& p, const glm::vec3& n) const;
+    //Izbor svjetla za tocku p (normala n ili nula); pdf izbora u `probability`. false: nista
+    //tree false: stari izbor samo po snazi (za usporedbu)
+    bool chooseLight(float choice, const glm::vec3& p, const glm::vec3& n, uint32_t& light, float& probability, bool tree = true) const;
+    //Vjerojatnost da chooseLight u (p, n) izabere ovo svjetlo (za MIS kad ga pogodi BSDF)
+    float choiceProbability(uint32_t light, const glm::vec3& p, const glm::vec3& n, bool tree = true) const;
 };
 
 //Scena se preuzima (move). Nikad ne vraca nullptr

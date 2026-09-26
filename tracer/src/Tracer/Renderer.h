@@ -68,7 +68,16 @@ struct RenderSettings{
     //MIPMAPE po stoscu zrake: udaljena ili kosa tekstura se usrednji umjesto da titra (aliasing)
     //i sumi. false: uvijek osnovna razina (za usporedbu)
     bool mipmaps = true;
+
+    //MNOGO SVJETALA: kandidata po izravnom svjetlu za RIS (jedna zraka sjene za najboljeg po
+    //doprinosu bez sjene). 0 = sam: 8 kad scena ima 16 ili vise lokalnih svjetala, inace 1
+    uint32_t lightCandidates = 0;
+    //Stablo svjetala (false: izbor samo po snazi, kao prije - za usporedbu; kartica uvijek stablo)
+    bool lightTree = true;
 };
+
+//Koliko kandidata stvarno (RenderSettings::lightCandidates, 0 = prema broju lokalnih svjetala)
+uint32_t lightCandidatesFor(const RenderSettings& settings, const CompiledScene& scene);
 
 struct RenderProgress{
     uint32_t samplesDone = 0;
@@ -116,6 +125,8 @@ private:
     std::vector<Accumulator> pixels;
     std::atomic<uint64_t> rayCount{0};
     bool glass = false, mipmaps = true;
+    uint32_t candidates = 1;
+    bool useLightTree = true;
     //Prilagodljivo: po pikselu bit 1 i 2 = gotov na parnoj / neparnoj provjeri, 4 = stao
     std::vector<uint8_t> adaptiveState;
     void adaptiveCheckpoint(uint32_t samples);
