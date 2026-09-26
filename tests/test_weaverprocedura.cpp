@@ -873,5 +873,97 @@ int main(){
     }catch(const std::exception& failure){ buildingText = failure.what(); }
     report.check("schema 7 Recipe round-trips building and road nodes", buildingRoundTrip, buildingText);
 
+    // ---- Interior rules (RoomSplit, Interior) ----
+    auto rectArea = [](const Proc::LocalRect& r){ return double(r.max.x - r.min.x) * double(r.max.y - r.min.y); };
+    Proc::FootprintNode homeSettings; homeSettings.shape = Proc::FootprintShape::LShape;
+    homeSettings.width = 14.0f; homeSettings.depth = 12.0f; homeSettings.wingWidth = 6.0f; homeSettings.rotationDegrees = 20.0f;
+    Proc::Footprint home, planned;
+    const bool homeMade = Proc::makeFootprint(homeSettings, home, error);
+    home.floors = 2; home.floorHeight = 3.0f; home.elevation = 0.3f;
+    const bool planMade = homeMade && Proc::planInterior(home, Proc::RoomSplitNode{}, planned, error);
+    bool floorsTiled = planMade, noOverlap = planMade;
+    std::map<std::string, int> kinds;
+    for(uint32_t floor = 0; planMade && floor < 2; ++floor){
+        double sum = 0.0;
+        for(std::size_t i = 0; i < planned.plan.rooms.size(); ++i){
+            const Proc::Room& a = planned.plan.rooms[i];
+            if(a.floor != floor) continue;
+            sum += rectArea(a.rect);
+            ++kinds[Proc::roomTypeNames()[std::size_t(a.type)]];
+            for(std::size_t j = i + 1; j < planned.plan.rooms.size(); ++j){
+                const Proc::Room& b = planned.plan.rooms[j];
+                if(b.floor != floor) continue;
+                const float ox = std::min(a.rect.max.x, b.rect.max.x) - std::max(a.rect.min.x, b.rect.min.x);
+                const float oz = std::min(a.rect.max.y, b.rect.max.y) - std::max(a.rect.min.y, b.rect.min.y);
+                if(ox > 1e-3f && oz > 1e-3f) noOverlap = false;
+            }
+        }
+        floorsTiled &= std::abs(sum - polygonArea(planned.outline)) < 1e-2;
+    }
+    report.check("RoomSplit tiles every floor of a turned L with rooms that never overlap",
+                 planMade && floorsTiled && noOverlap, error);
+    report.check("RoomSplit plans a home: hall or corridor, living, kitchen, bathroom, bedrooms and stairs on both floors",
+                 planMade && kinds["living"] == 1 && kinds["kitchen"] == 1 && kinds["bathroom"] >= 2 && kinds["bedroom"] >= 2 &&
+                 kinds["stairs"] == 2 && kinds["corridor"] >= 2 && planned.plan.hasStairs && !planned.plan.doors.empty(), error);
+
+    Proc::Footprint replanned, otherSeed;
+    Proc::RoomSplitNode seedTwo; seedTwo.seed = 2;
+    const bool deterministic = planMade && Proc::planInterior(home, Proc::RoomSplitNode{}, replanned, error) &&
+        replanned.plan.rooms.size() == planned.plan.rooms.size() &&
+        std::equal(replanned.plan.rooms.begin(), replanned.plan.rooms.end(), planned.plan.rooms.begin(), [](const Proc::Room& x, const Proc::Room& y){
+            return x.type == y.type && x.rect.min == y.rect.min && x.rect.max == y.rect.max; });
+    const bool seedMatters = planMade && Proc::planInterior(home, seedTwo, otherSeed, error) &&
+        !std::equal(otherSeed.plan.rooms.begin(), otherSeed.plan.rooms.end(), planned.plan.rooms.begin(), planned.plan.rooms.end(),
+                    [](const Proc::Room& x, const Proc::Room& y){ return x.type == y.type && x.rect.min == y.rect.min && x.rect.max == y.rect.max; });
+    report.check("The same seed gives the same plan and another seed another plan", deterministic && seedMatters, error);
+
+    Proc::MeshData plannedWalls, plannedSlabs, roomsMesh;
+    const bool plannedBuilt = planMade && Proc::makeWalls(planned, wallSettings, plannedWalls, error) &&
+                              Proc::makeSlabs(planned, Proc::SlabNode{}, plannedSlabs, error) &&
+                              Proc::makeInterior(planned, Proc::InteriorNode{}, roomsMesh, error);
+    report.check("Walls with a plan stay closed and put windows per room and the door where the plan says",
+                 plannedBuilt && closedWithout(plannedWalls, {"window", "door", "stairs"}) && semanticCount(plannedWalls, "window") > 0 &&
+                 semanticCount(plannedWalls, "door") == 4, error);
+    double upperFloor = 0.0, groundFloor = 0.0;
+    for(std::size_t t = 0; plannedBuilt && t < plannedSlabs.triangles.size(); ++t){
+        const Proc::MeshVertex& v = plannedSlabs.vertices[plannedSlabs.indices[t * 3]];
+        if(plannedSlabs.triangles[t].semantic != Proc::semanticId("floor") || v.normal.y < 0.9f) continue;
+        (v.position.y > 1.0f ? upperFloor : groundFloor) += triangleArea(plannedSlabs, t);
+    }
+    const double stairwell = planMade ? rectArea(planned.plan.stairCore) - 0.9 * double(planned.plan.stairsAlongX
+        ? planned.plan.stairCore.max.y - planned.plan.stairCore.min.y : planned.plan.stairCore.max.x - planned.plan.stairCore.min.x) : 0.0;
+    // The stairwell can reach the facade, where the slab is inset 0.1 m anyway: at most a 0.1 m
+    // rim along its sides is missing from the difference.
+    const double rim = planMade ? 0.1 * 2.0 * (rectArea(planned.plan.stairCore) > 0 ? double(planned.plan.stairCore.max.x - planned.plan.stairCore.min.x
+                                                 + planned.plan.stairCore.max.y - planned.plan.stairCore.min.y) : 0.0) : 0.0;
+    const double removed = groundFloor - upperFloor;
+    report.check("Slabs leave the stairwell open above the ground floor", plannedBuilt && removed <= stairwell + 1e-2 && removed > stairwell - rim,
+                 "difference " + std::to_string(removed) + " expected " + std::to_string(stairwell));
+    report.check("Interior builds partitions, a leaf for every door, floor finishes and the staircase",
+                 plannedBuilt && semanticCount(roomsMesh, "wall_interior") > 0 &&
+                 semanticCount(roomsMesh, "door") == long(planned.plan.doors.size()) * 12 &&
+                 semanticCount(roomsMesh, "stairs") > 0 && semanticCount(roomsMesh, "floor") > 0, error);
+
+    Proc::Footprint tracedPlan;
+    report.check("RoomSplit explains that traced outlines are not supported yet",
+                 tracedMade && !Proc::planInterior(traced, Proc::RoomSplitNode{}, tracedPlan, error) && error.find("rectangles") != std::string::npos, error);
+
+    Proc::Graph interiorJson;
+    Proc::RoomSplitNode officeSplit; officeSplit.program = Proc::InteriorProgram::Office; officeSplit.seed = 42; officeSplit.entranceEdge = 3;
+    Proc::addNode(interiorJson, officeSplit);
+    Proc::InteriorNode insideSettings; insideSettings.doorLeaves = false; insideSettings.partitionThickness = 0.1f;
+    Proc::addNode(interiorJson, insideSettings);
+    bool interiorRoundTrip = false;
+    std::string interiorText;
+    try{
+        interiorText = Loom::WeaverProceduraRecipe::serialize({"Interior", interiorJson});
+        const auto back = Loom::WeaverProceduraRecipe::parse(interiorText).graph;
+        const auto& split = std::get<Proc::RoomSplitNode>(back.nodes[0].payload);
+        const auto& inside = std::get<Proc::InteriorNode>(back.nodes[1].payload);
+        interiorRoundTrip = split.program == Proc::InteriorProgram::Office && split.seed == 42 && split.entranceEdge == 3 &&
+                            !inside.doorLeaves && std::abs(inside.partitionThickness - 0.1f) < 1e-6f;
+    }catch(const std::exception& failure){ interiorText = failure.what(); }
+    report.check("Recipe round-trips room_split and interior", interiorRoundTrip, interiorText);
+
     return report.result();
 }

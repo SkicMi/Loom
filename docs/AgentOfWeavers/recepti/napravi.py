@@ -77,22 +77,28 @@ def chain_posts():
     merge(r, posts + [chain, rope, ground])
     return r
 
-def building(name, shape, width, depth, wing, floors, roof_type, pitch=35, wall_material=None):
+def building(name, shape, width, depth, wing, floors, roof_type, pitch=35, wall_material=None, program="residential", seed=1):
     """Footprint -> Floor Stack -> Walls/Slab/Roof -> Merge (schema 7, cvorovi srednje razine)."""
     r = Recipe(name)
     fp = r.node({"type": "footprint", "shape": shape, "width": width, "depth": depth, "wing_width": wing,
                  "center": [0, 0], "rotation_degrees": 0})
-    st = r.node({"type": "floor_stack", "floors": floors, "floor_height": 3.0, "elevation": 0.4})
-    r.link(fp, st)
+    st0 = r.node({"type": "floor_stack", "floors": floors, "floor_height": 3.0, "elevation": 0.4})
+    r.link(fp, st0)
+    # RoomSplit: pravila interijera (hodnici, predsoblje, stubiste, sobe, vrata); Walls stavlja prozore po sobama
+    st = r.node({"type": "room_split", "program": program, "seed": seed, "corridor_width": 1.3, "door_width": 0.9,
+                 "entrance_edge": 0})
+    r.link(st0, st)
     walls = r.node({"type": "walls", "thickness": 0.25, "windows": True, "window_width": 1.2, "window_height": 1.4,
                     "sill_height": 0.9, "window_spacing": 3.0, "door": True, "door_edge": 0, "door_width": 1.0,
                     "door_height": 2.2})
     slab = r.node({"type": "slab", "thickness": 0.2, "inset": 0.1, "top_ceiling": True, "foundation": True})
     roof = r.node({"type": "roof", "roof_type": roof_type, "pitch_degrees": pitch, "overhang": 0.4,
                    "thickness": 0.25, "parapet_height": 0.9 if roof_type == "flat" else 0.0})
-    for n in (walls, slab, roof): r.link(st, n)
+    interior = r.node({"type": "interior", "partition_thickness": 0.12, "door_leaves": True, "floor_finish": True,
+                       "stairs": True})
+    for n in (walls, slab, roof, interior): r.link(st, n)
     ground = part(r, "plane", [width + 10, 1, depth + 10], [0, 0, 0], "terrain", "grass")
-    m = merge(r, [walls, slab, roof, ground])
+    m = merge(r, [walls, slab, roof, interior, ground])
     if wall_material:
         r.chain(m, {"type": "set_material", "material": wall_material,
                     "filter": {**ALL, "semantic": "wall_exterior"}})
@@ -113,6 +119,6 @@ if __name__ == "__main__":
     chain_posts().save(os.path.join(here, "lanac.loomrecipe.json"))
     building("L House", "l_shape", 12, 10, 5, 2, "gable", wall_material="brick").save(os.path.join(here, "kuca_l.loomrecipe.json"))
     building("U Villa", "u_shape", 16, 12, 5, 1, "hip").save(os.path.join(here, "vila_u.loomrecipe.json"))
-    building("Flat Block", "rectangle", 14, 10, 4, 5, "flat").save(os.path.join(here, "blok.loomrecipe.json"))
+    building("Flat Block", "rectangle", 14, 10, 4, 5, "flat", program="office").save(os.path.join(here, "blok.loomrecipe.json"))
     street().save(os.path.join(here, "ulica.loomrecipe.json"))
     print("ok")

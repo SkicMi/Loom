@@ -4,13 +4,10 @@ Najnovije gore. Svaka akcija: datum, što, zašto, kako je provjereno.
 
 ## Sadašnje
 
-### STAO SAM OVDJE (2026-09-26, ~19:40) — faza 2, prvi krug gotov
-Faza 1 je zatvorena, a faza 2 ima prvi krug čvorova srednje razine (vidi Prošle, zadnji unos).
-**Sljedeće:** `RoomSplit` (sobe i hodnik unutar Footprinta, unutarnji zidovi s vratima) pa `Stairs` između katova
-(otvor u ploči). Nakon toga faza 3 (`ProceduraGen`).
-Testni recepti su u `docs/AgentOfWeavers/recepti/` (`python3 napravi.py` ih ponovno piše), a snimka:
-`HOME=<scratch>/home DISPLAY=:78 ./build/loom --recept docs/AgentOfWeavers/recepti/kuca_l.loomrecipe.json --snimi out.png`
-(vlastiti HOME da se ne pojavi dijalog korisnikovog autosavea). Editor se gradi metom `LoomDesk`.
+### STAO SAM OVDJE (2026-09-26, ~20:40) — faza 2, drugi krug: interijer gotov (prva verzija)
+**Sljedeće:** namještaj po tipu sobe (krevet, ormar, kuhinja, sanitarije, stol) s pravilima razmaka; zatim faza 3
+(`ProceduraGen` — test `tests/test_procedura_300.cpp` je već njegov začetak: sampler + validatori + razlozi).
+Pregled: sampler i render alati su bili u scratchpadu (OBJ izvoz + Blender presjeci); ako zatrebaju, prenijeti u `tools/`.
 
 ## Buduće
 
@@ -25,6 +22,31 @@ Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
 6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
 
 ## Prošle
+
+### 2026-09-26 — Interijer po pravilima (RoomSplit, Interior) i test od 300 kuća
+- Korisnik pitao kako ručno štimanje pomaže AI generatoru — odgovor: ne štima se kuća nego generatori/pravila; dokaz
+  sampler: 1000 nasumičnih kuća, 0 rupa, svi padovi su pravila s razlogom; PNG 20 kuća poslan.
+- Popravci vanjštine iz tog pregleda: zabat krila probijao glavni krov (FootprintPart.joined: spojena strana bez
+  prepusta i hipa), pukotine na uglovima (krajevi brida su točno spremljeni uglovi; test zatvorenosti na točnim
+  floatovima), podnožje u ravnini ploče (samo prsten), stepenice do podignutih vrata, pravila tlocrta (dvorište U ≥ 2 m,
+  krila strše ≥ 1.5 m, jednostrešni krov samo na pravokutniku). Commit 605c524.
+- `RoomSplitNode` (Footprint → Footprint, plan u `Footprint.plan`) i `InteriorNode` (Footprint → Mesh); pravila u
+  CVOROVI.md → "Pravila interijera". Footprint dobio lokalni okvir (`frameCenter`, `frameAxis`) i `zones`.
+  FloorStack briše plan (plan vrijedi za jedan broj katova), pa je redoslijed Footprint → FloorStack → RoomSplit.
+- Walls s planom: prozori po sobama i tipu, ulazna vrata gdje plan kaže; rubovi otvora se poravnaju na mrežu prijeloma
+  (prozori različite visine razlikovali su se u zadnjem bitu → 101 od 300 kuća imala je pukotine).
+- Slab s planom: ćelije u lokalnom okviru, otvor stubišta na katovima iznad prizemlja.
+- Recipe: `room_split` (program residential/office, seed, corridor_width, door_width, entrance_edge), `interior`.
+  Panel: kontrole, gumbi "Room Split" / "Interior", "Create house" sada s interijerom. Recepti kuca_l, vila_u (dom) i
+  blok (ured) imaju interijer.
+- Iteracije na testu od 300 (pass / problemi): 187 s 101 rupom → 0 rupa → 267 → 280 → realne mjere (spavaća 17.6 → 14.2 m²,
+  kupaonica 12.7 → 8.8 m² uvođenjem dvoslojnih redova i ograničenja širine) → dnevni boravak spaja ćelije (L 12×10
+  prije nije prolazio) → stubište 3 m duboko → **287/300, 0 rupa, 0 soba bez prozora, 0 premalih soba, svaki dom
+  ima kuhinju i kupaonicu**; preostalih 13 su stvarno premale kuće (razlog u poruci).
+- Provjera: `test_weaverprocedura` 75/75 (8 novih za interijer), `test_procedura_300` 6/6 (0.3 s za 300 kuća),
+  agent 29/29; vizualno: presjeci prizemlja 20 kuća i 4 kadra u razini očiju (hodnik, dnevni boravak, stubište, kuhinja).
+- Nije napravljeno: namještaj, RoomSplit na obrisu iz krivulje, stubište s krakovima po dubini reda.
+
 
 ### 2026-09-26 — Faza 2, prvi krug: zgrade i ceste (shema 7)
 - Novi tip porta `Footprint` (obris u XZ s pozitivnom površinom + pravokutni dijelovi za krov + elevacija, katovi,

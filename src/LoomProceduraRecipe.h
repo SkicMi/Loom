@@ -115,6 +115,10 @@ inline const std::vector<std::string>& roofTypeNames(){
     static const std::vector<std::string> names = {"flat", "gable", "hip", "shed"};
     return names;
 }
+inline const std::vector<std::string>& interiorProgramNames(){
+    static const std::vector<std::string> names = {"residential", "office"};
+    return names;
+}
 inline std::size_t readName(const AgentJsonValue& value, const std::vector<std::string>& names, const char* field){
     const std::string name = readString(value, field);
     const auto found = std::find(names.begin(), names.end(), name);
@@ -280,6 +284,15 @@ inline std::string serialize(const Document& document){
             out << "{\"type\":\"road_from_curve\",\"road_width\":" << road->roadWidth
                 << ",\"sidewalks\":" << (road->sidewalks ? "true" : "false") << ",\"sidewalk_width\":" << road->sidewalkWidth
                 << ",\"curb_height\":" << road->curbHeight << ",\"sample_spacing\":" << road->sampleSpacing << '}';
+        }else if(const auto* split = std::get_if<Proc::RoomSplitNode>(&node.payload)){
+            out << "{\"type\":\"room_split\",\"program\":" << agentJsonEscape(nameOf(interiorProgramNames(), std::size_t(split->program)))
+                << ",\"seed\":" << split->seed << ",\"corridor_width\":" << split->corridorWidth
+                << ",\"door_width\":" << split->doorWidth << ",\"entrance_edge\":" << split->entranceEdge << '}';
+        }else if(const auto* interior = std::get_if<Proc::InteriorNode>(&node.payload)){
+            out << "{\"type\":\"interior\",\"partition_thickness\":" << interior->partitionThickness
+                << ",\"door_leaves\":" << (interior->doorLeaves ? "true" : "false")
+                << ",\"floor_finish\":" << (interior->floorFinish ? "true" : "false")
+                << ",\"stairs\":" << (interior->stairs ? "true" : "false") << '}';
         }else{
             throw std::runtime_error("recipe contains an unsupported node payload");
         }
@@ -524,6 +537,21 @@ inline Document parse(const std::string& source){
             road.curbHeight = readFloat(required(parameters,"curb_height"),"road_from_curve.curb_height");
             road.sampleSpacing = readFloat(required(parameters,"sample_spacing"),"road_from_curve.sample_spacing");
             node.payload = road;
+        }else if(type == "room_split"){
+            Proc::RoomSplitNode split;
+            split.program = Proc::InteriorProgram(readName(required(parameters,"program"), interiorProgramNames(), "room_split.program"));
+            split.seed = readUnsigned(required(parameters,"seed"),"room_split.seed");
+            split.corridorWidth = readFloat(required(parameters,"corridor_width"),"room_split.corridor_width");
+            split.doorWidth = readFloat(required(parameters,"door_width"),"room_split.door_width");
+            split.entranceEdge = readU32(required(parameters,"entrance_edge"),"room_split.entrance_edge");
+            node.payload = split;
+        }else if(type == "interior"){
+            Proc::InteriorNode interior;
+            interior.partitionThickness = readFloat(required(parameters,"partition_thickness"),"interior.partition_thickness");
+            interior.doorLeaves = readBool(required(parameters,"door_leaves"),"interior.door_leaves");
+            interior.floorFinish = readBool(required(parameters,"floor_finish"),"interior.floor_finish");
+            interior.stairs = readBool(required(parameters,"stairs"),"interior.stairs");
+            node.payload = interior;
         }else{
             throw std::runtime_error("unknown recipe node type: " + type);
         }

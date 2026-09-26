@@ -477,7 +477,9 @@ PortType outputType(const Node& node, uint32_t port){
        std::holds_alternative<CopyAlongCurveNode>(node.payload))
         return PortType::Mesh;
     if(std::holds_alternative<FootprintNode>(node.payload) || std::holds_alternative<FootprintFromCurveNode>(node.payload) ||
-       std::holds_alternative<FloorStackNode>(node.payload)) return PortType::Footprint;
+       std::holds_alternative<FloorStackNode>(node.payload) || std::holds_alternative<RoomSplitNode>(node.payload))
+        return PortType::Footprint;
+    if(std::holds_alternative<InteriorNode>(node.payload)) return PortType::Mesh;
     if(std::holds_alternative<WallsNode>(node.payload) || std::holds_alternative<SlabNode>(node.payload) ||
        std::holds_alternative<RoofNode>(node.payload) || std::holds_alternative<StairsNode>(node.payload) ||
        std::holds_alternative<RoadFromCurveNode>(node.payload)) return PortType::Mesh;
@@ -511,7 +513,8 @@ PortType inputType(const Node& node, uint32_t port){
     if((std::holds_alternative<FootprintFromCurveNode>(node.payload) || std::holds_alternative<RoadFromCurveNode>(node.payload)) &&
        port == 0) return PortType::Curve;
     if((std::holds_alternative<FloorStackNode>(node.payload) || std::holds_alternative<WallsNode>(node.payload) ||
-        std::holds_alternative<SlabNode>(node.payload) || std::holds_alternative<RoofNode>(node.payload)) && port == 0)
+        std::holds_alternative<SlabNode>(node.payload) || std::holds_alternative<RoofNode>(node.payload) ||
+        std::holds_alternative<RoomSplitNode>(node.payload) || std::holds_alternative<InteriorNode>(node.payload)) && port == 0)
         return PortType::Footprint;
     return PortType::Invalid;
 }
@@ -1888,6 +1891,14 @@ ValidationResult validate(const Graph& graph){
                !finite(road->curbHeight) || road->curbHeight < 0.0f || road->curbHeight > 1.0f ||
                !finite(road->sampleSpacing) || road->sampleSpacing < 0.1f || road->sampleSpacing > 20.0f)
                 return {false, "road settings are invalid"};
+        }else if(const auto* split = std::get_if<RoomSplitNode>(&node.payload)){
+            if(int(split->program) > int(InteriorProgram::Office) || !finite(split->corridorWidth) || split->corridorWidth < 0.9f ||
+               split->corridorWidth > 3.0f || !finite(split->doorWidth) || split->doorWidth < 0.7f || split->doorWidth > 1.5f ||
+               split->entranceEdge > 1023)
+                return {false, "room split settings are invalid"};
+        }else if(const auto* interior = std::get_if<InteriorNode>(&node.payload)){
+            if(!finite(interior->partitionThickness) || interior->partitionThickness < 0.05f || interior->partitionThickness > 0.4f)
+                return {false, "interior partition thickness must be between 0.05 and 0.4 m"};
         }
         if(!nodeIndex.emplace(node.id, i).second) return {false, "node IDs must be unique"};
         highestNodeId = std::max(highestNodeId, node.id);
@@ -2023,6 +2034,8 @@ EvaluationResult evaluate(const Graph& graph){
             if(std::holds_alternative<SlabNode>(node.payload)) return std::string("Slab");
             if(std::holds_alternative<RoofNode>(node.payload)) return std::string("Roof");
             if(std::holds_alternative<RoadFromCurveNode>(node.payload)) return std::string("Road from Curve");
+            if(std::holds_alternative<RoomSplitNode>(node.payload)) return std::string("Room Split");
+            if(std::holds_alternative<InteriorNode>(node.payload)) return std::string("Interior");
             return std::string("Node");
         }();
         // Resolves input 0 as a mesh for the single-input mesh operations.
@@ -2096,8 +2109,21 @@ EvaluationResult evaluate(const Graph& graph){
             stacked.floors = stack->floors;
             stacked.floorHeight = stack->floorHeight;
             stacked.elevation = stack->elevation;
+            stacked.hasPlan = false;          // a plan belongs to one floor count; RoomSplit comes after
+            stacked.plan = {};
             footprints.emplace(node.id, std::move(stacked));
             producesMesh = false;
+        }else if(const auto* split = std::get_if<RoomSplitNode>(&node.payload)){
+            const Footprint* footprint = footprintInput();
+            if(!footprint) return fail(name + " needs a Footprint input");
+            Footprint planned;
+            if(!planInterior(*footprint, *split, planned, error)) return fail(error);
+            footprints.emplace(node.id, std::move(planned));
+            producesMesh = false;
+        }else if(const auto* interior = std::get_if<InteriorNode>(&node.payload)){
+            const Footprint* footprint = footprintInput();
+            if(!footprint) return fail(name + " needs a Footprint input");
+            if(!makeInterior(*footprint, *interior, produced, error)) return fail(error);
         }else if(std::holds_alternative<WallsNode>(node.payload) || std::holds_alternative<SlabNode>(node.payload) ||
                  std::holds_alternative<RoofNode>(node.payload)){
             const Footprint* footprint = footprintInput();

@@ -33,6 +33,8 @@ Tipovi portova: Curve, Profile, PointGrid, Mesh, Points, **Footprint** (shema 7)
 | `RoofNode` | S | radi | flat (+ parapet) / gable / hip / shed; kosi krovovi po dijelovima obrisa (L i U dobiju križne krovove) |
 | `StairsNode` | S | radi | ravne pune stepenice s ogradom |
 | `RoadFromCurveNode` | S | radi | asfalt, rubnjak, pločnik s obje strane |
+| `RoomSplitNode` | S | radi | pravila interijera: program (home/office), seed, širina hodnika, vrata, ulazni brid → plan u Footprintu |
+| `InteriorNode` | S | radi | pregradni zidovi s otvorima (stupići na spojevima), krila vrata otvorena 90°, podovi po sobi, stubište s dva kraka |
 
 Zadane oznake novih čvorova (mijenjaju se sa `SetMaterial` + filter po semantici):
 zid vani `wall_exterior`/plaster, zid unutra `wall_interior`/plaster, špalete `frame`/plaster, staklo `window`/glass,
@@ -44,12 +46,29 @@ stepenice `stairs`/concrete, ograda `railing`/metal, cesta `road`/asphalt, `curb
 
 | Čvor | Razina | Za što |
 |---|---|---|
-| `RoomSplit` | S | sobe i hodnik unutar Footprinta, unutarnji zidovi s vratima, tip interijera po seedu |
+| Namještaj | S | krevet, ormar, kuhinjski element, sanitarije, stol — po tipu sobe i pravilima razmaka |
+| RoomSplit za obris iz krivulje | S | sada samo tlocrti od pravokutnika |
+| Stubište po dubini | S | sada krakovi uvijek idu uzduž reda; plitki redovi (< 2.6 m) nemaju mjesta |
 | `FloorStack` s uvlačenjem | S | različit tlocrt po katu (terase, neboderi) |
 | Otvori po pravilu | S | trenutačno samo razmak prozora i jedna vrata; fale balkoni, izlozi u prizemlju, prozori po katu |
-| Stepenice između katova | S | `Stairs` s visinom iz Footprinta i otvorom u ploči |
 | `Noise` / `Displace` | S | teren |
 | Raskrižja | S | spajanje više `RoadFromCurve` |
+
+## Pravila interijera (RoomSplit)
+
+1. Zone popločavaju tlocrt (pravokutnik: 1, L: glavni dio + krilo, U: glavni dio + 2 krila).
+2. Hodnik po dubini zone: ≥ 8 m središnji, 4.4–8 m bočni (glavni dio L/U prema krilima, krilo prema dvorištu,
+   pravokutnik po seedu), < 4.4 m bez hodnika (niz soba). Hodnik krila ide do hodnika glavnog dijela (spojnica kroz red).
+3. Ulaz: vrata u hodnik ako hodnik dira brid; inače predsoblje u redu iza brida ili na čelu reda; krajnje: soba iza vrata
+   postaje predsoblje.
+4. Stubište (više katova): 4.4 m dugo, 3 m duboko uz hodnik, isto mjesto na svim katovima; soba iza njega ako je red dublji.
+5. Red dublji od 5.2 m: sobe ~4 m uz fasadu + servisni pojas (kupaonice, ostave) s prolazom do svake sobe.
+6. Ćelije ~3.4 m (ured 5 m), tipovi po površini: dnevni boravak (spaja susjedne ćelije do 16 m²), kuhinja, kupaonica,
+   spavaće (≥ 7 m², ≥ 2.4 m), ostava; kupaonica ≤ 2.6 m, kuhinja ≤ 4.2 m širine; nedostajuća kuhinja/kupaonica se izreže.
+7. Vrata: otvoreni prostori (hodnik, predsoblje, stubište) su jedan prostor; svaka soba vrata prema otvorenom prostoru
+   s najduljim zajedničkim zidom, inače prema dostupnom susjedu; vrata 0.35 m od kuta.
+8. Prozori (Walls): samo unutar sobe; kupaonica mali visoki, hodnik/predsoblje samo na čelu, ostava bez.
+9. Greške s razlogom: premalo za dom, nema mjesta za stubište, nema ulaza, soba bez pristupa, zona preplitka.
 
 ## Vokabulari (samo dodavanje na kraj)
 

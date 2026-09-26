@@ -304,10 +304,12 @@ bool makeFootprint(const FootprintNode& settings, Footprint& output, std::string
     const float hw = w * 0.5f, hd = d * 0.5f;
     std::vector<glm::vec2> outline;
     std::vector<FootprintPart> parts;
+    std::vector<LocalRect> zones;   // tile the outline, for RoomSplit
     // Each outline starts on a +Z facing edge so doorEdge 0 is the front door.
     if(settings.shape == FootprintShape::Rectangle){
         outline = {{hw, hd}, {-hw, hd}, {-hw, -hd}, {hw, -hd}};
         parts.push_back({{0, 0}, {hw, hd}, {1, 0}});
+        zones.push_back({{-hw, -hd}, {hw, hd}});
     }else{
         const bool u = settings.shape == FootprintShape::UShape;
         if(settings.shape != FootprintShape::LShape && !u){ error = "unknown footprint shape"; return false; }
@@ -328,9 +330,11 @@ bool makeFootprint(const FootprintNode& settings, Footprint& output, std::string
         if(u){
             outline = {{hw, hd}, {hw - a, hd}, {hw - a, barZ}, {-hw + a, barZ}, {-hw + a, hd}, {-hw, hd}, {-hw, -hd}, {hw, -hd}};
             parts = {bar, left, right};
+            zones = {{{-hw, -hd}, {hw, barZ}}, {{-hw, barZ}, {-hw + a, hd}}, {{hw - a, barZ}, {hw, hd}}};
         }else{
             outline = {{-hw + a, hd}, {-hw, hd}, {-hw, -hd}, {hw, -hd}, {hw, barZ}, {-hw + a, barZ}};
             parts = {bar, left};
+            zones = {{{-hw, -hd}, {hw, barZ}}, {{-hw, barZ}, {-hw + a, hd}}};
         }
     }
     const float turn = settings.rotationDegrees * float(pi / 180.0);
@@ -342,6 +346,9 @@ bool makeFootprint(const FootprintNode& settings, Footprint& output, std::string
     Footprint made;
     if(!finishFootprint(outline, made, error)) return false;
     made.parts = std::move(parts);
+    made.zones = std::move(zones);
+    made.frameCenter = settings.center;
+    made.frameAxis = rotateXZ({1.0f, 0.0f}, turn);
     output = std::move(made);
     return true;
 }
@@ -354,6 +361,90 @@ bool footprintFromCurve(const Curve& curve, Footprint& output, std::string& erro
     output = std::move(made);
     return true;
 }
+
+namespace{
+
+// Points on an edge's outer and inner line. The ends return the stored corners exactly:
+// a + along * length differs from the next edge's first corner in the last float bit,
+// and that is enough to open pixel cracks down every building corner.
+struct Edge{
+    glm::vec2 a, b, innerA, innerB, along, outward;
+    float length, innerFrom, innerTo;
+    glm::vec2 outer(float s) const{ return s <= 0.0f ? a : s >= length ? b : a + along * s; }
+    glm::vec2 inside(float s) const{
+        return s <= innerFrom ? innerA : s >= innerTo ? innerB : innerA + along * (s - innerFrom);
+    }
+};
+
+// Windows from the interior plan: each room gets windows only on its own stretch of facade,
+// by its type (a bathroom a small high one, a corridor only at its end, storage none), so no
+// window ever lands on a partition. The front door goes where the plan put the entrance.
+bool planOpenings(const Footprint& footprint, const WallsNode& settings, const std::vector<Edge>& edges,
+                  std::vector<std::vector<std::vector<Opening>>>& openings, std::string& error){
+    const InteriorPlan& plan = footprint.plan;
+    const float h = footprint.floorHeight;
+    const std::size_t n = edges.size();
+    for(uint32_t floor = 0; floor < footprint.floors; ++floor){
+        const float low = footprint.elevation + float(floor) * h;
+        if(settings.door && floor == 0){
+            const Edge& e = edges[plan.entranceEdge % n];
+            const float lo = std::max(0.0f, e.innerFrom) + 0.3f, hi = std::min(e.length, e.innerTo) - 0.3f;
+            if(hi - lo < settings.doorWidth){ error = "door does not fit on outline edge " + std::to_string(plan.entranceEdge); return false; }
+            const float center = std::clamp(plan.entranceCenter, lo + settings.doorWidth * 0.5f, hi - settings.doorWidth * 0.5f);
+            openings[0][plan.entranceEdge % n].push_back({center - settings.doorWidth * 0.5f, center + settings.doorWidth * 0.5f,
+                                                          low, low + settings.doorHeight, true});
+        }
+        if(!settings.windows) continue;
+        for(const Room& room : plan.rooms){
+            if(room.floor != floor || room.type == RoomType::Storage) continue;
+            const LocalRect& r = room.rect;
+            const glm::vec2 corners[4] = {footprint.toWorld(r.min), footprint.toWorld({r.max.x, r.min.y}),
+                                          footprint.toWorld(r.max), footprint.toWorld({r.min.x, r.max.y})};
+            for(int side = 0; side < 4; ++side){
+                const glm::vec2 p = corners[side], q = corners[(side + 1) % 4];
+                for(std::size_t i = 0; i < n; ++i){
+                    const Edge& e = edges[i];
+                    auto off = [&](const glm::vec2& x){ return std::abs(glm::dot(x - e.a, e.outward)); };
+                    if(off(p) > 1e-3f || off(q) > 1e-3f) continue;
+                    float s0 = glm::dot(p - e.a, e.along), s1 = glm::dot(q - e.a, e.along);
+                    if(s0 > s1) std::swap(s0, s1);
+                    const float lo = std::max({s0 + 0.35f, std::max(0.0f, e.innerFrom) + 0.3f});
+                    const float hi = std::min({s1 - 0.35f, std::min(e.length, e.innerTo) - 0.3f});
+                    const float length = hi - lo;
+                    float width = settings.windowWidth, bottom = settings.sillHeight, height = settings.windowHeight;
+                    int count = 0;
+                    switch(room.type){
+                        case RoomType::Bathroom:
+                            width = 0.6f; height = std::min(0.6f, height); bottom = settings.sillHeight + settings.windowHeight - height;
+                            count = length >= width ? 1 : 0; break;
+                        case RoomType::Corridor: case RoomType::Hall:
+                            width = std::min(width, length - 0.1f);
+                            count = s1 - s0 <= 3.2f && width >= 0.6f ? 1 : 0; break;
+                        case RoomType::Stairs:
+                            count = length >= width ? 1 : 0; break;
+                        case RoomType::Kitchen:
+                            bottom = std::max(bottom, 1.05f); height = std::min(height, settings.sillHeight + settings.windowHeight - bottom);
+                            [[fallthrough]];
+                        default:
+                            count = length >= width ? std::max(1, int(std::floor(length / settings.windowSpacing))) : 0;
+                    }
+                    std::vector<Opening>& list = openings[floor][i];
+                    for(int k = 0; k < count; ++k){
+                        const float center = lo + length * (float(k) + 0.5f) / float(count);
+                        const Opening candidate{center - width * 0.5f, center + width * 0.5f, low + bottom, low + bottom + height, false};
+                        const bool clashes = std::any_of(list.begin(), list.end(), [&](const Opening& o){
+                            return candidate.a < o.b + 0.3f && candidate.b > o.a - 0.3f;
+                        });
+                        if(!clashes) list.push_back(candidate);
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+}  // namespace
 
 bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& output, std::string& error,
                std::size_t maxVertices){
@@ -372,17 +463,6 @@ bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& 
     const uint32_t floors = footprint.floors;
     const uint32_t doorEdge = settings.doorEdge % uint32_t(n);
 
-    // Points on an edge's outer and inner line. The ends return the stored corners exactly:
-    // a + along * length differs from the next edge's first corner in the last float bit,
-    // and that is enough to open pixel cracks down every building corner.
-    struct Edge{
-        glm::vec2 a, b, innerA, innerB, along, outward;
-        float length, innerFrom, innerTo;
-        glm::vec2 outer(float s) const{ return s <= 0.0f ? a : s >= length ? b : a + along * s; }
-        glm::vec2 inside(float s) const{
-            return s <= innerFrom ? innerA : s >= innerTo ? innerB : innerA + along * (s - innerFrom);
-        }
-    };
     std::vector<Edge> edges(n);
     for(std::size_t i = 0; i < n; ++i){
         Edge& e = edges[i];
@@ -399,7 +479,10 @@ bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& 
 
     // Openings first: every face needs the break lines of its neighbours.
     std::vector<std::vector<std::vector<Opening>>> openings(floors, std::vector<std::vector<Opening>>(n));
-    for(uint32_t floor = 0; floor < floors; ++floor){
+    if(footprint.hasPlan){
+        if(!planOpenings(footprint, settings, edges, openings, error)) return false;
+    }
+    for(uint32_t floor = 0; floor < floors && !footprint.hasPlan; ++floor){
         const float low = footprint.elevation + float(floor) * h;
         for(std::size_t i = 0; i < n; ++i){
             const Edge& e = edges[i];
@@ -433,7 +516,28 @@ bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& 
         std::vector<float> values{0.0f, edges[i].length, edges[i].innerFrom, edges[i].innerTo};
         for(uint32_t floor = 0; floor < floors; ++floor)
             for(const Opening& o : openings[floor][i]){ values.push_back(o.a); values.push_back(o.b); }
+        std::sort(values.begin(), values.end());
+        values.erase(std::unique(values.begin(), values.end(), [](float x, float y){ return y - x <= 1e-4f; }), values.end());
         edgeBreaks[i] = values;
+    }
+    // Opening edges computed in different ways can differ in the last bit ("top of a small
+    // bathroom window" vs "top of a window"); both must use the one break the faces use, or
+    // the reveal and the face miss each other by a crack.
+    auto snap = [](float v, const std::vector<float>& list){
+        for(float x : list) if(std::abs(x - v) <= 1e-4f) return x;
+        return v;
+    };
+    for(uint32_t floor = 0; floor < floors; ++floor){
+        std::vector<float> heights;
+        for(std::size_t i = 0; i < n; ++i)
+            for(const Opening& o : openings[floor][i]){ heights.push_back(o.bottom); heights.push_back(o.top); }
+        std::sort(heights.begin(), heights.end());
+        heights.erase(std::unique(heights.begin(), heights.end(), [](float x, float y){ return y - x <= 1e-4f; }), heights.end());
+        for(std::size_t i = 0; i < n; ++i)
+            for(Opening& o : openings[floor][i]){
+                o.a = snap(o.a, edgeBreaks[i]); o.b = snap(o.b, edgeBreaks[i]);
+                o.bottom = snap(o.bottom, heights); o.top = snap(o.top, heights);
+            }
     }
 
     Builder builder(maxVertices);
@@ -544,6 +648,61 @@ bool makeSlabs(const Footprint& footprint, const SlabNode& settings, MeshData& o
     // facade a few centimeters in front.
     const bool sides = settings.inset <= 0.0f;
     Builder builder(maxVertices);
+    if(footprint.hasPlan && footprint.plan.hasStairs && footprint.floors > 1){
+        // Rectilinear in the footprint frame: cut the slab into cells on every corner line and
+        // leave out the stairwell (the core without its arrival strip) above the ground floor.
+        std::vector<glm::vec2> local;
+        const glm::vec2 across{-footprint.frameAxis.y, footprint.frameAxis.x};
+        for(const glm::vec2& p : polygon){
+            const glm::vec2 d = p - footprint.frameCenter;
+            local.push_back({glm::dot(d, footprint.frameAxis), glm::dot(d, across)});
+        }
+        LocalRect hole = footprint.plan.stairCore;
+        if(footprint.plan.stairsAlongX) hole.min.x += 0.9f; else hole.min.y += 0.9f;
+        std::vector<float> xs{hole.min.x, hole.max.x}, zs{hole.min.y, hole.max.y};
+        for(const glm::vec2& p : local){ xs.push_back(p.x); zs.push_back(p.y); }
+        auto unique = [](std::vector<float>& v){
+            std::sort(v.begin(), v.end());
+            v.erase(std::unique(v.begin(), v.end(), [](float a, float b){ return b - a < 1e-4f; }), v.end());
+        };
+        unique(xs); unique(zs);
+        auto inside = [&](const glm::vec2& p){
+            bool in = false;
+            for(std::size_t i = 0, j = local.size() - 1; i < local.size(); j = i++)
+                if((local[i].y > p.y) != (local[j].y > p.y) &&
+                   p.x < (local[j].x - local[i].x) * (p.y - local[i].y) / (local[j].y - local[i].y) + local[i].x) in = !in;
+            return in;
+        };
+        const std::size_t nx = xs.size() - 1, nz = zs.size() - 1;
+        for(uint32_t floor = 0; floor < footprint.floors; ++floor){
+            const float top = footprint.elevation + float(floor) * footprint.floorHeight, bottom = top - settings.thickness;
+            auto cell = [&](long i, long j){
+                if(i < 0 || j < 0 || i >= long(nx) || j >= long(nz)) return 0;          // 0 outside
+                const glm::vec2 c{(xs[i] + xs[i + 1]) * 0.5f, (zs[j] + zs[j + 1]) * 0.5f};
+                if(!inside(c)) return 0;
+                if(floor > 0 && c.x > hole.min.x && c.x < hole.max.x && c.y > hole.min.y && c.y < hole.max.y) return 2;   // stairwell
+                return 1;
+            };
+            for(long i = 0; i < long(nx); ++i)
+                for(long j = 0; j < long(nz); ++j){
+                    if(cell(i, j) != 1) continue;
+                    const glm::vec2 p00 = footprint.toWorld({xs[i], zs[j]}), p10 = footprint.toWorld({xs[i + 1], zs[j]});
+                    const glm::vec2 p11 = footprint.toWorld({xs[i + 1], zs[j + 1]}), p01 = footprint.toWorld({xs[i], zs[j + 1]});
+                    builder.quad(at(p00, top), at(p10, top), at(p11, top), at(p01, top), {0, 1, 0}, floorTag, concrete);
+                    builder.quad(at(p00, bottom), at(p10, bottom), at(p11, bottom), at(p01, bottom), {0, -1, 0}, ceiling, concrete);
+                    // Edges toward the stairwell are seen; edges at the facade hide in the walls.
+                    const struct{ long di, dj; glm::vec2 a, b; } sidesOf[4] = {{-1, 0, p00, p01}, {1, 0, p10, p11}, {0, -1, p00, p10}, {0, 1, p01, p11}};
+                    for(const auto& side : sidesOf){
+                        const int other = cell(i + side.di, j + side.dj);
+                        if(other == 1 || (other == 0 && !sides)) continue;
+                        const glm::vec2 mid = (side.a + side.b) * 0.5f, center = (p00 + p11) * 0.5f;
+                        const glm::vec2 out = mid - center;
+                        builder.quad(at(side.a, bottom), at(side.b, bottom), at(side.b, top), at(side.a, top), {out.x, 0, out.y},
+                                     floorTag, concrete);
+                    }
+                }
+        }
+    }else
     for(uint32_t floor = 0; floor < footprint.floors; ++floor){
         const float top = footprint.elevation + float(floor) * footprint.floorHeight;
         builder.prism(polygon, triangles, top - settings.thickness, top, floorTag, floorTag, ceiling, concrete, true, sides);

@@ -260,12 +260,56 @@ struct FootprintPart{
 
 // outline is the exterior wall line in XZ with positive area (x0*z1 - x1*z0 summed), so an
 // edge (dx, dz) faces outward along (dz, -dx). Footprints traced from a curve have no parts.
+// Interior plan (RoomSplit). Rooms are axis-aligned rectangles in the footprint's local frame
+// (see Footprint::toWorld), one list for all floors.
+enum class RoomType : uint8_t{ Hall, Corridor, Stairs, Living, Kitchen, Bedroom, Bathroom, Office, Meeting, Storage };
+const std::vector<std::string>& roomTypeNames();   // "hall", "corridor", ... in enum order
+
+struct LocalRect{
+    glm::vec2 min{0.0f}, max{0.0f};   // local (x, z)
+};
+
+struct Room{
+    uint32_t floor = 0;
+    RoomType type = RoomType::Living;
+    LocalRect rect;
+};
+
+// A door in the partition between two rooms of one floor; from/to are the door span's ends
+// on their shared wall line (local).
+struct InteriorDoor{
+    uint32_t floor = 0;
+    uint32_t roomA = 0, roomB = 0;   // indices into InteriorPlan::rooms
+    glm::vec2 from{0.0f}, to{0.0f};
+};
+
+struct InteriorPlan{
+    std::vector<Room> rooms;
+    std::vector<InteriorDoor> doors;
+    bool hasStairs = false;
+    LocalRect stairCore;               // same rectangle on every floor
+    bool stairsAlongX = true;          // flights run along local x (else z)
+    uint32_t entranceEdge = 0;         // outline edge of the front door
+    float entranceCenter = 0.0f;       // meters along that edge from its first corner
+};
+
 struct Footprint{
     std::vector<glm::vec2> outline;
     std::vector<FootprintPart> parts;
     float elevation = 0.0f;        // Y of the ground floor
     uint32_t floors = 1;
     float floorHeight = 3.0f;
+    // Local frame of rectangle footprints: world = frameCenter + frameAxis * x + across * z,
+    // across = (-frameAxis.y, frameAxis.x). zones tile the outline in that frame.
+    glm::vec2 frameCenter{0.0f};
+    glm::vec2 frameAxis{1.0f, 0.0f};
+    std::vector<LocalRect> zones;
+    bool hasPlan = false;
+    InteriorPlan plan;
+
+    glm::vec2 toWorld(const glm::vec2& local) const{
+        return frameCenter + frameAxis * local.x + glm::vec2(-frameAxis.y, frameAxis.x) * local.y;
+    }
 };
 
 enum class FootprintShape : uint8_t{ Rectangle, LShape, UShape };
@@ -329,6 +373,28 @@ struct RoofNode{
     float parapetHeight = 0.0f;    // flat roof only; 0 = none
 };
 
+enum class InteriorProgram : uint8_t{ Residential, Office };
+
+// Footprint -> Footprint: plans rooms, corridors, the entrance hall, a staircase for more
+// than one floor, and a door into every room. Rules, not a drawing: the same settings give
+// a fitting plan for any rectangle, L or U footprint. Needs a footprint built from rectangles.
+struct RoomSplitNode{
+    InteriorProgram program = InteriorProgram::Residential;
+    uint64_t seed = 1;                 // which side corridors and stairs take, room order and size jitter
+    float corridorWidth = 1.3f;
+    float doorWidth = 0.9f;
+    uint32_t entranceEdge = 0;         // outline edge of the front door (mod edge count)
+};
+
+// Footprint with a plan -> Mesh: partition walls with door openings, door leaves, a floor
+// finish per room and the staircase with its railing.
+struct InteriorNode{
+    float partitionThickness = 0.12f;
+    bool doorLeaves = true;
+    bool floorFinish = true;
+    bool stairs = true;
+};
+
 // Straight solid stairs from the origin along +Z, rising in +Y.
 struct StairsNode{
     float width = 1.2f;
@@ -355,7 +421,8 @@ using NodePayload = std::variant<std::monostate, CurveNode, RectangleProfileNode
                                  SetMaterialNode, SmoothNormalsNode, UVProjectNode, CopyToPointsNode,
                                  CurveSmoothNode, CatenaryCurveNode, CopyAlongCurveNode,
                                  FootprintNode, FootprintFromCurveNode, FloorStackNode, WallsNode,
-                                 SlabNode, RoofNode, StairsNode, RoadFromCurveNode>;
+                                 SlabNode, RoofNode, StairsNode, RoadFromCurveNode, RoomSplitNode,
+                                 InteriorNode>;
 
 struct Node{
     NodeId id = 0;
@@ -457,6 +524,10 @@ bool makeSlabs(const Footprint& footprint, const SlabNode& settings, MeshData& o
 bool makeRoof(const Footprint& footprint, const RoofNode& settings, MeshData& output, std::string& error,
               std::size_t maxVertices = 2'000'000);
 bool makeStairs(const StairsNode& settings, MeshData& output, std::string& error);
+// Adds the interior plan to a copy of the footprint; error says which rule could not be met.
+bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Footprint& output, std::string& error);
+bool makeInterior(const Footprint& footprint, const InteriorNode& settings, MeshData& output, std::string& error,
+                  std::size_t maxVertices = 4'000'000);
 bool roadFromCurve(const Curve& curve, const RoadFromCurveNode& settings, MeshData& output, std::string& error);
 
 Profile makeRectangleProfile(float width, float height);
