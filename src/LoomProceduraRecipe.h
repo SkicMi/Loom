@@ -95,6 +95,25 @@ inline Proc::PrimitiveType readPrimitive(const AgentJsonValue& value){
     throw std::runtime_error("unknown primitive type: " + name);
 }
 
+inline void writeFilter(std::ostream& out, const Proc::TriangleFilter& filter){
+    out << "\"filter\":{\"semantic\":" << agentJsonEscape(filter.semantic)
+        << ",\"use_direction\":" << (filter.useDirection ? "true" : "false")
+        << ",\"direction\":[" << filter.direction.x << ',' << filter.direction.y << ',' << filter.direction.z
+        << "],\"max_angle_degrees\":" << filter.maxAngleDegrees << '}';
+}
+
+inline Proc::TriangleFilter readFilter(const AgentJsonValue& parameters){
+    Proc::TriangleFilter filter;
+    const AgentJsonValue* encoded = parameters.get("filter");
+    if(!encoded) return filter;
+    if(encoded->kind != AgentJsonValue::Kind::Object) throw std::runtime_error("filter must be an object");
+    filter.semantic = readString(required(*encoded, "semantic"), "filter.semantic");
+    filter.useDirection = readBool(required(*encoded, "use_direction"), "filter.use_direction");
+    filter.direction = readVec3(required(*encoded, "direction"), "filter.direction");
+    filter.maxAngleDegrees = readFloat(required(*encoded, "max_angle_degrees"), "filter.max_angle_degrees");
+    return filter;
+}
+
 inline std::string serialize(const Document& document){
     const Proc::ValidationResult validation = Proc::validate(document.graph);
     if(!validation) throw std::runtime_error(validation.error);
@@ -162,6 +181,27 @@ inline std::string serialize(const Document& document){
             out << "{\"type\":\"mesh_to_point\"}";
         }else if(const auto* sample = std::get_if<Proc::PointFromMeshNode>(&node.payload)){
             out << "{\"type\":\"point_from_mesh\",\"count\":" << sample->count << ",\"seed\":" << sample->seed << '}';
+        }else if(const auto* circle = std::get_if<Proc::CircleProfileNode>(&node.payload)){
+            out << "{\"type\":\"circle_profile\",\"radius\":" << circle->radius << ",\"sides\":" << circle->sides << '}';
+        }else if(std::holds_alternative<Proc::MergeNode>(node.payload)){
+            out << "{\"type\":\"merge\"}";
+        }else if(const auto* tag = std::get_if<Proc::SetSemanticNode>(&node.payload)){
+            out << "{\"type\":\"set_semantic\",\"semantic\":" << agentJsonEscape(tag->semantic) << ',';
+            writeFilter(out, tag->filter);
+            out << '}';
+        }else if(const auto* paint = std::get_if<Proc::SetMaterialNode>(&node.payload)){
+            out << "{\"type\":\"set_material\",\"material\":" << agentJsonEscape(paint->material) << ',';
+            writeFilter(out, paint->filter);
+            out << '}';
+        }else if(const auto* smooth = std::get_if<Proc::SmoothNormalsNode>(&node.payload)){
+            out << "{\"type\":\"smooth_normals\",\"angle_degrees\":" << smooth->angleDegrees << '}';
+        }else if(const auto* uv = std::get_if<Proc::UVProjectNode>(&node.payload)){
+            out << "{\"type\":\"uv_project\",\"tile_size\":" << uv->tileSize << '}';
+        }else if(const auto* copy = std::get_if<Proc::CopyToPointsNode>(&node.payload)){
+            out << "{\"type\":\"copy_to_points\",\"align_to_normal\":" << (copy->alignToNormal ? "true" : "false")
+                << ",\"scale\":" << copy->scale << ",\"random_yaw_degrees\":" << copy->randomYawDegrees
+                << ",\"random_scale\":" << copy->randomScale << ",\"seed\":" << copy->seed
+                << ",\"max_copies\":" << copy->maxCopies << '}';
         }else{
             throw std::runtime_error("recipe contains an unsupported node payload");
         }
@@ -193,8 +233,8 @@ inline Document parse(const std::string& source){
     if(document.name.empty() || document.name.size() > 120)
         throw std::runtime_error("recipe name must contain 1 to 120 characters");
     const uint64_t schema = readUnsigned(required(root, "schema_version"), "schema_version");
-    if(schema != 3 && schema != Proc::graphSchemaVersion) throw std::runtime_error("unsupported recipe schema version");
-    // Version 4 only adds node types; version 3 payloads retain their meanings.
+    if(schema < 3 || schema > Proc::graphSchemaVersion) throw std::runtime_error("unsupported recipe schema version");
+    // Versions 4 and 5 only add node types and per-triangle attributes; older payloads keep their meaning.
     document.graph.schemaVersion = Proc::graphSchemaVersion;
     document.graph.seed = readUnsigned(required(root, "seed"), "seed");
 
@@ -292,6 +332,36 @@ inline Document parse(const std::string& source){
             sample.count = readU32(required(parameters,"count"),"point_from_mesh.count");
             sample.seed = readUnsigned(required(parameters,"seed"),"point_from_mesh.seed");
             node.payload = sample;
+        }else if(type == "circle_profile"){
+            Proc::CircleProfileNode circle;
+            circle.radius = readFloat(required(parameters,"radius"),"circle_profile.radius");
+            circle.sides = readU32(required(parameters,"sides"),"circle_profile.sides");
+            node.payload = circle;
+        }else if(type == "merge"){
+            node.payload = Proc::MergeNode{};
+        }else if(type == "set_semantic"){
+            Proc::SetSemanticNode tag;
+            tag.semantic = readString(required(parameters,"semantic"),"set_semantic.semantic");
+            tag.filter = readFilter(parameters);
+            node.payload = std::move(tag);
+        }else if(type == "set_material"){
+            Proc::SetMaterialNode paint;
+            paint.material = readString(required(parameters,"material"),"set_material.material");
+            paint.filter = readFilter(parameters);
+            node.payload = std::move(paint);
+        }else if(type == "smooth_normals"){
+            node.payload = Proc::SmoothNormalsNode{readFloat(required(parameters,"angle_degrees"),"smooth_normals.angle_degrees")};
+        }else if(type == "uv_project"){
+            node.payload = Proc::UVProjectNode{readFloat(required(parameters,"tile_size"),"uv_project.tile_size")};
+        }else if(type == "copy_to_points"){
+            Proc::CopyToPointsNode copy;
+            copy.alignToNormal = readBool(required(parameters,"align_to_normal"),"copy_to_points.align_to_normal");
+            copy.scale = readFloat(required(parameters,"scale"),"copy_to_points.scale");
+            copy.randomYawDegrees = readFloat(required(parameters,"random_yaw_degrees"),"copy_to_points.random_yaw_degrees");
+            copy.randomScale = readFloat(required(parameters,"random_scale"),"copy_to_points.random_scale");
+            copy.seed = readUnsigned(required(parameters,"seed"),"copy_to_points.seed");
+            copy.maxCopies = readU32(required(parameters,"max_copies"),"copy_to_points.max_copies");
+            node.payload = copy;
         }else{
             throw std::runtime_error("unknown recipe node type: " + type);
         }

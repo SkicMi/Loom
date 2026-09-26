@@ -13,7 +13,7 @@ namespace Engine::WeaverProcedura{
 
 // Recipe files carry this schema version. Increment it when serialized node
 // payloads or port meanings change.
-constexpr uint32_t graphSchemaVersion = 4;
+constexpr uint32_t graphSchemaVersion = 5;
 using NodeId = uint64_t;
 
 struct Link{
@@ -35,6 +35,24 @@ struct Profile{
     std::vector<glm::vec2> points;
 };
 
+// Closed vocabularies. A triangle stores the index + 1 into these lists (0 = none), so
+// merged meshes need no remapping and a model can only choose names that exist.
+// Append only: existing positions are stable IDs in saved data and training sets.
+const std::vector<std::string>& semanticVocabulary();
+const std::vector<std::string>& materialLibrary();
+uint16_t semanticId(const std::string& name);  // 0 when the name is unknown or empty
+uint16_t materialId(const std::string& name);
+std::string semanticName(uint16_t id);
+std::string materialName(uint16_t id);
+
+// Provenance and look of one triangle. createdBy is the Recipe node that made the
+// triangle; the evaluator fills it for every triangle a node adds.
+struct TriangleAttributes{
+    NodeId createdBy = 0;
+    uint16_t semantic = 0;
+    uint16_t material = 0;
+};
+
 struct MeshVertex{
     glm::vec3 position{0.0f};
     glm::vec3 normal{0.0f};
@@ -46,6 +64,7 @@ struct MeshVertex{
 struct MeshData{
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
+    std::vector<TriangleAttributes> triangles;  // empty, or one entry per triangle
 
     bool empty() const {return vertices.empty() || indices.empty();}
 };
@@ -64,6 +83,11 @@ struct CurveNode{
 struct RectangleProfileNode{
     float width = 1.2f;
     float height = 0.14f;
+};
+
+struct CircleProfileNode{
+    float radius = 0.05f;
+    uint32_t sides = 12;
 };
 
 struct SweepNode{
@@ -135,6 +159,50 @@ struct BevelNode{
     uint32_t segments = 1;
 };
 
+// Joins up to mergeInputCount meshes; any subset of the inputs may be connected.
+constexpr uint32_t mergeInputCount = 8;
+struct MergeNode{};
+
+// Chooses triangles by semantic name and/or facing direction. An empty semantic
+// and useDirection == false select every triangle.
+struct TriangleFilter{
+    std::string semantic;
+    bool useDirection = false;
+    glm::vec3 direction{0.0f, 1.0f, 0.0f};
+    float maxAngleDegrees = 30.0f;
+};
+
+struct SetSemanticNode{
+    std::string semantic = "wall_exterior";
+    TriangleFilter filter;
+};
+
+struct SetMaterialNode{
+    std::string material = "plaster";
+    TriangleFilter filter;
+};
+
+// Averages normals across edges whose faces meet at less than angleDegrees.
+struct SmoothNormalsNode{
+    float angleDegrees = 30.0f;
+};
+
+// Box projection in world meters: each triangle uses the plane of its dominant
+// normal axis, so textures tile at tileSize meters on every wall and floor.
+struct UVProjectNode{
+    float tileSize = 1.0f;
+};
+
+// Places a copy of the mesh on input 0 at every point from input 1.
+struct CopyToPointsNode{
+    bool alignToNormal = false;
+    float scale = 1.0f;
+    float randomYawDegrees = 0.0f;   // 0..180, per copy around the point up axis
+    float randomScale = 0.0f;        // 0..0.9, uniform scale jitter as a fraction
+    uint64_t seed = 1;
+    uint32_t maxCopies = 10000;
+};
+
 struct MeshToPointNode{};
 
 struct PointFromMeshNode{
@@ -146,7 +214,8 @@ using NodePayload = std::variant<std::monostate, CurveNode, RectangleProfileNode
                                  GridNode, SetGridPointHeightNode, GridToMeshNode,
                                  InteriorBlockoutNode, AddPrimitiveNode, MoveNode, RotateNode,
                                  ScaleNode, ExtrudeNode, BevelNode, MeshToPointNode,
-                                 PointFromMeshNode>;
+                                 PointFromMeshNode, CircleProfileNode, MergeNode, SetSemanticNode,
+                                 SetMaterialNode, SmoothNormalsNode, UVProjectNode, CopyToPointsNode>;
 
 struct Node{
     NodeId id = 0;
@@ -176,6 +245,7 @@ struct EvaluationResult{
     MeshData mesh;
     std::string error;
     std::vector<glm::vec3> points;
+    std::vector<glm::vec3> pointNormals;  // same length as points
     bool pointCloudOutput = false;
 
     EvaluationResult() = default;
@@ -212,6 +282,17 @@ bool meshToPoints(const MeshData& input, std::vector<glm::vec3>& output, std::st
 bool pointsFromMesh(const MeshData& input, uint32_t count, uint64_t seed,
                     std::vector<glm::vec3>& output, std::string& error,
                     std::size_t maxPoints = 100'000);
+bool mergeMeshes(const std::vector<const MeshData*>& inputs, MeshData& output, std::string& error,
+                 std::size_t maxVertices = 1'000'000);
+bool validTriangleFilter(const TriangleFilter& filter);
+bool triangleMatches(const MeshData& mesh, std::size_t triangle, const TriangleFilter& filter);
+bool setSemantic(const MeshData& input, const SetSemanticNode& settings, MeshData& output, std::string& error);
+bool setMaterial(const MeshData& input, const SetMaterialNode& settings, MeshData& output, std::string& error);
+bool smoothNormals(const MeshData& input, float angleDegrees, MeshData& output, std::string& error);
+bool projectUVs(const MeshData& input, float tileSize, MeshData& output, std::string& error);
+bool copyToPoints(const MeshData& instance, const std::vector<glm::vec3>& points,
+                  const std::vector<glm::vec3>& normals, const CopyToPointsNode& settings,
+                  MeshData& output, std::string& error, std::size_t maxVertices = 2'000'000);
 bool makePointPreview(const std::vector<glm::vec3>& points, MeshData& output, std::string& error,
                       std::size_t maxDisplayedPoints = 20'000, float markerSize = 0.06f,
                       std::size_t maxVertices = 1'000'000);

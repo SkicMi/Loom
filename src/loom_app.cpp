@@ -52,7 +52,6 @@
     #include "LoomWeaverMotion.h"
     #include "LoomMotionPanel.h"
     #include "LoomProcedura.h"
-    #include "LoomAgentJson.h"
     #include "LoomMotionLive.h"
     #include "LoomAnimLayers.h"
     #include "LoomTimelineRange.h"
@@ -264,7 +263,7 @@
     }
     
     enum class Focus{ Entity, Media };
-    enum class RailPane{ None, Media, Scene, Components, Motion, Procedura, Timeline, Terminal, AiChat, Compositor, Render };
+    enum class RailPane{ None, Media, Scene, Components, Motion, Procedura, Timeline, Terminal, Compositor, Render };
     enum class After{ Nothing, Import, ImportAndTrain, AddSplat };
     
     }
@@ -386,18 +385,6 @@
         bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true, lightExpanded = true, volumeExpanded = true;
         bool pointsExpanded = true, splatExpanded = true, splatCutExpanded = true, materialExpanded = false;
         RailPane activeRailPane = RailPane::None;
-        bool chatWorkspaceSaved = false;
-        bool chatPreviousOutline = true, chatPreviousComponents = true, chatPreviousTimeline = true;
-        std::vector<std::pair<std::string, std::string>> agentChatMessages;
-        std::string agentChatDraft;
-        float agentChatScroll = 0.0f;
-        std::string agentStatus = "Ready — the local model loads when you send your first message.";
-        std::atomic<bool> agentBusy{false};
-        std::mutex agentResponseMutex;
-        std::optional<Loom::AgentApiResponse> agentResponse;
-        std::thread agentWorker;
-        struct PendingAgentConfirmation{ Loom::AgentAction action; size_t assistantIndex = 0; };
-        std::optional<PendingAgentConfirmation> pendingAgentConfirmation;
         std::string message;                  //zadnja poruka korisniku, u alatnoj traci
         //Pokret iz teksta (LoomMotionPanel.h): panel u pogledu s radnjama, postavkama i povijescu
         Loom::MotionPanelState motionPanel;
@@ -2820,23 +2807,7 @@
             };
     
             //== ALATNA TRAKA =========================================================================
-            if(activeRailPane == RailPane::AiChat){
-                const Treadle::Rect& bar = layout.toolbar;
-                ui.canvas().rect(bar, Treadle::Color{0.045f, 0.065f, 0.050f, 1.0f});
-                ui.canvas().text(bar.x + 12.0f, bar.y + 13.0f, "WEAVER", theme.title, theme.textScale);
-                const float backWidth = Treadle::textWidth("Back to Editor", theme.textScale) + 2.0f * theme.padding;
-                const float backX = std::max(bar.x + 96.0f, bar.x + bar.width - backWidth - 12.0f);
-                auto [backToEditor, afterBack] = toolButton("Back to Editor", backX, bar.y + 7.0f, bar.height - 14.0f,
-                                                            false, "Return to the scene editor.");
-                (void)afterBack;
-                if(backToEditor){
-                    outlineVisible = chatPreviousOutline;
-                    componentsVisible = chatPreviousComponents;
-                    timelineVisible = chatPreviousTimeline;
-                    chatWorkspaceSaved = false;
-                    activeRailPane = RailPane::None;
-                }
-            }else{
+            {
             {
                 const Treadle::Rect& bar = layout.toolbar;
                 ui.canvas().rect(bar, Treadle::Color{0.045f, 0.065f, 0.050f, 1.0f});
@@ -3015,38 +2986,7 @@
             const Treadle::Rect drawerBox{layout.viewport.x + layout.viewport.width - drawerWidth, layout.viewport.y,
                                            drawerWidth, layout.viewport.height};
             auto toggleRailPane = [&](RailPane pane){
-                if(pane != RailPane::AiChat && activeRailPane == RailPane::AiChat && chatWorkspaceSaved){
-                    outlineVisible = chatPreviousOutline;
-                    componentsVisible = chatPreviousComponents;
-                    timelineVisible = chatPreviousTimeline;
-                    chatWorkspaceSaved = false;
-                    activeRailPane = RailPane::None;
-                }
-                if(pane == RailPane::AiChat){
-                    if(activeRailPane == RailPane::AiChat){
-                        if(chatWorkspaceSaved){
-                            outlineVisible = chatPreviousOutline;
-                            componentsVisible = chatPreviousComponents;
-                            timelineVisible = chatPreviousTimeline;
-                        }
-                        chatWorkspaceSaved = false;
-                        activeRailPane = RailPane::None;
-                    }else{
-                        chatPreviousOutline = outlineVisible;
-                        chatPreviousComponents = componentsVisible;
-                        chatPreviousTimeline = timelineVisible;
-                        chatWorkspaceSaved = true;
-                        outlineVisible = false;
-                        componentsVisible = false;
-                        timelineVisible = false;
-                        terminal.visible = false;
-                        compositor.open = false;
-                        motionPanel.open = false;
-                        proceduraPanel.open = false;
-                        autoRig.open = false;
-                        activeRailPane = RailPane::AiChat;
-                    }
-                }else if(pane == RailPane::Timeline){
+                if(pane == RailPane::Timeline){
                     proceduraPanel.open = false;
                     timelineVisible = !timelineVisible;
                 }else if(pane == RailPane::Terminal){
@@ -3091,7 +3031,7 @@
                     activeRailPane = activeRailPane == pane ? RailPane::None : pane;
                 }
             };
-            if(activeRailPane != RailPane::AiChat){
+            {
             {
                 Treadle::DrawList& canvas = ui.canvas();
                 canvas.rect(layout.rail, theme.panel);
@@ -3112,12 +3052,12 @@
                             const char* fullName = pane == RailPane::Media ? "Media" : pane == RailPane::Scene ? "Scene Atlas" :
                                 pane == RailPane::Components ? "Inspector" : pane == RailPane::Motion ? "Motion" :
                                 pane == RailPane::Procedura ? "Procedura" : pane == RailPane::Timeline ? "Timeline" :
-                                pane == RailPane::Terminal ? "Terminal" : pane == RailPane::AiChat ? "AI Chat" :
+                                pane == RailPane::Terminal ? "Terminal" :
                                 pane == RailPane::Render ? "Render" : "Compositor";
                             const int shortcutIndex = pane == RailPane::Media ? 1 : pane == RailPane::Scene ? 2 :
                                 pane == RailPane::Components ? 3 : pane == RailPane::Motion ? 4 :
                                 pane == RailPane::Procedura ? 5 : pane == RailPane::Timeline ? 6 :
-                                pane == RailPane::Terminal ? 7 : pane == RailPane::AiChat ? 8 : pane == RailPane::Render ? 12 : 9;
+                                pane == RailPane::Terminal ? 7 : pane == RailPane::Render ? 12 : 9;
                             ui.tooltip("rail:" + label, fullName, pane == RailPane::Render ? "F12 renders" : "F" + std::to_string(shortcutIndex));
                         }
                         const bool active = pane == RailPane::Compositor ? compositor.open : pane == RailPane::Motion ? motionPanel.open :
@@ -3180,13 +3120,6 @@
                     canvas.triangle(cx + 6.0f, iy + 11.5f, cx + 12.0f, iy + 6.0f, cx + 12.0f, iy + 17.0f, ink);
                     canvas.outline(Treadle::Rect{cx - 6.0f, iy + 8.5f, 7.0f, 7.0f}, 1.2f, active ? theme.accent : ink);
                     if(renderSession.snapshot().running || viewportRender.active) canvas.rect(cx + 8.0f, iy, 5.0f, 5.0f, theme.accent);
-                        }else if(pane == RailPane::AiChat){
-                            canvas.outline(Treadle::Rect{cx - 10.0f, iy + 2.0f, 20.0f, 14.0f}, 1.3f, ink);
-                            canvas.line(cx - 3.0f, iy + 16.0f, cx - 7.0f, iy + 20.0f, 1.3f, ink);
-                            canvas.line(cx - 7.0f, iy + 20.0f, cx + 1.0f, iy + 16.0f, 1.3f, ink);
-                            canvas.rect(cx - 5.0f, iy + 8.0f, 2.0f, 2.0f, ink);
-                            canvas.rect(cx - 1.0f, iy + 8.0f, 2.0f, 2.0f, ink);
-                            canvas.rect(cx + 3.0f, iy + 8.0f, 2.0f, 2.0f, ink);
                         }else{
                             const Treadle::Color axes[3] = {{1.0f, 0.18f, 0.28f, 1.0f},
                                                             {0.20f, 1.0f, 0.42f, 1.0f},
@@ -3206,9 +3139,8 @@
                     railItem(RailPane::Procedura, "PROC", 4);
                     railItem(RailPane::Timeline, "TIME", 5);
                     railItem(RailPane::Terminal, "TERM", 6);
-                    railItem(RailPane::AiChat, "AI CHAT", 7);
-                    railItem(RailPane::Compositor, "COMPOSE", 8);
-                    railItem(RailPane::Render, "RENDER", 9);
+                    railItem(RailPane::Compositor, "COMPOSE", 7);
+                    railItem(RailPane::Render, "RENDER", 8);
             }else{
                 const float handleY = layout.rail.y + layout.rail.height * 0.5f;
                 const Treadle::Rect handleBox{2.0f, handleY - 18.0f, 8.0f, 36.0f};
@@ -3569,190 +3501,6 @@
                 ui.label(Treadle::fitText(rs.log[i], fitWidth, theme.textScale * 0.75f));
         }
 
-        if(activeRailPane == RailPane::AiChat){
-            //Complete background inference on the editor thread. Only this thread touches Warp::Stage.
-            if(!agentBusy.load() && agentWorker.joinable()){
-                agentWorker.join();
-                std::optional<Loom::AgentApiResponse> ready;
-                {
-                    std::lock_guard<std::mutex> guard(agentResponseMutex);
-                    ready = std::move(agentResponse);
-                    agentResponse.reset();
-                }
-                if(ready){
-                    if(!ready->error.empty()){
-                        agentStatus = ready->error;
-                        agentChatMessages.emplace_back("assistant", ready->error);
-                    }else{
-                        std::string reply = ready->reply;
-                        bool sceneChanged = false;
-                        size_t confirmationIndex = agentChatMessages.size();
-                        for(const Loom::AgentPendingAction& proposed : ready->actions){
-                            Loom::AgentControlState controlState;
-                            controlState.selected = selected;
-                            controlState.frame = frame;
-                            controlState.orbit = view.orbit;
-                            controlState.lookThrough = view.lookThrough;
-                            Loom::AgentActionResult actionResult = Loom::executeAgentAction(
-                                stage, controlState, proposed.action, false);
-                            selected = controlState.selected;
-                            frame = controlState.frame;
-                            view.orbit = controlState.orbit;
-                            view.lookThrough = controlState.lookThrough;
-                            if(proposed.action.tool.rfind("scene.", 0) == 0) focus = Focus::Entity;
-                            if(actionResult.confirmationRequired || proposed.confirmationRequired){
-                                pendingAgentConfirmation = PendingAgentConfirmation{proposed.action, confirmationIndex};
-                                reply += "\n\n" + actionResult.message + " Confirm before I continue.";
-                                continue;
-                            }
-                            if(actionResult.succeeded){
-                                reply += "\n\n" + actionResult.message;
-                                sceneChanged = sceneChanged || proposed.action.tool.rfind("scene.", 0) == 0;
-                                if(actionResult.proceduraGraph && actionResult.proceduraPreview){
-                                    proceduraPanel.graph = std::move(*actionResult.proceduraGraph);
-                                    proceduraPanel.recipeName = std::move(actionResult.proceduraRecipeName);
-                                    proceduraPanel.expandedNodes.clear();
-                                    for(const Engine::WeaverProcedura::Node& node : proceduraPanel.graph.nodes)
-                                        proceduraPanel.expandedNodes[node.id] = true;
-                                    proceduraPanel.selectedCurveNodeId = 0;
-                                    proceduraPanel.selectedControlPoint = -1;
-                                    proceduraPanel.contextCurveNodeId = 0;
-                                    proceduraPanel.contextControlPoint = -1;
-                                    proceduraPanel.previewMesh = std::move(*actionResult.proceduraPreview);
-                                    proceduraPanel.previewReady = true;
-                                    proceduraPanel.previewVisible = true;
-                                    proceduraPanel.graphDirty = false;
-                                    proceduraPanel.previewError.clear();
-                                    proceduraPanel.recipeStatus = "Created by Weaver. Save Recipe to export this graph.";
-                                    ++proceduraPanel.previewRevision;
-
-                                    if(!proceduraPanel.previewMesh.vertices.empty()){
-                                        glm::vec3 minimum(std::numeric_limits<float>::max());
-                                        glm::vec3 maximum(std::numeric_limits<float>::lowest());
-                                        for(const Engine::WeaverProcedura::MeshVertex& vertex : proceduraPanel.previewMesh.vertices){
-                                            minimum = glm::min(minimum, vertex.position);
-                                            maximum = glm::max(maximum, vertex.position);
-                                        }
-                                        view.orbit.target = (minimum + maximum) * 0.5f;
-                                        const float radius = glm::length(maximum - minimum) * 0.5f;
-                                        view.orbit.distance = std::clamp(radius * 3.2f, 2.0f, 100000.0f);
-                                        view.lookThrough = Warp::None;
-                                    }
-                                    reply += "\nPreview is visible in the viewport. Open Procedura and use Save Recipe to export it.";
-                                }
-                                if(!actionResult.entities.empty()){
-                                    for(const Loom::AgentEntityInfo& entity : actionResult.entities)
-                                        reply += "\n" + entity.path + "  ·  " + entity.type +
-                                                 (entity.visible ? "  ·  visible" : "  ·  hidden");
-                                }else if(proposed.action.tool == "scene.list_entities"){
-                                    reply += "\n(Scene is empty.)";
-                                }
-                            }else reply += "\n\n" + actionResult.message;
-                        }
-                        agentChatMessages.emplace_back("assistant", reply);
-                        if(pendingAgentConfirmation) pendingAgentConfirmation->assistantIndex = agentChatMessages.size() - 1;
-                        if(sceneChanged){
-                            extentDirty = true;
-                            history.track(stage, false);
-                        }
-                        agentStatus = pendingAgentConfirmation ? "Waiting for your confirmation." : "Ready";
-                    }
-                }
-            }
-
-            const float composerHeight = std::min(185.0f, drawerBox.height * 0.42f);
-            const float chatGap = 4.0f;
-            const Treadle::Rect chatHistoryBox{drawerBox.x, drawerBox.y, drawerBox.width,
-                std::max(0.0f, drawerBox.height - composerHeight - chatGap)};
-            const Treadle::Rect chatComposerBox{drawerBox.x, chatHistoryBox.y + chatHistoryBox.height + chatGap,
-                drawerBox.width, composerHeight};
-            ui.dock("AI CHAT", chatHistoryBox, &agentChatScroll);
-            ui.caption("WEAVER  ·  LOCAL LOOM AGENT");
-            ui.status(agentBusy.load() ? "Loading model or thinking…" : agentStatus,
-                      agentBusy.load() ? theme.accent : (pendingAgentConfirmation ? theme.warning : theme.dim));
-            const Warp::Entity* chatSelection = stage.get(selected);
-            std::string liveSceneLabel = std::to_string(stage.size()) + " objects  ·  frame " + std::to_string(int(frame));
-            if(chatSelection) liveSceneLabel += "  ·  selected " + stage.path(chatSelection->id);
-            else if(stage.size() == 0) liveSceneLabel += "  ·  empty scene";
-            ui.caption("LIVE SCENE");
-            ui.hint(liveSceneLabel);
-            ui.separator();
-            const size_t firstMessage = agentChatMessages.size() > 14 ? agentChatMessages.size() - 14 : 0;
-            for(size_t i = firstMessage; i < agentChatMessages.size(); ++i){
-                const bool fromUser = agentChatMessages[i].first == "user";
-                ui.caption(fromUser ? "YOU" : "WEAVER");
-                ui.hint(agentChatMessages[i].second);
-                if(!fromUser && ui.setClipboard &&
-                   ui.button("agent-chat-copy-" + std::to_string(i), "Copy answer")){
-                    ui.setClipboard(agentChatMessages[i].second);
-                    agentStatus = "Answer copied to clipboard.";
-                }
-            }
-            if(agentChatMessages.empty())
-                ui.hint("Ask in Croatian or English. I can change the live scene and create grid or hallway Recipes that preview in the viewport.");
-            if(pendingAgentConfirmation){
-                ui.separator();
-                ui.status("Deletion needs confirmation.", theme.warning);
-                const int confirmationChoice = ui.buttonRow({"Confirm delete", "Cancel"});
-                if(confirmationChoice >= 0){
-                    if(confirmationChoice == 0){
-                        Loom::AgentControlState controlState;
-                        controlState.selected = selected; controlState.frame = frame;
-                        controlState.orbit = view.orbit; controlState.lookThrough = view.lookThrough;
-                        Loom::AgentActionResult deleted = Loom::executeAgentAction(
-                            stage, controlState, pendingAgentConfirmation->action, true);
-                        selected = controlState.selected; frame = controlState.frame;
-                        view.orbit = controlState.orbit; view.lookThrough = controlState.lookThrough;
-                        if(pendingAgentConfirmation->assistantIndex < agentChatMessages.size())
-                            agentChatMessages[pendingAgentConfirmation->assistantIndex].second += "\n\n" + deleted.message;
-                        if(deleted.succeeded){ extentDirty = true; history.track(stage, false); }
-                        agentStatus = deleted.message;
-                    }else{
-                        if(pendingAgentConfirmation->assistantIndex < agentChatMessages.size())
-                            agentChatMessages[pendingAgentConfirmation->assistantIndex].second += "\n\nCancelled.";
-                        agentStatus = "Deletion cancelled.";
-                    }
-                    pendingAgentConfirmation.reset();
-                }
-            }
-
-            auto sendAgentMessage = [&]{
-                if(agentBusy.load() || pendingAgentConfirmation || agentChatDraft.empty()) return;
-                const std::string prompt = agentChatDraft;
-                agentChatDraft.clear();
-                agentChatMessages.emplace_back("user", prompt);
-                std::vector<std::pair<std::string, std::string>> conversation;
-                const size_t first = agentChatMessages.size() > 24 ? agentChatMessages.size() - 24 : 0;
-                for(size_t i = first; i < agentChatMessages.size(); ++i)
-                    conversation.push_back(agentChatMessages[i]);
-                const fs::path root(LOOM_ROOT_DIR);
-                const std::string sceneContextJson = Loom::agentSceneContextJson(stage, selected, frame);
-                agentBusy.store(true);
-                agentStatus = "Starting the local Weaver service…";
-                agentWorker = std::thread([root, conversation = std::move(conversation), sceneContextJson,
-                                           &agentResponseMutex, &agentResponse, &agentBusy]() mutable{
-                    Loom::AgentApiResponse response;
-                    try{ response = Loom::callLocalAgentApi(root, conversation, sceneContextJson); }
-                    catch(const std::exception& error){ response.error = error.what(); }
-                    {
-                        std::lock_guard<std::mutex> guard(agentResponseMutex);
-                        agentResponse = std::move(response);
-                    }
-                    agentBusy.store(false);
-                });
-            };
-
-            ui.dock("ASK WEAVER", chatComposerBox);
-            Treadle::Ui::TextFieldConfig chatField;
-            chatField.lines = 3;
-            chatField.maxLength = 4000;
-            chatField.placeholder = "Ask Loom to make or change something…";
-            chatField.enterSubmits = true;
-            const Treadle::Ui::TextFieldResult chatResult = ui.textField("loom-agent-chat-input", &agentChatDraft, chatField);
-            if(chatResult.submitted) sendAgentMessage();
-            if(ui.primaryButton(agentBusy.load() ? "Weaver is working…" : "Send", !agentBusy.load() && !pendingAgentConfirmation && !agentChatDraft.empty()))
-                sendAgentMessage();
-        }
         Warp::Id hoveredAtlasId = Warp::None;
         Treadle::Rect hoveredAtlasRect;
 
@@ -8383,7 +8131,7 @@
                            GLFW_KEY_KP_0, GLFW_KEY_DELETE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_ESCAPE,
                            GLFW_KEY_I, GLFW_KEY_M,
                            GLFW_KEY_F1, GLFW_KEY_F2, GLFW_KEY_F3, GLFW_KEY_F4, GLFW_KEY_F5,
-                           GLFW_KEY_F6, GLFW_KEY_F7, GLFW_KEY_F8, GLFW_KEY_F9, GLFW_KEY_F11, GLFW_KEY_F12}) keys.pressed(window, key);
+                           GLFW_KEY_F6, GLFW_KEY_F7, GLFW_KEY_F9, GLFW_KEY_F11, GLFW_KEY_F12}) keys.pressed(window, key);
         }else{
         const bool railF1 = keys.pressed(window, GLFW_KEY_F1);
         const bool railF2 = keys.pressed(window, GLFW_KEY_F2);
@@ -8392,11 +8140,10 @@
         const bool railF5 = keys.pressed(window, GLFW_KEY_F5);
         const bool railF6 = keys.pressed(window, GLFW_KEY_F6);
         const bool railF7 = keys.pressed(window, GLFW_KEY_F7);
-        const bool railF8 = keys.pressed(window, GLFW_KEY_F8);
         const bool railF9 = keys.pressed(window, GLFW_KEY_F9);
         const RailPane shortcutPane = railF1 ? RailPane::Media : railF2 ? RailPane::Scene :
             railF3 ? RailPane::Components : railF4 ? RailPane::Motion : railF5 ? RailPane::Procedura :
-            railF6 ? RailPane::Timeline : railF7 ? RailPane::Terminal : railF8 ? RailPane::AiChat :
+            railF6 ? RailPane::Timeline : railF7 ? RailPane::Terminal :
             railF9 ? RailPane::Compositor : RailPane::None;
         if(shortcutPane != RailPane::None) toggleRailPane(shortcutPane);
         //RENDER: F12 pokrene (ili prekine) render iz kamere, F11 prozor sa slikom (LoomRender.h)
@@ -9154,7 +8901,6 @@
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
-    if(agentWorker.joinable()) agentWorker.join();
     if(worker.joinable()) worker.join();
     plateStream.close();
     loom.waitIdle();

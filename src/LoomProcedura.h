@@ -66,6 +66,13 @@ inline std::string nodeType(const Engine::WeaverProcedura::Node& node){
     if(std::holds_alternative<Proc::BevelNode>(node.payload)) return "Bevel";
     if(std::holds_alternative<Proc::MeshToPointNode>(node.payload)) return "Mesh to Point";
     if(std::holds_alternative<Proc::PointFromMeshNode>(node.payload)) return "Point from Mesh";
+    if(std::holds_alternative<Proc::CircleProfileNode>(node.payload)) return "Circle profile";
+    if(std::holds_alternative<Proc::MergeNode>(node.payload)) return "Merge";
+    if(std::holds_alternative<Proc::SetSemanticNode>(node.payload)) return "Set Semantic";
+    if(std::holds_alternative<Proc::SetMaterialNode>(node.payload)) return "Set Material";
+    if(std::holds_alternative<Proc::SmoothNormalsNode>(node.payload)) return "Smooth Normals";
+    if(std::holds_alternative<Proc::UVProjectNode>(node.payload)) return "UV Project";
+    if(std::holds_alternative<Proc::CopyToPointsNode>(node.payload)) return "Copy to Points";
     return "Unknown node";
 }
 
@@ -106,6 +113,24 @@ inline std::string nodeSummary(const Engine::WeaverProcedura::Node& node){
     if(std::holds_alternative<Proc::MeshToPointNode>(node.payload)) return "unique mesh vertex positions";
     if(const auto* sample = std::get_if<Proc::PointFromMeshNode>(&node.payload))
         return std::to_string(sample->count) + " surface points / seed " + std::to_string(sample->seed);
+    auto filterText = [](const Proc::TriangleFilter& filter){
+        std::string text = filter.semantic.empty() ? "all" : filter.semantic;
+        if(filter.useDirection) text += " / facing within " + formatSize(filter.maxAngleDegrees) + "°";
+        return text;
+    };
+    if(const auto* circle = std::get_if<Proc::CircleProfileNode>(&node.payload))
+        return "radius " + formatSize(circle->radius) + " m / " + std::to_string(circle->sides) + " sides";
+    if(std::holds_alternative<Proc::MergeNode>(node.payload)) return "joins up to 8 meshes";
+    if(const auto* tag = std::get_if<Proc::SetSemanticNode>(&node.payload))
+        return tag->semantic + " on " + filterText(tag->filter);
+    if(const auto* paint = std::get_if<Proc::SetMaterialNode>(&node.payload))
+        return paint->material + " on " + filterText(paint->filter);
+    if(const auto* smooth = std::get_if<Proc::SmoothNormalsNode>(&node.payload))
+        return "below " + formatSize(smooth->angleDegrees) + "°";
+    if(const auto* uv = std::get_if<Proc::UVProjectNode>(&node.payload))
+        return "box / " + formatSize(uv->tileSize) + " m tiles";
+    if(const auto* copy = std::get_if<Proc::CopyToPointsNode>(&node.payload))
+        return std::string(copy->alignToNormal ? "aligned" : "upright") + " / scale " + formatSize(copy->scale);
     return {};
 }
 
@@ -121,6 +146,10 @@ inline std::string nodeLabel(const Engine::WeaverProcedura::Graph& graph,
 inline std::string inputName(const Engine::WeaverProcedura::Node& node, uint32_t port){
     if(std::holds_alternative<Engine::WeaverProcedura::SweepNode>(node.payload))
         return port == 0 ? "Curve input" : "Profile input";
+    if(std::holds_alternative<Engine::WeaverProcedura::MergeNode>(node.payload))
+        return "Mesh input " + std::to_string(port + 1);
+    if(std::holds_alternative<Engine::WeaverProcedura::CopyToPointsNode>(node.payload))
+        return port == 0 ? "Instance mesh" : "Points input";
     if(std::holds_alternative<Engine::WeaverProcedura::SetGridPointHeightNode>(node.payload) ||
        std::holds_alternative<Engine::WeaverProcedura::GridToMeshNode>(node.payload))
         return "Point Grid input";
@@ -130,7 +159,11 @@ inline std::string inputName(const Engine::WeaverProcedura::Node& node, uint32_t
        std::holds_alternative<Engine::WeaverProcedura::ExtrudeNode>(node.payload) ||
        std::holds_alternative<Engine::WeaverProcedura::BevelNode>(node.payload) ||
        std::holds_alternative<Engine::WeaverProcedura::MeshToPointNode>(node.payload) ||
-       std::holds_alternative<Engine::WeaverProcedura::PointFromMeshNode>(node.payload)) return "Mesh input";
+       std::holds_alternative<Engine::WeaverProcedura::PointFromMeshNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::SetSemanticNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::SetMaterialNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::SmoothNormalsNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::UVProjectNode>(node.payload)) return "Mesh input";
     return "Input";
 }
 
@@ -177,7 +210,13 @@ inline bool isGeometryOutputNode(const Engine::WeaverProcedura::Node& node){
            std::holds_alternative<Proc::ExtrudeNode>(node.payload) ||
            std::holds_alternative<Proc::BevelNode>(node.payload) ||
            std::holds_alternative<Proc::MeshToPointNode>(node.payload) ||
-           std::holds_alternative<Proc::PointFromMeshNode>(node.payload);
+           std::holds_alternative<Proc::PointFromMeshNode>(node.payload) ||
+           std::holds_alternative<Proc::MergeNode>(node.payload) ||
+           std::holds_alternative<Proc::SetSemanticNode>(node.payload) ||
+           std::holds_alternative<Proc::SetMaterialNode>(node.payload) ||
+           std::holds_alternative<Proc::SmoothNormalsNode>(node.payload) ||
+           std::holds_alternative<Proc::UVProjectNode>(node.payload) ||
+           std::holds_alternative<Proc::CopyToPointsNode>(node.payload);
 }
 
 inline Engine::WeaverProcedura::Node* terminalGeometryNode(WeaverProceduraPanelState& state){
@@ -193,6 +232,34 @@ inline Engine::WeaverProcedura::Node* terminalGeometryNode(WeaverProceduraPanelS
         }
     }
     return terminal;
+}
+
+inline bool vocabularyChoice(Treadle::Ui& ui, const std::string& label, const std::vector<std::string>& names,
+                             std::string& value, bool allowAny){
+    std::vector<std::string> options;
+    if(allowAny) options.push_back("any");
+    options.insert(options.end(), names.begin(), names.end());
+    const auto found = std::find(options.begin(), options.end(), value.empty() && allowAny ? "any" : value);
+    int selected = found == options.end() ? 0 : int(found - options.begin());
+    if(!ui.choice(label, options, &selected) || selected < 0 || selected >= int(options.size())) return false;
+    value = allowAny && selected == 0 ? std::string{} : options[std::size_t(selected)];
+    return true;
+}
+
+inline bool filterControls(Treadle::Ui& ui, Engine::WeaverProcedura::TriangleFilter& filter){
+    bool changed = vocabularyChoice(ui, "Only semantic", Engine::WeaverProcedura::semanticVocabulary(), filter.semantic, true);
+    changed |= ui.checkbox("Only faces facing a direction", &filter.useDirection);
+    if(filter.useDirection){
+        const std::vector<std::string> directions = {"up", "down", "+X", "-X", "+Z", "-Z"};
+        const glm::vec3 axes[] = {{0,1,0},{0,-1,0},{1,0,0},{-1,0,0},{0,0,1},{0,0,-1}};
+        int selected = 0;
+        for(int i = 0; i < 6; ++i) if(glm::dot(filter.direction, axes[i]) > 0.99f) selected = i;
+        if(ui.choice("Direction", directions, &selected) && selected >= 0 && selected < 6){
+            filter.direction = axes[selected]; changed = true;
+        }
+        changed |= ui.slider("Max angle", &filter.maxAngleDegrees, 0.0f, 90.0f, "°");
+    }
+    return changed;
 }
 
 inline bool appendPrimitiveNode(WeaverProceduraPanelState& state){
@@ -622,6 +689,11 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
         else if(secondOperation == 1) Panel::appendMeshNode(state,Proc::BevelNode{});
         else if(secondOperation == 2) Panel::appendMeshNode(state,Proc::MeshToPointNode{});
         if(ui.button("Point from Mesh")) Panel::appendMeshNode(state,Proc::PointFromMeshNode{});
+        const int lookOperation = ui.buttonRow({"Semantic","Material","Smooth","UV"});
+        if(lookOperation == 0) Panel::appendMeshNode(state,Proc::SetSemanticNode{});
+        else if(lookOperation == 1) Panel::appendMeshNode(state,Proc::SetMaterialNode{});
+        else if(lookOperation == 2) Panel::appendMeshNode(state,Proc::SmoothNormalsNode{});
+        else if(lookOperation == 3) Panel::appendMeshNode(state,Proc::UVProjectNode{});
         if(!state.recipeStatus.empty()) ui.status(state.recipeStatus,{0.95f,0.70f,0.26f,1.0f});
 
         bool hasGridOutput = false;
@@ -792,6 +864,27 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                     changed = true;
                 }
                 ui.hint("Samples mesh triangles proportionally to their surface area.");
+            }else if(auto* circle = std::get_if<Proc::CircleProfileNode>(&node.payload)){
+                changed |= ui.slider("Radius",&circle->radius,0.005f,5.0f,"m");
+                float sides = float(circle->sides);
+                if(ui.slider("Sides",&sides,3.0f,64.0f)){ circle->sides = uint32_t(std::lround(sides)); changed = true; }
+            }else if(std::holds_alternative<Proc::MergeNode>(node.payload)){
+                ui.hint("Joins every connected mesh input; each triangle keeps the node that made it.");
+            }else if(auto* tag = std::get_if<Proc::SetSemanticNode>(&node.payload)){
+                changed |= Panel::vocabularyChoice(ui,"Semantic",Engine::WeaverProcedura::semanticVocabulary(),tag->semantic,false);
+                changed |= Panel::filterControls(ui,tag->filter);
+            }else if(auto* paint = std::get_if<Proc::SetMaterialNode>(&node.payload)){
+                changed |= Panel::vocabularyChoice(ui,"Material",Engine::WeaverProcedura::materialLibrary(),paint->material,false);
+                changed |= Panel::filterControls(ui,paint->filter);
+            }else if(auto* smooth = std::get_if<Proc::SmoothNormalsNode>(&node.payload)){
+                changed |= ui.slider("Smoothing angle",&smooth->angleDegrees,0.0f,180.0f,"°");
+            }else if(auto* uv = std::get_if<Proc::UVProjectNode>(&node.payload)){
+                changed |= ui.slider("Tile size",&uv->tileSize,0.05f,20.0f,"m");
+            }else if(auto* copy = std::get_if<Proc::CopyToPointsNode>(&node.payload)){
+                changed |= ui.checkbox("Align to point normal",&copy->alignToNormal);
+                changed |= ui.slider("Scale",&copy->scale,0.01f,10.0f);
+                changed |= ui.slider("Random yaw",&copy->randomYawDegrees,0.0f,180.0f,"°");
+                changed |= ui.slider("Random scale",&copy->randomScale,0.0f,0.9f);
             }
         }
         if(changed){

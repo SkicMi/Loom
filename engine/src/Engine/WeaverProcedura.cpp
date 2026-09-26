@@ -284,7 +284,19 @@ bool validMesh(const MeshData& mesh){
     for(const MeshVertex& vertex : mesh.vertices)
         if(!finite(vertex.position) || !finite(vertex.normal) || !finite(vertex.uv)) return false;
     for(uint32_t index : mesh.indices) if(index >= mesh.vertices.size()) return false;
+    if(!mesh.triangles.empty() && mesh.triangles.size() != mesh.indices.size() / 3) return false;
     return true;
+}
+
+TriangleAttributes attributesOf(const MeshData& mesh, std::size_t triangle){
+    return triangle < mesh.triangles.size() ? mesh.triangles[triangle] : TriangleAttributes{};
+}
+
+// Triangles a node adds carry createdBy == 0 until the evaluator stamps them.
+void stampProvenance(MeshData& mesh, NodeId node){
+    mesh.triangles.resize(mesh.indices.size() / 3);
+    for(TriangleAttributes& triangle : mesh.triangles)
+        if(triangle.createdBy == 0) triangle.createdBy = node;
 }
 
 struct FacePatch{
@@ -445,7 +457,8 @@ enum class PortType{ Invalid, Curve, Profile, PointGrid, Mesh, Points };
 PortType outputType(const Node& node, uint32_t port){
     if(port != 0) return PortType::Invalid;
     if(std::holds_alternative<CurveNode>(node.payload)) return PortType::Curve;
-    if(std::holds_alternative<RectangleProfileNode>(node.payload)) return PortType::Profile;
+    if(std::holds_alternative<RectangleProfileNode>(node.payload) ||
+       std::holds_alternative<CircleProfileNode>(node.payload)) return PortType::Profile;
     if(std::holds_alternative<GridNode>(node.payload) ||
        std::holds_alternative<SetGridPointHeightNode>(node.payload)) return PortType::PointGrid;
     if(std::holds_alternative<SweepNode>(node.payload) ||
@@ -457,6 +470,10 @@ PortType outputType(const Node& node, uint32_t port){
     if(std::holds_alternative<MoveNode>(node.payload) || std::holds_alternative<RotateNode>(node.payload) ||
        std::holds_alternative<ScaleNode>(node.payload) || std::holds_alternative<ExtrudeNode>(node.payload) ||
        std::holds_alternative<BevelNode>(node.payload)) return PortType::Mesh;
+    if(std::holds_alternative<MergeNode>(node.payload) || std::holds_alternative<SetSemanticNode>(node.payload) ||
+       std::holds_alternative<SetMaterialNode>(node.payload) || std::holds_alternative<SmoothNormalsNode>(node.payload) ||
+       std::holds_alternative<UVProjectNode>(node.payload) || std::holds_alternative<CopyToPointsNode>(node.payload))
+        return PortType::Mesh;
     return PortType::Invalid;
 }
 
@@ -471,7 +488,14 @@ PortType inputType(const Node& node, uint32_t port){
     if((std::holds_alternative<MoveNode>(node.payload) || std::holds_alternative<RotateNode>(node.payload) ||
         std::holds_alternative<ScaleNode>(node.payload) || std::holds_alternative<ExtrudeNode>(node.payload) ||
         std::holds_alternative<BevelNode>(node.payload) || std::holds_alternative<MeshToPointNode>(node.payload) ||
-        std::holds_alternative<PointFromMeshNode>(node.payload)) && port == 0) return PortType::Mesh;
+        std::holds_alternative<PointFromMeshNode>(node.payload) || std::holds_alternative<SetSemanticNode>(node.payload) ||
+        std::holds_alternative<SetMaterialNode>(node.payload) || std::holds_alternative<SmoothNormalsNode>(node.payload) ||
+        std::holds_alternative<UVProjectNode>(node.payload)) && port == 0) return PortType::Mesh;
+    if(std::holds_alternative<MergeNode>(node.payload) && port < mergeInputCount) return PortType::Mesh;
+    if(std::holds_alternative<CopyToPointsNode>(node.payload)){
+        if(port == 0) return PortType::Mesh;
+        if(port == 1) return PortType::Points;
+    }
     return PortType::Invalid;
 }
 
@@ -639,30 +663,35 @@ bool makeInteriorBlockout(const InteriorBlockoutNode& settings, MeshData& output
     const float wallY = settings.wallHeight * 0.5f;
     const float wallZ = settings.wallThickness * 0.5f;
     MeshData generated;
-    auto box = [&](float x, float y, float z, float sx, float sy, float sz){
-        return appendBox(generated, {x,y,z}, {sx,sy,sz}, maxVertices, error);
+    const uint16_t floorTag = semanticId("floor");
+    const uint16_t exteriorTag = semanticId("wall_exterior");
+    const uint16_t interiorTag = semanticId("wall_interior");
+    auto box = [&](float x, float y, float z, float sx, float sy, float sz, uint16_t semantic){
+        if(!appendBox(generated, {x,y,z}, {sx,sy,sz}, maxVertices, error)) return false;
+        generated.triangles.resize(generated.indices.size() / 3, TriangleAttributes{0, semantic, 0});
+        return true;
     };
-    auto wallAlongX = [&](float start, float end, float z){
+    auto wallAlongX = [&](float start, float end, float z, uint16_t semantic){
         if(end - start <= 1e-4f) return true;
-        return box((start + end) * 0.5f, wallY, z, end - start, settings.wallHeight, settings.wallThickness);
+        return box((start + end) * 0.5f, wallY, z, end - start, settings.wallHeight, settings.wallThickness, semantic);
     };
-    auto wallAlongZ = [&](float x, float start, float end){
+    auto wallAlongZ = [&](float x, float start, float end, uint16_t semantic){
         if(end - start <= 1e-4f) return true;
-        return box(x, wallY, (start + end) * 0.5f, settings.wallThickness, settings.wallHeight, end - start);
+        return box(x, wallY, (start + end) * 0.5f, settings.wallThickness, settings.wallHeight, end - start, semantic);
     };
 
     // A continuous floor slab makes the first result easy to read as a blockout.
     if(!box(0.0f, -settings.floorThickness * 0.5f, 0.0f, length,
-            settings.floorThickness, outerZ * 2.0f)) return false;
+            settings.floorThickness, outerZ * 2.0f, floorTag)) return false;
 
     // Outer long walls and room-end walls; the two corridor ends stay open.
-    if(!wallAlongX(-halfLength, halfLength, outerZ - wallZ) ||
-       !wallAlongX(-halfLength, halfLength, -outerZ + wallZ)) return false;
+    if(!wallAlongX(-halfLength, halfLength, outerZ - wallZ, exteriorTag) ||
+       !wallAlongX(-halfLength, halfLength, -outerZ + wallZ, exteriorTag)) return false;
     for(int side : {-1, 1}){
         const float roomStartZ = side > 0 ? corridorHalf + wallZ : -outerZ + wallZ;
         const float roomEndZ = side > 0 ? outerZ - wallZ : -corridorHalf - wallZ;
-        if(!wallAlongZ(-halfLength + wallZ, roomStartZ, roomEndZ) ||
-           !wallAlongZ(halfLength - wallZ, roomStartZ, roomEndZ)) return false;
+        if(!wallAlongZ(-halfLength + wallZ, roomStartZ, roomEndZ, exteriorTag) ||
+           !wallAlongZ(halfLength - wallZ, roomStartZ, roomEndZ, exteriorTag)) return false;
 
         // Room-to-corridor walls have a centered door opening in each bay.
         for(uint32_t room = 0; room < settings.roomsPerSide; ++room){
@@ -671,14 +700,14 @@ bool makeInteriorBlockout(const InteriorBlockoutNode& settings, MeshData& output
             const float center = (x0 + x1) * 0.5f;
             const float gapHalf = settings.doorWidth * 0.5f;
             const float corridorWallZ = side > 0 ? corridorHalf + wallZ : -corridorHalf - wallZ;
-            if(!wallAlongX(x0, center - gapHalf, corridorWallZ) ||
-               !wallAlongX(center + gapHalf, x1, corridorWallZ)) return false;
+            if(!wallAlongX(x0, center - gapHalf, corridorWallZ, interiorTag) ||
+               !wallAlongX(center + gapHalf, x1, corridorWallZ, interiorTag)) return false;
         }
 
         // Partitions separate adjacent rooms without crossing the corridor.
         for(uint32_t divider = 1; divider < settings.roomsPerSide; ++divider){
             const float x = -halfLength + divider * settings.roomWidth;
-            if(!wallAlongZ(x, roomStartZ, roomEndZ)) return false;
+            if(!wallAlongZ(x, roomStartZ, roomEndZ, interiorTag)) return false;
         }
     }
 
@@ -851,12 +880,16 @@ bool extrudeFace(const MeshData& input, const ExtrudeNode& settings, MeshData& o
     std::unordered_set<std::size_t> selectedTriangles(selected->triangles.begin(),selected->triangles.end());
     MeshData generated = input;
     generated.indices.clear();
+    generated.triangles.clear();
     generated.indices.reserve(input.indices.size() + selected->boundary.size()*6);
     for(std::size_t triangle = 0; triangle < triangleCount; ++triangle){
         if(selectedTriangles.count(triangle)) continue;
         generated.indices.insert(generated.indices.end(),input.indices.begin()+std::ptrdiff_t(triangle*3),
                                  input.indices.begin()+std::ptrdiff_t(triangle*3+3));
+        generated.triangles.push_back(attributesOf(input,triangle));
     }
+    TriangleAttributes sideAttributes = attributesOf(input,selected->triangles.front());
+    sideAttributes.createdBy = 0;
     std::unordered_map<uint32_t,uint32_t> top;
     for(std::size_t triangle : selected->triangles){
         for(int corner = 0; corner < 3; ++corner){
@@ -877,6 +910,7 @@ bool extrudeFace(const MeshData& input, const ExtrudeNode& settings, MeshData& o
         const uint32_t b = top.at(input.indices[triangle*3+1]);
         const uint32_t c = top.at(input.indices[triangle*3+2]);
         generated.indices.insert(generated.indices.end(),{a,b,c});
+        generated.triangles.push_back(attributesOf(input,triangle));
     }
     for(std::size_t edge = 0; edge < selected->boundary.size(); ++edge){
         const uint32_t a = selected->boundary[edge];
@@ -894,6 +928,7 @@ bool extrudeFace(const MeshData& input, const ExtrudeNode& settings, MeshData& o
         generated.vertices.push_back({generated.vertices[top.at(b)].position,sideNormal,{length,std::abs(settings.distance)}});
         generated.vertices.push_back({generated.vertices[top.at(a)].position,sideNormal,{0,std::abs(settings.distance)}});
         generated.indices.insert(generated.indices.end(),{base,base+1,base+2,base,base+2,base+3});
+        generated.triangles.insert(generated.triangles.end(),{sideAttributes,sideAttributes});
     }
     if(generated.empty()){ error = "extrusion produced no geometry"; return false; }
     output = std::move(generated);
@@ -935,9 +970,18 @@ bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& outpu
         PositionKey startKey, endKey;
     };
     struct BevelPatchData{ std::vector<uint32_t> insetIds; };
-    struct CornerPath{ std::vector<uint32_t> ring; glm::vec3 normal{0.0f}; };
+    struct CornerPath{ std::vector<uint32_t> ring; glm::vec3 normal{0.0f}; std::size_t patch = 0; };
 
     MeshData generated;
+    auto patchAttributes = [&](std::size_t patch, bool keepSource){
+        TriangleAttributes attributes = attributesOf(input,patches[patch].triangles.front());
+        if(!keepSource) attributes.createdBy = 0;
+        return attributes;
+    };
+    auto emit = [&](uint32_t a, uint32_t b, uint32_t c, const glm::vec3& normal, const TriangleAttributes& attributes){
+        appendOrientedTriangle(generated,a,b,c,normal);
+        generated.triangles.push_back(attributes);
+    };
     std::vector<BevelPatchData> patchData(patches.size());
     std::map<GeometricEdge,std::vector<EdgeOccurrence>> edges;
     for(std::size_t patchIndex = 0; patchIndex < patches.size(); ++patchIndex){
@@ -970,7 +1014,7 @@ bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& outpu
             edges[key].push_back({patchIndex,outerA,outerB,innerA,innerB,keyA,keyB});
         }
         for(std::size_t i = 1; i+1 < boundaryCount; ++i)
-            appendOrientedTriangle(generated,data.insetIds[0],data.insetIds[i],data.insetIds[i+1],patch.normal);
+            emit(data.insetIds[0],data.insetIds[i],data.insetIds[i+1],patch.normal,patchAttributes(patchIndex,true));
     }
 
     std::map<PositionKey,std::vector<CornerPath>> cornerPaths;
@@ -997,10 +1041,11 @@ bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& outpu
         // Coplanar patches can share a boundary after extrusion. Their inset caps
         // leave a planar seam; fill it instead of leaving a visible open slot.
         if(glm::dot(normalA,normalB) > 0.9999f){
-            appendOrientedTriangle(generated,aStart,aEnd,bEnd,normalA);
-            appendOrientedTriangle(generated,aStart,bEnd,bStart,normalA);
+            emit(aStart,aEnd,bEnd,normalA,patchAttributes(first.patch,false));
+            emit(aStart,bEnd,bStart,normalA,patchAttributes(first.patch,false));
             CornerPath startPath, endPath;
             startPath.normal = endPath.normal = normalA;
+            startPath.patch = endPath.patch = first.patch;
             startPath.ring = {aStart,bStart};
             endPath.ring = {aEnd,bEnd};
             cornerPaths[first.startKey].push_back(std::move(startPath));
@@ -1034,12 +1079,13 @@ bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& outpu
         for(uint32_t segment = 0; segment < settings.segments; ++segment){
             const auto& a = rings[segment];
             const auto& b = rings[segment+1];
-            appendOrientedTriangle(generated,a[0],a[1],b[1],edgeNormal);
-            appendOrientedTriangle(generated,a[0],b[1],b[0],edgeNormal);
+            emit(a[0],a[1],b[1],edgeNormal,patchAttributes(first.patch,false));
+            emit(a[0],b[1],b[0],edgeNormal,patchAttributes(first.patch,false));
         }
 
         CornerPath startPath, endPath;
         startPath.normal = endPath.normal = edgeNormal;
+        startPath.patch = endPath.patch = first.patch;
         for(const auto& ring : rings){ startPath.ring.push_back(ring[0]); endPath.ring.push_back(ring[1]); }
         cornerPaths[first.startKey].push_back(std::move(startPath));
         cornerPaths[first.endKey].push_back(std::move(endPath));
@@ -1093,7 +1139,7 @@ bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& outpu
         const uint32_t centerId = uint32_t(generated.vertices.size());
         generated.vertices.push_back({center,normal,{0.5f,0.5f}});
         for(std::size_t i = 0; i < boundary.size(); ++i)
-            appendOrientedTriangle(generated,centerId,boundary[i],boundary[(i+1)%boundary.size()],normal);
+            emit(centerId,boundary[i],boundary[(i+1)%boundary.size()],normal,patchAttributes(paths.front().patch,false));
         (void)cornerKey;
     }
 
@@ -1103,8 +1149,12 @@ bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& outpu
     return true;
 }
 
-bool meshToPoints(const MeshData& input, std::vector<glm::vec3>& output, std::string& error,
-                  std::size_t maxPoints){
+namespace{
+
+// Point sets flow between nodes with one normal per point so copies can align to
+// the surface they were taken from.
+bool meshToPointSet(const MeshData& input, std::vector<glm::vec3>& output, std::vector<glm::vec3>* normals,
+                    std::string& error, std::size_t maxPoints){
     if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
     constexpr double keyRange = 8.0e13;
     using Key = std::tuple<int64_t,int64_t,int64_t>;
@@ -1116,8 +1166,8 @@ bool meshToPoints(const MeshData& input, std::vector<glm::vec3>& output, std::st
             return hash;
         }
     };
-    std::unordered_set<Key,Hash> seen;
-    std::vector<glm::vec3> generated;
+    std::unordered_map<Key,std::size_t,Hash> seen;
+    std::vector<glm::vec3> generated, summedNormals;
     seen.reserve(input.vertices.size());
     generated.reserve(std::min(input.vertices.size(),maxPoints));
     for(const MeshVertex& vertex : input.vertices){
@@ -1130,23 +1180,32 @@ bool meshToPoints(const MeshData& input, std::vector<glm::vec3>& output, std::st
         const Key key{int64_t(std::llround(double(p.x)/positionTolerance)),
                       int64_t(std::llround(double(p.y)/positionTolerance)),
                       int64_t(std::llround(double(p.z)/positionTolerance))};
-        if(seen.emplace(key).second){
+        const auto [found, inserted] = seen.emplace(key, generated.size());
+        if(inserted){
             if(generated.size() >= maxPoints){ error = "mesh-to-point output exceeds the configured point limit"; return false; }
             generated.push_back(p);
-        }
+            summedNormals.push_back(vertex.normal);
+        }else summedNormals[found->second] += vertex.normal;
     }
     if(generated.empty()){ error = "mesh-to-point produced no points"; return false; }
+    if(normals){
+        for(glm::vec3& normal : summedNormals) if(!normalized(normal,normal)) normal = {0.0f,1.0f,0.0f};
+        *normals = std::move(summedNormals);
+    }
     output = std::move(generated);
     error.clear();
     return true;
 }
 
-bool pointsFromMesh(const MeshData& input, uint32_t count, uint64_t seed,
-                    std::vector<glm::vec3>& output, std::string& error, std::size_t maxPoints){
+bool samplePointSet(const MeshData& input, uint32_t count, uint64_t seed,
+                    std::vector<glm::vec3>& output, std::vector<glm::vec3>* normals,
+                    std::string& error, std::size_t maxPoints){
     if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
     if(count == 0 || count > maxPoints){ error = "point count must be within the configured point limit"; return false; }
     std::vector<double> cumulative;
+    std::vector<glm::vec3> faceNormals;
     cumulative.reserve(input.indices.size()/3);
+    faceNormals.reserve(input.indices.size()/3);
     double totalArea = 0.0;
     for(std::size_t i = 0; i < input.indices.size(); i += 3){
         const glm::vec3& a = input.vertices[input.indices[i]].position;
@@ -1157,6 +1216,7 @@ bool pointsFromMesh(const MeshData& input, uint32_t count, uint64_t seed,
         if(!std::isfinite(area) || area <= pointEpsilon){ error = "mesh has a degenerate triangle"; return false; }
         totalArea += area;
         cumulative.push_back(totalArea);
+        faceNormals.push_back(glm::normalize(crossValue));
     }
     if(!std::isfinite(totalArea) || totalArea <= pointEpsilon){ error = "mesh surface area is zero"; return false; }
     auto nextRandom = [&seed](){
@@ -1167,15 +1227,284 @@ bool pointsFromMesh(const MeshData& input, uint32_t count, uint64_t seed,
         value ^= value >> 31u;
         return double(value >> 11u) * (1.0 / 9007199254740992.0);
     };
-    std::vector<glm::vec3> generated;
+    std::vector<glm::vec3> generated, generatedNormals;
     generated.reserve(count);
+    generatedNormals.reserve(count);
     for(uint32_t sample = 0; sample < count; ++sample){
         const double areaPick = nextRandom()*totalArea;
-        const std::size_t triangle = std::size_t(std::lower_bound(cumulative.begin(),cumulative.end(),areaPick)-cumulative.begin());
+        const std::size_t triangle = std::min(cumulative.size()-1,
+            std::size_t(std::lower_bound(cumulative.begin(),cumulative.end(),areaPick)-cumulative.begin()));
         const uint32_t ia = input.indices[triangle*3], ib = input.indices[triangle*3+1], ic = input.indices[triangle*3+2];
         const double root = std::sqrt(nextRandom()), v = nextRandom();
         const float wa = float(1.0-root), wb = float(root*(1.0-v)), wc = float(root*v);
         generated.push_back(input.vertices[ia].position*wa + input.vertices[ib].position*wb + input.vertices[ic].position*wc);
+        generatedNormals.push_back(faceNormals[triangle]);
+    }
+    if(normals) *normals = std::move(generatedNormals);
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+// Rebuilds a mesh with one vertex per (source vertex, key) pair; callers use it
+// when a pass gives a shared vertex different values on different triangles.
+struct CornerRemap{
+    std::unordered_map<uint64_t,uint32_t> ids;
+    MeshData mesh;
+    uint32_t vertex(const MeshVertex& value, uint64_t key){
+        const auto found = ids.find(key);
+        if(found != ids.end()) return found->second;
+        const uint32_t id = uint32_t(mesh.vertices.size());
+        mesh.vertices.push_back(value);
+        ids.emplace(key,id);
+        return id;
+    }
+};
+
+uint32_t quantizedNormalKey(const glm::vec3& normal){
+    auto part = [](float value){ return uint32_t(std::clamp(std::lround((value + 1.0f) * 511.5f), 0l, 1023l)); };
+    return (part(normal.x) << 20u) | (part(normal.y) << 10u) | part(normal.z);
+}
+
+}
+
+bool meshToPoints(const MeshData& input, std::vector<glm::vec3>& output, std::string& error,
+                  std::size_t maxPoints){
+    return meshToPointSet(input,output,nullptr,error,maxPoints);
+}
+
+bool pointsFromMesh(const MeshData& input, uint32_t count, uint64_t seed,
+                    std::vector<glm::vec3>& output, std::string& error, std::size_t maxPoints){
+    return samplePointSet(input,count,seed,output,nullptr,error,maxPoints);
+}
+
+const std::vector<std::string>& semanticVocabulary(){
+    static const std::vector<std::string> names = {
+        "floor", "ceiling", "wall_exterior", "wall_interior", "roof", "window", "door", "frame",
+        "stairs", "railing", "foundation", "trim", "glass", "road", "sidewalk", "curb",
+        "rope", "chain_link", "terrain", "prop",
+    };
+    return names;
+}
+
+const std::vector<std::string>& materialLibrary(){
+    static const std::vector<std::string> names = {
+        "plaster", "brick", "stone", "concrete", "wood_planks", "wood_beam", "roof_tiles", "roof_metal",
+        "glass", "metal", "steel_chain", "asphalt", "paving", "rope_fiber", "ground_dirt", "grass",
+    };
+    return names;
+}
+
+namespace{
+uint16_t vocabularyId(const std::vector<std::string>& names, const std::string& name){
+    if(name.empty()) return 0;
+    const auto found = std::find(names.begin(), names.end(), name);
+    return found == names.end() ? 0 : uint16_t(found - names.begin() + 1);
+}
+std::string vocabularyName(const std::vector<std::string>& names, uint16_t id){
+    return id == 0 || id > names.size() ? std::string{} : names[id - 1];
+}
+}
+
+uint16_t semanticId(const std::string& name){ return vocabularyId(semanticVocabulary(), name); }
+uint16_t materialId(const std::string& name){ return vocabularyId(materialLibrary(), name); }
+std::string semanticName(uint16_t id){ return vocabularyName(semanticVocabulary(), id); }
+std::string materialName(uint16_t id){ return vocabularyName(materialLibrary(), id); }
+
+bool mergeMeshes(const std::vector<const MeshData*>& inputs, MeshData& output, std::string& error,
+                 std::size_t maxVertices){
+    if(inputs.empty()){ error = "merge needs at least one mesh"; return false; }
+    MeshData generated;
+    for(const MeshData* input : inputs){
+        if(!input || !validMesh(*input)){ error = "merge input mesh is invalid"; return false; }
+        if(generated.vertices.size() + input->vertices.size() > maxVertices){
+            error = "merged mesh exceeds the configured vertex limit"; return false;
+        }
+        const uint32_t base = uint32_t(generated.vertices.size());
+        generated.vertices.insert(generated.vertices.end(), input->vertices.begin(), input->vertices.end());
+        for(uint32_t index : input->indices) generated.indices.push_back(base + index);
+        for(std::size_t triangle = 0; triangle < input->indices.size() / 3; ++triangle)
+            generated.triangles.push_back(attributesOf(*input, triangle));
+    }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool validTriangleFilter(const TriangleFilter& filter){
+    if(!filter.semantic.empty() && semanticId(filter.semantic) == 0) return false;
+    if(!filter.useDirection) return true;
+    glm::vec3 unit;
+    return normalized(filter.direction, unit) && finite(filter.maxAngleDegrees) &&
+           filter.maxAngleDegrees >= 0.0f && filter.maxAngleDegrees <= 180.0f;
+}
+
+bool triangleMatches(const MeshData& mesh, std::size_t triangle, const TriangleFilter& filter){
+    if(!filter.semantic.empty() && attributesOf(mesh, triangle).semantic != semanticId(filter.semantic)) return false;
+    if(!filter.useDirection) return true;
+    const glm::vec3& a = mesh.vertices[mesh.indices[triangle*3]].position;
+    const glm::vec3& b = mesh.vertices[mesh.indices[triangle*3+1]].position;
+    const glm::vec3& c = mesh.vertices[mesh.indices[triangle*3+2]].position;
+    glm::vec3 normal, wanted;
+    if(!normalized(glm::cross(b-a, c-a), normal) || !normalized(filter.direction, wanted)) return false;
+    return glm::dot(normal, wanted) >= std::cos(double(filter.maxAngleDegrees) * pi / 180.0) - 1e-6;
+}
+
+namespace{
+template<typename Apply>
+bool retagTriangles(const MeshData& input, const TriangleFilter& filter, MeshData& output,
+                    std::string& error, Apply apply){
+    if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
+    if(!validTriangleFilter(filter)){ error = "triangle filter is invalid"; return false; }
+    MeshData generated = input;
+    generated.triangles.resize(generated.indices.size() / 3);
+    for(std::size_t triangle = 0; triangle < generated.triangles.size(); ++triangle)
+        if(triangleMatches(input, triangle, filter)) apply(generated.triangles[triangle]);
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+}
+
+bool setSemantic(const MeshData& input, const SetSemanticNode& settings, MeshData& output, std::string& error){
+    const uint16_t id = semanticId(settings.semantic);
+    if(id == 0){ error = "unknown semantic name: " + settings.semantic; return false; }
+    return retagTriangles(input, settings.filter, output, error, [id](TriangleAttributes& t){ t.semantic = id; });
+}
+
+bool setMaterial(const MeshData& input, const SetMaterialNode& settings, MeshData& output, std::string& error){
+    const uint16_t id = materialId(settings.material);
+    if(id == 0){ error = "unknown material name: " + settings.material; return false; }
+    return retagTriangles(input, settings.filter, output, error, [id](TriangleAttributes& t){ t.material = id; });
+}
+
+bool smoothNormals(const MeshData& input, float angleDegrees, MeshData& output, std::string& error){
+    if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
+    if(!finite(angleDegrees) || angleDegrees < 0.0f || angleDegrees > 180.0f){
+        error = "smoothing angle must be between 0 and 180 degrees"; return false;
+    }
+    const std::size_t triangleCount = input.indices.size() / 3;
+    std::vector<glm::vec3> areaNormals(triangleCount), unitNormals(triangleCount);
+    std::vector<uint8_t> usable(triangleCount, 0);
+    using Key = std::tuple<int64_t,int64_t,int64_t>;
+    std::map<Key,std::vector<std::size_t>> corners;
+    auto keyOf = [](const glm::vec3& p){
+        constexpr double tolerance = 1e-5;
+        return Key{int64_t(std::llround(double(p.x)/tolerance)), int64_t(std::llround(double(p.y)/tolerance)),
+                   int64_t(std::llround(double(p.z)/tolerance))};
+    };
+    for(std::size_t triangle = 0; triangle < triangleCount; ++triangle){
+        const glm::vec3& a = input.vertices[input.indices[triangle*3]].position;
+        const glm::vec3& b = input.vertices[input.indices[triangle*3+1]].position;
+        const glm::vec3& c = input.vertices[input.indices[triangle*3+2]].position;
+        areaNormals[triangle] = glm::cross(b-a, c-a);
+        usable[triangle] = normalized(areaNormals[triangle], unitNormals[triangle]);
+        for(int corner = 0; corner < 3; ++corner)
+            corners[keyOf(input.vertices[input.indices[triangle*3+std::size_t(corner)]].position)].push_back(triangle);
+    }
+    const float cosine = float(std::cos(double(angleDegrees) * pi / 180.0)) - 1e-5f;
+    CornerRemap remap;
+    remap.mesh.triangles = input.triangles;
+    remap.mesh.indices.reserve(input.indices.size());
+    for(std::size_t triangle = 0; triangle < triangleCount; ++triangle){
+        for(int corner = 0; corner < 3; ++corner){
+            const uint32_t source = input.indices[triangle*3+std::size_t(corner)];
+            MeshVertex vertex = input.vertices[source];
+            if(usable[triangle]){
+                glm::vec3 sum{0.0f};
+                for(std::size_t other : corners[keyOf(vertex.position)])
+                    if(usable[other] && glm::dot(unitNormals[triangle], unitNormals[other]) >= cosine)
+                        sum += areaNormals[other];
+                glm::vec3 normal;
+                if(normalized(sum, normal)) vertex.normal = normal;
+            }
+            remap.mesh.indices.push_back(remap.vertex(vertex, (uint64_t(source) << 30u) | quantizedNormalKey(vertex.normal)));
+        }
+    }
+    output = std::move(remap.mesh);
+    error.clear();
+    return true;
+}
+
+bool projectUVs(const MeshData& input, float tileSize, MeshData& output, std::string& error){
+    if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
+    if(!finite(tileSize) || tileSize < 0.01f || tileSize > 1000.0f){
+        error = "UV tile size must be between 0.01 and 1000 meters"; return false;
+    }
+    CornerRemap remap;
+    remap.mesh.triangles = input.triangles;
+    remap.mesh.indices.reserve(input.indices.size());
+    for(std::size_t triangle = 0; triangle < input.indices.size() / 3; ++triangle){
+        const glm::vec3& a = input.vertices[input.indices[triangle*3]].position;
+        const glm::vec3& b = input.vertices[input.indices[triangle*3+1]].position;
+        const glm::vec3& c = input.vertices[input.indices[triangle*3+2]].position;
+        glm::vec3 normal{0.0f, 1.0f, 0.0f};
+        normalized(glm::cross(b-a, c-a), normal);
+        const glm::vec3 magnitude = glm::abs(normal);
+        const int axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
+        const int facing = (axis == 0 ? normal.x : axis == 1 ? normal.y : normal.z) >= 0.0f ? 0 : 1;
+        for(int corner = 0; corner < 3; ++corner){
+            const uint32_t source = input.indices[triangle*3+std::size_t(corner)];
+            MeshVertex vertex = input.vertices[source];
+            const glm::vec3& p = vertex.position;
+            // U runs along the face as seen from outside, V points up (or along -Z on floors).
+            if(axis == 0) vertex.uv = {facing == 0 ? -p.z : p.z, p.y};
+            else if(axis == 1) vertex.uv = {p.x, facing == 0 ? -p.z : p.z};
+            else vertex.uv = {facing == 0 ? p.x : -p.x, p.y};
+            vertex.uv /= tileSize;
+            remap.mesh.indices.push_back(remap.vertex(vertex, uint64_t(source) * 6u + uint64_t(axis * 2 + facing)));
+        }
+    }
+    output = std::move(remap.mesh);
+    error.clear();
+    return true;
+}
+
+bool copyToPoints(const MeshData& instance, const std::vector<glm::vec3>& points,
+                  const std::vector<glm::vec3>& normals, const CopyToPointsNode& settings,
+                  MeshData& output, std::string& error, std::size_t maxVertices){
+    if(!validMesh(instance)){ error = "copy instance mesh is invalid"; return false; }
+    if(points.empty()){ error = "copy-to-points needs at least one point"; return false; }
+    if(points.size() > settings.maxCopies){ error = "copy-to-points exceeds its copy limit"; return false; }
+    if(instance.vertices.size() * points.size() > maxVertices){
+        error = "copied mesh exceeds the configured vertex limit"; return false;
+    }
+    uint64_t state = settings.seed;
+    auto nextRandom = [&state](){
+        state += 0x9e3779b97f4a7c15ull;
+        uint64_t value = state;
+        value = (value ^ (value >> 30u)) * 0xbf58476d1ce4e5b9ull;
+        value = (value ^ (value >> 27u)) * 0x94d049bb133111ebull;
+        value ^= value >> 31u;
+        return double(value >> 11u) * (1.0 / 9007199254740992.0);
+    };
+    MeshData generated;
+    generated.vertices.reserve(instance.vertices.size() * points.size());
+    generated.indices.reserve(instance.indices.size() * points.size());
+    for(std::size_t i = 0; i < points.size(); ++i){
+        if(!finite(points[i])){ error = "copy point is not finite"; return false; }
+        const float yaw = float((nextRandom() * 2.0 - 1.0) * double(settings.randomYawDegrees) * pi / 180.0);
+        const float scale = settings.scale * float(1.0 + (nextRandom() * 2.0 - 1.0) * double(settings.randomScale));
+        glm::vec3 up{0.0f, 1.0f, 0.0f};
+        if(settings.alignToNormal && i < normals.size()) normalized(normals[i], up);
+        glm::vec3 side;
+        if(!normalized(glm::cross(up, std::abs(up.z) < 0.99f ? glm::vec3(0,0,1) : glm::vec3(1,0,0)), side))
+            side = {1.0f, 0.0f, 0.0f};
+        const glm::vec3 forward = glm::cross(side, up);
+        auto place = [&](const glm::vec3& local){
+            const glm::vec3 turned = rotateAround(local, {0.0f, 1.0f, 0.0f}, yaw);
+            return side * turned.x + up * turned.y + forward * turned.z;
+        };
+        const uint32_t base = uint32_t(generated.vertices.size());
+        for(const MeshVertex& vertex : instance.vertices){
+            MeshVertex copy = vertex;
+            copy.position = points[i] + place(vertex.position * scale);
+            copy.normal = place(vertex.normal);
+            generated.vertices.push_back(copy);
+        }
+        for(uint32_t index : instance.indices) generated.indices.push_back(base + index);
+        for(std::size_t triangle = 0; triangle < instance.indices.size() / 3; ++triangle)
+            generated.triangles.push_back(attributesOf(instance, triangle));
     }
     output = std::move(generated);
     error.clear();
@@ -1259,6 +1588,28 @@ ValidationResult validate(const Graph& graph){
         }else if(const auto* sample = std::get_if<PointFromMeshNode>(&node.payload)){
             if(sample->count == 0 || sample->count > 100000)
                 return {false, "point sampling count must be between 1 and 100000"};
+        }else if(const auto* circle = std::get_if<CircleProfileNode>(&node.payload)){
+            if(!finite(circle->radius) || circle->radius <= 0.0f || circle->radius > 1000.0f ||
+               circle->sides < 3 || circle->sides > 128)
+                return {false, "circle profile needs a positive radius and 3 to 128 sides"};
+        }else if(const auto* tag = std::get_if<SetSemanticNode>(&node.payload)){
+            if(semanticId(tag->semantic) == 0) return {false, "unknown semantic name: " + tag->semantic};
+            if(!validTriangleFilter(tag->filter)) return {false, "semantic filter is invalid"};
+        }else if(const auto* paint = std::get_if<SetMaterialNode>(&node.payload)){
+            if(materialId(paint->material) == 0) return {false, "unknown material name: " + paint->material};
+            if(!validTriangleFilter(paint->filter)) return {false, "material filter is invalid"};
+        }else if(const auto* smooth = std::get_if<SmoothNormalsNode>(&node.payload)){
+            if(!finite(smooth->angleDegrees) || smooth->angleDegrees < 0.0f || smooth->angleDegrees > 180.0f)
+                return {false, "smoothing angle must be between 0 and 180 degrees"};
+        }else if(const auto* uv = std::get_if<UVProjectNode>(&node.payload)){
+            if(!finite(uv->tileSize) || uv->tileSize < 0.01f || uv->tileSize > 1000.0f)
+                return {false, "UV tile size must be between 0.01 and 1000 meters"};
+        }else if(const auto* copy = std::get_if<CopyToPointsNode>(&node.payload)){
+            if(!finite(copy->scale) || copy->scale <= 0.0f || copy->scale > 1000.0f ||
+               !finite(copy->randomYawDegrees) || copy->randomYawDegrees < 0.0f || copy->randomYawDegrees > 180.0f ||
+               !finite(copy->randomScale) || copy->randomScale < 0.0f || copy->randomScale > 0.9f ||
+               copy->maxCopies == 0 || copy->maxCopies > 100000)
+                return {false, "copy-to-points settings are invalid"};
         }
         if(!nodeIndex.emplace(node.id, i).second) return {false, "node IDs must be unique"};
         highestNodeId = std::max(highestNodeId, node.id);
@@ -1353,158 +1704,161 @@ EvaluationResult evaluate(const Graph& graph){
     }
     if(order.size() != graph.nodes.size()) return {false, outputId, {}, "graph connections must be acyclic"};
 
+    struct PointSet{ std::vector<glm::vec3> positions, normals; };
     std::unordered_map<NodeId, PointGrid> grids;
     std::unordered_map<NodeId, MeshData> meshes;
-    std::unordered_map<NodeId, std::vector<glm::vec3>> pointSets;
+    std::unordered_map<NodeId, PointSet> pointSets;
+    std::unordered_map<NodeId, Curve> curves;
+    std::unordered_map<NodeId, Profile> profiles;
+    std::unordered_map<NodeId, std::vector<const Link*>> incomingLinks;
+    for(const Link& link : graph.links) incomingLinks[link.to].push_back(&link);
+    auto linkInto = [&](NodeId node, uint32_t port) -> const Link*{
+        const auto found = incomingLinks.find(node);
+        if(found == incomingLinks.end()) return nullptr;
+        for(const Link* link : found->second) if(link->toPort == port) return link;
+        return nullptr;
+    };
+    auto fail = [&](std::string message){ return EvaluationResult{false, outputId, {}, std::move(message)}; };
     std::string error;
     for(std::size_t index : order){
         const Node& node = graph.nodes[index];
-        if(const auto* primitive = std::get_if<AddPrimitiveNode>(&node.payload)){
-            MeshData mesh;
-            if(!makePrimitive(*primitive,mesh,error)) return {false,outputId,{},error};
-            meshes.emplace(node.id,std::move(mesh));
-            continue;
+        const std::string name = [&]{
+            if(std::holds_alternative<SetGridPointHeightNode>(node.payload)) return std::string("Set Grid Point Height");
+            if(std::holds_alternative<GridToMeshNode>(node.payload)) return std::string("Grid to Mesh");
+            if(std::holds_alternative<MoveNode>(node.payload)) return std::string("Move");
+            if(std::holds_alternative<RotateNode>(node.payload)) return std::string("Rotate");
+            if(std::holds_alternative<ScaleNode>(node.payload)) return std::string("Scale");
+            if(std::holds_alternative<ExtrudeNode>(node.payload)) return std::string("Extrude");
+            if(std::holds_alternative<BevelNode>(node.payload)) return std::string("Bevel");
+            if(std::holds_alternative<MeshToPointNode>(node.payload)) return std::string("Mesh to Point");
+            if(std::holds_alternative<PointFromMeshNode>(node.payload)) return std::string("Point from Mesh");
+            if(std::holds_alternative<SetSemanticNode>(node.payload)) return std::string("Set Semantic");
+            if(std::holds_alternative<SetMaterialNode>(node.payload)) return std::string("Set Material");
+            if(std::holds_alternative<SmoothNormalsNode>(node.payload)) return std::string("Smooth Normals");
+            if(std::holds_alternative<UVProjectNode>(node.payload)) return std::string("UV Project");
+            if(std::holds_alternative<CopyToPointsNode>(node.payload)) return std::string("Copy to Points");
+            return std::string("Node");
+        }();
+        // Resolves input 0 as a mesh for the single-input mesh operations.
+        const MeshData* meshInput = nullptr;
+        std::string meshInputError;
+        if(inputType(node, 0) == PortType::Mesh && !std::holds_alternative<MergeNode>(node.payload)){
+            const Link* link = linkInto(node.id, 0);
+            if(!link) meshInputError = name + " needs a Mesh input";
+            else{
+                const auto source = meshes.find(link->from);
+                if(source == meshes.end()) meshInputError = name + " input did not produce a mesh";
+                else meshInput = &source->second;
+            }
         }
-        if(const auto* source = std::get_if<GridNode>(&node.payload)){
+        MeshData produced;
+        bool producesMesh = true;
+
+        if(const auto* curve = std::get_if<CurveNode>(&node.payload)){
+            curves.emplace(node.id, curve->curve);
+            producesMesh = false;
+        }else if(const auto* rectangle = std::get_if<RectangleProfileNode>(&node.payload)){
+            profiles.emplace(node.id, makeRectangleProfile(rectangle->width, rectangle->height));
+            producesMesh = false;
+        }else if(const auto* circle = std::get_if<CircleProfileNode>(&node.payload)){
+            profiles.emplace(node.id, makeCircularProfile(circle->radius, circle->sides));
+            producesMesh = false;
+        }else if(const auto* source = std::get_if<GridNode>(&node.payload)){
             PointGrid grid;
-            if(!makeGrid(*source, grid, error)) return {false, outputId, {}, error};
+            if(!makeGrid(*source, grid, error)) return fail(error);
             grids.emplace(node.id, std::move(grid));
-            continue;
-        }
-        if(const auto* height = std::get_if<SetGridPointHeightNode>(&node.payload)){
-            const Link* input = nullptr;
-            for(const Link& link : graph.links) if(link.to == node.id && link.toPort == 0){ input = &link; break; }
-            if(!input) return {false, outputId, {}, "Set Grid Point Height needs a Point Grid input"};
+            producesMesh = false;
+        }else if(const auto* height = std::get_if<SetGridPointHeightNode>(&node.payload)){
+            const Link* input = linkInto(node.id, 0);
+            if(!input) return fail("Set Grid Point Height needs a Point Grid input");
             const auto source = grids.find(input->from);
-            if(source == grids.end()) return {false, outputId, {}, "height node input did not produce a point grid"};
+            if(source == grids.end()) return fail("height node input did not produce a point grid");
             if(height->column > source->second.cellsX || height->row > source->second.cellsZ)
-                return {false, outputId, {}, "height node point index is outside the grid"};
+                return fail("height node point index is outside the grid");
             PointGrid changed = source->second;
             changed.points[std::size_t(height->row) * (changed.cellsX + 1) + height->column].y = height->height;
             grids.emplace(node.id, std::move(changed));
-            continue;
-        }
-        if(const auto* toMesh = std::get_if<GridToMeshNode>(&node.payload)){
-            (void)toMesh;
-            const Link* input = nullptr;
-            for(const Link& link : graph.links) if(link.to == node.id && link.toPort == 0){ input = &link; break; }
-            if(!input) return {false, outputId, {}, "Grid to Mesh needs a Point Grid input"};
+            producesMesh = false;
+        }else if(std::holds_alternative<GridToMeshNode>(node.payload)){
+            const Link* input = linkInto(node.id, 0);
+            if(!input) return fail("Grid to Mesh needs a Point Grid input");
             const auto source = grids.find(input->from);
-            if(source == grids.end()) return {false, outputId, {}, "mesh input did not produce a point grid"};
-            MeshData mesh;
-            if(!gridToMesh(source->second, mesh, error)) return {false, outputId, {}, error};
-            meshes.emplace(node.id,std::move(mesh));
-            continue;
-        }
-        if(const auto* sweepNode = std::get_if<SweepNode>(&node.payload)){
-            const Link* curveLink = nullptr;
-            const Link* profileLink = nullptr;
-            for(const Link& link : graph.links){
-                if(link.to != node.id) continue;
-                if(link.toPort == 0) curveLink = &link;
-                else if(link.toPort == 1) profileLink = &link;
+            if(source == grids.end()) return fail("mesh input did not produce a point grid");
+            if(!gridToMesh(source->second, produced, error)) return fail(error);
+        }else if(const auto* sweepNode = std::get_if<SweepNode>(&node.payload)){
+            const Link* curveLink = linkInto(node.id, 0);
+            const Link* profileLink = linkInto(node.id, 1);
+            if(!curveLink || !profileLink) return fail("Sweep needs both Curve and Profile inputs");
+            const auto curve = curves.find(curveLink->from);
+            const auto profile = profiles.find(profileLink->from);
+            if(curve == curves.end() || profile == profiles.end())
+                return fail("Sweep inputs did not produce a curve and a profile");
+            if(!sweep(curve->second, profile->second, produced, error, sweepNode->settings)) return fail(error);
+        }else if(const auto* interior = std::get_if<InteriorBlockoutNode>(&node.payload)){
+            if(!makeInteriorBlockout(*interior, produced, error)) return fail(error);
+        }else if(const auto* primitive = std::get_if<AddPrimitiveNode>(&node.payload)){
+            if(!makePrimitive(*primitive, produced, error)) return fail(error);
+        }else if(std::holds_alternative<MergeNode>(node.payload)){
+            std::vector<const MeshData*> inputs;
+            for(uint32_t port = 0; port < mergeInputCount; ++port){
+                const Link* link = linkInto(node.id, port);
+                if(!link) continue;
+                const auto source = meshes.find(link->from);
+                if(source == meshes.end()) return fail("Merge input did not produce a mesh");
+                inputs.push_back(&source->second);
             }
-            if(!curveLink || !profileLink) return {false, outputId, {}, "Sweep needs both Curve and Profile inputs"};
-            const Node* curveSource = nullptr;
-            const Node* profileSource = nullptr;
-            for(const Node& candidate : graph.nodes){
-                if(candidate.id == curveLink->from) curveSource = &candidate;
-                if(candidate.id == profileLink->from) profileSource = &candidate;
-            }
-            const auto* curve = curveSource ? std::get_if<CurveNode>(&curveSource->payload) : nullptr;
-            const auto* profile = profileSource ? std::get_if<RectangleProfileNode>(&profileSource->payload) : nullptr;
-            if(!curve || !profile) return {false, outputId, {}, "Sweep inputs must come from Curve and Rectangle Profile nodes"};
-            MeshData mesh;
-            if(!sweep(curve->curve, makeRectangleProfile(profile->width, profile->height), mesh,
-                      error, sweepNode->settings)) return {false, outputId, {}, error};
-            meshes.emplace(node.id,std::move(mesh));
-            continue;
+            if(inputs.empty()) return fail("Merge needs at least one Mesh input");
+            if(!mergeMeshes(inputs, produced, error)) return fail(error);
+        }else if(const auto* copy = std::get_if<CopyToPointsNode>(&node.payload)){
+            if(!meshInput) return fail(meshInputError);
+            const Link* pointsLink = linkInto(node.id, 1);
+            if(!pointsLink) return fail("Copy to Points needs a Points input");
+            const auto points = pointSets.find(pointsLink->from);
+            if(points == pointSets.end()) return fail("Copy to Points input did not produce points");
+            if(!copyToPoints(*meshInput, points->second.positions, points->second.normals, *copy, produced, error))
+                return fail(error);
+        }else if(std::holds_alternative<MeshToPointNode>(node.payload) || std::holds_alternative<PointFromMeshNode>(node.payload)){
+            if(!meshInput) return fail(meshInputError);
+            PointSet points;
+            const auto* sample = std::get_if<PointFromMeshNode>(&node.payload);
+            const bool made = sample
+                ? samplePointSet(*meshInput, sample->count, sample->seed, points.positions, &points.normals, error, 100'000)
+                : meshToPointSet(*meshInput, points.positions, &points.normals, error, 1'000'000);
+            if(!made) return fail(error);
+            pointSets.emplace(node.id, std::move(points));
+            producesMesh = false;
+        }else{
+            if(!meshInput) return fail(meshInputError);
+            bool made = false;
+            if(const auto* move = std::get_if<MoveNode>(&node.payload)) made = moveMesh(*meshInput, *move, produced, error);
+            else if(const auto* rotate = std::get_if<RotateNode>(&node.payload)) made = rotateMesh(*meshInput, *rotate, produced, error);
+            else if(const auto* scale = std::get_if<ScaleNode>(&node.payload)) made = scaleMesh(*meshInput, *scale, produced, error);
+            else if(const auto* extrude = std::get_if<ExtrudeNode>(&node.payload)) made = extrudeFace(*meshInput, *extrude, produced, error);
+            else if(const auto* bevel = std::get_if<BevelNode>(&node.payload)) made = bevelMesh(*meshInput, *bevel, produced, error);
+            else if(const auto* tag = std::get_if<SetSemanticNode>(&node.payload)) made = setSemantic(*meshInput, *tag, produced, error);
+            else if(const auto* paint = std::get_if<SetMaterialNode>(&node.payload)) made = setMaterial(*meshInput, *paint, produced, error);
+            else if(const auto* smooth = std::get_if<SmoothNormalsNode>(&node.payload)) made = smoothNormals(*meshInput, smooth->angleDegrees, produced, error);
+            else if(const auto* uv = std::get_if<UVProjectNode>(&node.payload)) made = projectUVs(*meshInput, uv->tileSize, produced, error);
+            else return fail("unsupported node type");
+            if(!made) return fail(error);
         }
-        if(const auto* interior = std::get_if<InteriorBlockoutNode>(&node.payload)){
-            MeshData mesh;
-            if(!makeInteriorBlockout(*interior, mesh, error)) return {false, outputId, {}, error};
-            meshes.emplace(node.id,std::move(mesh));
-            continue;
-        }
-
-        const Link* input = nullptr;
-        for(const Link& link : graph.links)
-            if(link.to == node.id && link.toPort == 0){ input = &link; break; }
-        if(const auto* move = std::get_if<MoveNode>(&node.payload)){
-            if(!input) return {false,outputId,{},"Move needs a Mesh input"};
-            const auto source = meshes.find(input->from);
-            if(source == meshes.end()) return {false,outputId,{},"Move input did not produce a mesh"};
-            MeshData changed;
-            if(!moveMesh(source->second,*move,changed,error)) return {false,outputId,{},error};
-            meshes.emplace(node.id,std::move(changed));
-            continue;
-        }
-        if(const auto* rotate = std::get_if<RotateNode>(&node.payload)){
-            if(!input) return {false,outputId,{},"Rotate needs a Mesh input"};
-            const auto source = meshes.find(input->from);
-            if(source == meshes.end()) return {false,outputId,{},"Rotate input did not produce a mesh"};
-            MeshData changed;
-            if(!rotateMesh(source->second,*rotate,changed,error)) return {false,outputId,{},error};
-            meshes.emplace(node.id,std::move(changed));
-            continue;
-        }
-        if(const auto* scale = std::get_if<ScaleNode>(&node.payload)){
-            if(!input) return {false,outputId,{},"Scale needs a Mesh input"};
-            const auto source = meshes.find(input->from);
-            if(source == meshes.end()) return {false,outputId,{},"Scale input did not produce a mesh"};
-            MeshData changed;
-            if(!scaleMesh(source->second,*scale,changed,error)) return {false,outputId,{},error};
-            meshes.emplace(node.id,std::move(changed));
-            continue;
-        }
-        if(const auto* extrude = std::get_if<ExtrudeNode>(&node.payload)){
-            if(!input) return {false,outputId,{},"Extrude needs a Mesh input"};
-            const auto source = meshes.find(input->from);
-            if(source == meshes.end()) return {false,outputId,{},"Extrude input did not produce a mesh"};
-            MeshData changed;
-            if(!extrudeFace(source->second,*extrude,changed,error)) return {false,outputId,{},error};
-            meshes.emplace(node.id,std::move(changed));
-            continue;
-        }
-        if(const auto* bevel = std::get_if<BevelNode>(&node.payload)){
-            if(!input) return {false,outputId,{},"Bevel needs a Mesh input"};
-            const auto source = meshes.find(input->from);
-            if(source == meshes.end()) return {false,outputId,{},"Bevel input did not produce a mesh"};
-            MeshData changed;
-            if(!bevelMesh(source->second,*bevel,changed,error)) return {false,outputId,{},error};
-            meshes.emplace(node.id,std::move(changed));
-            continue;
-        }
-        if(std::holds_alternative<MeshToPointNode>(node.payload)){
-            if(!input) return {false,outputId,{},"Mesh to Point needs a Mesh input"};
-            const auto source = meshes.find(input->from);
-            if(source == meshes.end()) return {false,outputId,{},"Mesh to Point input did not produce a mesh"};
-            std::vector<glm::vec3> points;
-            if(!meshToPoints(source->second,points,error)) return {false,outputId,{},error};
-            pointSets.emplace(node.id,std::move(points));
-            continue;
-        }
-        if(const auto* sample = std::get_if<PointFromMeshNode>(&node.payload)){
-            if(!input) return {false,outputId,{},"Point from Mesh needs a Mesh input"};
-            const auto source = meshes.find(input->from);
-            if(source == meshes.end()) return {false,outputId,{},"Point from Mesh input did not produce a mesh"};
-            std::vector<glm::vec3> points;
-            if(!pointsFromMesh(source->second,sample->count,sample->seed,points,error)) return {false,outputId,{},error};
-            pointSets.emplace(node.id,std::move(points));
-            continue;
+        if(producesMesh){
+            stampProvenance(produced, node.id);
+            meshes.emplace(node.id, std::move(produced));
         }
     }
 
     if(pointCloudOutput){
         const auto points = pointSets.find(outputId);
-        if(points == pointSets.end() || points->second.empty()) return {false,outputId,{},"recipe point-cloud output is empty"};
+        if(points == pointSets.end() || points->second.positions.empty()) return fail("recipe point-cloud output is empty");
         EvaluationResult result{true,outputId,{}, {}};
-        result.points = std::move(points->second);
+        result.points = std::move(points->second.positions);
+        result.pointNormals = std::move(points->second.normals);
         result.pointCloudOutput = true;
         return result;
     }
     const auto mesh = meshes.find(outputId);
-    if(mesh == meshes.end() || mesh->second.empty()) return {false,outputId,{},"recipe output mesh is empty"};
+    if(mesh == meshes.end() || mesh->second.empty()) return fail("recipe output mesh is empty");
     return {true, outputId, std::move(mesh->second), {}};
 }
 

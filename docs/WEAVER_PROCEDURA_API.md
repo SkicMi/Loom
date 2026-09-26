@@ -23,8 +23,21 @@ The engine-facing API is `engine/src/Engine/WeaverProcedura.h`. The editor bridg
 | `BevelNode` | `0: Mesh` | `0: Mesh` | Insets convex planar faces and creates a segmented chamfer band. Amount is in meters; segment count is 1–8. |
 | `MeshToPointNode` | `0: Mesh` | `0: Points` | Emits one point per unique mesh-vertex position, merging coincident face-split vertices within 0.00001 m. |
 | `PointFromMeshNode` | `0: Mesh` | `0: Points` | Deterministically samples a requested number of points over the mesh surface, weighted by triangle area and controlled by a seed. |
+| `CircleProfileNode` | — | `0: Profile` | Radius in meters and 3–128 sides; feeds Sweep for ropes and pipes. |
+| `MergeNode` | `0–7: Mesh` | `0: Mesh` | Joins every connected input (any subset of the eight ports) and keeps each triangle's attributes. |
+| `SetSemanticNode` | `0: Mesh` | `0: Mesh` | Sets a semantic name from `semanticVocabulary()` on triangles chosen by a `TriangleFilter`. |
+| `SetMaterialNode` | `0: Mesh` | `0: Mesh` | Sets a material name from `materialLibrary()` on triangles chosen by a `TriangleFilter`. |
+| `SmoothNormalsNode` | `0: Mesh` | `0: Mesh` | Averages area-weighted normals across faces meeting below the angle; 0° gives flat shading. |
+| `UVProjectNode` | `0: Mesh` | `0: Mesh` | Box projection in world meters; each triangle uses the plane of its dominant normal axis. |
+| `CopyToPointsNode` | `0: Mesh`, `1: Points` | `0: Mesh` | Copies the instance to every point, optionally aligned to the point normal, with seeded yaw and scale jitter. |
 
-The evaluator supports exactly one terminal geometry output per Recipe: either a mesh or a point cloud. Mesh modifiers chain through typed mesh ports; point nodes are terminal outputs in this first round. Links must join matching port types, input ports accept at most one link, and graph cycles are rejected. Graph validation also enforces finite dimensions, point counts, node/link limits, and safe output budgets.
+The evaluator supports exactly one terminal geometry output per Recipe: either a mesh or a point cloud; use Merge to combine parts. Mesh modifiers chain through typed mesh ports. Points carry a normal and can feed Copy to Points or be the terminal output.
+
+## Triangle attributes and provenance
+
+`MeshData::triangles` is either empty or holds one `TriangleAttributes` per triangle: `createdBy` (the Recipe node that made it), `semantic`, and `material`. The evaluator stamps `createdBy` on every triangle a node adds. Move, Rotate, Scale, Merge, Set Semantic/Material, Smooth Normals, UV Project, and Copy to Points keep existing attributes; Extrude and Bevel keep them on the surviving faces and stamp their own node on new side walls and chamfers, inheriting the face's semantic and material. Interior Blockout labels `floor`, `wall_exterior`, and `wall_interior`.
+
+Semantic and material names come from closed, append-only lists (`semanticVocabulary()`, `materialLibrary()`); a triangle stores the list position + 1 and 0 means none. Validation rejects unknown names, so a generating model can only choose values that exist. A `TriangleFilter` selects by semantic name, by facing direction within an angle, or both; an empty filter selects every triangle. Links must join matching port types, input ports accept at most one link, and graph cycles are rejected. Graph validation also enforces finite dimensions, point counts, node/link limits, and safe output budgets.
 
 The interior blockout is intentionally a tlocrt and wall massing tool. It does not generate ceilings, windows, furniture, multiple floors, curved corridors, or individually authored room polygons yet. It creates geometry directly from its parameters rather than exposing each wall as a separate editable node.
 
@@ -131,12 +144,12 @@ Other public functions are `makeGrid`, `gridToMesh`, `makeInteriorBlockout`, `ma
 
 ## Recipe file format
 
-The editor's Recipe controls save and load `loom.weaverprocedura.recipe` JSON. The current `schema_version` is `4`; version 3 recipes are upgraded on load because their existing node payloads retain the same meaning. Unknown node types and other schema versions are rejected. The importer caps files at 1 MB, graphs at 256 nodes and 1,024 links, and curve point arrays at 4,096 points. Save writes a temporary file and renames it into place.
+The editor's Recipe controls save and load `loom.weaverprocedura.recipe` JSON. The current `schema_version` is `5`; versions 3 and 4 are upgraded on load because their existing node payloads retain the same meaning. Unknown node types and other schema versions are rejected. The importer caps files at 1 MB, graphs at 256 nodes and 1,024 links, and curve point arrays at 4,096 points. Save writes a temporary file and renames it into place.
 
 ```json
 {
   "format": "loom.weaverprocedura.recipe",
-  "schema_version": 4,
+  "schema_version": 5,
   "name": "Raised Grid Surface",
   "seed": 1,
   "nodes": [
@@ -162,8 +175,8 @@ The file stores node IDs, graph editor positions, typed links, parameters, and t
 - Preview geometry is derived from the Recipe; changing the graph marks the preview dirty. The last successful preview stays visible if a later evaluation fails.
 - Grid point edits are explicit and reproducible: the height node sets one zero-based point's absolute Y value. Multiple edits chain through typed `PointGrid` ports.
 - Interior blockout parameters are stored in the graph, so layout edits can be replayed from the Recipe file.
-- The agent action protocol exposes `procedura.create_recipe` for the grid surface and hallway/rooms generators. It constructs typed nodes, validates and evaluates the graph on the editor thread, and puts the result into the live Procedura panel and viewport preview. The user can then edit the graph or save it as a `.loomrecipe.json` file. Arbitrary graph JSON, editing existing graphs from chat, roads, exterior building generation, ropes, and chains remain unsupported.
+- `src/LoomAgentActions.h` still validates and executes `procedura.create_recipe` for the grid surface and hallway/rooms generators on the editor thread. The previous chat model and its F8 panel were removed; the AgentOfWeavers model that will generate Recipes is planned in `docs/AgentOfWeavers/`. Roads, exterior buildings, and chains are not built-in generators yet.
 
 ## Geometry checks
 
-`tests/test_weaverprocedura.cpp` exercises the grid lattice, upward mesh normals, chained point edits, interior output, each primitive and mesh operation, deterministic surface point sampling, point-cloud preview geometry, Recipe round trips, legacy schema upgrades, and schema-version rejection.
+`tests/test_weaverprocedura.cpp` exercises triangle provenance through Merge, Extrude, and Bevel; semantic and material filters; vocabulary rejection; normal smoothing; metric UV projection; Copy to Points; circle-profile sweeps; the grid lattice, upward mesh normals, chained point edits, interior output, each primitive and mesh operation, deterministic surface point sampling, point-cloud preview geometry, Recipe round trips, legacy schema upgrades, and schema-version rejection.

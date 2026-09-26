@@ -1,8 +1,0 @@
-{"id":"hr-interior-explicit","language":"hr","prompt":"Napravi tlocrt hodnika s tri sobe sa svake strane i hodnikom širokim 2.5 metra.","expected":{"tool":"procedura.create_recipe","arguments":{"generator":"interior_blockout","rooms_per_side":3,"corridor_width":2.5}}}
-{"id":"en-interior-explicit","language":"en","prompt":"Create a hallway with two rooms on each side and 3-meter-high walls.","expected":{"tool":"procedura.create_recipe","arguments":{"generator":"interior_blockout","rooms_per_side":2,"wall_height":3}}}
-{"id":"hr-grid-raised-point","language":"hr","prompt":"Napravi grid površinu širine 12 metara i dubine 8 metara, s 4 ćelije po osi. Podigni točku stupac 2, red 1 na Y 2.5 metra.","expected":{"tool":"procedura.create_recipe","arguments":{"generator":"grid_surface","width":12,"depth":8,"cells_x":4,"cells_z":4,"point_heights":[{"column":2,"row":1,"height":2.5}]}}}
-{"id":"en-grid-surface","language":"en","prompt":"Create a 10 by 6 meter grid surface, with five cells along X and three along Z.","expected":{"tool":"procedura.create_recipe","arguments":{"generator":"grid_surface","width":10,"depth":6,"cells_x":5,"cells_z":3}}}
-{"id":"en-unsupported-street-network","language":"en","prompt":"Create a procedural street network through a whole city.","expected":{"abstain":true}}
-{"id":"hr-unsupported-exterior-building","language":"hr","prompt":"Napravi proceduralnu poslovnu zgradu s tri kata.","expected":{"abstain":true}}
-{"id":"en-ambiguous-procedural-request","language":"en","prompt":"Make something procedural for me.","expected":{"abstain":true}}
-{"id":"hr-edit-existing-recipe","language":"hr","prompt":"Promijeni visinu označene točke u postojećem grid Recipeu na 2 metra.","expected":{"abstain":true}}

@@ -346,42 +346,4 @@ inline AgentApiResponse agentResponseFromJson(const std::string& source){
     return response;
 }
 
-inline std::string agentShellQuote(const std::string& value){
-    std::string quoted = "'";
-    for(char c : value){ if(c == '\'') quoted += "'\\''"; else quoted.push_back(c); }
-    quoted.push_back('\''); return quoted;
-}
-inline AgentApiResponse callLocalAgentApi(const std::filesystem::path& root,
-                                           const std::vector<std::pair<std::string, std::string>>& conversation,
-                                           const std::string& sceneContextJson = "{}") {
-    const std::filesystem::path python = root / "tools/weaveragent/.venv/bin/python";
-    const std::filesystem::path script = root / "tools/weaveragent/api_client.py";
-    if(!std::filesystem::is_regular_file(python) || !std::filesystem::is_regular_file(script))
-        throw std::runtime_error("Local Weaver environment is missing. Complete tools/weaveragent setup first.");
-    const std::filesystem::path cache = root / ".cache/weaverprocedura/app-chat";
-    std::filesystem::create_directories(cache);
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    const std::filesystem::path requestFile = cache / ("request-" + std::to_string(stamp) + ".json");
-    std::ofstream request(requestFile, std::ios::binary);
-    if(!request) throw std::runtime_error("Could not write the local Weaver request.");
-    request << "{\"conversation\":[";
-    for(size_t i = 0; i < conversation.size(); ++i){
-        if(i) request << ',';
-        request << "{\"role\":" << agentJsonEscape(conversation[i].first)
-                << ",\"content\":" << agentJsonEscape(conversation[i].second) << '}';
-    }
-    request << "],\"scene_context\":" << sceneContextJson << '}'; request.close();
-    const std::string command = agentShellQuote(python.string()) + " " + agentShellQuote(script.string()) +
-                                " < " + agentShellQuote(requestFile.string());
-    FILE* pipe = popen(command.c_str(), "r");
-    if(!pipe){ std::filesystem::remove(requestFile); throw std::runtime_error("Could not start the local Weaver API client."); }
-    std::string output; char buffer[2048];
-    while(std::fgets(buffer, sizeof(buffer), pipe)) output += buffer;
-    const int status = pclose(pipe);
-    std::filesystem::remove(requestFile);
-    if(output.empty()) throw std::runtime_error("Local Weaver API returned no response (exit " + std::to_string(status) + ").");
-    AgentApiResponse response = agentResponseFromJson(output);
-    return response;
-}
-
 } // namespace Loom

@@ -405,13 +405,161 @@ int main(){
                  std::holds_alternative<Proc::MeshToPointNode>(newVocabularyRoundTrip.graph.nodes[6].payload) &&
                  std::holds_alternative<Proc::PointFromMeshNode>(newVocabularyRoundTrip.graph.nodes[7].payload),newVocabularyJson);
     std::string legacyRecipeJson = encoded;
-    const std::string currentSchemaToken = "\"schema_version\":4";
+    const std::string currentSchemaToken = "\"schema_version\":" + std::to_string(Proc::graphSchemaVersion);
     const std::size_t schemaPosition = legacyRecipeJson.find(currentSchemaToken);
     if(schemaPosition != std::string::npos) legacyRecipeJson.replace(schemaPosition,currentSchemaToken.size(),"\"schema_version\":3");
     bool readLegacyRecipe = false;
     try{ readLegacyRecipe = Loom::WeaverProceduraRecipe::parse(legacyRecipeJson).graph.schemaVersion == Proc::graphSchemaVersion; }
     catch(const std::exception&){ readLegacyRecipe = false; }
-    report.check("schema 4 loader upgrades existing schema 3 recipes",readLegacyRecipe,"version 3 input maps to the current graph schema");
+    report.check("current loader upgrades existing schema 3 recipes",readLegacyRecipe &&
+                 legacyRecipeJson.find("\"schema_version\":3") != std::string::npos,"version 3 input maps to the current graph schema");
+
+    //== AgentOfWeavers infrastruktura: provenance, semantika, materijali, Merge, Copy to Points ==
+    auto attributesSized = [](const Proc::MeshData& mesh){ return mesh.triangles.size() == mesh.indices.size() / 3; };
+    auto countSemantic = [](const Proc::MeshData& mesh, const char* name){
+        return std::count_if(mesh.triangles.begin(), mesh.triangles.end(),
+            [&](const Proc::TriangleAttributes& t){ return t.semantic == Proc::semanticId(name); });
+    };
+
+    report.check("closed vocabularies map names to stable non-zero IDs",
+                 Proc::semanticId("roof") != 0 && Proc::semanticName(Proc::semanticId("roof")) == "roof" &&
+                 Proc::materialId("brick") != 0 && Proc::materialName(Proc::materialId("brick")) == "brick" &&
+                 Proc::semanticId("spaceship") == 0 && Proc::materialId("") == 0, "vocabulary lookup");
+
+    Proc::Graph mergeRecipe;
+    const auto firstCube = Proc::addNode(mergeRecipe, Proc::AddPrimitiveNode{});
+    const auto secondCube = Proc::addNode(mergeRecipe, Proc::AddPrimitiveNode{});
+    Proc::MoveNode apart; apart.offset = {3.0f, 0.0f, 0.0f};
+    const auto shiftedCube = Proc::addNode(mergeRecipe, apart);
+    const auto merged = Proc::addNode(mergeRecipe, Proc::MergeNode{});
+    mergeRecipe.links = {{secondCube,0,shiftedCube,0},{firstCube,0,merged,0},{shiftedCube,0,merged,3}};
+    const Proc::EvaluationResult mergeResult = Proc::evaluate(mergeRecipe);
+    report.check("Merge joins meshes from any input ports and keeps provenance per source",
+                 mergeResult.succeeded && mergeResult.mesh.vertices.size() == 48 && attributesSized(mergeResult.mesh) &&
+                 mergeResult.mesh.triangles.front().createdBy == firstCube &&
+                 mergeResult.mesh.triangles.back().createdBy == secondCube, mergeResult.error);
+
+    Proc::Graph extrudeRecipe;
+    const auto extrudeSource = Proc::addNode(extrudeRecipe, Proc::AddPrimitiveNode{});
+    const auto extrudeNode = Proc::addNode(extrudeRecipe, Proc::ExtrudeNode{});
+    const auto bevelNode = Proc::addNode(extrudeRecipe, Proc::BevelNode{0.05f, 2});
+    extrudeRecipe.links = {{extrudeSource,0,extrudeNode,0},{extrudeNode,0,bevelNode,0}};
+    Proc::Graph extrudeOnly = extrudeRecipe;
+    extrudeOnly.nodes.pop_back(); extrudeOnly.links.pop_back();
+    const Proc::EvaluationResult extrudedResult = Proc::evaluate(extrudeOnly);
+    const auto sideTriangles = extrudedResult.succeeded ? std::count_if(extrudedResult.mesh.triangles.begin(), extrudedResult.mesh.triangles.end(),
+        [&](const Proc::TriangleAttributes& t){ return t.createdBy == extrudeNode; }) : 0;
+    report.check("Extrude stamps its new side walls and keeps the shiftedCube face's source",
+                 extrudedResult.succeeded && attributesSized(extrudedResult.mesh) && sideTriangles == 8 &&
+                 extrudedResult.mesh.triangles.size() == 20, extrudedResult.error);
+    const Proc::EvaluationResult beveledResult = Proc::evaluate(extrudeRecipe);
+    const bool bevelHasBothSources = beveledResult.succeeded &&
+        std::any_of(beveledResult.mesh.triangles.begin(), beveledResult.mesh.triangles.end(),
+                    [&](const Proc::TriangleAttributes& t){ return t.createdBy == extrudeSource; }) &&
+        std::any_of(beveledResult.mesh.triangles.begin(), beveledResult.mesh.triangles.end(),
+                    [&](const Proc::TriangleAttributes& t){ return t.createdBy == bevelNode; });
+    report.check("Bevel keeps face caps from their source and stamps chamfer strips",
+                 bevelHasBothSources && attributesSized(beveledResult.mesh), beveledResult.error);
+
+    Proc::Graph interiorTags;
+    Proc::addNode(interiorTags, Proc::InteriorBlockoutNode{});
+    const Proc::EvaluationResult taggedInterior = Proc::evaluate(interiorTags);
+    report.check("interior blockout labels floor, exterior walls, and interior walls",
+                 taggedInterior.succeeded && attributesSized(taggedInterior.mesh) &&
+                 countSemantic(taggedInterior.mesh,"floor") == 12 && countSemantic(taggedInterior.mesh,"wall_exterior") > 0 &&
+                 countSemantic(taggedInterior.mesh,"wall_interior") > 0 &&
+                 std::none_of(taggedInterior.mesh.triangles.begin(), taggedInterior.mesh.triangles.end(),
+                              [](const Proc::TriangleAttributes& t){ return t.semantic == 0; }), taggedInterior.error);
+
+    Proc::Graph tagRecipe;
+    const auto tagSource = Proc::addNode(tagRecipe, Proc::AddPrimitiveNode{});
+    Proc::SetSemanticNode roofTag; roofTag.semantic = "roof";
+    roofTag.filter.useDirection = true; roofTag.filter.direction = {0,1,0}; roofTag.filter.maxAngleDegrees = 10.0f;
+    const auto tagged = Proc::addNode(tagRecipe, roofTag);
+    Proc::SetMaterialNode roofMaterial; roofMaterial.material = "roof_tiles"; roofMaterial.filter.semantic = "roof";
+    const auto painted = Proc::addNode(tagRecipe, roofMaterial);
+    tagRecipe.links = {{tagSource,0,tagged,0},{tagged,0,painted,0}};
+    const Proc::EvaluationResult tagResult = Proc::evaluate(tagRecipe);
+    const auto tiled = tagResult.succeeded ? std::count_if(tagResult.mesh.triangles.begin(), tagResult.mesh.triangles.end(),
+        [](const Proc::TriangleAttributes& t){ return t.material == Proc::materialId("roof_tiles"); }) : 0;
+    report.check("Set Semantic by direction and Set Material by semantic select only the top face",
+                 tagResult.succeeded && countSemantic(tagResult.mesh,"roof") == 2 && tiled == 2, tagResult.error);
+
+    Proc::Graph unknownTag = tagRecipe;
+    std::get<Proc::SetMaterialNode>(unknownTag.nodes[2].payload).material = "unobtainium";
+    report.check("validation rejects material names outside the library", !Proc::validate(unknownTag),
+                 "closed material vocabulary");
+
+    Proc::MeshData sphere;
+    Proc::AddPrimitiveNode sphereSettings; sphereSettings.primitive = Proc::PrimitiveType::Sphere;
+    Proc::makePrimitive(sphereSettings, sphere, error);
+    Proc::MeshData flatSphere, smoothSphere;
+    const bool flattened = Proc::smoothNormals(sphere, 0.0f, flatSphere, error);
+    const bool smoothed = flattened && Proc::smoothNormals(flatSphere, 60.0f, smoothSphere, error);
+    float worstSmooth = 1.0f;
+    for(const Proc::MeshVertex& vertex : smoothSphere.vertices)
+        worstSmooth = std::min(worstSmooth, glm::dot(vertex.normal, glm::normalize(vertex.position)));
+    report.check("Smooth Normals flattens at 0 degrees and restores a round sphere at 60 degrees",
+                 smoothed && flatSphere.vertices.size() > sphere.vertices.size() && worstSmooth > 0.98f,
+                 "worst dot " + std::to_string(worstSmooth));
+
+    Proc::MeshData cubeForUv, wideCube, projected;
+    Proc::AddPrimitiveNode wideSettings; wideSettings.size = {4.0f, 2.0f, 1.0f};
+    Proc::makePrimitive(wideSettings, wideCube, error);
+    const bool uvDone = Proc::projectUVs(wideCube, 0.5f, projected, error);
+    float uMin = 1e9f, uMax = -1e9f;
+    for(const Proc::MeshVertex& vertex : projected.vertices){ uMin = std::min(uMin, vertex.uv.x); uMax = std::max(uMax, vertex.uv.x); }
+    report.check("UV Project tiles in world meters", uvDone && std::abs((uMax - uMin) - 8.0f) < 1e-3f,
+                 "U span " + std::to_string(uMax - uMin));
+
+    Proc::Graph copyRecipe;
+    Proc::GridNode copyGrid; copyGrid.cellsX = 4; copyGrid.cellsZ = 4;
+    const auto copyGridId = Proc::addNode(copyRecipe, copyGrid);
+    const auto copySurface = Proc::addNode(copyRecipe, Proc::GridToMeshNode{});
+    const auto copyPoints = Proc::addNode(copyRecipe, Proc::MeshToPointNode{});
+    Proc::AddPrimitiveNode post; post.size = glm::vec3(0.2f);
+    const auto postId = Proc::addNode(copyRecipe, post);
+    const auto copies = Proc::addNode(copyRecipe, Proc::CopyToPointsNode{});
+    copyRecipe.links = {{copyGridId,0,copySurface,0},{copySurface,0,copyPoints,0},{postId,0,copies,0},{copyPoints,0,copies,1}};
+    const Proc::EvaluationResult copyResult = Proc::evaluate(copyRecipe);
+    report.check("Copy to Points places one instance on every point and points now feed the graph",
+                 copyResult.succeeded && !copyResult.pointCloudOutput && copyResult.mesh.vertices.size() == 24u * 25u &&
+                 attributesSized(copyResult.mesh) && copyResult.mesh.triangles.front().createdBy == postId, copyResult.error);
+
+    Proc::Graph ropeRecipe;
+    Proc::CurveNode ropePath; ropePath.curve.points = {{0,2,0},{2,1.5f,0},{4,2,0}};
+    const auto ropeCurve = Proc::addNode(ropeRecipe, ropePath);
+    const auto ropeProfile = Proc::addNode(ropeRecipe, Proc::CircleProfileNode{0.04f, 10});
+    Proc::SweepNode ropeSweep; ropeSweep.settings.sampleSpacing = 0.25f;
+    const auto ropeMesh = Proc::addNode(ropeRecipe, ropeSweep);
+    ropeRecipe.links = {{ropeCurve,0,ropeMesh,0},{ropeProfile,0,ropeMesh,1}};
+    const Proc::EvaluationResult ropeResult = Proc::evaluate(ropeRecipe);
+    report.check("Sweep accepts a Circle Profile node", ropeResult.succeeded && attributesSized(ropeResult.mesh),
+                 ropeResult.error);
+
+    Proc::Graph infrastructureRecipe;
+    Proc::addNode(infrastructureRecipe, Proc::CircleProfileNode{});
+    Proc::addNode(infrastructureRecipe, Proc::MergeNode{});
+    Proc::addNode(infrastructureRecipe, roofTag);
+    Proc::addNode(infrastructureRecipe, roofMaterial);
+    Proc::addNode(infrastructureRecipe, Proc::SmoothNormalsNode{45.0f});
+    Proc::addNode(infrastructureRecipe, Proc::UVProjectNode{2.0f});
+    Proc::CopyToPointsNode copySettings; copySettings.alignToNormal = true; copySettings.randomYawDegrees = 90.0f;
+    Proc::addNode(infrastructureRecipe, copySettings);
+    std::string infrastructureJson;
+    bool infrastructureRoundTrip = false;
+    try{
+        infrastructureJson = Loom::WeaverProceduraRecipe::serialize({"Infrastructure", infrastructureRecipe});
+        const auto back = Loom::WeaverProceduraRecipe::parse(infrastructureJson).graph;
+        const auto& tagBack = std::get<Proc::SetSemanticNode>(back.nodes[2].payload);
+        const auto& copyBack = std::get<Proc::CopyToPointsNode>(back.nodes[6].payload);
+        infrastructureRoundTrip = back.nodes.size() == 7 && tagBack.semantic == "roof" && tagBack.filter.useDirection &&
+            std::abs(tagBack.filter.maxAngleDegrees - 10.0f) < 1e-6f &&
+            std::get<Proc::SetMaterialNode>(back.nodes[3].payload).filter.semantic == "roof" &&
+            std::abs(std::get<Proc::UVProjectNode>(back.nodes[5].payload).tileSize - 2.0f) < 1e-6f &&
+            copyBack.alignToNormal && std::abs(copyBack.randomYawDegrees - 90.0f) < 1e-6f;
+    }catch(const std::exception& failure){ infrastructureJson = failure.what(); }
+    report.check("schema 5 Recipe round-trips every infrastructure payload", infrastructureRoundTrip, infrastructureJson);
 
     return report.result();
 }
