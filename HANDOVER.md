@@ -989,7 +989,7 @@ Qwen/LoRA agent i F8 AI Chat su obrisani (26.9.).
   Podaci: `.cache/agentofweavers/data/houses-v0.1` (stari, prije UV/materijala — treba regenerirati).
 - Codex prompt za 200 held-out promptova: `docs/AgentOfWeavers/heldout/CODEX_PROMPT.md`.
 
-**NECOMMITANO — u radnom stablu, testovi prolaze** (Procedura 79/79, akcije 15/15, asseti 27/27,
+**Commitano u f23c2bb (27.9.), testovi prolaze** (Procedura 79/79, akcije 15/15, asseti 27/27,
 300 kuća 16/16, PBR 8/8):
 - Proceduralne PBR teksture: `engine/src/Engine/WeaverProceduraTextures.{h,cpp}` (21 materijal, boja +
   hrapavost/metalnost + normal, bešavno, 1 m po ponavljanju); PNG cache u `.cache/procedura/textures/v1`
@@ -1004,8 +1004,7 @@ Qwen/LoRA agent i F8 AI Chat su obrisani (26.9.).
   prije su krajevi pregrada virili kroz vanjski zid (vidljivo tek s materijalima).
 - `ProceduraGen --save-recipes K` (recepti za pregled), editor `--recept X [--izvezi Y.glb]`.
 
-**Sljedeće:** commitati gornje (LoomPbr.h i CMakeLists.txt samo svoje komade — drugi agent ima necommitan i
-staged rad: commit preko privremenog indeksa); vizualno provjeriti unutrašnjost nakon popravka pregrada
+**Sljedeće:** (drugi agent ima necommitan i staged rad: svoje commitati preko privremenog indeksa); vizualno provjeriti unutrašnjost nakon popravka pregrada
 (Xvfb :78, `--recept` na kući bez krova); regenerirati podatke (`procedura-gen --houses 10000 --seed 1 --out
 .cache/agentofweavers/data/houses-v0.3`, pa `embed.py`); zatim prvi model. Kasnije: training engine s
 povremenim prompt + render (izvana, iznutra, prolaz) na Telegram, korisnik ocjenjuje dobro/loše.
