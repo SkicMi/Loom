@@ -1,6 +1,6 @@
 # Loom — predaja projekta
 
-Zadnje osvjezeno: 25. rujna 2026.
+Zadnje osvjezeno: 26. rujna 2026. (odjeljak 7.9: sake, prsti i hvat predmeta)
 Repo: `https://github.com/SkicMi/Loom.git`, grana **`main`** (radi se isključivo na njoj).
 
 Ovo je **radni brief**, ne pregled. Piše što projekt jest, gdje stoji **s brojkama**, u što se smije
@@ -854,6 +854,74 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
 **Editor se provjerava okom**: `loom projekt.usda --snimi x.png --render [--uzorci 32]` otvori panel,
 renderira i spremi prozor kad render završi (`--render-pogled` za engine Viewport). Pod Xvfb-om s
 lavapipeom (`VK_ICD_FILENAMES=.../lvp_icd.json xvfb-run -a ...`) radi i bez kartice.
+
+### 9. Šake, prsti i hvat predmeta — STANJE 26.9. (navečer)
+
+Cilj korisnika: (a) kad lik uhvati predmet (mač, pištolj...), prsti se prirodno sklope oko njega i
+realno ga drže; (b) UI/UX hvata jednostavan i intuitivan. Lik za sve provjere je **desni klik >
+HumanoidMascott** = `tools/autorig/outputs/mascot-manny/rigged.glb` (lokalno, nije u gitu), u editoru
+`./build/loom --mascott`.
+
+**Gotovo i commitano (main):**
+
+| commit | što | mjera |
+|---|---|---|
+| `106b548` | hand rig u auto-rigu: +X savija prst u dlan, Z prema dlanu | savijanje prema dlanu -1.000 → +0.999 |
+| `fef29b1` | mirne šake na svakom rigu (`LoomRelaxedHands.h`, gumb Relax Hands); SOMA `Index1` je metakarpal — mapa retargeta bila pomaknuta za zglob | greška kutova prstiju 10.9 → 7.2° |
+| `99f51c6` | prsti se prenose u sustavu kosti (`motionFingerAlignment`); UniRig peace sign provjeren (`test_unirig_fingers`) | A-poza + zakrenut dlan: savijanje/raširenost 8.1/16.0 → 0.44/0.44° |
+| `b5f73f6` | hvat: drška u dlanu, prsti se omataju kao pravi prst, pištolj za rukohvat | vidi dolje |
+
+`b5f73f6` u detalju (`test_grab_real`, mascot-manny 1.80 m + `~/Downloads/bastard_sword__lowpoly.glb`):
+- točka dlana je bila **zapešće** (Manny nema `MiddleEnd`) → sad iz prstiju u stablu, 70 % prema zglobovima;
+- lik bez animacije nije savijao prste → `syncHoldHandLayers` napravi prazan klip "Pose";
+- omatanje: svi zglobovi zajedno u malim koracima + pokušaj od stisnute šake; vrh prsta (rig bez kosti
+  vrha) nosi rotacija zadnjeg zgloba; granice anatomske 90/110/90°;
+- dijagonalni power grip 20°, `pistolGrip` (rukohvat poprijeko na cijev, cijev naprijed za obje šake),
+  debljina drške prema dlanu, potraga položaja šake na dršci, collider za prste iz mreže 2 mm;
+- mač: dlan 4.6 cm (očekivano 4.6), omatanje 47 → 150°, vrhovi ≤ 1.0 cm od drške, bez prodora, 39 ms;
+- pištolj (Desert Eagle, 460k trokuta): rukohvat u dlanu, cijev naprijed, 2955 → 285 ms; mali prst
+  pada ispod rukohvata (šaka mascota je veća od rukohvata) — prihvatljivo, nije savršeno.
+- CLI za snimke hvata: `--lik <glb>`, `--tool <glb>`, `--uhvati desna|lijeva`, `--pogled-saka <yaw> <pitch>`
+  (npr. `./build/loom --mascott --tool ~/Downloads/bastard_sword__lowpoly.glb --uhvati desna --pogled-saka -1.2 -0.4 --snimi x.png`).
+
+**U radu, NIJE provjereno (UX korak 1):** sekcija **HOLD** u Inspectoru umjesto plutajućeg TOOL EDITOR
+panela (koji je prekrivao baš šaku; preseti su bili skraćeni u "G.. P.. C.."). Sadrži: status
+("In the right hand, frames 1 - 100"), gumbe Right hand / Left hand (hvat jednim klikom, šaka lika
+najbližeg predmetu), Other hand / Let go here / Remove, preset poze u dva reda pilula s punim imenima,
+"Hand on the tool" %, Flip / Turn palm, "Look at the hand", i zatvoreni "Tool setup" (vrsta, stvarna
+veličina, grip za ruku, debljina, "Find the handle again"). Kod je u `loom_app.cpp` (traži
+`//HOLD: sve o drzanju predmeta`), gradi se, **ali nije ni jednom kliknut na Xvfb-u**.
+
+**Zamke:**
+- **Mesh šake mascota je loš za prste**, ne algoritam: cijela desna šaka ~430 vrhova; 6 kostiju prstiju
+  (`index_01`, `middle_01`, `pinky_01`, `pinky_02`, `ring_02`, `thumb_01`) nije glavna kost nijednom vrhu;
+  24 % vrhova prstiju vezano je za kost dalje od 3 cm (neki `index_02` vrhovi 10.7 cm). Kod savijanja se
+  razvuku u "krhotine" — vidi se već u mirnoj pozi. Novi čišći model (odvojeni prsti, dovoljno petlji na
+  zglobovima, ~2-5k vrhova po šaci, T/A-poza s blago raširenim prstima) kroz auto-rig bi to riješio.
+- Kad mjeriš prste, kut bez predznaka laže (miješa bočni otklon sa savijanjem) — mjeri s predznakom u
+  ravnini savijanja (tako je "7° ostatak" bio artefakt).
+- Model uvezen kao `scene.gltf` (Sketchfab zip) ne prepozna se po imenu → ostane 514 m dug. Treba
+  procjena veličine iz oblika kad ime ništa ne kaže.
+- `WeaverMotion/Manny_reference.glb` kroz `--lik` se razleti (mjerilo/hijerarhija) — nije vezano za hvat.
+- Drugi agent (Codex) istodobno mijenja `loom_app.cpp`, Proceduru i render; commitaj samo svoje hunkove
+  (`git apply --cached` s izdvojenim hunkovima). Njihov build zna biti privremeno slomljen.
+- Xvfb `:78` je dvaput ugašen izvana; koristi vlastiti (npr. `:79`).
+
+**Sljedeći koraci, redom:**
+1. Provjeriti HOLD sekciju na Xvfb-u (klik Right hand → hvat; Other hand; Let go here; preseti;
+   Hand on the tool; Look at the hand) i popraviti što ne radi; zatim commit.
+2. Veličina toola bez prepoznatljivog imena: procjena iz oblika (pištolj/mač/šalica) ili pitanje pri uvozu
+   ("Koliko je dugačak?") umjesto 514 m.
+3. Novi čišći model lika (korisnik ga može dati) kroz auto-rig + hand rig; ponoviti `test_grab_real`
+   i snimke; ako ostane tearing, popraviti težine prstiju u `tools/autorig/hand_rig.py`
+   (težine po udaljenosti od kosti prsta, bez preskakanja `_01` kostiju).
+4. Pištolj: kažiprst točno na okidač (sad samo ravan), palac uz okvir, "high grip" (web šake uz vrh
+   rukohvata); dvoručni hvat (druga šaka na prvu) kao preset.
+5. Hvat u animaciji: provjeriti s Kimodo pokretom (hod s mačem) da šaka drži kroz cijeli klip i da
+   Let go / On-Off trake na timelineu rade s novim panelom; ukloniti stari HOLD panel iznad timelinea
+   ako ga nova sekcija pokrije.
+6. Stare otvorene stavke Animatora (memorija `animator-plan-2026-09`): slojevi kao trake na timelineu,
+   kartice varijanti, slaganje takeova, grupirane rig kontrole.
 
 ## 8. Testni materijal — koje snimke i kako ih snimiti
 

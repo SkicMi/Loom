@@ -396,6 +396,7 @@
         bool railHoverOpen = false;
         float railReveal = 0.0f;
         static bool compassMinimized = false;
+        bool holdExpanded = true, toolSetupExpanded = false;
         bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true, lightExpanded = true, volumeExpanded = true;
         bool pointsExpanded = true, splatExpanded = true, splatCutExpanded = true, materialExpanded = false;
         RailPane activeRailPane = RailPane::None;
@@ -4152,6 +4153,157 @@
 
                     }
                 }
+                //HOLD: sve o drzanju predmeta na jednom mjestu u Inspectoru (prije plutajuci TOOL EDITOR preko
+                //pogleda, bas preko sake). Stavi u saku jednim klikom, promijeni kako se drzi, pusti
+                if(const Warp::Id toolRoot = Loom::toolRootOf(stage, entity->id);
+                   toolRoot != Warp::None && ui.componentHeader("HOLD", {1.0f, 0.62f, 0.25f, 1.0f}, &holdExpanded)){
+                    Warp::Entity* toolEntity = stage.get(toolRoot);
+                    Warp::Tool& tool = *toolEntity->tool;
+                    if(toolEditorFor != toolRoot){
+                        toolEditorFor = toolRoot;
+                        toolEditorGeometry = Loom::toolGeometry(stage, toolRoot, frame);
+                        toolEditorGrip = 0;
+                    }
+                    const Loom::ToolGeometry& geometry = toolEditorGeometry;
+                    const glm::vec3 size = geometry.high - geometry.low;
+                    const float scale = toolEntity->local.scale.x;
+                    if(tool.grips.empty()) tool.grips.push_back(Loom::defaultGrip(geometry, Loom::gripForItemName(toolEntity->name)));
+                    toolEditorGrip = std::clamp(toolEditorGrip, 0, int(tool.grips.size()) - 1);
+                    bool changed = false;
+                    if(holdHands.empty()) holdHands = holdHandsInScene();
+                    //Hvat u ovom kadru (ili prvi)
+                    const double here = std::round(frame);
+                    int current = -1;
+                    for(size_t h = 0; h < toolEntity->holds.size(); ++h)
+                        if(here >= toolEntity->holds[h].onFrame && here < toolEntity->holds[h].offFrame){ current = int(h); break; }
+                    //Saka zeljene strane na liku najblizem predmetu
+                    auto handFor = [&](bool right) -> const Loom::HoldHand*{
+                        const glm::vec3 itemAt(stage.worldMatrix(toolRoot, frame)[3]);
+                        const Loom::HoldHand* best = nullptr;
+                        float bestDistance = std::numeric_limits<float>::max();
+                        for(const Loom::HoldHand& hand : holdHands){
+                            if(hand.right != right) continue;
+                            const float distance = glm::length(Loom::holdPalmPoint(stage, hand, frame) - itemAt);
+                            if(distance < bestDistance){ bestDistance = distance; best = &hand; }
+                        }
+                        return best;
+                    };
+                    if(holdHands.empty()){
+                        ui.status("No character with hands in the scene.", {0.6f, 0.6f, 0.6f, 1.0f});
+                        ui.hint("Add one with right click > HumanoidMascott or Auto Rig, then put this in a hand.");
+                    }else if(current < 0){
+                        ui.status(toolEntity->holds.empty() ? "Not held." : "Not held at this frame.", {0.6f, 0.6f, 0.6f, 1.0f});
+                        const int put = ui.buttonRow({"Right hand", "Left hand"});
+                        if(put >= 0){
+                            if(const Loom::HoldHand* hand = handFor(put == 0)) grabWithHand(toolRoot, *hand, here);
+                        }
+                        ui.hint("Puts it in the hand from this frame on. You can also drag it onto a glowing hand in the viewport.");
+                    }else{
+                        Warp::Hold& hold = toolEntity->holds[size_t(current)];
+                        ui.status("In the " + holdHandName(hold.hand) + ", frames " + std::to_string(int(hold.onFrame)) + " - " +
+                                  std::to_string(int(hold.offFrame)), {1.0f, 0.62f, 0.25f, 1.0f});
+                        const int act = ui.buttonRow({"Other hand", "Let go here", "Remove"});
+                        if(act == 0){
+                            bool right = false;
+                            for(const Loom::HoldHand& hand : holdHands) if(hand.hand == hold.hand) right = hand.right;
+                            const double on = hold.onFrame, off = hold.offFrame;
+                            toolEntity->holds.erase(toolEntity->holds.begin() + current);
+                            if(const Loom::HoldHand* other = handFor(!right); other && grabWithHand(toolRoot, *other, on)){
+                                for(Warp::Hold& moved : stage.get(toolRoot)->holds) if(moved.onFrame == on) moved.offFrame = off;
+                                syncHoldLayers();
+                            }else syncHoldLayers();
+                        }else if(act == 1 && here > hold.onFrame){
+                            Loom::releaseItem(stage, toolRoot, here);
+                            syncHoldLayers();
+                            message = toolEntity->name + " is let go at frame " + std::to_string(int(here)) + " and stays where the hand left it.";
+                        }else if(act == 2){
+                            toolEntity->holds.erase(toolEntity->holds.begin() + current);
+                            syncHoldLayers();
+                            message = "Hold removed; " + toolEntity->name + " moves on its own again.";
+                        }
+                    }
+                    //KAKO SE DRZI (grip): poza prstiju, polozaj sake na drsci, smjer
+                    Warp::Grip& grip = tool.grips[size_t(toolEditorGrip)];
+                    ui.caption("HOW IT IS HELD");
+                    int presetIndex = -1;
+                    for(size_t q = 0; q < Loom::gripPresets().size(); ++q) if(grip.preset == Loom::gripPresets()[q].name) presetIndex = int(q);
+                    //Dva reda pilula s punim imenima (u jednom redu su se skratile na "G.. P..")
+                    for(size_t row = 0; row < 2; ++row){
+                        const size_t first = row == 0 ? 0 : 4, last = row == 0 ? 4 : Loom::gripPresets().size();
+                        std::vector<std::string> labels;
+                        for(size_t q = first; q < last; ++q) labels.push_back(Loom::gripPresets()[q].label);
+                        const int picked = ui.pills(labels, presetIndex >= int(first) && presetIndex < int(last) ? presetIndex - int(first) : -1);
+                        if(picked >= 0){ grip.preset = Loom::gripPresets()[first + size_t(picked)].name; changed = true; }
+                    }
+                    const glm::vec3 axis = glm::normalize(grip.axis);
+                    float alongLow = 0.0f, alongHigh = 0.0f;
+                    Loom::toolExtentAlong(geometry, grip.point, axis, alongLow, alongHigh);
+                    const float alongLength = std::max(alongHigh - alongLow, 1e-9f);
+                    float percent = -alongLow / alongLength * 100.0f;
+                    if(ui.slider("Hand on the tool", &percent, 0.0f, 100.0f, " %")){
+                        grip.point += axis * (alongLow + std::clamp(percent, 0.0f, 100.0f) / 100.0f * alongLength);
+                        changed = true;
+                    }
+                    const int turn = ui.buttonRow({"Flip", "Turn palm"});
+                    if(turn == 0){ grip.axis = -grip.axis; changed = true; }
+                    if(turn == 1){ grip.palm = glm::angleAxis(glm::radians(90.0f), axis) * grip.palm; changed = true; }
+                    ui.hint("Flip: blade or barrel points the other way. Turn palm: which side of the handle the palm touches. The fingers close around it again after every change.");
+                    if(current >= 0 && ui.button("Look at the hand")){
+                        for(const Loom::HoldHand& hand : holdHands) if(hand.hand == toolEntity->holds[size_t(current)].hand){
+                            view.lookThrough = Warp::None;
+                            view.orbit.target = Loom::holdPalmPoint(stage, hand, frame);
+                            view.orbit.distance = std::max(0.35f, 2.5f * glm::length(Loom::holdPalmPoint(stage, hand, frame) -
+                                                                                     glm::vec3(stage.worldMatrix(hand.hand, frame)[3])) * 4.0f);
+                        }
+                    }
+                    //POSTAVKE TOOLA: rijetko se diraju, pa su zatvorene
+                    char setupSummary[96];
+                    std::snprintf(setupSummary, sizeof(setupSummary), "%s, %.0f cm", tool.kind == "weapon" ? "weapon" : "tool",
+                                  double(std::max({size.x, size.y, size.z}) * scale * 100.0f));
+                    if(ui.disclosure("Tool setup", setupSummary, &toolSetupExpanded)){
+                        if(const int kind = ui.pills({"Tool", "Weapon"}, tool.kind == "weapon" ? 1 : 0); kind >= 0) tool.kind = kind ? "weapon" : "tool";
+                        float lengthCm = std::round(std::max({size.x, size.y, size.z}) * scale * 100.0f);
+                        if(ui.slider("Real size", &lengthCm, 1.0f, 250.0f, " cm") && std::max({size.x, size.y, size.z}) > 1e-6f){
+                            toolEntity->local.scale = glm::vec3(std::round(lengthCm) / 100.0f / std::max({size.x, size.y, size.z}));
+                            changed = true;
+                        }
+                        std::vector<std::string> gripNames;
+                        for(size_t g = 0; g < tool.grips.size(); ++g) gripNames.push_back("Grip " + std::to_string(g + 1));
+                        gripNames.push_back("+");
+                        if(const int pick = ui.pills(gripNames, toolEditorGrip); pick >= 0){
+                            if(pick == int(tool.grips.size())){ tool.grips.push_back(Loom::defaultGrip(geometry, grip.preset)); changed = true; }
+                            toolEditorGrip = pick;
+                        }
+                        Warp::Grip& edited = tool.grips[size_t(toolEditorGrip)];
+                        int handIndex = std::clamp(edited.hand, 0, 2);
+                        if(ui.choice("For hand", {"Any", "Right", "Left"}, &handIndex)){ edited.hand = handIndex; changed = true; }
+                        const float autoThickness = Loom::handleRadius(geometry, Warp::Grip{edited.name, edited.point, edited.axis, edited.palm, 0.0f, edited.preset, edited.hand},
+                                                                       1.0f / std::max(scale, 1e-9f));
+                        float thicknessCm = edited.thickness * scale * 100.0f;
+                        if(ui.slider("Handle radius", &thicknessCm, 0.0f, 6.0f, " cm")){ edited.thickness = std::max(0.0f, thicknessCm) / 100.0f / std::max(scale, 1e-6f); changed = true; }
+                        char autoText[96];
+                        std::snprintf(autoText, sizeof(autoText), "0 = measured from the model (%.1f cm).", double(autoThickness * scale * 100.0f));
+                        ui.hint(autoText);
+                        if(ui.button("Find the handle again")){ edited = Loom::defaultGrip(geometry, edited.preset); changed = true; }
+                        if(tool.grips.size() > 1 && ui.button("Delete this grip")){ tool.grips.erase(tool.grips.begin() + toolEditorGrip); toolEditorGrip = 0; changed = true; }
+                    }
+                    //Hvatovi ovog toola odmah preuzmu promjenu: drska iznova u dlan, prsti iznova oko nje
+                    if(changed){
+                        for(Warp::Hold& hold : toolEntity->holds){
+                            Warp::Grip& used = tool.grips.front();
+                            for(const Loom::HoldHand& hand : holdHands){
+                                if(hand.hand != hold.hand) continue;
+                                Loom::HandFrame handFrame;
+                                if(!Loom::handFrameAt(stage, hand, hold.onFrame, handFrame)) break;
+                                const glm::mat4 world = Loom::heldWorld(stage, toolRoot, used, handFrame, hold.onFrame, &hand);
+                                hold.offset = glm::inverse(stage.worldMatrix(hold.hand, hold.onFrame)) * world;
+                                hold.grip = used.preset;
+                                break;
+                            }
+                        }
+                        if(!toolEntity->holds.empty()) syncHoldLayers();
+                    }
+                }
                 if(ui.componentHeader("TRANSFORM", theme.accent, &transformExpanded)){
                 //TRANSFORMACIJA U OVOM KADRU. Brzina vucenja je iz velicine scene: solve nema
                 //metre, pa bi stalni korak u jednoj snimci bio nevidljiv, a u drugoj golem
@@ -5200,89 +5352,6 @@
                         timelineRegenOpen = false;
                     }
                 }
-            }
-        }
-
-        //== TOOL EDITOR: gdje se tool drzi i kako (gripovi), vrsta i stvarna velicina =================
-        if(const Warp::Id toolRoot = Loom::toolRootOf(stage, selected);
-           toolRoot != Warp::None && !motionPanel.open && layout.viewport.width > 360.0f){
-            Warp::Entity* toolEntity = stage.get(toolRoot);
-            Warp::Tool& tool = *toolEntity->tool;
-            if(toolEditorFor != toolRoot){
-                toolEditorFor = toolRoot;
-                toolEditorGeometry = Loom::toolGeometry(stage, toolRoot, frame);
-                toolEditorGrip = 0;
-            }
-            const Loom::ToolGeometry& geometry = toolEditorGeometry;
-            const glm::vec3 size = geometry.high - geometry.low;
-            const float scale = toolEntity->local.scale.x;
-            bool changed = false;
-            ui.panel("TOOL EDITOR  /  " + toolEntity->name, layout.viewport.x + 10.0f, layout.viewport.y + 230.0f, 310.0f);
-            if(const int kind = ui.pills({"Tool", "Weapon"}, tool.kind == "weapon" ? 1 : 0); kind >= 0){
-                tool.kind = kind ? "weapon" : "tool";
-            }
-            float lengthCm = std::round(std::max({size.x, size.y, size.z}) * scale * 100.0f);
-            if(ui.slider("Real size", &lengthCm, 1.0f, 250.0f, " cm") && std::max({size.x, size.y, size.z}) > 1e-6f)
-                toolEntity->local.scale = glm::vec3(std::round(lengthCm) / 100.0f / std::max({size.x, size.y, size.z}));
-            if(tool.grips.empty()) tool.grips.push_back(Loom::defaultGrip(geometry, "grip"));
-            toolEditorGrip = std::clamp(toolEditorGrip, 0, int(tool.grips.size()) - 1);
-            std::vector<std::string> gripNames;
-            for(size_t g = 0; g < tool.grips.size(); ++g) gripNames.push_back("Grip " + std::to_string(g + 1));
-            gripNames.push_back("+");
-            if(const int pick = ui.pills(gripNames, toolEditorGrip); pick >= 0){
-                if(pick == int(tool.grips.size())){ tool.grips.push_back(Loom::defaultGrip(geometry, "grip")); changed = true; }
-                toolEditorGrip = pick;
-            }
-            Warp::Grip& grip = tool.grips[size_t(toolEditorGrip)];
-            //Kako: poza prstiju i ruka
-            std::vector<std::string> presetNames;
-            int presetIndex = 0;
-            for(size_t p = 0; p < Loom::gripPresets().size(); ++p){
-                presetNames.push_back(Loom::gripPresets()[p].label);
-                if(grip.preset == Loom::gripPresets()[p].name) presetIndex = int(p);
-            }
-            if(ui.choice("Hand pose", presetNames, &presetIndex)){ grip.preset = Loom::gripPresets()[size_t(presetIndex)].name; changed = true; }
-            int handIndex = std::clamp(grip.hand, 0, 2);
-            if(ui.choice("Hand", {"Any", "Right", "Left"}, &handIndex)){ grip.hand = handIndex; changed = true; }
-            //Gdje: polozaj uz najduzu os, smjer drske, strana dlana, debljina
-            const glm::vec3 axis = glm::normalize(grip.axis);
-            //Polozaj duz osi drske (ne osi kutije - model moze lezati dijagonalno u svom sustavu)
-            float alongLow = 0.0f, alongHigh = 0.0f;
-            Loom::toolExtentAlong(geometry, grip.point, axis, alongLow, alongHigh);
-            const float alongLength = std::max(alongHigh - alongLow, 1e-9f);
-            float percent = -alongLow / alongLength * 100.0f;
-            if(ui.slider("Along the tool", &percent, 0.0f, 100.0f, " %")){
-                grip.point += axis * (alongLow + std::clamp(percent, 0.0f, 100.0f) / 100.0f * alongLength);
-                changed = true;
-            }
-            const float autoThickness = Loom::handleRadius(geometry, Warp::Grip{grip.name, grip.point, grip.axis, grip.palm, 0.0f, grip.preset, grip.hand},
-                                                           1.0f / std::max(scale, 1e-9f));
-            float thicknessCm = grip.thickness * scale * 100.0f;
-            if(ui.slider("Handle radius", &thicknessCm, 0.0f, 6.0f, " cm")){ grip.thickness = std::max(0.0f, thicknessCm) / 100.0f / std::max(scale, 1e-6f); changed = true; }
-            char autoText[96];
-            std::snprintf(autoText, sizeof(autoText), "0 = measured from the model (%.1f cm).", double(autoThickness * scale * 100.0f));
-            ui.hint(autoText);
-            const int action = ui.buttonRow({"Flip", "Turn palm", "Delete"});
-            if(action == 0){ grip.axis = -grip.axis; changed = true; }
-            if(action == 1){ grip.palm = glm::angleAxis(glm::radians(90.0f), axis) * grip.palm; changed = true; }
-            if(action == 2 && tool.grips.size() > 1){ tool.grips.erase(tool.grips.begin() + toolEditorGrip); toolEditorGrip = 0; changed = true; }
-            ui.hint("Flip: the thumb side points the other way (blade, barrel). Turn palm: which side of the handle the palm touches.");
-            //Hvatovi ovog toola odmah preuzmu promjenu: drska iznova u dlan, prsti iznova oko nje
-            if(changed){
-                if(holdHands.empty()) holdHands = holdHandsInScene();
-                for(Warp::Hold& hold : toolEntity->holds){
-                    Warp::Grip& used = tool.grips.front();
-                    for(const Loom::HoldHand& hand : holdHands){
-                        if(hand.hand != hold.hand) continue;
-                        Loom::HandFrame handFrame;
-                        if(!Loom::handFrameAt(stage, hand, hold.onFrame, handFrame)) break;
-                        const glm::mat4 world = Loom::heldWorld(stage, toolRoot, used, handFrame, hold.onFrame, &hand);
-                        hold.offset = glm::inverse(stage.worldMatrix(hold.hand, hold.onFrame)) * world;
-                        hold.grip = used.preset;
-                        break;
-                    }
-                }
-                if(!toolEntity->holds.empty()) syncHoldLayers();
             }
         }
 
