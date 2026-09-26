@@ -199,6 +199,17 @@ struct Joint{
     glm::vec3 colour{0.35f, 0.75f, 1.0f};
 };
 
+//HVAT: predmet u ruci lika. Od onFrame predmet prati kost (hand) s pomakom offset (svijet kosti ->
+//svijet predmeta, izmjeren u trenutku hvata); iza offFrame ostaje tocno gdje je pusten. Prije
+//prvog hvata predmet se krece po svojim kljucevima. Kako se hvat napravi i kako prsti drze
+//predmet odlucuje Loom (LoomHold.h); Warp samo cuva podatke i primijeni ih u worldMatrix
+struct Hold{
+    Id hand = None;
+    std::string handPath;               //za spremanje: id se nakon otvaranja projekta nadje po putu
+    double onFrame = 0.0, offFrame = 0.0;
+    glm::mat4 offset{1.0f};
+};
+
 //Istrenirani gaussian splat, kao put do .ply
 struct Splat{
     std::string path;
@@ -224,6 +235,7 @@ struct Entity{
     std::optional<Joint> joint;
     std::optional<Model> model;
     std::optional<Animator> animator;
+    std::vector<Hold> holds;            //uzlazno po onFrame, bez preklapanja
 
     bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty() ||
                                   (animator && animator->enabled && !animator->animations.empty());}
@@ -292,6 +304,11 @@ public:
     bool neighbourKey(Id id, double frame, int direction, double& found) const;
     glm::mat4 localMatrix(Id id, double frame) const;
     glm::mat4 worldMatrix(Id id, double frame) const;
+
+    //Svijet predmeta iz hvata (Hold) u tom kadru; false kad ga u tom kadru nijedan hvat ne drzi
+    bool heldWorld(Id id, double frame, glm::mat4& world) const;
+    //Moze li kost hand drzati predmet id: ne sebe i ne kost unutar samog predmeta (to bi bila petlja)
+    bool canHold(Id id, Id hand) const;
 
     //OTISAK SCENE: broj koji se promijeni kad se promijeni bilo sto sto se sprema - stablo, imena,
     //transformacije, kljucevi, komponente, snimke, raspon. Editor iz njega zna ima li nespremljenog.

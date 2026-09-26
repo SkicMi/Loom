@@ -349,10 +349,40 @@ glm::mat4 Stage::worldMatrix(Id id, double frame) const{
     for(Id walk = id; walk != None;){
         const Entity* entity = get(walk);
         if(!entity) break;
+        //Predmet u ruci (ili predak koji je u ruci): svijet od kosti, roditelji predmeta se ne pitaju
+        glm::mat4 held;
+        if(!entity->holds.empty() && heldWorld(walk, frame, held)){ world = held * world; break; }
         world = localMatrix(walk, frame) * world;
         walk = entity->parent;
     }
     return world;
+}
+
+bool Stage::heldWorld(Id id, double frame, glm::mat4& world) const{
+    const Entity* entity = get(id);
+    if(!entity || entity->holds.empty()) return false;
+    //Zadnji hvat koji je poceo do ovog kadra; iza njegovog kraja predmet ostaje gdje je pusten
+    const Hold* active = nullptr;
+    for(const Hold& hold : entity->holds) if(hold.onFrame <= frame + 1e-9) active = &hold;
+    if(!active || !get(active->hand)) return false;
+    //Straza od petlje (kost drzi predmet koji drzi njen predak...): canHold je odbija pri hvatu,
+    //ali projekt izvana moze biti bilo kakav
+    static thread_local int depth = 0;
+    if(depth > 16) return false;
+    ++depth;
+    world = worldMatrix(active->hand, std::min(frame, active->offFrame)) * active->offset;
+    --depth;
+    return true;
+}
+
+bool Stage::canHold(Id id, Id hand) const{
+    if(!get(id) || !get(hand) || id == hand) return false;
+    for(Id walk = hand; walk != None;){
+        if(walk == id) return false;
+        const Entity* entity = get(walk);
+        walk = entity ? entity->parent : None;
+    }
+    return true;
 }
 
 namespace{
@@ -404,6 +434,11 @@ uint64_t Stage::fingerprint() const{
         if(e.model){ h.text(e.model->path); h.add(e.model->mesh); h.add(e.model->skin); h.add(e.model->materials.size());
                      for(int m : e.model->materials) h.add(m);
                      h.add(e.model->skinJointPaths.size()); for(const std::string& path : e.model->skinJointPaths) h.text(path); }
+        h.add(e.holds.size());
+        for(const Hold& hold : e.holds){
+            h.text(contains(hold.hand) ? path(hold.hand) : hold.handPath);
+            h.add(hold.onFrame); h.add(hold.offFrame); h.add(hold.offset);
+        }
         h.add(e.animator.has_value());
         if(e.animator){
             h.add(e.animator->enabled); h.add(e.animator->activeAnimation); h.add(e.animator->relaxedUniRigPose); h.add(e.animator->animations.size());

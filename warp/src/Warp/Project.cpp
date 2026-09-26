@@ -202,6 +202,20 @@ public:
         }
         if(entity.splat){ indent(in); out << "custom asset loom:splat = "; asset(entity.splat->path); out << '\n'; }
         if(entity.joint){ indent(in); out << "custom color3f loom:joint = "; vector(entity.joint->colour); out << '\n'; }
+        //Hvatovi kao zasebni Scopeovi uz predmet (tudji USD ih preskoci kao prazne Scopeove)
+        for(size_t holdIndex = 0; holdIndex < entity.holds.size(); ++holdIndex){
+            const Hold& hold = entity.holds[holdIndex];
+            indent(in); out << "\ndef Scope "; string("LoomHold_" + std::to_string(holdIndex)); out << "\n";
+            indent(in); out << "{\n";
+            indent(in + 1); out << "custom bool loom:hold = 1\n";
+            indent(in + 1); out << "custom string loom:handPath = "; string(stage.contains(hold.hand) ? stage.path(hold.hand) : hold.handPath); out << '\n';
+            indent(in + 1); out << "custom double loom:onFrame = "; number(hold.onFrame); out << '\n';
+            indent(in + 1); out << "custom double loom:offFrame = "; number(hold.offFrame); out << '\n';
+            indent(in + 1); out << "custom double[] loom:offset = [";
+            for(int c = 0; c < 4; ++c) for(int r = 0; r < 4; ++r){ if(c || r) out << ", "; number(hold.offset[c][r]); }
+            out << "]\n";
+            indent(in); out << "}\n";
+        }
         if(entity.animator){
             const Animator& animator = *entity.animator;
             indent(in); out << "\ndef Scope \"LoomAnimator\"\n";
@@ -456,6 +470,15 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
 
     for(const usda::Prim& child : prim.children){
         if(numberOf(child, "loom:animatorComponent", 0.0) != 0.0) entity.animator = readAnimator(child);
+        else if(numberOf(child, "loom:hold", 0.0) != 0.0){
+            Hold hold;
+            hold.handPath = textOf(child, "loom:handPath");
+            hold.onFrame = numberOf(child, "loom:onFrame", 0.0);
+            hold.offFrame = numberOf(child, "loom:offFrame", hold.onFrame);
+            if(const usda::Attribute* a = child.find("loom:offset"); a && a->value.items.size() == 16)
+                for(int c = 0; c < 4; ++c) for(int r = 0; r < 4; ++r) hold.offset[c][r] = float(a->value.at(size_t(c * 4 + r)));
+            stage.get(id)->holds.push_back(hold);
+        }
         else readEntity(child, stage, id);
     }
 }
@@ -600,6 +623,9 @@ bool loadProject(const std::string& path, Stage& stage, std::string& error){
         model->skinJoints.clear();
         model->skinJoints.reserve(model->skinJointPaths.size());
         for(const std::string& jointPath : model->skinJointPaths) model->skinJoints.push_back(loaded.find(jointPath));
+    });
+    loaded.walk([&](const Entity& entity, int){
+        for(Hold& hold : loaded.get(entity.id)->holds) hold.hand = loaded.find(hold.handPath);
     });
     loaded.walk([&](const Entity& entity, int){
         if(!entity.animator) return;
