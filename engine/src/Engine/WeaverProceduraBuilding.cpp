@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace Engine::WeaverProcedura{
 namespace{
@@ -181,12 +182,12 @@ std::vector<float> breaksWithin(const std::vector<float>& values, float from, fl
 // One wall face as a grid over shared break lines, minus the cells inside openings. Faces
 // that meet (floor above, next edge, reveals, caps) use the same breaks, so every shared
 // edge has the same vertices and no T-junction cracks open between them.
-void wallFace(Builder& builder, const glm::vec2& origin, const glm::vec2& direction, const glm::vec3& normal,
+void wallFace(Builder& builder, const std::function<glm::vec2(float)>& point, const glm::vec3& normal,
               const std::vector<float>& sBreaks, const std::vector<float>& yBreaks, const std::vector<Opening>& openings,
               uint16_t semantic, uint16_t material){
     for(std::size_t i = 0; i + 1 < sBreaks.size(); ++i){
         const float s0 = sBreaks[i], s1 = sBreaks[i + 1], sm = (s0 + s1) * 0.5f;
-        const glm::vec2 p0 = origin + direction * s0, p1 = origin + direction * s1;
+        const glm::vec2 p0 = point(s0), p1 = point(s1);
         for(std::size_t j = 0; j + 1 < yBreaks.size(); ++j){
             const float y0 = yBreaks[j], y1 = yBreaks[j + 1], ym = (y0 + y1) * 0.5f;
             const bool open = std::any_of(openings.begin(), openings.end(), [&](const Opening& o){
@@ -310,17 +311,20 @@ bool makeFootprint(const FootprintNode& settings, Footprint& output, std::string
     }else{
         const bool u = settings.shape == FootprintShape::UShape;
         if(settings.shape != FootprintShape::LShape && !u){ error = "unknown footprint shape"; return false; }
-        if(!finite(a) || a < 1.0f || a >= d || (u ? 2.0f * a >= w : a >= w)){
-            error = u ? "U footprint arms must be at least 1 m and fit twice in the width"
-                      : "L footprint arm must be at least 1 m and narrower than the width and depth";
+        // Arms must stand out at least 1.5 m and a U keeps a courtyard of at least 2 m: narrower
+        // gaps close under a roof overhang and are not rooms anyone could use.
+        if(!finite(a) || a < 1.0f || d - a < 1.5f || (u ? w - 2.0f * a < 2.0f : w - a < 1.5f)){
+            error = u ? "U footprint needs arms of at least 1 m that stand out 1.5 m (depth - wing) and a courtyard of 2 m (width - 2 wing)"
+                      : "L footprint needs an arm of at least 1 m that stands out 1.5 m in both directions (width - wing, depth - wing)";
             return false;
         }
         const float barZ = -hd + a;
         // Arms start at the bar's ridge line so their roofs meet it under the ridge.
         const float armStart = -hd + a * 0.5f;
         const FootprintPart bar{{0, -hd + a * 0.5f}, {hw, a * 0.5f}, {1, 0}};
-        const FootprintPart left{{-hw + a * 0.5f, (armStart + hd) * 0.5f}, {a * 0.5f, (hd - armStart) * 0.5f}, {1, 0}};
-        const FootprintPart right{{hw - a * 0.5f, (armStart + hd) * 0.5f}, {a * 0.5f, (hd - armStart) * 0.5f}, {1, 0}};
+        // across of axis (1, 0) is +Z, so an arm meets the bar on its -across side (bit 2).
+        const FootprintPart left{{-hw + a * 0.5f, (armStart + hd) * 0.5f}, {a * 0.5f, (hd - armStart) * 0.5f}, {1, 0}, 4};
+        const FootprintPart right{{hw - a * 0.5f, (armStart + hd) * 0.5f}, {a * 0.5f, (hd - armStart) * 0.5f}, {1, 0}, 4};
         if(u){
             outline = {{hw, hd}, {hw - a, hd}, {hw - a, barZ}, {-hw + a, barZ}, {-hw + a, hd}, {-hw, hd}, {-hw, -hd}, {hw, -hd}};
             parts = {bar, left, right};
@@ -368,14 +372,26 @@ bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& 
     const uint32_t floors = footprint.floors;
     const uint32_t doorEdge = settings.doorEdge % uint32_t(n);
 
-    struct Edge{ glm::vec2 a, along, outward; float length, innerFrom, innerTo; };
+    // Points on an edge's outer and inner line. The ends return the stored corners exactly:
+    // a + along * length differs from the next edge's first corner in the last float bit,
+    // and that is enough to open pixel cracks down every building corner.
+    struct Edge{
+        glm::vec2 a, b, innerA, innerB, along, outward;
+        float length, innerFrom, innerTo;
+        glm::vec2 outer(float s) const{ return s <= 0.0f ? a : s >= length ? b : a + along * s; }
+        glm::vec2 inside(float s) const{
+            return s <= innerFrom ? innerA : s >= innerTo ? innerB : innerA + along * (s - innerFrom);
+        }
+    };
     std::vector<Edge> edges(n);
     for(std::size_t i = 0; i < n; ++i){
         Edge& e = edges[i];
         e.a = footprint.outline[i];
-        const glm::vec2 b = footprint.outline[(i + 1) % n];
-        e.length = glm::length(b - e.a);
-        e.along = (b - e.a) / e.length;
+        e.b = footprint.outline[(i + 1) % n];
+        e.innerA = inner[i];
+        e.innerB = inner[(i + 1) % n];
+        e.length = glm::length(e.b - e.a);
+        e.along = (e.b - e.a) / e.length;
         e.outward = {e.along.y, -e.along.x};
         e.innerFrom = glm::dot(inner[i] - e.a, e.along);
         e.innerTo = glm::dot(inner[(i + 1) % n] - e.a, e.along);
@@ -422,7 +438,8 @@ bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& 
 
     Builder builder(maxVertices);
     for(uint32_t floor = 0; floor < floors; ++floor){
-        const float low = footprint.elevation + float(floor) * h, high = low + h;
+        // Both computed the same way as the next floor's low, so the seam shares its vertices.
+        const float low = footprint.elevation + float(floor) * h, high = footprint.elevation + float(floor + 1) * h;
         std::vector<float> heights;
         for(std::size_t i = 0; i < n; ++i)
             for(const Opening& o : openings[floor][i]){ heights.push_back(o.bottom); heights.push_back(o.top); }
@@ -432,13 +449,14 @@ bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& 
             const std::vector<Opening>& list = openings[floor][i];
             const glm::vec3 out3{e.outward.x, 0.0f, e.outward.y};
             const glm::vec3 along3{e.along.x, 0.0f, e.along.y};
-            const glm::vec2 innerOrigin = e.a - e.outward * t;
-            wallFace(builder, e.a, e.along, out3, breaksWithin(edgeBreaks[i], 0.0f, e.length), yBreaks, list, exterior, plaster);
-            wallFace(builder, innerOrigin, e.along, -out3, breaksWithin(edgeBreaks[i], e.innerFrom, e.innerTo), yBreaks,
+            const auto outerPoint = [&e](float s0){ return e.outer(s0); };
+            const auto innerPoint = [&e](float s0){ return e.inside(s0); };
+            wallFace(builder, outerPoint, out3, breaksWithin(edgeBreaks[i], 0.0f, e.length), yBreaks, list, exterior, plaster);
+            wallFace(builder, innerPoint, -out3, breaksWithin(edgeBreaks[i], e.innerFrom, e.innerTo), yBreaks,
                      list, interior, plaster);
             for(const Opening& o : list){
-                auto outerAt = [&](float s, float y){ return at(e.a + e.along * s, y); };
-                auto innerAt = [&](float s, float y){ return at(innerOrigin + e.along * s, y); };
+                auto outerAt = [&](float s0, float y){ return at(e.outer(s0), y); };
+                auto innerAt = [&](float s0, float y){ return at(e.inside(s0), y); };
                 const std::vector<float> ys = breaksWithin(yBreaks, o.bottom, o.top);
                 const std::vector<float> ss = breaksWithin(edgeBreaks[i], o.a, o.b);
                 for(std::size_t k = 0; k + 1 < ys.size(); ++k){
@@ -480,9 +498,32 @@ bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& 
                 const std::vector<float> outerS = breaksWithin(edgeBreaks[i], outerSpans[span].first, outerSpans[span].second);
                 const std::vector<float> innerS = breaksWithin(edgeBreaks[i], innerSpans[span].first, innerSpans[span].second);
                 std::vector<glm::vec3> outerPoints, innerPoints;
-                for(float s0 : outerS) outerPoints.push_back(at(e.a + e.along * s0, y));
-                for(float s0 : innerS) innerPoints.push_back(at(e.a - e.outward * t + e.along * s0, y));
+                for(float s0 : outerS) outerPoints.push_back(at(e.outer(s0), y));
+                for(float s0 : innerS) innerPoints.push_back(at(e.inside(s0), y));
                 stitch(builder, outerPoints, outerS, innerPoints, innerS, {0, y == top ? 1.0f : -1.0f, 0}, exterior, plaster);
+            }
+        }
+    }
+    // Steps up to a door on a raised ground floor: 0.3 m treads, risers of at most 0.18 m.
+    const float rise = footprint.elevation;
+    if(settings.door && rise > 0.05f){
+        for(const Opening& o : openings[0][doorEdge]){
+            if(!o.door) continue;
+            const Edge& e = edges[doorEdge];
+            const int steps = int(std::ceil(rise / 0.18f));
+            const float riser = rise / float(steps), tread = 0.3f, half = (o.b - o.a) * 0.5f + 0.3f;
+            const float center = (o.a + o.b) * 0.5f;
+            const uint16_t stairs = semanticId("stairs"), concrete = materialId("concrete");
+            // Step k reaches riser * (steps - k) and runs from the facade out to (k + 1) treads.
+            for(int k = 0; k < steps; ++k){
+                const float top = riser * float(steps - k), far = tread * float(k + 1) + 0.05f;
+                const glm::vec2 c0 = e.a + e.along * (center - half), c1 = e.a + e.along * (center + half);
+                const glm::vec2 corners[4] = {c0, c1, c1 + e.outward * far, c0 + e.outward * far};
+                const glm::vec3 out3{e.outward.x, 0.0f, e.outward.y}, along3{e.along.x, 0.0f, e.along.y};
+                builder.quad(at(corners[0], top), at(corners[1], top), at(corners[2], top), at(corners[3], top), {0, 1, 0}, stairs, concrete);
+                builder.quad(at(corners[3], 0.0f), at(corners[2], 0.0f), at(corners[2], top), at(corners[3], top), out3, stairs, concrete);
+                builder.quad(at(corners[0], 0.0f), at(corners[3], 0.0f), at(corners[3], top), at(corners[0], top), -along3, stairs, concrete);
+                builder.quad(at(corners[1], 0.0f), at(corners[2], 0.0f), at(corners[2], top), at(corners[1], top), along3, stairs, concrete);
             }
         }
     }
@@ -513,11 +554,18 @@ bool makeSlabs(const Footprint& footprint, const SlabNode& settings, MeshData& o
         builder.prism(polygon, triangles, top - settings.thickness, top, ceiling, ceiling, ceiling, concrete, true, sides);
     }
     if(settings.foundation && footprint.elevation > 0.01f){
+        // Sides from the ground, and on top only the ring outside the ground floor slab: a full
+        // top would lie in the slab's plane and flicker through the floor.
         std::vector<glm::vec2> plinth;
-        std::vector<uint32_t> plinthTriangles;
-        if(!offsetPolygon(footprint.outline, -0.05f, plinth, error) || !triangulatePolygon(plinth, plinthTriangles, error))
-            return false;
-        builder.prism(plinth, plinthTriangles, 0.0f, footprint.elevation, foundation, foundation, foundation, concrete, false);
+        if(!offsetPolygon(footprint.outline, -0.05f, plinth, error)) return false;
+        const float y = footprint.elevation;
+        for(std::size_t i = 0; i < plinth.size(); ++i){
+            const std::size_t j = (i + 1) % plinth.size();
+            const glm::vec2 edge = plinth[j] - plinth[i];
+            builder.quad(at(plinth[i], 0.0f), at(plinth[j], 0.0f), at(plinth[j], y), at(plinth[i], y), {edge.y, 0, -edge.x},
+                         foundation, concrete);
+            builder.quad(at(plinth[i], y), at(plinth[j], y), at(polygon[j], y), at(polygon[i], y), {0, 1, 0}, foundation, concrete);
+        }
     }
     return builder.finish(output, error, "slabs");
 }
@@ -559,6 +607,10 @@ bool makeRoof(const Footprint& footprint, const RoofNode& settings, MeshData& ou
         error = "gable, hip and shed roofs need a footprint made of rectangles; use a flat roof for traced outlines";
         return false;
     }
+    if(settings.type == RoofType::Shed && footprint.parts.size() != 1){
+        error = "a shed roof needs a rectangular footprint; use gable or hip for L and U shapes";
+        return false;
+    }
     const float slope = std::tan(settings.pitchDegrees * float(pi / 180.0));
     // The slopes pass 5 cm above the walls' outer top edge, so that edge is inside the roof
     // instead of exactly on its surface (where it would flicker through the tiles).
@@ -567,15 +619,21 @@ bool makeRoof(const Footprint& footprint, const RoofNode& settings, MeshData& ou
     for(const FootprintPart& part : footprint.parts){
         glm::vec2 u = part.axis, v{-part.axis.y, part.axis.x};
         float hu = part.halfSize.x, hv = part.halfSize.y;
-        if(hv > hu){ std::swap(hu, hv); std::swap(u, v); }   // ridge along the long side
-        const float lh = hu + overhang, sh = hv + overhang;
+        bool joinedStart = part.joined & 1, joinedEnd = part.joined & 2;
+        if(hv > hu){   // ridge along the long side
+            std::swap(hu, hv); std::swap(u, v);
+            joinedStart = part.joined & 4; joinedEnd = part.joined & 8;
+        }
+        // Ridge runs from u0 to u1; a joined end has no overhang and no hip.
+        const float u0 = -hu - (joinedStart ? 0.0f : overhang), u1 = hu + (joinedEnd ? 0.0f : overhang);
+        const float sh = hv + overhang;
         auto p = [&](float su, float sv, float y){ return at(part.center + u * su + v * sv, y); };
         const glm::vec3 u3{u.x, 0.0f, u.y}, v3{v.x, 0.0f, v.y};
 
         if(settings.type == RoofType::Shed){
             const float yl = pitchedBase - overhang * slope, yh = pitchedBase + (2.0f * hv + overhang) * slope;
-            const glm::vec3 e1 = p(-lh, -sh, yl), e2 = p(lh, -sh, yl), e3 = p(lh, sh, yh), e4 = p(-lh, sh, yh);
-            const glm::vec3 b3 = p(lh, sh, yl), b4 = p(-lh, sh, yl);
+            const glm::vec3 e1 = p(u0, -sh, yl), e2 = p(u1, -sh, yl), e3 = p(u1, sh, yh), e4 = p(u0, sh, yh);
+            const glm::vec3 b3 = p(u1, sh, yl), b4 = p(u0, sh, yl);
             builder.quad(e1, e2, e3, e4, up, roof, tiles);
             builder.quad(e3, e4, b4, b3, v3, wall, plaster);
             builder.tri(e1, e4, b4, -u3, wall, plaster);
@@ -584,18 +642,19 @@ bool makeRoof(const Footprint& footprint, const RoofNode& settings, MeshData& ou
             continue;
         }
         const float ye = pitchedBase - overhang * slope, yr = pitchedBase + hv * slope;
-        const float ridge = settings.type == RoofType::Hip ? std::max(0.0f, lh - sh) : lh;
-        const glm::vec3 e1 = p(-lh, -sh, ye), e2 = p(lh, -sh, ye), e3 = p(lh, sh, ye), e4 = p(-lh, sh, ye);
-        const glm::vec3 r1 = p(-ridge, 0.0f, yr), r2 = p(ridge, 0.0f, yr);
+        const bool hip = settings.type == RoofType::Hip;
+        const bool hipStart = hip && !joinedStart, hipEnd = hip && !joinedEnd;
+        float r0 = hipStart ? u0 + sh : u0, r1u = hipEnd ? u1 - sh : u1;
+        if(r0 > r1u) r0 = r1u = (r0 + r1u) * 0.5f;   // square part: pyramid
+        const glm::vec3 e1 = p(u0, -sh, ye), e2 = p(u1, -sh, ye), e3 = p(u1, sh, ye), e4 = p(u0, sh, ye);
+        const glm::vec3 r1 = p(r0, 0.0f, yr), r2 = p(r1u, 0.0f, yr);
         builder.quad(e1, e2, r2, r1, up - v3, roof, tiles);
         builder.quad(e3, e4, r1, r2, up + v3, roof, tiles);
-        if(settings.type == RoofType::Hip){
-            builder.tri(e4, e1, r1, up - u3, roof, tiles);
-            builder.tri(e2, e3, r2, up + u3, roof, tiles);
-        }else{
-            builder.tri(e1, r1, e4, -u3, wall, plaster);
-            builder.tri(e2, e3, r2, u3, wall, plaster);
-        }
+        // A joined end's gable is hidden inside the neighbouring roof, so it is roof, not facade.
+        if(hipStart) builder.tri(e4, e1, r1, up - u3, roof, tiles);
+        else builder.tri(e1, r1, e4, -u3, joinedStart ? roof : wall, joinedStart ? tiles : plaster);
+        if(hipEnd) builder.tri(e2, e3, r2, up + u3, roof, tiles);
+        else builder.tri(e2, e3, r2, u3, joinedEnd ? roof : wall, joinedEnd ? tiles : plaster);
         builder.quad(e1, e2, e3, e4, -up, trim, wood);
     }
     return builder.finish(output, error, "roof");

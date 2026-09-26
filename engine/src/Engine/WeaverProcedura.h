@@ -248,10 +248,14 @@ struct PointFromMeshNode{
 // type instead of editing triangles. Openings are cut as wall panels, never by booleans.
 
 // One rectangle of a footprint; roofs are built per part, ridge along the long side.
+// joined marks sides that run into another part (bit 0: -axis end, 1: +axis end,
+// 2: -across side, 3: +across side); the roof has no overhang or hip there, so its ridge
+// runs on into the neighbour's roof.
 struct FootprintPart{
     glm::vec2 center{0.0f};        // XZ
     glm::vec2 halfSize{1.0f};      // along axis, across axis
-    glm::vec2 axis{1.0f, 0.0f};    // unit XZ direction of halfSize.x
+    glm::vec2 axis{1.0f, 0.0f};    // unit XZ direction of halfSize.x; across is (-axis.y, axis.x)
+    uint8_t joined = 0;
 };
 
 // outline is the exterior wall line in XZ with positive area (x0*z1 - x1*z0 summed), so an

@@ -746,8 +746,9 @@ int main(){
     // Without the panes the wall is a closed solid: every edge is shared by exactly two
     // triangles. A T-junction (a vertex in the middle of a neighbour's edge) breaks this.
     auto closedWithout = [](const Proc::MeshData& mesh, const std::vector<std::string>& skip){
-        std::map<std::tuple<long,long,long,long,long,long>, int> edges;
-        auto key = [](const glm::vec3& p){ return std::make_tuple(std::lround(p.x * 1000.0f), std::lround(p.y * 1000.0f), std::lround(p.z * 1000.0f)); };
+        std::map<std::tuple<float,float,float,float,float,float>, int> edges;
+        // Exact positions: a last-bit difference between neighbours is already a crack on screen.
+        auto key = [](const glm::vec3& p){ return std::make_tuple(p.x, p.y, p.z); };
         for(std::size_t t = 0; t < mesh.triangles.size(); ++t){
             if(std::any_of(skip.begin(), skip.end(), [&](const std::string& name){ return mesh.triangles[t].semantic == Proc::semanticId(name); }))
                 continue;
@@ -779,8 +780,17 @@ int main(){
     const float ridge = roofBase + 0.05f + 2.0f * std::tan(35.0f * 3.14159265f / 180.0f);   // 4 m arm, 5 cm above the walls
     report.check("Gable and hip roofs sit on the last floor with the ridge at half-span times the pitch",
                  roofsMade && std::abs(highestY(gableRoof) - ridge) < 1e-3f && std::abs(highestY(hipRoof) - ridge) < 1e-3f &&
-                 semanticCount(gableRoof, "wall_exterior") == 4 && semanticCount(hipRoof, "wall_exterior") == 0 &&
+                 // L: the bar's two gables and the arm's free end; the arm's end inside the bar roof is roof.
+                 semanticCount(gableRoof, "wall_exterior") == 3 && semanticCount(hipRoof, "wall_exterior") == 0 &&
                  semanticCount(hipRoof, "roof") > 0, error);
+
+    Proc::RoofNode shed = gable; shed.type = Proc::RoofType::Shed;
+    Proc::MeshData refusedShed;
+    Proc::FootprintNode narrowCourt = uSettings; narrowCourt.width = 7.5f;   // 7.5 - 2 * 3 = 1.5 m courtyard
+    Proc::Footprint refusedPrint;
+    report.check("Rules refuse a shed roof on an L and a U courtyard narrower than 2 m, with the reason",
+                 !Proc::makeRoof(stacked, shed, refusedShed, error) && error.find("rectangular") != std::string::npos &&
+                 !Proc::makeFootprint(narrowCourt, refusedPrint, error) && error.find("courtyard") != std::string::npos, error);
 
     Proc::Footprint traced;
     const bool tracedMade = Proc::footprintFromCurve({{{0,0,0},{6,0,0},{6,0,4},{3,0,6},{0,0,4}}, true}, traced, error);
