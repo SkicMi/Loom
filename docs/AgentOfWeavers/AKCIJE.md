@@ -4,7 +4,29 @@ Najnovije gore. Svaka akcija: datum, što, zašto, kako je provjereno.
 
 ## Sadašnje
 
-### STAO SAM OVDJE (2026-09-26, kasno) — namještaj prvi krug gotov
+### STAO SAM OVDJE (2026-09-26, noć) — namještaj, stilovi, alati/oružje/rekviziti gotovi
+**Napravljeno u ovoj sesiji** (detalji u Prošle, commitovi cf7115f → ddded43):
+- Namještaj po pravilima: asseti kao zasebni recepti (`procedura/assets`), `AssetLibrary`, `Furnish` → Placements
+  (podatak), `PlaceAssets`, `Asset`, shema 8; vrata kupaonice prema van.
+- Drugi krug: kutna kuhinja, gornji elementi, tepisi, lampe, stolice pod stolom (`Placement.base`, `under`).
+- Stilovi basic / modern / rustic (zatvoren vokabular, jedan stil po kući, stil je podatak u konektoru).
+- Alati, oružje, rekviziti: zatvoren popis kategorija, hvat za šaku (`AssetGrip` = Warp Grip), `writeGlb`.
+- Klik-test u editoru na Xvfb-u (Furnish, Create house), plan arhitekture faze 5 (mali modeli po jeziku).
+- Stanje: 71 asset; `test_procedura_assets` 25/25, `test_procedura_300` 16/16 (286/300 kao bez namještaja,
+  ~25 000 komada, 0 sudara / u vratima / uz prozor, stilovi 90/104/92), `test_weaverprocedura` 75/75.
+- Nezgoda: ispražnjen i vraćen tuđi `src/LoomPbr.h` (vidi Prošle); drugi agent neka ga pregleda.
+
+**Sljedeće (redom):**
+1. Gumb "Export GLB" u Procedura panelu — treba tablicu boja iz `src/LoomPbr.h` (premjestiti u zaseban header).
+   Dira tuđu datoteku: tek uz odobrenje korisnika ili kad drugi agent commita svoj rad.
+2. Uvoz alata koji čita `extras.loom_tool` (hvat iz recepta umjesto procjene iz oblika) — `loom_app.cpp` /
+   `LoomImporter.h`, isti uvjet kao 1. Zatim provjera na Xvfb-u: lik drži procedurni mač (`--tool`, `--uhvati`).
+3. Faza 3 (`ProceduraGen`): headless generator — kuće s namještajem i stilom, asseti po kategoriji; JSONL s
+   receptom, Placements, stilom, metrikama i Fail → Why; odvojeni skupovi po jeziku (zgrade / raspored / objekti).
+4. Više asseta po kategoriji alata/rekvizita (2–3 oblika) i stilovi i za njih, da model objekata ima raznolikost.
+5. Rekviziti u rasporedu: Furnish (ili novi čvor) stavlja knjige na police, bocu i lampu na stol, sanduke u ostavu.
+
+### 2026-09-26, kasno — stanje nakon prvog kruga namještaja (bivši "STAO SAM OVDJE")
 Gotovo: asseti kao zasebni recepti, `AssetLibrary`, `Furnish` → Placements (podatak), `PlaceAssets`, `Asset`, shema 8,
 18 asseta, pravila po tipu sobe, test od 300 kuća s namještajem 14/14 (285/300, 92/100 skica, 18 835 komada, 0.56 s),
 `test_procedura_assets` 15/15, panel (gumb Furnish, "Create house" s namještajem). Detalji u Prošle.
