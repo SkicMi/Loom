@@ -421,6 +421,20 @@ uint64_t Stage::fingerprint() const{
         if(e.camera){
             h.add(e.camera->focalPixels); h.add(e.camera->centreX); h.add(e.camera->centreY);
             h.add(e.camera->width); h.add(e.camera->height); h.text(e.camera->plate); h.add(e.camera->plateFirstFrame);
+            h.add(e.camera->distortionFx); h.add(e.camera->distortionFy); h.add(e.camera->distortionCx);
+            h.add(e.camera->distortionCy); h.add(e.camera->k1); h.add(e.camera->k2);
+        }
+        h.add(e.light.has_value());
+        if(e.light){
+            const Light& l = *e.light;
+            h.add(int(l.type)); h.add(l.color); h.add(l.intensity); h.add(l.radius); h.add(l.angle); h.add(l.coneAngle);
+            h.add(l.coneSoftness); h.add(l.width); h.add(l.height); h.text(l.texture); h.add(l.skyTop); h.add(l.skyBottom);
+        }
+        h.add(e.volume.has_value());
+        if(e.volume){
+            const Volume& v = *e.volume;
+            h.add(int(v.shape)); h.add(v.color); h.add(v.density); h.add(v.anisotropy); h.add(v.anisotropy2); h.add(v.lobeMix);
+            h.add(v.height); h.add(v.edge); h.add(v.noise); h.add(v.noiseScale);
         }
         h.add(e.points.has_value());
         if(e.points){
@@ -483,6 +497,7 @@ uint64_t Stage::fingerprint() const{
     for(const Material& m : materials){
         h.text(m.name); h.add(m.baseColor); h.add(m.metallic); h.add(m.roughness); h.add(m.emissive); h.add(m.emissiveStrength);
         h.add(m.alphaMode); h.add(m.alphaCutoff); h.add(m.doubleSided);
+        h.add(m.transmission); h.add(m.ior); h.add(m.specular); h.add(m.clearcoat); h.add(m.clearcoatRoughness);
         for(const TextureSlot* t : {&m.baseColorMap, &m.metallicRoughnessMap, &m.normalMap, &m.occlusionMap, &m.emissiveMap}){
             h.text(t->source); h.add(t->image); h.add(t->texCoord); h.add(t->amount);
         }

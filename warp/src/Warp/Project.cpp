@@ -83,6 +83,11 @@ public:
                                                               : m.alphaMode == Material::Alpha::Blend ? "blend" : "opaque") << "\"\n";
         out << "        custom float loom:alphaCutoff = "; number(m.alphaCutoff); out << '\n';
         out << "        custom bool loom:doubleSided = " << (m.doubleSided ? 1 : 0) << '\n';
+        out << "        custom float loom:transmission = "; number(m.transmission); out << '\n';
+        out << "        custom float loom:ior = "; number(m.ior); out << '\n';
+        out << "        custom float loom:specular = "; number(m.specular); out << '\n';
+        out << "        custom float loom:clearcoat = "; number(m.clearcoat); out << '\n';
+        out << "        custom float loom:clearcoatRoughness = "; number(m.clearcoatRoughness); out << '\n';
         slot(2, "baseColorMap", m.baseColorMap);
         slot(2, "metallicRoughnessMap", m.metallicRoughnessMap);
         slot(2, "normalMap", m.normalMap);
@@ -97,6 +102,9 @@ public:
         out << "            float inputs:opacity = "; number(m.alphaMode == Material::Alpha::Opaque ? 1.0 : m.baseColor.a); out << '\n';
         if(m.alphaMode == Material::Alpha::Mask){ out << "            float inputs:opacityThreshold = "; number(m.alphaCutoff); out << '\n'; }
         out << "            color3f inputs:emissiveColor = "; vector(m.emissive * m.emissiveStrength); out << '\n';
+        out << "            float inputs:ior = "; number(m.ior); out << '\n';
+        out << "            float inputs:clearcoat = "; number(m.clearcoat); out << '\n';
+        out << "            float inputs:clearcoatRoughness = "; number(m.clearcoatRoughness); out << '\n';
         out << "            token outputs:surface\n        }\n    }\n";
     }
 
@@ -113,10 +121,15 @@ public:
     }
 
     void prim(const Stage& stage, const Entity& entity, int depth){
+        const char* lightType = !entity.light ? nullptr
+            : entity.light->type == Light::Type::Distant ? "DistantLight"
+            : entity.light->type == Light::Type::Rect ? "RectLight"
+            : entity.light->type == Light::Type::Dome ? "DomeLight" : "SphereLight";
         const char* type = entity.camera ? "Camera" : entity.points ? "Points"
                          : entity.mesh ? (entity.mesh->shape == Shape::Cube ? "Cube"
                             : entity.mesh->shape == Shape::Sphere ? "Sphere"
-                            : entity.mesh->shape == Shape::Capsule ? "Capsule" : "Mesh") : "Xform";
+                            : entity.mesh->shape == Shape::Capsule ? "Capsule" : "Mesh")
+                         : lightType ? lightType : "Xform";
         indent(depth); out << "def " << type << ' '; string(entity.name); out << "\n";
         indent(depth); out << "{\n";
         const int in = depth + 1;
@@ -146,6 +159,48 @@ public:
             indent(in); out << "custom int2 loom:resolution = (" << lens.width << ", " << lens.height << ")\n";
             if(!lens.plate.empty()){ indent(in); out << "custom asset loom:plate = "; asset(lens.plate); out << '\n'; }
             indent(in); out << "custom int loom:plateFirstFrame = " << lens.plateFirstFrame << '\n';
+            if(lens.distorted()){
+                indent(in); out << "custom float4 loom:distortionLens = ("; number(lens.distortionFx); out << ", ";
+                number(lens.distortionFy); out << ", "; number(lens.distortionCx); out << ", "; number(lens.distortionCy); out << ")\n";
+                indent(in); out << "custom float2 loom:radialDistortion = ("; number(lens.k1); out << ", "; number(lens.k2); out << ")\n";
+            }
+        }
+        if(entity.light){
+            //UsdLux atributi (drugi alati ih citaju kao svjetlo) i loom: (tocne Loomove jedinice)
+            const Light& l = *entity.light;
+            const char* kinds[] = {"distant", "sphere", "spot", "rect", "dome"};
+            indent(in); out << "custom token loom:lightType = \"" << kinds[int(l.type)] << "\"\n";
+            indent(in); out << "color3f inputs:color = "; vector(l.color); out << '\n';
+            indent(in); out << "float inputs:intensity = "; number(l.intensity); out << '\n';
+            if(l.type == Light::Type::Distant){ indent(in); out << "float inputs:angle = "; number(l.angle); out << '\n'; }
+            if(l.type == Light::Type::Sphere || l.type == Light::Type::Spot){ indent(in); out << "float inputs:radius = "; number(l.radius); out << '\n'; }
+            if(l.type == Light::Type::Spot){
+                indent(in); out << "float inputs:shaping:cone:angle = "; number(l.coneAngle); out << '\n';
+                indent(in); out << "float inputs:shaping:cone:softness = "; number(l.coneSoftness); out << '\n';
+            }
+            if(l.type == Light::Type::Rect){
+                indent(in); out << "float inputs:width = "; number(l.width); out << '\n';
+                indent(in); out << "float inputs:height = "; number(l.height); out << '\n';
+            }
+            if(l.type == Light::Type::Dome){
+                if(!l.texture.empty()){ indent(in); out << "asset inputs:texture:file = "; asset(l.texture); out << '\n'; }
+                indent(in); out << "custom color3f loom:skyTop = "; vector(l.skyTop); out << '\n';
+                indent(in); out << "custom color3f loom:skyBottom = "; vector(l.skyBottom); out << '\n';
+            }
+        }
+        if(entity.volume){
+            //Nema standardnog USD tipa za jednoliku maglu u kutiji: Xform s loom: atributima
+            indent(in); out << "custom color3f loom:volumeColor = "; vector(entity.volume->color); out << '\n';
+            indent(in); out << "custom float loom:volumeDensity = "; number(entity.volume->density); out << '\n';
+            indent(in); out << "custom float loom:volumeAnisotropy = "; number(entity.volume->anisotropy); out << '\n';
+            const Volume& v = *entity.volume;
+            indent(in); out << "custom token loom:volumeShape = \"" << (v.shape == Volume::Shape::Height ? "height" : "box") << "\"\n";
+            indent(in); out << "custom float loom:volumeAnisotropy2 = "; number(v.anisotropy2); out << '\n';
+            indent(in); out << "custom float loom:volumeLobeMix = "; number(v.lobeMix); out << '\n';
+            indent(in); out << "custom float loom:volumeHeight = "; number(v.height); out << '\n';
+            indent(in); out << "custom float loom:volumeEdge = "; number(v.edge); out << '\n';
+            indent(in); out << "custom float loom:volumeNoise = "; number(v.noise); out << '\n';
+            indent(in); out << "custom float loom:volumeNoiseScale = "; number(v.noiseScale); out << '\n';
         }
         if(entity.points){
             const Points& points = *entity.points;
@@ -451,7 +506,50 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
         }
         lens.plate = textOf(prim, "loom:plate");
         lens.plateFirstFrame = int(numberOf(prim, "loom:plateFirstFrame", 0.0));
+        if(const usda::Attribute* d = prim.find("loom:distortionLens")){
+            lens.distortionFx = float(d->value.at(0, 0.0));
+            lens.distortionFy = float(d->value.at(1, 0.0));
+            lens.distortionCx = float(d->value.at(2, 0.0));
+            lens.distortionCy = float(d->value.at(3, 0.0));
+        }
+        if(const usda::Attribute* k = prim.find("loom:radialDistortion")){
+            lens.k1 = float(k->value.at(0, 0.0));
+            lens.k2 = float(k->value.at(1, 0.0));
+        }
         entity.camera = lens;
+    }
+    if(prim.type == "DistantLight" || prim.type == "SphereLight" || prim.type == "RectLight" || prim.type == "DomeLight"){
+        Light l;
+        const std::string kind = textOf(prim, "loom:lightType");
+        l.type = prim.type == "DistantLight" ? Light::Type::Distant : prim.type == "RectLight" ? Light::Type::Rect
+               : prim.type == "DomeLight" ? Light::Type::Dome
+               : (kind == "spot" || prim.find("inputs:shaping:cone:angle")) ? Light::Type::Spot : Light::Type::Sphere;
+        if(const usda::Attribute* c = prim.find("inputs:color")) l.color = asVector(c->value, l.color);
+        l.intensity = float(numberOf(prim, "inputs:intensity", l.intensity));
+        l.angle = float(numberOf(prim, "inputs:angle", l.angle));
+        l.radius = float(numberOf(prim, "inputs:radius", l.radius));
+        l.coneAngle = float(numberOf(prim, "inputs:shaping:cone:angle", l.coneAngle));
+        l.coneSoftness = float(numberOf(prim, "inputs:shaping:cone:softness", l.coneSoftness));
+        l.width = float(numberOf(prim, "inputs:width", l.width));
+        l.height = float(numberOf(prim, "inputs:height", l.height));
+        l.texture = textOf(prim, "inputs:texture:file");
+        if(const usda::Attribute* t = prim.find("loom:skyTop")) l.skyTop = asVector(t->value, l.skyTop);
+        if(const usda::Attribute* b = prim.find("loom:skyBottom")) l.skyBottom = asVector(b->value, l.skyBottom);
+        entity.light = l;
+    }
+    if(prim.find("loom:volumeDensity")){
+        Volume v;
+        if(const usda::Attribute* c = prim.find("loom:volumeColor")) v.color = asVector(c->value, v.color);
+        v.density = float(numberOf(prim, "loom:volumeDensity", v.density));
+        v.anisotropy = float(numberOf(prim, "loom:volumeAnisotropy", v.anisotropy));
+        v.shape = textOf(prim, "loom:volumeShape") == "height" ? Volume::Shape::Height : Volume::Shape::Box;
+        v.anisotropy2 = float(numberOf(prim, "loom:volumeAnisotropy2", v.anisotropy2));
+        v.lobeMix = float(numberOf(prim, "loom:volumeLobeMix", v.lobeMix));
+        v.height = float(numberOf(prim, "loom:volumeHeight", v.height));
+        v.edge = float(numberOf(prim, "loom:volumeEdge", v.edge));
+        v.noise = float(numberOf(prim, "loom:volumeNoise", v.noise));
+        v.noiseScale = float(numberOf(prim, "loom:volumeNoiseScale", v.noiseScale));
+        entity.volume = v;
     }
     if(prim.type == "Points"){
         Points points;
@@ -637,6 +735,11 @@ bool loadProject(const std::string& path, Stage& stage, std::string& error){
             m.alphaMode = alpha == "mask" ? Material::Alpha::Mask : alpha == "blend" ? Material::Alpha::Blend : Material::Alpha::Opaque;
             m.alphaCutoff = float(numberOf(entry, "loom:alphaCutoff", 0.5));
             m.doubleSided = numberOf(entry, "loom:doubleSided", 0.0) != 0.0;
+            m.transmission = float(numberOf(entry, "loom:transmission", 0.0));
+            m.ior = float(numberOf(entry, "loom:ior", 1.5));
+            m.specular = float(numberOf(entry, "loom:specular", 1.0));
+            m.clearcoat = float(numberOf(entry, "loom:clearcoat", 0.0));
+            m.clearcoatRoughness = float(numberOf(entry, "loom:clearcoatRoughness", 0.03));
             auto slot = [&](const char* name, TextureSlot& t){
                 t.source = textOf(entry, std::string("loom:") + name);
                 if(const usda::Attribute* info = entry.find(std::string("loom:") + name + "Info")){

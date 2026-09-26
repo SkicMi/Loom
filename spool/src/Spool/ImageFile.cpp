@@ -1,7 +1,10 @@
 #include "ImageFile.h"
+#include "ExrFile.h"
 #include <stb_image.h>
 #include <stb_image_write.h>
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -53,6 +56,55 @@ Image loadImage(const std::string& path){
     unsigned char* decoded = stbi_load(path.c_str(), &width, &height, &channels, wantedChannels);
 
     return adopt(decoded, width, height, channels, path);
+}
+
+FloatImage loadImageLinear(const std::string& path){
+    std::string extension = std::filesystem::path(path).extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c){ return char(std::tolower(c)); });
+    FloatImage out;
+    if(extension == ".exr"){
+        const ExrImage exr = loadExr(path);
+        const ExrChannel* r = exr.find("R");
+        const ExrChannel* g = exr.find("G");
+        const ExrChannel* b = exr.find("B");
+        const ExrChannel* a = exr.find("A");
+        if(!r) r = exr.find("Y");
+        if(!r) throw std::runtime_error("Spool: " + path + " - EXR nema kanal R ni Y");
+        if(!g) g = r;
+        if(!b) b = r;
+        out.width = exr.width;
+        out.height = exr.height;
+        out.pixels.resize(size_t(out.width) * out.height * 4);
+        for(size_t i = 0; i < size_t(out.width) * out.height; ++i){
+            out.pixels[i * 4] = r->values[i];
+            out.pixels[i * 4 + 1] = g->values[i];
+            out.pixels[i * 4 + 2] = b->values[i];
+            out.pixels[i * 4 + 3] = a ? a->values[i] : 1.0f;
+        }
+        return out;
+    }
+    if(extension == ".hdr"){
+        int width = 0, height = 0, channels = 0;
+        float* decoded = stbi_loadf(path.c_str(), &width, &height, &channels, wantedChannels);
+        if(!decoded || width <= 0 || height <= 0){
+            if(decoded) stbi_image_free(decoded);
+            throw std::runtime_error("Spool: could not decode " + path + " - " + reason());
+        }
+        out.width = uint32_t(width);
+        out.height = uint32_t(height);
+        out.pixels.assign(decoded, decoded + size_t(width) * size_t(height) * wantedChannels);
+        stbi_image_free(decoded);
+        return out;
+    }
+    const Image image = loadImage(path);
+    out.width = image.width;
+    out.height = image.height;
+    out.pixels.resize(image.pixels.size());
+    for(size_t i = 0; i < image.pixels.size(); ++i){
+        const float v = float(image.pixels[i]) / 255.0f;
+        out.pixels[i] = (i % 4 == 3) ? v : (v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f));
+    }
+    return out;
 }
 
 Image decodeImage(const void* data, size_t size){

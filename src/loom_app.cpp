@@ -21,6 +21,15 @@
     // spremi kadar i izadje.
     // Tako se editor provjerava okom, a ne samo testom racuna
     //
+    //   loom projekt.usda --snimi slika.png --render [--uzorci 32]   (panel RENDER, render iz kamere, snimka kad zavrsi)
+    //   loom projekt.usda --snimi slika.png --render-pogled           (isto, engine Viewport)
+    //
+    // RENDER IZ KAMERE (F12, panel RENDER u lijevoj traci). LoomTracer (path tracer, LoomRender.h)
+    // renderira kroz rijesenu kameru u pozadinskoj niti, a slika se cisti u prozoru preko pogleda
+    // (F11). Bira se sto je u slici: snimka iza CG-a, prozirna pozadina, sjena na pravom podu
+    // (shadow catcher), nebo, dubina, normale, albedo. Engine "Viewport" umjesto tracera sprema
+    // kadrove pogleda kroz kameru - brzo, u rezoluciji prozora, bez slojeva.
+    //
     // SNIMKA IZA SCENE (V). Kroz rijesenu kameru se iza scene crta pravi kadar snimke - ploca. Tu se
     // matchmove presudjuje: kocka na podu mora stajati na istom mjestu snimke kroz cijeli kadar
     #include "Core/LoomConfig.h"
@@ -52,6 +61,8 @@
     #include "LoomTool.h"
     #include "LoomMoodboard.h"
     #include "LoomAutoRig.h"
+    #include "LoomRender.h"
+    #include "LoomRenderGpu.h"
     
     #include "Vulkan/ImageData.h"
     #include "Vulkan/Material.h"
@@ -77,6 +88,7 @@
     #include <cstdio>
     #include <initializer_list>
     #include <cstdlib>
+    #include <cstring>
     #include <filesystem>
     #include <limits>
     #include <mutex>
@@ -188,6 +200,11 @@
         if(entity.camera) return "Camera";
         if(entity.points) return "Point Cloud";
         if(entity.mesh) return Warp::shapeName(entity.mesh->shape);
+        if(entity.light){
+            const char* names[] = {"Sun Light", "Point Light", "Spot Light", "Area Light", "Sky Dome"};
+            return names[int(entity.light->type)];
+        }
+        if(entity.volume) return entity.volume->shape == Warp::Volume::Shape::Height ? "Height Fog" : "Volume Box";
         if(entity.splat) return "Gaussian Splat";
         if(entity.joint) return "Joint";
         if(entity.model) return "Model (glTF)";
@@ -196,6 +213,8 @@
     
     Treadle::Color sceneAccent(const Warp::Entity& entity){
         if(entity.camera) return {0.18f, 0.88f, 1.0f, 1.0f};
+    if(entity.light) return {1.0f, 0.86f, 0.35f, 1.0f};
+    if(entity.volume) return {0.62f, 0.80f, 1.0f, 1.0f};
         if(entity.splat) return {0.94f, 0.42f, 0.96f, 1.0f};
         if(entity.joint) return {1.0f, 0.55f, 0.23f, 1.0f};
         if(entity.points) return {0.40f, 0.94f, 0.56f, 1.0f};
@@ -206,6 +225,8 @@
     
     std::string sceneTag(const Warp::Entity& entity){
         if(entity.camera) return "CAM";
+    if(entity.light) return entity.light->type == Warp::Light::Type::Dome ? "SKY" : "LIGHT";
+    if(entity.volume) return "FOG";
         if(entity.splat) return "SPLAT";
         if(entity.joint) return "BONE";
         if(entity.points) return "POINTS";
@@ -243,7 +264,7 @@
     }
     
     enum class Focus{ Entity, Media };
-    enum class RailPane{ None, Media, Scene, Components, Motion, Procedura, Timeline, Terminal, AiChat, Compositor };
+    enum class RailPane{ None, Media, Scene, Components, Motion, Procedura, Timeline, Terminal, AiChat, Compositor, Render };
     enum class After{ Nothing, Import, ImportAndTrain, AddSplat };
     
     }
@@ -287,6 +308,9 @@
         bool shotSurfaceWanted = false;
         double shotFrame = -1.0;
         bool shotThrough = false, shotCube = false, shotNoSplat = false, shotRotate = false;
+    bool shotRender = false;              //--render: panel RENDER otvoren, render pokrenut, snimka kad zavrsi
+    bool shotRenderViewport = false;      //--render-pogled: isto, engine Viewport (raster kroz kameru)
+    uint32_t shotSamples = 32;            //--uzorci: uzoraka za --render
         double shotCubeFrame = -1.0;          //kadar u kojem se kocka postavi, kad nije isti kao snimljeni
         for(int i = 1; i < argc; ++i){
             const std::string argument = argv[i];
@@ -294,6 +318,9 @@
             else if(argument == "--rezultat" && i + 1 < argc) shotResult = argv[++i];
             else if(argument == "--kadar" && i + 1 < argc) shotFrame = std::atof(argv[++i]);
             else if(argument == "--kroz") shotThrough = true;
+        else if(argument == "--render") shotRender = true;
+        else if(argument == "--render-pogled"){ shotRender = true; shotRenderViewport = true; }
+        else if(argument == "--uzorci" && i + 1 < argc) shotSamples = uint32_t(std::max(1, std::atoi(argv[++i])));
             else if(argument == "--bez-splata") shotNoSplat = true;
             else if(argument == "--rotacija") shotRotate = true;
             else if(argument == "--pokret" && i + 1 < argc) shotMotion = argv[++i];
@@ -356,7 +383,7 @@
         bool railHoverOpen = false;
         float railReveal = 0.0f;
         static bool compassMinimized = false;
-        bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true;
+        bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true, lightExpanded = true, volumeExpanded = true;
         bool pointsExpanded = true, splatExpanded = true, splatCutExpanded = true, materialExpanded = false;
         RailPane activeRailPane = RailPane::None;
         bool chatWorkspaceSaved = false;
@@ -1860,6 +1887,85 @@
             bool relativeScale = false;
         };
         std::unordered_map<Warp::Id, HudLocalBounds> hudBoundsCache;
+
+        //-- render iz kamere (LoomRender.h) -----------------------------------------------------------
+        //Render tece u svojoj niti nad KOPIJOM scene; ovdje su postavke, prozor sa slikom i tekstura
+        //u koju se slika koja se cisti prepise svaki put kad stigne nova
+        Loom::RenderOptions renderOptions;
+        Loom::RenderSession renderSession;
+        //LoomTracer na kartici: posao se rasporedjuje kroz kadrove editora (LoomRenderGpu.h), ~12 ms po kadru
+        Loom::GpuRenderDriver renderDriver(loom, 0.012);
+        renderSession.attachGpu(true);
+        bool renderWindowOpen = false;
+        float renderScroll = 0.0f;
+        size_t renderLogSeen = 0;
+        std::unique_ptr<StreamingTexture> renderTexture;
+        std::unique_ptr<Material> renderMaterial;
+        uint32_t renderTextureWidth = 0, renderTextureHeight = 0;
+        std::vector<uint8_t> renderPixels;
+        bool renderPixelsFresh = false;
+        Treadle::Rect renderWindowBox{}, renderImageBox{};
+        bool pickingFocus = false;             //sljedeci klik na sliku rendera bira ostrinu
+        bool renderImageShown = false;
+        //ENGINE "VIEWPORT": kadrovi pogleda kroz kameru u PNG. Pogled se za to vrijeme ocisti od
+        //pomagala (mreza, tocke, kamere, gizmo) i vrati kakav je bio kad posao zavrsi
+        struct ViewportRenderJob{
+            bool active = false;
+            std::vector<double> frames;
+            size_t next = 0;
+            int settled = 0;
+            std::string folder;
+            Loom::RenderOptions options;
+            Warp::Id look = Warp::None, selection = Warp::None;
+            double frame = 1.0;
+            bool plate = true, grid = true, points = true, cameras = true, paths = true;
+            RailPane pane = RailPane::None;
+            std::vector<std::string> written;
+        } viewportRender;
+        auto renderFolder = [&]{
+            if(!renderOptions.outputFolder.empty()) return renderOptions.outputFolder;
+            if(!projectPath.empty()) return (projectPath.parent_path() / "render").string();
+            return (fs::current_path() / "render").string();
+        };
+        auto startRender = [&]{
+            if(renderSession.snapshot().running || viewportRender.active){ message = "A render is already running (F12 again cancels it)."; return; }
+            Loom::RenderOptions options = renderOptions;
+            const Warp::Entity* chosen = stage.get(options.camera);
+            if(!chosen || !chosen->camera){
+                const Warp::Entity* looking = stage.get(view.lookThrough);
+                options.camera = looking && looking->camera ? view.lookThrough : firstCamera();
+            }
+            if(options.camera == Warp::None){ message = "Render needs a camera: solve a video or add a camera first."; return; }
+            renderOptions.camera = options.camera;
+            if(options.sequence){ options.firstFrame = stage.startFrame; options.lastFrame = stage.endFrame; }
+            else options.firstFrame = options.lastFrame = std::round(frame);
+            const std::string folder = renderFolder();
+            playing = false;
+            if(options.pathTraced){
+                renderSession.start(stage, options, folder);
+                renderWindowOpen = true;
+                renderLogSeen = 0;
+                message = "LoomTracer: render started -> " + folder;
+                return;
+            }
+            viewportRender = ViewportRenderJob{};
+            viewportRender.active = true;
+            viewportRender.options = options;
+            viewportRender.folder = folder;
+            for(double f = std::round(options.firstFrame); f <= std::round(options.lastFrame) + 1e-9; f += 1.0) viewportRender.frames.push_back(f);
+            viewportRender.look = view.lookThrough;
+            viewportRender.selection = selected;
+            viewportRender.frame = frame;
+            viewportRender.plate = showPlate;
+            viewportRender.grid = view.showGrid;
+            viewportRender.points = view.showPoints;
+            viewportRender.cameras = view.showCameras;
+            viewportRender.paths = view.showPaths;
+            viewportRender.pane = activeRailPane;
+            renderWindowOpen = false;
+            message = "Viewport render: " + std::to_string(viewportRender.frames.size()) + " frame(s) -> " + folder;
+        };
+
         Loom::MaterialPanelState materialState;
         Loom::SurfaceTool surfaceTool;
         view.gpuMeshes = true;
@@ -2115,6 +2221,95 @@
             const Warp::Id id = stage.create("Empty", parent);
             selected = id;
             focus = Focus::Entity;
+        };
+        //SVJETLO u sceni (Warp::Light): iznad sredine scene, jakost iz velicine scene - solve nema metre,
+        //pa bi "1" bilo ili nevidljivo ili bijelo. Lampa daje ozracenost ~2 na sredini, sunce 3
+        auto addLight = [&](Warp::Light::Type type, Warp::Id parent){
+            const char* names[] = {"Sun", "Point Light", "Spot Light", "Area Light", "Sky Dome"};
+            const Warp::Id id = stage.create(names[int(type)], parent);
+            Warp::Entity& entity = *stage.get(id);
+            Warp::Light light;
+            light.type = type;
+            const float height = std::max(1e-3f, extent.radius * 0.8f);
+            glm::vec3 place = extent.centre + glm::vec3(0.0f, height, 0.0f);
+            glm::quat rotation(1.0f, 0.0f, 0.0f, 0.0f);
+            const glm::quat down = Loom::detail::renderRotationBetween(glm::vec3(0, 0, 1), glm::vec3(0, 1, 0));   //-Z prema dolje
+            switch(type){
+            case Warp::Light::Type::Distant:
+                light.intensity = 3.0f;
+                rotation = Loom::detail::renderRotationBetween(glm::vec3(0, 0, 1), Loom::sunDirection(50.0f, 135.0f));
+                break;
+            case Warp::Light::Type::Sphere:
+                light.intensity = 2.0f * height * height;
+                light.radius = extent.radius * 0.03f;
+                break;
+            case Warp::Light::Type::Spot:
+                light.intensity = 4.0f * height * height;
+                light.radius = extent.radius * 0.02f;
+                rotation = down;
+                break;
+            case Warp::Light::Type::Rect:
+                light.intensity = 4.0f;
+                light.width = light.height = extent.radius * 0.5f;
+                rotation = down;
+                break;
+            case Warp::Light::Type::Dome:
+                place = glm::vec3(0.0f);
+                break;
+            }
+            entity.light = light;
+            const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
+            entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(place, 1.0f));
+            entity.local.rotation = glm::normalize(glm::quat_cast(glm::inverse(glm::mat3(parentWorld))) * rotation);
+            selected = id;
+            focus = Focus::Entity;
+            message = std::string("Added ") + names[int(type)] + (type == Warp::Light::Type::Dome ? " - Render > Sky 'Scene' uses it" : "");
+        };
+        //MAGLA U KUTIJI: kutija oko sredine scene; gustoca tako da kroz nju prode pola svjetla
+        auto addVolume = [&](Warp::Id parent){
+            const Warp::Id id = stage.create("Volume Box", parent);
+            Warp::Entity& entity = *stage.get(id);
+            const float size = std::max(1e-3f, extent.radius * 1.2f);
+            Warp::Volume volume;
+            volume.density = 0.69f / size;
+            volume.color = glm::vec3(0.95f);
+            entity.volume = volume;
+            const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
+            entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(extent.centre, 1.0f));
+            const glm::mat3 inverse = glm::inverse(glm::mat3(parentWorld));
+            entity.local.scale = glm::vec3(size) * glm::vec3(glm::length(inverse[0]), glm::length(inverse[1]), glm::length(inverse[2]));
+            selected = id;
+            focus = Focus::Entity;
+            message = "Added Volume Box - light (sun, spot) through it shows as rays in the render";
+        };
+        //MAGLA PO VISINI: ishodiste na dnu scene, pada e puta na cetvrtini velicine scene; gustoca
+        //tako da vodoravno kroz scenu pri dnu prode oko pola svjetla
+        auto addHeightFog = [&](Warp::Id parent){
+            const Warp::Id id = stage.create("Height Fog", parent);
+            Warp::Entity& entity = *stage.get(id);
+            const float size = std::max(1e-3f, extent.radius);
+            Warp::Volume volume;
+            volume.shape = Warp::Volume::Shape::Height;
+            volume.height = 0.5f * size;
+            volume.density = 0.35f / size;
+            volume.color = glm::vec3(0.92f, 0.94f, 0.97f);
+            volume.anisotropy = 0.3f;
+            entity.volume = volume;
+            const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
+            entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(extent.centre - glm::vec3(0.0f, size * 0.5f, 0.0f), 1.0f));
+            entity.local.rotation = glm::normalize(glm::quat_cast(glm::inverse(glm::mat3(parentWorld))));
+            selected = id;
+            focus = Focus::Entity;
+            message = "Added Height Fog - denser low, thinner up; the horizon fades into it in the render";
+        };
+        auto addLightMenu = [&](Warp::Id parent){
+            if(ui.menuItem("Volume Box (fog)")) addVolume(parent);
+            if(ui.menuItem("Height Fog")) addHeightFog(parent);
+            if(ui.menuItem("Sun Light")) addLight(Warp::Light::Type::Distant, parent);
+            if(ui.menuItem("Point Light")) addLight(Warp::Light::Type::Sphere, parent);
+            if(ui.menuItem("Spot Light")) addLight(Warp::Light::Type::Spot, parent);
+            if(ui.menuItem("Area Light")) addLight(Warp::Light::Type::Rect, parent);
+            if(ui.menuItem("Sky Dome")) addLight(Warp::Light::Type::Dome, parent);
         };
         bool splatWasLoading = false;
         int splatSettledFrames = 0;
@@ -2712,7 +2907,15 @@
                     auto [boardButton, afterBoardNormal] = toolButton("Moodboard (M)", afterNew, y, h, moodboard.open,
                                                                       "Open or close the project moodboard.", "M");
                     if(boardButton) setMoodboardOpen(!moodboard.open);
-                    afterBoard = afterBoardNormal;
+                    const bool rendering = renderSession.snapshot().running || viewportRender.active;
+                    auto [renderButton, afterRender] = toolButton(rendering ? "Cancel Render" : "Render (F12)", afterBoardNormal + 12.0f, y, h, rendering,
+                                                                  "Render through the camera with LoomTracer.", "F12");
+                    if(renderButton){
+                        if(renderSession.snapshot().running) renderSession.cancel();
+                        else if(viewportRender.active) viewportRender.frames.resize(viewportRender.next);
+                        else startRender();
+                    }
+                    afterBoard = afterRender;
                 }
     
                 //Stanje posla ili zadnja poruka, desno
@@ -2900,7 +3103,7 @@
                                 layout.rail.height, theme.panelEdge);
                     auto railItem = [&](RailPane pane, const std::string& label, int row){
                         const float side = layout.rail.width - 12.0f;
-                        const float stride = std::min(62.0f, std::max(34.0f, (layout.rail.height - 16.0f) / 9.0f));
+                        const float stride = std::min(62.0f, std::max(34.0f, (layout.rail.height - 16.0f) / 10.0f));
                         const Treadle::Rect box{layout.rail.x + 6.0f, layout.rail.y + 8.0f + float(row) * stride,
                                                 side, std::min(54.0f, stride - 3.0f)};
                         const Treadle::Ui::Region hit = ui.region("loom-rail-" + label, box);
@@ -2909,12 +3112,13 @@
                             const char* fullName = pane == RailPane::Media ? "Media" : pane == RailPane::Scene ? "Scene Atlas" :
                                 pane == RailPane::Components ? "Inspector" : pane == RailPane::Motion ? "Motion" :
                                 pane == RailPane::Procedura ? "Procedura" : pane == RailPane::Timeline ? "Timeline" :
-                                pane == RailPane::Terminal ? "Terminal" : pane == RailPane::AiChat ? "AI Chat" : "Compositor";
+                                pane == RailPane::Terminal ? "Terminal" : pane == RailPane::AiChat ? "AI Chat" :
+                                pane == RailPane::Render ? "Render" : "Compositor";
                             const int shortcutIndex = pane == RailPane::Media ? 1 : pane == RailPane::Scene ? 2 :
                                 pane == RailPane::Components ? 3 : pane == RailPane::Motion ? 4 :
                                 pane == RailPane::Procedura ? 5 : pane == RailPane::Timeline ? 6 :
-                                pane == RailPane::Terminal ? 7 : pane == RailPane::AiChat ? 8 : 9;
-                            ui.tooltip("rail:" + label, fullName, "F" + std::to_string(shortcutIndex));
+                                pane == RailPane::Terminal ? 7 : pane == RailPane::AiChat ? 8 : pane == RailPane::Render ? 12 : 9;
+                            ui.tooltip("rail:" + label, fullName, pane == RailPane::Render ? "F12 renders" : "F" + std::to_string(shortcutIndex));
                         }
                         const bool active = pane == RailPane::Compositor ? compositor.open : pane == RailPane::Motion ? motionPanel.open :
                             (pane == RailPane::Procedura ? proceduraPanel.open :
@@ -2970,6 +3174,12 @@
                             canvas.text(cx - 8.0f, iy + 3.0f, ">_", ink, theme.textScale * 0.7f);
                             if(terminal.unreadError) canvas.rect(cx + 8.0f, iy, 5.0f, 5.0f, theme.warning);
                             else if(job.running || motionLive.active) canvas.rect(cx + 8.0f, iy, 5.0f, 5.0f, theme.accent);
+                }else if(pane == RailPane::Render){
+                    //Kamera s lecom, a kad render tece tocka u boji naglaska
+                    canvas.outline(Treadle::Rect{cx - 11.0f, iy + 5.0f, 17.0f, 13.0f}, 1.3f, ink);
+                    canvas.triangle(cx + 6.0f, iy + 11.5f, cx + 12.0f, iy + 6.0f, cx + 12.0f, iy + 17.0f, ink);
+                    canvas.outline(Treadle::Rect{cx - 6.0f, iy + 8.5f, 7.0f, 7.0f}, 1.2f, active ? theme.accent : ink);
+                    if(renderSession.snapshot().running || viewportRender.active) canvas.rect(cx + 8.0f, iy, 5.0f, 5.0f, theme.accent);
                         }else if(pane == RailPane::AiChat){
                             canvas.outline(Treadle::Rect{cx - 10.0f, iy + 2.0f, 20.0f, 14.0f}, 1.3f, ink);
                             canvas.line(cx - 3.0f, iy + 16.0f, cx - 7.0f, iy + 20.0f, 1.3f, ink);
@@ -2998,6 +3208,7 @@
                     railItem(RailPane::Terminal, "TERM", 6);
                     railItem(RailPane::AiChat, "AI CHAT", 7);
                     railItem(RailPane::Compositor, "COMPOSE", 8);
+                    railItem(RailPane::Render, "RENDER", 9);
             }else{
                 const float handleY = layout.rail.y + layout.rail.height * 0.5f;
                 const Treadle::Rect handleBox{2.0f, handleY - 18.0f, 8.0f, 36.0f};
@@ -3125,6 +3336,237 @@
             }
         }
 
+        }
+
+        //== RENDER ===============================================================================
+        if(activeRailPane == RailPane::Render){
+            ui.dock("RENDER", drawerBox, &renderScroll);
+            const Loom::RenderSession::State rs = renderSession.snapshot();
+            const float fitWidth = drawerBox.width - 2.0f * theme.padding - 8.0f;
+
+            //Kamera: sve kamere scene, odabrana je ona iz koje se renderira
+            std::vector<Warp::Id> cameraIds;
+            stage.walk([&](const Warp::Entity& e, int){ if(e.camera) cameraIds.push_back(e.id); });
+            ui.label("CAMERA");
+            const Warp::Entity* renderCamera = stage.get(renderOptions.camera);
+            if(!renderCamera || !renderCamera->camera){
+                const Warp::Entity* looking = stage.get(view.lookThrough);
+                renderOptions.camera = looking && looking->camera ? view.lookThrough : (cameraIds.empty() ? Warp::None : cameraIds.front());
+                renderCamera = stage.get(renderOptions.camera);
+            }
+            if(cameraIds.empty()) ui.label("(no camera - solve a video first)");
+            for(Warp::Id id : cameraIds){
+                const Warp::Entity* e = stage.get(id);
+                if(ui.selectable(Treadle::fitText(e->name, fitWidth - 20.0f, theme.textScale), id == renderOptions.camera))
+                    renderOptions.camera = id;
+            }
+            int engine = renderOptions.pathTraced ? (renderOptions.gpu ? 0 : 1) : 2;
+            if(ui.choice("Engine", {"GPU", "CPU", "Viewport"}, &engine)){
+                renderOptions.pathTraced = engine != 2;
+                renderOptions.gpu = engine == 0;
+            }
+            int range = renderOptions.sequence ? 1 : 0;
+            if(ui.choice("Frames", {"Current", "Timeline"}, &range)) renderOptions.sequence = range == 1;
+            ui.value("Range", renderOptions.sequence
+                ? std::to_string(long(std::lround(stage.startFrame))) + " - " + std::to_string(long(std::lround(stage.endFrame)))
+                : "frame " + std::to_string(long(std::lround(frame))));
+            const float scales[] = {1.0f, 0.5f, 0.25f};
+            int scaleIndex = renderOptions.resolutionScale >= 0.99f ? 0 : (renderOptions.resolutionScale >= 0.49f ? 1 : 2);
+            if(ui.choice("Size", {"100%", "50%", "25%"}, &scaleIndex)) renderOptions.resolutionScale = scales[scaleIndex];
+            if(renderCamera && renderCamera->camera){
+                uint32_t w = 0, h = 0;
+                Loom::renderSize(*renderCamera->camera, renderOptions.resolutionScale, w, h);
+                ui.value("Output", renderOptions.pathTraced ? std::to_string(w) + " x " + std::to_string(h) : "viewport pixels");
+            }
+
+            ui.separator();
+            ui.label("IN THE IMAGE");
+            ui.checkbox("Video plate behind CG", &renderOptions.plate);
+            if(renderOptions.pathTraced){
+                ui.checkbox("Transparent background", &renderOptions.transparent);
+                ui.checkbox("Shadow catcher (planes, proxy)", &renderOptions.shadowCatcher);
+                //Splat projiciran kroz kameru zaklanja CG iza stvarnih stvari (bez blockera)
+                ui.checkbox("Holdout from splat", &renderOptions.splatHoldout);
+                ui.checkbox("Sky visible to camera", &renderOptions.skyVisible);
+                ui.checkbox("Depth map (Z)", &renderOptions.depth);
+                ui.checkbox("Normals", &renderOptions.normal);
+                ui.checkbox("Albedo", &renderOptions.albedo);
+
+                ui.separator();
+                ui.label("QUALITY");
+                const uint32_t sampleSteps[] = {16, 64, 256, 1024, 4096};
+                int sampleIndex = 0;
+                for(int i = 0; i < 5; ++i) if(renderOptions.samples >= sampleSteps[i]) sampleIndex = i;
+                if(ui.choice("Samples", {"16", "64", "256", "1K", "4K"}, &sampleIndex)) renderOptions.samples = sampleSteps[sampleIndex];
+                float bounces = float(renderOptions.maxBounces);
+                if(ui.slider("Max Bounces", &bounces, 1.0f, 32.0f)) renderOptions.maxBounces = uint32_t(std::lround(bounces));
+                ui.slider("Clamp Indirect", &renderOptions.indirectClamp, 0.0f, 100.0f);
+                ui.checkbox("Denoise", &renderOptions.denoise);
+                if(renderOptions.denoise){
+                    //OIDN (Intel, neuronska mreza) cisti na cetvrtini uzoraka; bez biblioteke A-trous
+                    int denoiser = renderOptions.denoiser == Tracer::Denoiser::ATrous ? 1 : 0;
+                    if(ui.choice("Denoiser", {"OIDN", "A-trous"}, &denoiser))
+                        renderOptions.denoiser = denoiser == 1 ? Tracer::Denoiser::ATrous : Tracer::Denoiser::Auto;
+                    static const bool oidnLoaded = Tracer::oidnAvailable();
+                    if(!oidnLoaded && denoiser == 0) ui.label(Treadle::fitText("OIDN not found - run tools/oidn/fetch.sh (using A-trous)",
+                                                                                layout.properties.width - 30.0f, theme.textScale * 0.8f));
+                }
+                //Prilagodljivo: 0 = svi pikseli sve uzorke
+                ui.slider("Noise Threshold", &renderOptions.noiseThreshold, 0.0f, 0.1f);
+                //Bez kaustika staklo baca svijetlu obojenu sjenu (bez suma); s njima tocno, ali sumovito
+                ui.checkbox("Caustics (slow, noisy)", &renderOptions.caustics);
+
+                //MOTION BLUR: scena se gradi u vise trenutaka unutar otvora; Shutter u kadrovima
+                //(0.5 = 180 st), sredinom na kadru. Snimka ostaje ona kadra - mutnoca je vec u njoj
+                ui.checkbox("Motion Blur", &renderOptions.motionBlur);
+                if(renderOptions.motionBlur){
+                    ui.slider("Shutter", &renderOptions.shutter, 0.0f, 1.0f, "frame");
+                    float steps = float(renderOptions.motionSteps);
+                    if(ui.slider("Time Steps", &steps, 2.0f, 64.0f)) renderOptions.motionSteps = uint32_t(std::lround(steps));
+                }
+
+                //DUBINSKA OSTRINA: f-broj -> otvor iz zarisne kamere (1 jedinica = 1 m). Ostrina se
+                //bira klikom na sliku rendera (dubina pod klikom) ili na odabrani objekt
+                ui.separator();
+                ui.label("DEPTH OF FIELD");
+                ui.checkbox("Depth of Field", &renderOptions.depthOfField);
+                if(renderOptions.depthOfField){
+                    ui.slider("F-Stop", &renderOptions.fStop, 0.7f, 22.0f);
+                    ui.slider("Focus Distance", &renderOptions.focusDistance, 0.05f, 100.0f, "m");
+                    if(renderCamera && renderCamera->camera){
+                        char aperture[64];
+                        std::snprintf(aperture, sizeof(aperture), "%.1f mm lens, %.1f mm opening",
+                                      renderCamera->camera->focalPixels / float(std::max(1u, renderCamera->camera->width)) * renderOptions.sensorWidth,
+                                      2000.0f * Loom::apertureRadiusFor(*renderCamera->camera, renderOptions.fStop, renderOptions.sensorWidth));
+                        ui.value("Aperture", aperture);
+                    }
+                    if(ui.button(pickingFocus ? "Click the Render Image..." : "Pick Focus in Render")){
+                        pickingFocus = !pickingFocus;
+                        if(pickingFocus && !renderSession.hasResult()) message = "Render once (a few samples is enough), then click where it should be sharp.";
+                        if(pickingFocus) renderWindowOpen = true;
+                    }
+                    if(ui.button("Focus On Selection")){
+                        const Warp::Entity* target = stage.get(selected);
+                        if(!target || !renderCamera){
+                            message = "Select the object that should be sharp first.";
+                        }else{
+                            const glm::mat4 cameraWorld = stage.worldMatrix(renderCamera->id, frame);
+                            const glm::vec3 at(stage.worldMatrix(selected, frame)[3]);
+                            const glm::vec3 forward = -glm::normalize(glm::vec3(cameraWorld[2]));
+                            const float distance = glm::dot(at - glm::vec3(cameraWorld[3]), forward);
+                            if(distance > 0.0f){
+                                renderOptions.focusDistance = distance;
+                                message = "Focus " + std::to_string(distance).substr(0, 5) + " on " + target->name;
+                            }else message = target->name + " is behind the camera.";
+                        }
+                    }
+                }
+
+                ui.separator();
+                ui.label("LIGHT");
+                int sky = int(renderOptions.sky);
+                if(ui.choice("Sky", {"Sun+Sky", "HDRI", "Flat", "Scene"}, &sky)) renderOptions.sky = Loom::RenderOptions::Sky(sky);
+                size_t sceneLights = 0;
+                stage.walk([&](const Warp::Entity& e, int){ if(e.visible && e.light) ++sceneLights; });
+                ui.value("Scene lights", std::to_string(sceneLights));
+                //SVJETLO IZ SNIMKE: relight.py uz splat nauci sunce i nebo; ovdje postanu entiteti scene
+                if(ui.button("Light From Footage")){
+                    const std::string json = Loom::findRelightJson(stage);
+                    if(json.empty()){
+                        message = "No <splat>_svjetlo.json next to the splat - run tools/splat/relight.py first";
+                    }else{
+                        const Warp::Entity* cameraEntity = stage.get(renderOptions.camera != Warp::None ? renderOptions.camera : firstCamera());
+                        const Loom::RelightImport imported = Loom::importRelight(stage, json, cameraEntity ? cameraEntity->parent : Warp::None);
+                        if(imported.problem.empty()){
+                            renderOptions.sky = Loom::RenderOptions::Sky::Scene;
+                            selected = imported.sun;
+                            message = "Sun and sky from footage added (Sky = Scene): " + fs::path(json).filename().string();
+                        }else message = imported.problem;
+                    }
+                }
+                if(renderOptions.sky == Loom::RenderOptions::Sky::Physical){
+                    ui.slider("Sun Elevation", &renderOptions.sunElevation, -5.0f, 90.0f, "deg");
+                    ui.slider("Sun Azimuth", &renderOptions.sunAzimuth, 0.0f, 360.0f, "deg");
+                    ui.slider("Sun Strength", &renderOptions.sunIntensity, 0.0f, 20.0f);
+                    ui.slider("Sun Size", &renderOptions.sunSize, 0.0f, 10.0f, "deg");
+                    ui.slider("Haze", &renderOptions.turbidity, 2.0f, 10.0f);
+                    ui.slider("Sky Strength", &renderOptions.skyIntensity, 0.0f, 3.0f);
+                }else if(renderOptions.sky == Loom::RenderOptions::Sky::Hdri){
+                    Treadle::Ui::TextFieldConfig hdriField;
+                    hdriField.placeholder = "/path/to/sky.hdr (.hdr, .exr, .png)";
+                    ui.textField("render-hdri", &renderOptions.hdri, hdriField);
+                    ui.slider("HDRI Strength", &renderOptions.hdriIntensity, 0.0f, 10.0f);
+                    ui.slider("HDRI Rotation", &renderOptions.hdriRotation, 0.0f, 360.0f, "deg");
+                }else{
+                    float colour[3] = {renderOptions.uniformColor.r, renderOptions.uniformColor.g, renderOptions.uniformColor.b};
+                    if(ui.dragVector("Sky Colour", colour, 0.004f))
+                        renderOptions.uniformColor = glm::max(glm::vec3(colour[0], colour[1], colour[2]), glm::vec3(0.0f));
+                }
+            }else{
+                ui.label(Treadle::fitText("Viewport: window pixels, beauty only", fitWidth, theme.textScale * 0.8f));
+            }
+
+            ui.separator();
+            ui.label("OUTPUT");
+            if(renderOptions.pathTraced){
+                //Prikaz, ekspozicija i post mijenjaju samo slaganje: gotov render se ponovno slozi bez
+                //ponovnog racunanja (RenderSession::restyle)
+                bool lookChanged = false;
+                int viewTransform = renderOptions.view == Tracer::ViewTransform::AgX ? 1 : 0;
+                if(ui.choice("View", {"Standard", "AgX"}, &viewTransform)){
+                    renderOptions.view = viewTransform == 1 ? Tracer::ViewTransform::AgX : Tracer::ViewTransform::Standard;
+                    lookChanged = true;
+                }
+                lookChanged |= ui.slider("Exposure", &renderOptions.exposure, -5.0f, 5.0f, "EV");
+
+                ui.separator();
+                ui.label("POST (PNG + window; EXR stays raw)");
+                Tracer::PostSettings& post = renderOptions.post;
+                lookChanged |= ui.checkbox("Post Processing", &post.enabled);
+                if(post.enabled){
+                    lookChanged |= ui.slider("Bloom", &post.bloom, 0.0f, 0.3f);
+                    lookChanged |= ui.slider("Bloom Radius", &post.bloomRadius, 0.01f, 0.3f);
+                    lookChanged |= ui.slider("Bloom Threshold", &post.bloomThreshold, 0.0f, 10.0f);
+                    lookChanged |= ui.slider("Vignette", &post.vignette, 0.0f, 1.0f);
+                    lookChanged |= ui.slider("Chromatic Aberr.", &post.chromaticAberration, 0.0f, 10.0f, "px");
+                    lookChanged |= ui.slider("Temperature", &post.temperature, 2000.0f, 12000.0f, "K");
+                    lookChanged |= ui.slider("Tint", &post.tint, -1.0f, 1.0f);
+                    lookChanged |= ui.slider("Contrast", &post.contrast, 0.5f, 1.5f);
+                    lookChanged |= ui.slider("Saturation", &post.saturation, 0.0f, 2.0f);
+                    lookChanged |= ui.slider("Grain", &post.grain, 0.0f, 0.2f);
+                    if(ui.button("Reset Post")){ const bool on = post.enabled; post = Tracer::PostSettings{}; post.enabled = on; lookChanged = true; }
+                }
+                if(lookChanged && renderSession.hasResult()) renderSession.restyle(renderOptions);
+                if(renderSession.hasResult() && ui.button("Save PNG With This Look")){
+                    std::string problem;
+                    const std::string path = renderSession.rewritePng(renderOptions, problem);
+                    message = path.empty() ? "Could not save: " + problem : "Saved " + path;
+                }
+                ui.checkbox("Write EXR (linear, all layers)", &renderOptions.writeExr);
+                ui.checkbox("Write PNG", &renderOptions.writePng);
+            }
+            Treadle::Ui::TextFieldConfig folderField;
+            folderField.placeholder = renderFolder();
+            ui.textField("render-folder", &renderOptions.outputFolder, folderField);
+            Treadle::Ui::TextFieldConfig nameField;
+            nameField.placeholder = "render";
+            ui.textField("render-name", &renderOptions.name, nameField);
+            if(renderOptions.name.empty()) renderOptions.name = "render";
+
+            ui.separator();
+            if(rs.running){
+                char progress[96];
+                std::snprintf(progress, sizeof(progress), "%.0f%%  %s", 100.0 * double(rs.progress), Loom::humanTime(rs.seconds).c_str());
+                ui.value("Progress", progress);
+                if(ui.button("Cancel Render")) renderSession.cancel();
+            }else if(viewportRender.active){
+                ui.value("Progress", std::to_string(viewportRender.next) + " / " + std::to_string(viewportRender.frames.size()));
+                if(ui.button("Cancel Render")) viewportRender.frames.resize(viewportRender.next);
+            }else if(ui.button("RENDER  (F12)")) startRender();
+            if(ui.button(renderWindowOpen ? "Hide Render Window (F11)" : "Show Render Window (F11)")) renderWindowOpen = !renderWindowOpen;
+            const size_t shown = std::min<size_t>(rs.log.size(), 6);
+            for(size_t i = rs.log.size() - shown; i < rs.log.size(); ++i)
+                ui.label(Treadle::fitText(rs.log[i], fitWidth, theme.textScale * 0.75f));
         }
 
         if(activeRailPane == RailPane::AiChat){
@@ -4017,6 +4459,73 @@
                         std::snprintf(plateText, sizeof(plateText), "%lld", (long long)plateShown);
                         if(view.lookThrough == entity->id && showPlate) ui.value("Plate Frame", plateText);
                     }
+                }
+                if(entity->light && ui.componentHeader("LIGHT", {1.0f, 0.86f, 0.35f, 1.0f}, &lightExpanded)){
+                    Warp::Light& l = *entity->light;
+                    int type = int(l.type);
+                    if(ui.choice("Type", {"Sun", "Point", "Spot", "Area", "Dome"}, &type)) l.type = Warp::Light::Type(type);
+                    float colour[3] = {l.color.r, l.color.g, l.color.b};
+                    if(ui.dragVector("Color", colour, 0.004f))
+                        l.color = glm::clamp(glm::vec3(colour[0], colour[1], colour[2]), glm::vec3(0.0f), glm::vec3(10.0f));
+                    if(ui.dragFloat("Intensity", &l.intensity, 0.01f * std::max(1.0f, l.intensity))) l.intensity = std::max(0.0f, l.intensity);
+                    const char* unit = l.type == Warp::Light::Type::Distant ? "irradiance (sun strength)"
+                                     : l.type == Warp::Light::Type::Rect ? "surface radiance"
+                                     : l.type == Warp::Light::Type::Dome ? "sky multiplier" : "intensity: E = I / d^2";
+                    ui.label(Treadle::fitText(unit, layout.properties.width - 30.0f, theme.textScale * 0.8f));
+                    if(l.type == Warp::Light::Type::Distant) ui.slider("Angular Size", &l.angle, 0.0f, 10.0f, "deg");
+                    if(l.type == Warp::Light::Type::Sphere || l.type == Warp::Light::Type::Spot)
+                        if(ui.dragFloat("Radius", &l.radius, 0.001f * std::max(1e-3f, extent.radius))) l.radius = std::max(0.0f, l.radius);
+                    if(l.type == Warp::Light::Type::Spot){
+                        ui.slider("Cone Angle", &l.coneAngle, 1.0f, 90.0f, "deg");
+                        ui.slider("Softness", &l.coneSoftness, 0.0f, 1.0f);
+                    }
+                    if(l.type == Warp::Light::Type::Rect){
+                        if(ui.dragFloat("Width", &l.width, 0.002f * std::max(1e-3f, extent.radius))) l.width = std::max(1e-5f, l.width);
+                        if(ui.dragFloat("Height", &l.height, 0.002f * std::max(1e-3f, extent.radius))) l.height = std::max(1e-5f, l.height);
+                    }
+                    if(l.type == Warp::Light::Type::Dome){
+                        Treadle::Ui::TextFieldConfig hdri;
+                        hdri.placeholder = "HDRI path (empty: gradient)";
+                        ui.textField("dome-hdri-" + std::to_string(entity->id), &l.texture, hdri);
+                        float top[3] = {l.skyTop.r, l.skyTop.g, l.skyTop.b}, bottom[3] = {l.skyBottom.r, l.skyBottom.g, l.skyBottom.b};
+                        if(ui.dragVector("Sky Top", top, 0.004f)) l.skyTop = glm::max(glm::vec3(top[0], top[1], top[2]), glm::vec3(0.0f));
+                        if(ui.dragVector("Sky Bottom", bottom, 0.004f)) l.skyBottom = glm::max(glm::vec3(bottom[0], bottom[1], bottom[2]), glm::vec3(0.0f));
+                        ui.label(Treadle::fitText("Used when Render > Sky is 'Scene'", layout.properties.width - 30.0f, theme.textScale * 0.8f));
+                    }
+                }
+                if(entity->volume && ui.componentHeader("VOLUME", {0.62f, 0.80f, 1.0f, 1.0f}, &volumeExpanded)){
+                    //Gustoca po jedinici scene; ispod se vidi sto to znaci za OVU kutiju
+                    Warp::Volume& v = *entity->volume;
+                    int shape = int(v.shape);
+                    if(ui.choice("Shape", {"Box", "Height Fog"}, &shape)) v.shape = Warp::Volume::Shape(shape);
+                    const bool heightFog = v.shape == Warp::Volume::Shape::Height;
+                    if(ui.dragFloat(heightFog ? "Density at Base" : "Density", &v.density, 0.002f * std::max(0.01f, v.density))) v.density = std::max(0.0f, v.density);
+                    if(heightFog && ui.dragFloat("Falloff Height", &v.height, 0.002f * std::max(1e-3f, extent.radius))) v.height = std::max(1e-4f, v.height);
+                    float colour[3] = {v.color.r, v.color.g, v.color.b};
+                    if(ui.dragVector("Scatter Color", colour, 0.004f))
+                        v.color = glm::clamp(glm::vec3(colour[0], colour[1], colour[2]), glm::vec3(0.0f), glm::vec3(1.0f));
+                    ui.slider("Anisotropy", &v.anisotropy, -0.9f, 0.9f);
+                    ui.slider("Second Lobe", &v.lobeMix, 0.0f, 1.0f);
+                    if(v.lobeMix > 0.0f) ui.slider("Second Anisotropy", &v.anisotropy2, -0.9f, 0.9f);
+                    if(!heightFog){
+                        ui.slider("Soft Edge", &v.edge, 0.0f, 0.5f);
+                        ui.slider("Noise", &v.noise, 0.0f, 1.0f);
+                        if(v.noise > 0.0f && ui.dragFloat("Noise Size", &v.noiseScale, 0.002f * std::max(1e-3f, extent.radius)))
+                            v.noiseScale = std::max(1e-4f, v.noiseScale);
+                    }
+                    const glm::mat4 world = stage.worldMatrix(entity->id, frame);
+                    char info[96];
+                    if(heightFog){
+                        //Vodoravno na visini ishodista: koliko svjetla prode kroz velicinu scene
+                        std::snprintf(info, sizeof(info), "%.0f%% passes %.3g units at the base", 100.0f * std::exp(-v.density * extent.radius * 2.0f),
+                                      extent.radius * 2.0f);
+                    }else{
+                        const float across = std::min({glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2]))});
+                        std::snprintf(info, sizeof(info), "%.0f%% of light passes the thinnest side", 100.0f * std::exp(-v.density * across));
+                    }
+                    ui.value("Through", info);
+                    ui.label(Treadle::fitText("Anisotropy > 0: glow around the sun; < 0: back-lit. Rendered by LoomTracer.",
+                                              layout.properties.width - 30.0f, theme.textScale * 0.8f));
                 }
                 if(entity->points && ui.componentHeader("POINT CLOUD", {0.43f, 0.92f, 0.54f, 1.0f}, &pointsExpanded)){
                     ui.value("Points", std::to_string(entity->points->positions.size()));
@@ -5854,6 +6363,8 @@
                 if(ui.menuItem("Camera from View")) addCameraHere(menuEntity);
                 if(ui.menuItem("Empty")) addEmpty(menuEntity);
                 ui.menuSeparator();
+                addLightMenu(menuEntity);
+                ui.menuSeparator();
                 if(ui.menuItem("Import...  (Ctrl+I)")) openImporter();
                 ui.endMenu();
             }
@@ -5876,6 +6387,8 @@
                 if(ui.menuItem("Add Camera from View")) addCameraHere(Warp::None);
                 if(ui.menuItem("Add Primitive")) openAtlasPrimitiveMenu = true;
                 if(ui.menuItem("Add Empty")) addEmpty(Warp::None);
+                ui.menuSeparator();
+                addLightMenu(Warp::None);
                 ui.endMenu();
             }
             if(openAtlasPrimitiveMenu) openContextSubmenu("Atlas Primitive");
@@ -5926,6 +6439,8 @@
                 if(ui.menuItem("Add Primitive")) openViewPrimitiveMenu = true;
                 if(ui.menuItem("Camera from View")) addCameraHere(Warp::None);
                 ui.menuSeparator();
+                addLightMenu(Warp::None);
+                ui.menuSeparator();
                 if(ui.menuItem("Import...  (Ctrl+I)")) openImporter();
                 ui.endMenu();
             }
@@ -5945,8 +6460,10 @@
         //== VIEWPORT HUD: STAGE COMPASS + CAMERA POSTCARDS =====================================
         {
             const Treadle::Rect& hudViewport = layout.viewport;
-            //Importer i Compositor prekrivaju pogled; kompas i razglednice bi se crtali preko njih
-            if(!importer.open && !compositor.open && hudViewport.width > 300.0f && hudViewport.height > 190.0f){
+            //Importer, Compositor i prozor rendera prekrivaju pogled; kompas i razglednice bi se crtali preko
+            //njih, a render pogleda ih ne smije snimiti u kadar
+            if(!importer.open && !compositor.open && !renderWindowOpen && !viewportRender.active &&
+               hudViewport.width > 300.0f && hudViewport.height > 190.0f){
                 static int cameraPostcardOffset = 0;
                 static bool cameraCompareMode = false;
                 static Warp::Id cameraCompareA = Warp::None;
@@ -6355,7 +6872,8 @@
         //== SCENE PULSE: LIVE VIEWPORT ACTIVITY =================================================
         {
             const Treadle::Rect& pulseViewport = layout.viewport;
-            if(!importer.open && !compositor.open && pulseViewport.width > 300.0f && pulseViewport.height > 190.0f){
+            if(!importer.open && !compositor.open && !renderWindowOpen && !viewportRender.active &&
+               pulseViewport.width > 300.0f && pulseViewport.height > 190.0f){
                 static glm::vec3 previousOrbitTarget = view.orbit.target;
                 static float previousOrbitYaw = view.orbit.yaw;
                 static float previousOrbitPitch = view.orbit.pitch;
@@ -6429,6 +6947,69 @@
             };
             if(Loom::drawMoodboard(ui, moodboard, browser.images, browser.at, boardArea))
                 setMoodboardOpen(false);
+        }
+        //PROZOR RENDERA preko pogleda: naslov i napredak crta suicelje, sliku crta prolaz na kartici
+        //(vidi dolje), a tamnu pozadinu sloj ispod nje - pa se slika ne prekrije
+        renderImageShown = false;
+        if(renderWindowOpen){
+            const Treadle::Rect& v = layout.viewport;
+            //Ladica s desna (panel RENDER, media...) stoji preko pogleda: prozor ide lijevo od nje
+            const float drawerTaken = activeRailPane != RailPane::None ? drawerBox.width : 0.0f;
+            renderWindowBox = Treadle::Rect{v.x + 8.0f, v.y + 8.0f, std::max(0.0f, v.width - drawerTaken - 16.0f), std::max(0.0f, v.height - 16.0f)};
+            ui.region("render-window", renderWindowBox);
+            const float titleHeight = 30.0f;
+            const Treadle::Rect title{renderWindowBox.x, renderWindowBox.y, renderWindowBox.width, titleHeight};
+            Treadle::DrawList& canvas = ui.canvas();
+            canvas.rect(title, Treadle::Color{0.045f, 0.065f, 0.050f, 1.0f});
+            const Loom::RenderSession::State rs = renderSession.snapshot();
+            if(rs.running) canvas.rect(title.x, title.y + titleHeight - 3.0f, title.width * std::clamp(rs.progress, 0.0f, 1.0f), 3.0f, theme.accent);
+            const Treadle::Rect close{title.x + title.width - 28.0f, title.y + 4.0f, 22.0f, 22.0f};
+            const Treadle::Ui::Region closeHit = ui.region("render-window-close", close);
+            canvas.rect(close, closeHit.hot ? theme.hot : theme.control);
+            canvas.line(close.x + 6.0f, close.y + 6.0f, close.x + 16.0f, close.y + 16.0f, 1.6f, theme.text);
+            canvas.line(close.x + 16.0f, close.y + 6.0f, close.x + 6.0f, close.y + 16.0f, 1.6f, theme.text);
+            if(closeHit.pressed) renderWindowOpen = false;
+            const std::string heading = "RENDER   " + (rs.status.empty() ? std::string("F12 renders from the camera") : rs.status);
+            canvas.text(title.x + 10.0f, title.y + 8.0f, Treadle::fitText(heading, title.width - 50.0f, theme.textScale * 0.8f),
+                        rs.failed ? theme.warning : theme.title, theme.textScale * 0.8f);
+            canvas.outline(renderWindowBox, 1.0f, theme.panelEdge);
+            const Treadle::Rect content{renderWindowBox.x + 4.0f, renderWindowBox.y + titleHeight + 4.0f,
+                                        std::max(0.0f, renderWindowBox.width - 8.0f), std::max(0.0f, renderWindowBox.height - titleHeight - 8.0f)};
+            if(renderTextureWidth > 0 && renderTextureHeight > 0 && renderMaterial){
+                const float fit = std::min(content.width / float(renderTextureWidth), content.height / float(renderTextureHeight));
+                const float w = float(renderTextureWidth) * fit, h = float(renderTextureHeight) * fit;
+                renderImageBox = Treadle::Rect{content.x + (content.width - w) * 0.5f, content.y + (content.height - h) * 0.5f, w, h};
+                renderImageShown = true;
+                //Ostrina na klik: dubina zadnjeg rendera pod misem
+                if(pickingFocus){
+                    const Treadle::Ui::Region image = ui.region("render-image", renderImageBox);
+                    canvas.outline(renderImageBox, 2.0f, theme.accent);
+                    if(image.pressed && renderSession.hasResult()){
+                        const Tracer::Frame last = renderSession.lastFrame();
+                        const float px = (image.mouseX - renderImageBox.x) / std::max(1.0f, renderImageBox.width) * float(last.width);
+                        const float py = (image.mouseY - renderImageBox.y) / std::max(1.0f, renderImageBox.height) * float(last.height);
+                        const float depth = Loom::focusFromDepth(last, px, py);
+                        if(depth > 0.0f){
+                            renderOptions.focusDistance = depth;
+                            renderOptions.depthOfField = true;
+                            message = "Focus " + std::to_string(depth).substr(0, 5) + " - render again to see it.";
+                        }else message = "Nothing there to focus on (sky or plate) - click on an object.";
+                        pickingFocus = false;
+                    }
+                }
+            }else{
+                const std::string hint = rs.running ? "Preparing the scene..." : "No render yet. Press F12 or RENDER in the Render panel.";
+                canvas.text(content.x + 16.0f, content.y + 16.0f, hint, theme.dim, theme.textScale * 0.8f);
+            }
+        }
+        //Render: poruke niti u terminal, i kraj posla u alatnu traku
+        {
+            const Loom::RenderSession::State rs = renderSession.snapshot();
+            for(; renderLogSeen < rs.log.size(); ++renderLogSeen)
+                terminal.add("Render: " + rs.log[renderLogSeen], Loom::TerminalState::classify(rs.log[renderLogSeen]));
+            static bool renderWasRunning = false;
+            if(renderWasRunning && !rs.running) message = rs.finished ? rs.status + " -> " + renderFolder() : rs.status;
+            renderWasRunning = rs.running;
         }
         // Collect process output and app status after actions in this frame.
         {
@@ -7802,7 +8383,7 @@
                            GLFW_KEY_KP_0, GLFW_KEY_DELETE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_ESCAPE,
                            GLFW_KEY_I, GLFW_KEY_M,
                            GLFW_KEY_F1, GLFW_KEY_F2, GLFW_KEY_F3, GLFW_KEY_F4, GLFW_KEY_F5,
-                           GLFW_KEY_F6, GLFW_KEY_F7, GLFW_KEY_F8, GLFW_KEY_F9}) keys.pressed(window, key);
+                           GLFW_KEY_F6, GLFW_KEY_F7, GLFW_KEY_F8, GLFW_KEY_F9, GLFW_KEY_F11, GLFW_KEY_F12}) keys.pressed(window, key);
         }else{
         const bool railF1 = keys.pressed(window, GLFW_KEY_F1);
         const bool railF2 = keys.pressed(window, GLFW_KEY_F2);
@@ -7818,6 +8399,13 @@
             railF6 ? RailPane::Timeline : railF7 ? RailPane::Terminal : railF8 ? RailPane::AiChat :
             railF9 ? RailPane::Compositor : RailPane::None;
         if(shortcutPane != RailPane::None) toggleRailPane(shortcutPane);
+        //RENDER: F12 pokrene (ili prekine) render iz kamere, F11 prozor sa slikom (LoomRender.h)
+        if(keys.pressed(window, GLFW_KEY_F12)){
+            if(renderSession.snapshot().running) renderSession.cancel();
+            else if(viewportRender.active) viewportRender.frames.resize(viewportRender.next);
+            else startRender();
+        }
+        if(keys.pressed(window, GLFW_KEY_F11)) renderWindowOpen = !renderWindowOpen;
         if(moodboard.open && escapePressed) setMoodboardOpen(false);
         if(keys.pressed(window, GLFW_KEY_M)) setMoodboardOpen(!moodboard.open);
         if(keys.pressed(window, GLFW_KEY_SPACE)) togglePlayback();
@@ -7879,6 +8467,18 @@
             else if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
         }
 
+        }
+
+        //Render pogleda: kroz kameru, bez pomagala, kadar po kadar (vidi ViewportRenderJob)
+        if(viewportRender.active){
+            view.lookThrough = viewportRender.options.camera;
+            showPlate = viewportRender.options.plate;
+            view.showGrid = view.showPoints = view.showCameras = view.showPaths = false;
+            selected = Warp::None;
+            playing = false;
+            renderWindowOpen = false;
+            activeRailPane = RailPane::None;
+            if(viewportRender.next < viewportRender.frames.size()) frame = viewportRender.frames[viewportRender.next];
         }
 
         //== CRTANJE =================================================================================
@@ -8341,7 +8941,33 @@
                                                             platePipeline, compositorTexture->getSampled());
             compositorReady = false;
         }
+        //RENDER: kartica preuzme posao / procita sliku, pa nova slika u teksturu (stvara se kad se
+        //velicina promijeni)
+        renderDriver.beforeFrame(renderSession);
+        {
+            uint32_t w = 0, h = 0;
+            if(renderSession.takePreview(renderPixels, w, h) && w > 0 && h > 0){
+                if(!renderTexture || w != renderTextureWidth || h != renderTextureHeight){
+                    loom.waitIdle();
+                    renderMaterial.reset();
+                    StreamingTextureConfig textureConfig;
+                    textureConfig.format = vk::Format::eR8G8B8A8Srgb;
+                    renderTexture = std::make_unique<StreamingTexture>(loom.device, loom.command, vk::Extent2D{w, h}, textureConfig);
+                    renderMaterial = std::make_unique<Material>(loom.device, loom.command, loom.getDescriptorPool(),
+                                                                platePipeline, renderTexture->getSampled());
+                    renderTextureWidth = w;
+                    renderTextureHeight = h;
+                }
+                renderPixelsFresh = true;
+            }
+            //Tamna pozadina prozora ispod slike (sloj pomagala se crta prije nje)
+            if(renderWindowOpen) overlay.rect(Treadle::Rect{renderWindowBox.x, renderWindowBox.y + 30.0f, renderWindowBox.width,
+                                                            std::max(0.0f, renderWindowBox.height - 30.0f)},
+                                              Treadle::Color{0.02f, 0.025f, 0.022f, 1.0f});
+        }
+
         if(!loom.renderer.beginFrame()) continue;
+        renderDriver.inFrame(renderSession);
         if(compositor.open && compositor.outputChanged && compositorTexture &&
            compositor.output.size() == size_t(compositor.outputWidth) * compositor.outputHeight * 4){
             compositorTexture->update(compositor.output.data(), compositor.output.size());
@@ -8352,6 +8978,11 @@
         if(splatActive) viewportSplat.compute();
         if(meshesActive) viewportMeshes.render();
         //Tek NAKON beginFrame: prsten teksture se oslanja na to da je renderer vec pricekao
+        if(renderPixelsFresh && renderTexture){
+            renderTexture->update(renderPixels.data(), renderPixels.size());
+            renderMaterial->setSampledImage(renderTexture->getSampled());
+            renderPixelsFresh = false;
+        }
         if(plateArrived && plateTexture){
             plateTexture->update(platePixels.data(), platePixels.size());
             plateMaterial->setSampledImage(plateTexture->getSampled());
@@ -8409,6 +9040,19 @@
         if(!overlay.vertices.empty()){
             overlayPainter.draw(loom.renderer, overlay, uint32_t(windowWidth), uint32_t(windowHeight));
         }
+        //Slika rendera u prozoru, preko pogleda a ispod suicelja (naslov, napredak)
+        if(renderWindowOpen && renderImageShown && renderMaterial){
+            const float sx = pixelScaleX, sy = float(framebufferHeight) / float(std::max(1, windowHeight));
+            const vk::raii::CommandBuffer& commands = loom.renderer.borrowCommands();
+            renderMaterial->setBaseColor(glm::vec4(1.0f));
+            commands.setViewport(0, vk::Viewport{renderImageBox.x * sx, renderImageBox.y * sy,
+                                                 renderImageBox.width * sx, renderImageBox.height * sy, 0.0f, 1.0f});
+            commands.setScissor(0, vk::Rect2D{{int32_t(renderImageBox.x * sx), int32_t(renderImageBox.y * sy)},
+                                              {uint32_t(renderImageBox.width * sx), uint32_t(renderImageBox.height * sy)}});
+            loom.renderer.drawFullscreen(*renderMaterial);
+            commands.setViewport(0, vk::Viewport{0.0f, 0.0f, float(framebufferWidth), float(framebufferHeight), 0.0f, 1.0f});
+            commands.setScissor(0, vk::Rect2D{{0, 0}, {uint32_t(framebufferWidth), uint32_t(framebufferHeight)}});
+        }
         painter.draw(loom.renderer, ui.drawn(), uint32_t(windowWidth), uint32_t(windowHeight));
         loom.renderer.endPass();
         loom.renderer.endFrame();
@@ -8422,7 +9066,22 @@
         const bool splatSettled = splatSettledFrames >= 3;
         meshSettledFrames = viewportMeshes.loading() ? 0 : meshSettledFrames + 1;
         const bool meshSettled = meshSettledFrames >= 3;
-        if(!shotPath.empty() && ++framesDrawn >= 6 && ((plateSettled && splatSettled && meshSettled) || framesDrawn > 3000)){
+        //--render: render se pokrene kad se prozor slegne, a snimka ceka da zavrsi i da slika stigne na karticu
+        static int shotRenderState = 0, shotRenderQuiet = 0;
+        if(shotRender && !shotPath.empty()){
+            if(shotRenderState == 0 && framesDrawn >= 3){
+                activeRailPane = RailPane::Render;
+                renderOptions.samples = shotSamples;
+                renderOptions.pathTraced = !shotRenderViewport;
+                startRender();
+                shotRenderState = 1;
+            }else if(shotRenderState == 1 && !renderSession.snapshot().running && !viewportRender.active){
+                shotRenderQuiet = renderPixelsFresh ? 0 : shotRenderQuiet + 1;
+                if(shotRenderQuiet > 3) shotRenderState = 2;
+            }
+        }
+        const bool renderSettled = !shotRender || shotRenderState == 2;
+        if(!shotPath.empty() && ++framesDrawn >= 6 && ((plateSettled && splatSettled && meshSettled && renderSettled) || framesDrawn > 30000)){
             loom.waitIdle();
             const ImageData shot = loom.renderer.readLastFrame();
             Spool::Image image = Spool::imageFromPixels(shot.pixels.data(), shot.extent.width, shot.extent.height,
@@ -8433,6 +9092,56 @@
             Spool::saveImage(shotPath, image);
             std::printf("Screenshot saved: %s (%ux%u)\n", shotPath.c_str(), image.width, image.height);
             break;
+        }
+
+        //Render pogleda: kad je kadar sjeo (snimka, splat i modeli stigli), izrez kadra kamere u PNG
+        if(viewportRender.active){
+            if(viewportRender.next < viewportRender.frames.size() && ++viewportRender.settled >= 4 &&
+               ((plateSettled && splatSettled && meshSettled) || viewportRender.settled > 600)){
+                loom.waitIdle();
+                const ImageData shot = loom.renderer.readLastFrame();
+                const Loom::ViewCamera through = Loom::viewCameraFor(stage, frame, layout.viewport, view);
+                const float sx = float(shot.extent.width) / float(std::max(1, windowWidth));
+                const float sy = float(shot.extent.height) / float(std::max(1, windowHeight));
+                const uint32_t x0 = uint32_t(std::clamp(through.frame.x * sx, 0.0f, float(shot.extent.width)));
+                const uint32_t y0 = uint32_t(std::clamp(through.frame.y * sy, 0.0f, float(shot.extent.height)));
+                const uint32_t x1 = uint32_t(std::clamp((through.frame.x + through.frame.width) * sx, float(x0), float(shot.extent.width)));
+                const uint32_t y1 = uint32_t(std::clamp((through.frame.y + through.frame.height) * sy, float(y0), float(shot.extent.height)));
+                if(x1 > x0 && y1 > y0){
+                    std::vector<uint8_t> crop(size_t(x1 - x0) * (y1 - y0) * 4);
+                    for(uint32_t y = y0; y < y1; ++y)
+                        std::memcpy(crop.data() + size_t(y - y0) * (x1 - x0) * 4, shot.pixels.data() + (size_t(y) * shot.extent.width + x0) * 4,
+                                    size_t(x1 - x0) * 4);
+                    Spool::Image image = Spool::imageFromPixels(crop.data(), x1 - x0, y1 - y0,
+                        isBgraFormat(shot.format) ? Spool::ChannelOrder::BGRA : Spool::ChannelOrder::RGBA);
+                    for(size_t i = 3; i < image.pixels.size(); i += 4) image.pixels[i] = 255;
+                    const std::string path = (fs::path(viewportRender.folder) /
+                        (Loom::frameStem(viewportRender.options, viewportRender.frames[viewportRender.next]) + ".png")).string();
+                    try{
+                        Spool::saveImage(path, image);
+                        viewportRender.written.push_back(path);
+                        terminal.add("Render: Wrote " + path);
+                    }catch(const std::exception& failure){
+                        terminal.add(std::string("Render: ") + failure.what(), Loom::TerminalState::classify("error"));
+                        viewportRender.frames.resize(viewportRender.next);
+                    }
+                }
+                ++viewportRender.next;
+                viewportRender.settled = 0;
+            }
+            if(viewportRender.next >= viewportRender.frames.size()){
+                view.lookThrough = viewportRender.look;
+                showPlate = viewportRender.plate;
+                view.showGrid = viewportRender.grid;
+                view.showPoints = viewportRender.points;
+                view.showCameras = viewportRender.cameras;
+                view.showPaths = viewportRender.paths;
+                if(stage.get(viewportRender.selection)) selected = viewportRender.selection;
+                frame = viewportRender.frame;
+                activeRailPane = viewportRender.pane;
+                message = "Viewport render: " + std::to_string(viewportRender.written.size()) + " frame(s) -> " + viewportRender.folder;
+                viewportRender.active = false;
+            }
         }
     }
 

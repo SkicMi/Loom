@@ -128,6 +128,15 @@ struct Camera{
     //kamere koju je netko dodao rukom
     std::string plate;
     int plateFirstFrame = 0;
+
+    //DISTORZIJA SNIMKE (Brown, radijalno), u pikselima snimke. Pinhole gore je kamera ISPRAVLJENE
+    //slike - ona koju je solve rijesio. Pravi piksel snimke je distort(pinhole piksel):
+    //   n = (p - c) / f,  p' = c + f * n * (1 + k1 r^2 + k2 r^4),  r = |n|
+    //s vlastitim f i c (objektiv koji je solve procijenio). distortionFx 0: ravna leca.
+    //Render kroz ovakvu kameru zakrivi CG isto kao sto je leca zakrivila snimku
+    float distortionFx = 0.0f, distortionFy = 0.0f, distortionCx = 0.0f, distortionCy = 0.0f;
+    float k1 = 0.0f, k2 = 0.0f;
+    bool distorted() const {return distortionFx > 0.0f && distortionFy > 0.0f && (k1 != 0.0f || k2 != 0.0f);}
 };
 
 //Oblak tocaka iz solvea. Boje su prazne kad ih solve nije zapisao
@@ -211,6 +220,15 @@ struct Material{
     Alpha alphaMode = Alpha::Opaque;
     float alphaCutoff = 0.5f;
     bool doubleSided = false;
+
+    //Sto zna samo path tracer (LoomTracer); pogled ih ne crta. Isti smisao kao u Blenderovom
+    //Principled BSDF-u: transmission 1 je staklo s lomom po ior-u, clearcoat je lak preko svega,
+    //specular mnozi odsjaj dielektrika (0 = cisti Lambert)
+    float transmission = 0.0f;
+    float ior = 1.5f;
+    float specular = 1.0f;
+    float clearcoat = 0.0f;
+    float clearcoatRoughness = 0.03f;
 };
 
 //Mreza iz glTF modela: datoteka, koja mreza u njoj, i materijal za svaki njezin primitiv
@@ -261,6 +279,49 @@ struct Tool{
     std::vector<Grip> grips;
 };
 
+//SVJETLO - isti oblik kao UsdLux, pa ga Blender/Houdini/Nuke procitaju kao svjetlo. Svijetli niz
+//lokalnu -Z os (sunce, reflektor, pravokutnik), kupola neba ima gore u lokalnoj +Y.
+//
+//JEDINICE su Loomove (LoomTracer, vidi tracer/Scene.h), ne UsdLuxove fotometrijske:
+//   Distant   intensity * color = ozracenost okomite plohe (Blenderova jakost sunca)
+//   Sphere    intenzitet: ozracenost na udaljenosti d je I / d^2; radius > 0 daje meke sjene
+//   Spot      kao Sphere, u stoscu coneAngle s mekim rubom coneSoftness
+//   Rect      radijancija svijetle plohe width x height (lokalno XY), svijetli samo prema -Z
+//   Dome      nebo: HDRI (texture) ili gradijent skyBottom -> skyTop, puta intensity
+struct Light{
+    enum class Type{ Distant, Sphere, Spot, Rect, Dome };
+    Type type = Type::Sphere;
+    glm::vec3 color{1.0f};
+    float intensity = 1.0f;
+    float radius = 0.0f;
+    float angle = 0.53f;                //Distant: kutni promjer u stupnjevima (sunce 0.53)
+    float coneAngle = 45.0f;            //Spot: polukut u stupnjevima
+    float coneSoftness = 0.15f;         //Spot: udio stosca u kojem svjetlo mekano pada
+    float width = 1.0f, height = 1.0f;  //Rect
+    std::string texture;                //Dome: HDRI; prazno = gradijent
+    glm::vec3 skyTop{0.55f, 0.65f, 0.85f}, skyBottom{0.18f, 0.16f, 0.14f};
+};
+
+//VOLUMEN: jednolika magla (sumaglica, dim, prasina u zraci) u kutiji -0.5..0.5 lokalno - ista
+//kocka kao Shape::Cube, pa se pomice, okrece i skalira kao kocka. Svjetlo se u njoj rasprsi
+//(zrake sunca i reflektora postanu vidljive, sjene objekata ostave tamne pruge) i oslabi.
+//   density     gustoca: koliko se svjetla izgubi po jedinici scene (1 / density je srednji put)
+//   color       albedo rasprsenja: udio izgubljenog svjetla koji se rasprsi (ostatak se upije)
+//   anisotropy  Henyey-Greenstein g: 0 na sve strane, > 0 naprijed (sjaj oko sunca), < 0 natrag
+//HEIGHT (magla po visini): beskonacna vodoravno; density je gustoca na visini entiteta, pada e
+//puta na svakih `height` jedinica prema lokalnoj +Y (i raste prema dolje) - izmaglica doline,
+//zrak koji gusne prema horizontu
+struct Volume{
+    enum class Shape{ Box, Height };
+    Shape shape = Shape::Box;
+    glm::vec3 color{1.0f};
+    float density = 0.5f;
+    float anisotropy = 0.0f;
+    float anisotropy2 = 0.0f, lobeMix = 0.0f;   //drugi rezanj faze i njegov udio
+    float height = 2.0f;                        //Height
+    float edge = 0.0f, noise = 0.0f, noiseScale = 1.0f;     //Box: meki rub, sum gustoce
+};
+
 //Istrenirani gaussian splat, kao put do .ply
 struct Splat{
     std::string path;
@@ -288,6 +349,8 @@ struct Entity{
     std::optional<Animator> animator;
     std::vector<Hold> holds;            //uzlazno po onFrame, bez preklapanja
     std::optional<Tool> tool;
+    std::optional<Light> light;
+    std::optional<Volume> volume;
 
     bool animated() const {return !translationKeys.empty() || !rotationKeys.empty() || !scaleKeys.empty() ||
                                   (animator && animator->enabled && !animator->animations.empty());}

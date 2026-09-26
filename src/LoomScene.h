@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 namespace Loom{
@@ -134,6 +135,16 @@ inline ImportReport importResult(Warp::Stage& stage, const std::filesystem::path
     }
     lens.plate = plate;
     lens.plateFirstFrame = 0;
+    //Objektiv snimke (VideoSolve ga zapise kad je leca zakrivljena): render ga koristi da CG zakrivi
+    //isto kao snimku
+    {
+        std::ifstream lensFile(directory / "lens.txt");
+        std::string word;
+        while(lensFile >> word){
+            if(word[0] == '#'){ std::string rest; std::getline(lensFile, rest); continue; }
+            if(word == "radial") lensFile >> lens.distortionFx >> lens.distortionFy >> lens.distortionCx >> lens.distortionCy >> lens.k1 >> lens.k2;
+        }
+    }
 
     //Kamera s kljucem na SVAKOM kadru snimke, kad ju je VideoSolve zapisao
     Warp::UsdCamera usd;

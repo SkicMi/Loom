@@ -209,6 +209,13 @@ inline void editMaterial(Treadle::Ui& ui, Warp::Stage& stage, int index, Materia
     if(m.alphaMode != Warp::Material::Alpha::Opaque) ui.slider("Opacity", &m.baseColor.a, 0.0f, 1.0f);
     if(m.alphaMode == Warp::Material::Alpha::Mask) ui.slider("Mask Cutoff", &m.alphaCutoff, 0.0f, 1.0f);
     ui.checkbox("Double-Sided", &m.doubleSided);
+    //Samo za render (LoomTracer): pogled ih ne pokazuje
+    ui.label("TRACER ONLY");
+    ui.slider("Transmission", &m.transmission, 0.0f, 1.0f);
+    if(m.transmission > 0.0f) ui.slider("IOR", &m.ior, 1.0f, 2.5f);
+    ui.slider("Specular", &m.specular, 0.0f, 1.0f);
+    ui.slider("Clearcoat", &m.clearcoat, 0.0f, 1.0f);
+    if(m.clearcoat > 0.0f) ui.slider("Coat Roughness", &m.clearcoatRoughness, 0.0f, 1.0f);
 
     //Mape: ime, pa [iz datoteke] [ukloni]. Naoruzana ceka klik na sliku u media prozoru
     for(int slot = 0; slot < 5; ++slot){

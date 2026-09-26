@@ -278,6 +278,24 @@ public:
         setProceduralPreview(proceduralPreview, previewRevision);
         items.clear();
         drawnPrimitives = 0;
+        //Sunce iz scene (Warp::Light Distant) vodi kljucno svjetlo pogleda: smjer, boja i jakost
+        //se vide i prije rendera. Bez njega ostaje dogovoreno svjetlo odozgo sprijeda
+        {
+            bool found = false;
+            stage.walk([&](const Warp::Entity& e, int){
+                if(found || !e.visible || !e.light || e.light->type != Warp::Light::Type::Distant) return;
+                const glm::mat4 world = stage.worldMatrix(e.id, frame);
+                keyLight->setDirection(glm::normalize(glm::mat3(world) * glm::vec3(0.0f, 0.0f, -1.0f)));
+                keyLight->setColor(e.light->color);
+                keyLight->setIntensity(e.light->intensity * (2.6f / 3.0f));
+                found = true;
+            });
+            if(!found){
+                keyLight->setDirection({-0.45f, -1.0f, -0.35f});
+                keyLight->setColor({1.0f, 0.97f, 0.92f});
+                keyLight->setIntensity(2.6f);
+            }
+        }
         lastSkinningDebug.clear();
         for(auto& [path, a] : assets){
             if(a->state != 0 && a->loader.joinable()) a->loader.join();

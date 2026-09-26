@@ -59,6 +59,20 @@ Image loadImage(const std::string& path);
 Image decodeImage(const void* data, size_t size);
 
 
+//Linear light in floats, four channels. What a path tracer wants for an environment: the sun on
+//an HDRI is thousands of times brighter than the sky, which eight bits cannot hold
+struct FloatImage{
+    std::vector<float> pixels;          //RGBA, linear, first row first
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool isValid() const {return width > 0 && height > 0 && pixels.size() == size_t(width) * height * 4;}
+};
+
+//.hdr (Radiance, already linear) and uncompressed .exr as they are; anything loadImage reads is
+//decoded and taken from sRGB to linear. Throws with the path, like loadImage
+FloatImage loadImageLinear(const std::string& path);
+
+
 //How hard to work at making the file small. PNG is lossless either way - this only trades
 //encode time against bytes on disk, which is the trade a sequence export cares about most:
 //a preview pass wants frames written faster than they are rendered, a final pass does not

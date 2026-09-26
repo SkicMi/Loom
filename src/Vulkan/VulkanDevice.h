@@ -54,6 +54,11 @@ struct QueueFamilyIndices{
     //crta jednako, samo bez ustede
     bool hasFragmentShadingRate() const {return hasShadingRate;}
 
+    //HARDVERSKE ZRAKE (VK_KHR_ray_query + acceleration_structure, s buffer device address).
+    //Neobavezno kao i ostalo iz ovog reda: LoomTracer bez njih obilazi vlastiti BVH. Varijabla
+    //okoline LOOM_NO_RAY_QUERY=1 ih iskljuci (usporedba, sumnja na drajver)
+    bool hasRayQuery() const {return rayQuery;}
+
     //Je li BAS ta stopa dozvoljena. Drajver nabraja koje podrzava, i 4x4 nije zajamcen ni
     //tamo gdje 2x2 jest
     bool supportsShadingRate(ShadingRate rate) const;
@@ -86,6 +91,7 @@ struct QueueFamilyIndices{
     bool hasMemoryBudget = false;
     bool hasMemoryPriority = false;
     bool hasShadingRate = false;
+    bool rayQuery = false;
     bool hasRateImage = false;
     vk::Extent2D rateTexelSize{16,16};
 

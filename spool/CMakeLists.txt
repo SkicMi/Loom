@@ -48,6 +48,7 @@ add_library(Spool STATIC
     src/Spool/ImageFile.cpp
     src/Spool/Sequence.cpp
     src/Spool/DepthFile.cpp
+    src/Spool/ExrFile.cpp
     src/Spool/VideoFile.cpp
     src/Spool/CameraMetadata.cpp
     src/Spool/GaussianPly.cpp

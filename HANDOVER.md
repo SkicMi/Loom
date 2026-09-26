@@ -1,6 +1,6 @@
 # Loom — predaja projekta
 
-Zadnje osvjezeno: 17. rujna 2026.
+Zadnje osvjezeno: 25. rujna 2026.
 Repo: `https://github.com/SkicMi/Loom.git`, grana **`main`** (radi se isključivo na njoj).
 
 Ovo je **radni brief**, ne pregled. Piše što projekt jest, gdje stoji **s brojkama**, u što se smije
@@ -29,7 +29,7 @@ Sve je vlastito osim `gsplat`-a (rasterizacija i zgušnjavanje pri treningu) i F
 
 ## 2. Arhitektura
 
-Pet biblioteka, **nijedna ne ovisi o drugoj**:
+Šest biblioteka, **nijedna ne ovisi o drugoj**:
 
 | modul | što radi | ključni headeri |
 |---|---|---|
@@ -37,6 +37,7 @@ Pet biblioteka, **nijedna ne ovisi o drugoj**:
 | **`Spool`** (`spool/src/Spool`) | čita i piše datoteke | `ImageFile.h`, `VideoFile.h`, `GaussianPly.h` |
 | **`Engine`** (`engine/src/Engine`) | rekonstrukcija | `ScaleSpace.h`, `MatchGraph.h`, `Reconstruct.h`, `Bundle.h`, `ColmapExport.h`, `CameraHints.h` |
 | **`Treadle`** (`treadle/src/Treadle`) | UI, **nula vanjskih ovisnosti** | `Ui.h`, `Draw.h` |
+| **`Tracer`** (`tracer/src/Tracer`) | **LoomTracer** — fizikalni path tracer za render iz kamere, samo glm + dretve (procesor, referenca) | `Compiled.h`, `Renderer.h`, `Scene.h`, `Bsdf.h`, `Film.h` |
 | **`Warp`** (`warp/src/Warp`) | scena: stablo entiteta s komponentama, ključevi kroz vrijeme (USD-oblik), samo glm; projekt se sprema kao pravi `.usda` (vlastiti čitač podskupa, bez OpenUSD-a) | `Stage.h`, `Project.h`, `Usda.h`, `UsdCamera.h` |
 
 Tier disciplina u Loomu je **branjena testom**: `<Loom/Loom.h>` se preprocesira i u 1 622 367 znakova
@@ -49,6 +50,7 @@ detektor koji ne radi.
 |---|---|
 | **`VideoSolve`** | glavni alat: .MP4 → poze + točke + slike u COLMAP formatu; `--samo-kamera` za matchmove (bez slika, ~18 % brže) |
 | **`loom`** (LoomDesk) | editor: media lijevo, pogled, scena i svojstva desno, timeline; solve/splat desnim klikom, kocka kroz riješenu kameru preko snimke. `loom <mapa> --snimi x.png --rezultat <mapa_loom> --kadar N --kroz --kocka-u M` sprema vlastiti kadar (prozor se izvana ne da snimiti). Projekt: `loom projekt.usda`, Spremi/Ctrl+S. Splat se crta u pogledu (B), samo nulti SH clan |
+| **`loom-render`** (LoomRender) | render projekta iz kamere bez prozora (LoomTracer): `loom-render projekt.usda --kadar 42 --uzorci 256` ili `--od 1 --do 120`; PNG + EXR (R G B A, `cg.*`, `shadow.*`, `Z`, `N.*`, `albedo.*`). Isti most kao gumb Render u editoru |
 | **`TruthBench`** | **apsolutna** greška na snimci koju Loom sam nacrta (istina poznata) |
 | **`ModelInfo`** | što vrijedi rekonstrukcija **bez poznate istine** — baza, šavovi |
 | **`OverlayBox`** | kocka zalijepljena za scenu preko pravih kadrova — prava VFX provjera |
@@ -123,7 +125,7 @@ glatka putanja. **Ali žarišna nije određena** — vidi zadatak 2.
 
 ## 5. Kako se testira — četiri razine
 
-### a) Jedinični testovi — 88 u `ctest`
+### a) Jedinični testovi — 118 u `ctest`
 
 ```bash
 cmake --build build -j8 && cd build && ctest --output-on-failure -j1
@@ -599,6 +601,260 @@ zadani seed poza/tocaka koji nas bundle prima umjesto uvijek-vlastite inicijaliz
 iskoristi ondje gdje nasa geometrija danas nema signala. `tools/solve/mapanything_solve.sh` vec
 postoji i radi kao samostalan alat za slucajeve gdje i nas solver i COLMAP padnu.
 
+### 8. Render iz kamere i LoomTracer — PRVA VERZIJA (25.9.)
+
+**Što je.** U editoru: panel **RENDER** u lijevoj traci i gumb **Render (F12)** u alatnoj traci;
+prozor sa slikom koja se čisti preko pogleda (**F11**). Render ide kroz riješenu (ili bilo koju)
+kameru u pozadinskoj niti nad kopijom scene, pa se smije dalje uređivati. Bira se:
+
+- **engine**: `LoomTracer` (path tracer) ili `Viewport` (kadrovi pogleda kroz kameru u PNG, brzo,
+  rezolucija prozora, bez slojeva — pogled se za to vrijeme očisti od mreže, točaka, gizma i HUD-a)
+- **što je u slici**: snimka iza CG-a, prozirna pozadina, shadow catcher, nebo vidljivo kameri,
+  dubina (Z), normale, albedo
+- **kadrovi**: trenutni ili cijeli timeline (`ime_####`), veličina 100/50/25 %
+- **svjetlo**: Preethamovo nebo + sunce (elevacija, azimut, jakost, veličina diska = mekoća sjene,
+  izmaglica), HDRI (`.hdr`, nekomprimirani `.exr`, `.png`) ili jednolika boja; emisijski materijali
+  su sami svjetla
+- **prikaz**: Standard (snimka se vraća bit po bit ista) ili AgX; ekspozicija; EXR i/ili PNG
+
+**Shadow catcher.** Uz snimku (ili prozirnu pozadinu) su ravnine, proxy mesh i blokeri iz splata
+(`_proxy`/`_blocker` u imenu datoteke) i sve s `catcher` u imenu — *stvarna scena*: kamera ih ne
+vidi, ali skupljaju sjenu CG-a (sloj `shadow`), a u odrazu i lomu pokazuju **piksel snimke** u toj
+točki (staklo lomi pravi pod, zlato ga reflektira).
+
+**LoomTracer** (`tracer/`): binned-SAH BVH; Sobol s Owenovim miješanjem po parovima dimenzija;
+principijelni BSDF (Lambert + GGX s uzorkovanjem vidljivih normala, metal, lak, hrapavo staklo s
+lomom) s **nadoknadom višestrukog raspršenja** (Turquin) i skaliranjem difuzije albedom odsjaja;
+NEE + BSDF uzorkovanje spojeni MIS-om (sunce kao disk, kugle/reflektori, emisijski trokuti, nebo
+po važnosti); ruski rulet; A-trous filtar vođen albedom/normalom/dubinom/varijancom. Warp
+materijal je dobio `transmission`, `ior`, `specular`, `clearcoat`, `clearcoatRoughness` (spremaju
+se u `.usda`, uređuju u panelu materijala pod TRACER ONLY).
+
+**Izmjereno** (`test_tracer`, 24 provjere protiv analitičkih odgovora, bez kartice):
+
+| provjera | rezultat | istina |
+|---|---|---|
+| bijela peć: Lambert / plastika / hrapavi metal / staklo / lak | 0.9998 / 0.9998 / 0.9996 / 1.0001 / 0.9997 | 1 |
+| negativna kontrola: GGX bez nadoknade, hrapavost 1 | E = 0.451 | (gubi 55 %) |
+| sunce na Lambertu (točka i disk 0.53°) | 0.47746 | a·E/π = 0.47746 |
+| točkasto i kuglasto svjetlo | 0.63662 | I/(π h²) = 0.63662 |
+| svijetli kvadrat nad podom (MIS) | 0.55367 | faktor oblika 0.55413 |
+| projekcija (pomaknuta glavna točka) | 0.014 px | formula pogleda editora |
+| dubina | 6.00005 / 5.00000 | 6 / 5 |
+| snimka izvan sjene | bit po bit | — |
+| 1 dretva = 4 dretve | bit po bit | — |
+
+`test_render_bridge` (12, cijeli put: Warp + snimka ffv1 bez gubitka → EXR/PNG natrag): kamera =
+pogled editora na **3.8e-6 px**, pravi kadar snimke (plateFirstFrame + kadar − 1), PNG izvan sjene i
+CG-a **jednak snimci bajt po bajt**, EXR slojevi, sekvenca u pozadinskoj sesiji. `test_spool_exr`
+(5): half zaokruživanje za svih 63 488 konačnih vrijednosti, zapis/čitanje, komprimirani se odbije.
+
+**Brzina** (CPU, 4 jezgre ovog sandboxa): ~9 M zraka/s; 1280×720, 64 uzorka, 10 k trokuta ≈ 18 s.
+
+**LoomTracer na kartici (26.9.)** — `TracerGpu` (`src/TracerGpu/`, spaja Loom i Tracer kao
+LoomPreset) + `shaders/tracer.slang` (port `Renderer::trace` redak po redak) i
+`shaders/tracer_resolve.slang` (prosjek, composite, AgX/Standard, šahovnica → RGBA8). Scenu gradi
+procesor jednom (`Tracer::compile`: BVH, svjetla, CDF-ovi, tablice energije) i **ista** se prepiše
+u storage buffere — kartica nema svoju gradnju ni svoju težinu svjetala. Vulkan compute nad
+vlastitim BVH-om, ne ray query: radi na svakoj kartici i na llvmpipeu (testira se ovdje).
+
+- Posao: jedan dispatch = jedan uzorak za pojas redaka. `LoomRenderGpu.h` (pogon) ga raspoređuje
+  kroz kadrove editora tako da render kadru doda ~12 ms (mjeri se kadar s renderom minus kadar
+  bez njega), `loom-render` ~250 ms po predaji (ispod Windows TDR-a). Natrag se čita samo slika za
+  prikaz (4 B/px, 2× u sekundi), film tek na kraju.
+- `RenderSession` objavi posao (prevedenu scenu), pogon ga u niti koja crta izvrši i vrati film;
+  filtar i zapis rade u render niti. Bez Vulkana ili s `--procesor` (panel: Engine CPU) sve ide
+  na procesor, a padne li kartica usred kadra, taj kadar se ponovi na procesoru.
+- `test_tracer_gpu` (13/13, llvmpipe): bijela peć 0.9997–1.0001, sunce 0.47746, kugla 0.63662,
+  svijetli kvadrat 0.55415 (0.55413), projekcija 0.015 px, **slika kartica–procesor RMSE 0.0022**
+  uz šum procesora 0.0099 (drugi materijal 0.25 — negativna kontrola), prikaz s kartice =
+  procesorski composite+toDisplay **bajt po bajt**, 0 validacijskih poruka. `test_render_bridge`
+  (14/14) isto kroz cijelu sesiju s pogonom: snimka izvan sjene netaknuta (4.6e-4, half).
+- **Brzina na pravoj kartici NIJE izmjerena** — sandbox ima samo llvmpipe (softverski Vulkan,
+  ovdje ~3.7× sporiji od CPU tracera). Prvo mjerenje na RTX-u: `loom-render x.usda --uzorci 256`
+  sa i bez `--procesor`.
+
+**Optimizacije CPU puta (isti rezultat, izmjereno na 1280×720, 16 uzoraka, demo scena):**
+
+| korak | prije | poslije | kako |
+|---|---|---|---|
+| filtar šuma | 3.13 s | 0.62 s | sve jezgre po recima; vodiči u gusta polja; tri `exp` u jedan; x^64 kvadriranjem |
+| zapis PNG+EXR | 1.08 s | 0.42 s | svaka datoteka u svojoj niti |
+| render | 3.58 s | 3.09 s | Sobol 2. dimenzija tablicom po bajtu (bila je petlja od 32 koraka, callgrind 6.3 %), izbor svjetla binarnom pretragom, popisi sunaca/kugli, slab test u FMA obliku |
+
+Filtrirana slika je ista (RMSE prema referenci 0.0262 prije i poslije).
+
+**Post processing (27.9.)** — `Tracer/Post.h`: bloom (piramida pola-pola pa natrag, prosjek
+razina = mekano zvono s dugim repom, **čuva energiju**), kromatska aberacija, vinjeta, balans
+bijele (crno tijelo, Kelvin + tint, luminancija ostaje ista), kontrast oko 0.18, zasićenje, zrno
+(relativni šum ~1/√svjetla, sjeme po kadru). Fizikalni redoslijed: leća → obrada → senzor, na
+linearnoj slici prije Standard/AgX. Ide u **PNG i prozor; EXR ostaje sirov**. Zadnji gotov kadar
+ostaje u memoriji, pa se post/prikaz/ekspozicija mijenjaju **poslije rendera** bez ponovnog
+računanja (`RenderSession::restyle`, gumb *Save PNG With This Look*; 3 ms na 80×45). Panel:
+sekcija POST; CLI: `--post`, `--bloom`, `--vinjeta`, `--aberacija`, `--zrno`, `--temperatura`...
+`test_post` 9/9: isključeno = identitet bit po bit, bloom zbroj 1219.95 → 1216.94 (<1 %, rub),
+monotono rasipanje, prag ne dira tamno, vinjeta u kutu 0.606 (0.6), zrno srednja 0.1799 i σ 0.0498
+(0.05), zasićenje 0 = luminancija, 3200 K toplije uz luminanciju 0.5000, aberacija crveno van.
+Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta, gotov kadar s njim.
+
+**Nadogradnje 27.9. (prijedlozi 1, 3, 4, 5, 6 — napravljeno redom):**
+- **Distorzija leće.** VideoSolve piše `lens.txt` (Brown k1, k2 i objektiv), Warp::Camera ga nosi
+  (`loom:distortionLens`, `loom:radialDistortion` u USD-u), tracer zraku puca kroz ispravljeni
+  piksel (`Camera::undistortPixel`, 8 koraka), snimka i odrazi se projiciraju istom lećom. EXR
+  dobiva ST-mapu (`<ime>_stmap.exr`, R/G undistort + `redistort.R/G`) za Nuke.
+- **Svjetla kao entiteti** (`Warp::Light`, UsdLux: Distant, Sphere, Spot, Rect, Dome) — izbornik
+  Add, komponenta LIGHT, gizmo u pogledu, pogled PBR slijedi prvo sunce. Nebo *Scene* = samo
+  kupola i svjetla scene. **Light From Footage** pretvori `relight.py` JSON u sunce + kupolu.
+  `test_render_lights` 8/8 (sunce a·E/π pod zakrenutom grupom, lampa, pravokutnik jednostran...).
+- **Motion blur** — scena u `motionSteps` trenutaka unutar otvora (shutter u kadrovima, sredinom
+  na kadru), uzorci podijeljeni, filmovi prosječeni, dubina iz srednjeg; snimka ostaje ona kadra.
+  Kartica i procesor. `test_render_motion` 7/7 (razmaz 0.5 jedinice, linearna rampa, mirno = isto).
+- **Prilagodljivo uzorkovanje** (Noise Threshold, 0.01): piksel stane kad je sqrt(var/n)/sqrt(L)
+  ispod praga, provjera svakih 8 od 32 uzorka, isto pravilo u shaderu. **Staklene sjene**: zraka
+  sjene prolazi kroz staklo oslabljena bojom i Fresnelom, kaustike putanjama se tada ne broje (MIS
+  težina 1 kroz staklo) — umjesto path guidinga/MNEE, bez šuma. *Caustics* vraća točne kaustike.
+  `test_tracer_adaptive` 11/11 (ploča stakla 0.9216 = (1−F0)², ravnoparalelna ploča = prava
+  kaustika, 169/512 uzoraka uz RMSE 0.0133 prema 0.0189, svjetlina −0.35 %).
+- **Mipmape po stošcu zrake** (ray cones): razine linearno usrednjene, stožac = kut piksela × put /
+  cos, × gustoća teksela trokuta. `test_tracer_textures` 6/6 (daleki šah bez treperenja).
+- **Dubinska oštrina u panelu**: f-broj → otvor iz žarišne (1 jedinica = 1 m, senzor 36 mm),
+  fokus klikom na sliku rendera (dubina pod mišem, medijan 5×5) ili *Focus On Selection*.
+  `test_tracer_dof` 8/8 (razmaz ruba 4.249 px prema analitičkih 4R/3π = 4.244).
+- **Holdout iz splata**: splat projiciran kroz kameru (gaussiani α ≥ 0.4, krug jedne sigme,
+  z-buffer, rupe medijanom) → `Scene::holdout`; uzorak koji pogodi CG iza stvarne plohe je
+  pozadina (snimka). *Holdout from splat*, `--holdout`. `test_render_holdout` 8/8 (1 M gaussiana
+  u 1080p za 0.15 s).
+
+- **Volumetrijsko svjetlo — Volume Box** (`Warp::Volume`, izbornik Add → *Volume Box (fog)*,
+  komponenta VOLUME, isprekidana kutija u pogledu): jednolika magla u kutiji entiteta (gustoća po
+  jedinici scene, albedo raspršenja, Henyey-Greenstein g). Tracer (`Tracer/Volume.h` + shader):
+  slobodni put točno po dijelovima konstantne gustoće (kutije se smiju preklapati), izravno
+  svjetlo kroz fazu s MIS-om, **svaka zraka sjene oslabi za exp(−∫σ)** — zrake sunca/reflektora
+  i pruge sjena u magli. USD: Xform s `loom:volume*`. `test_tracer_volume` 10/10 (upijanje
+  exp(−0.8) = 0.4492, bijela peć 0.9986, jedno raspršenje 0.02263 = analitičko za g 0 i 0.6,
+  pruga sjene 0, kartica isto).
+- **Prilagodljivo uzorkovanje sa susjedima**: magla je pokazala da piksel kojem 32 uzorka ništa
+  ne pogode (varijanca 0) stane crn — točkice u magli. Sad piksel stane tek kad je gotov i na
+  prošloj provjeri i kad je svih 8 susjeda bilo gotovo na prošloj provjeri (bitovi po parnosti
+  provjere, pa isto na procesoru i kartici). Svjetlina −0.14 % (prije −0.35 %), RMSE kao pun
+  broj uzoraka uz 215/512 spp. Na lavapipeu uvjetni upis u buffer stanja ruši LLVM — upis je
+  zato bezuvjetan.
+
+- **Brži renderer (28.9., prijedlozi 1–6 redom):**
+  1. **OIDN** (Intel Open Image Denoise 2.5) učitan pri pokretanju (`dlopen`, vlastito C sučelje) —
+     `tools/oidn/fetch.sh` izvadi knjižnice iz pip paketa `pyoidn` u `tools/oidn/lib`; bez njih
+     A-trous. Na 16 spp greška 0.0045 prema A-trous 0.0054 i sirovih 0.0118 (sirovo tek na 256 spp).
+     **Filtar i post na kartici** (`tracer_finish.slang`, isti kod kao procesor, razlika ≤ 1 razina)
+     za sliku koja se čisti.
+  2. **Hardverske zrake** (`VK_KHR_ray_query`, neobavezno; `LOOM_NO_RAY_QUERY=1` isključi): kod
+     shadera u `include/TracerCore.slang`, `tracer.slang` = BVH, `tracer_rq.slang` = ray query;
+     BLAS iz istih trokuta, geometrija sa zastavicama kroz istu `accept()`. = BVH (RMSE 0.0001).
+  3. **Motion blur jednim stablom** (`Scene::motion`): ključevi vrhova/normala/kamere, BVH jednom nad
+     kutijama svih ključeva, vrijeme po uzorku; 16 ključeva 0.21 s umjesto 16 gradnji 2.40 s.
+  4. **Sekvenca**: `Bvh::refit` (3.6× brže od gradnje, ista slika; svakih 8 kadrova gradi iznova) i
+     `UploadCache` (teksture, nebo, mirna geometrija ostaju na kartici; snimka u svom spremniku).
+  5. **Stablo svjetala + RIS** (Conty & Kulla; jezgra ReSTIR-a bez ponovne upotrebe): 256 svjetala,
+     16 spp — greška po snazi 2.317, stablo 0.335, stablo + RIS 0.132 (= po snazi na 1024 spp).
+  6. **Wavefront — izmjereno, nije rađeno**: `loom-render --profil` daje vrijeme po uzorku (BVH i
+     ray query) i koherenciju po dubini (aktivne trake, materijala po valu, subgroup brojači).
+     Na sceni s maglom: materijala po valu ≤ 1.43, ali od dubine 2 samo 35 % aktivnih traka, od 8
+     12.5 % (val od 8 na lavapipeu; na pravoj kartici 32/64 — gore). Dakle ne razvrstavanje po
+     materijalu nego **regeneracija/kompakcija putanja** (traka koja završi počne novi uzorak) —
+     sljedeći korak, potvrditi `--profil` brojkama na pravoj kartici.
+
+- **Magla — visina, ekviangularno, šum (26.9.):**
+  1. **Eksponencijalna magla po visini** (Add → *Height Fog*, `Volume::Shape::Height`, USD
+     `loom:volumeShape "height"`, `loom:volumeHeight`): σ = d0·e^(−h/visina) iznad ravnine entiteta
+     (os +Y entiteta), beskonačna u širinu. Optička debljina analitička (i za zrake do neba),
+     slobodni put Newton + bisekcija na zbroju svih medija. **Holdout magle**: na kameri magla staje
+     na stvarnoj plohi iz splata (bez magle "iza zida"). **Dvostruki HG** (g, g2, udio): sjaj oko
+     sunca i povratno raspršenje kapljica. Vodoravno 0.5459 / 0.5452, gore 0.7495 / 0.7496, peć 0.9997.
+  2. **Ekviangularno uzorkovanje** (Kulla & Fajardo) prema lokalnim svjetlima, **MIS triju
+     strategija** (ekviangularno + svjetlo, slobodni put + svjetlo/RIS, slobodni put + faza) —
+     sve gustoće izračunljive, nepristrano. Svjetlo za odsječak bira stablo po **cijelom odsječku**
+     (`chooseLightOnSegment`: čvor u najbližoj točki zrake, važnost ~1/D). Raspršenje s kamerine
+     zrake ide u cg **bez pokrivenosti** (`PathResult::inscatter`). Točkasto svjetlo u magli =
+     numerički integral (0.17277), **šum 12× manji** na 16 spp; `--bez-ekviangularnog` za usporedbu.
+  3. **Nehomogena kutija**: meki rub (`loom:volumeEdge`) i šum gustoće (`loom:volumeNoise`,
+     `loom:volumeNoiseScale`, 4 oktave vrijednosnog šuma u mjerilu kutije). **Delta tracking** po
+     majoranti (homogeno ostaje analitički), zrake sjene **ratio tracking** s ruskim ruletom. Meki
+     rub 0.5713 / e^−0.56 = 0.5712, ratio/delta = kvadratura (±0.003), peć sa šumom 0.9987.
+  `test_tracer_volume` 25/25 (procesor i kartica).
+
+- **Nadogradnje prema UHD i brzini (redom, commit po stavci):**
+  1. **Regeneracija putanja na kartici**: `trace` je razbijen na `startPath` / `stepPath` (stanje
+     putanje u `PathState`), a `tracePixel` vrti do 4 uzorka po pikselu u JEDNOJ petlji po
+     odbijanjima — traka kojoj putanja završi odmah počne sljedeći uzorak. Uzorci su isti kao prije
+     (isti indeksi), zbrojevi se upišu jednom. Prvi uzorci idu po 1, pa 2, pa 4; paket nikad ne
+     prelazi provjeru prilagodljivog uzorkovanja. `GpuTracer::setSamplesPerDispatch`,
+     `LOOM_SAMPLES_PER_DISPATCH`. Koherencija se sad broji po koraku petlje. Mješovita scena:
+     aktivnih traka 74 % → 83 %; lavapipe (val 8): magla s lampama 537.7 → 487.6 ms po uzorku,
+     visinska magla 199.7 → 186.6 ms. Na kartici s valom 32/64 očekivano više — izmjeriti.
+  2. **Wavefront po materijalu — NE radi se** (izmjereno i obrazloženo): svi materijali idu kroz isti
+     uber-BSDF (`makeBsdf/evalBsdf/sampleBsdf`), pa razni materijali u valu ne razdvajaju kod, samo
+     čitanja tekstura; izmjereno 1.2–2.1 materijala po valu. Prazne trake zbog putanja različite
+     duljine rješava regeneracija (1.). Puni wavefront s redovima = prepisivanje tracera bez dobitka.
+  3. **ReSTIR DI na kartici** (prvi pogodak): glavni prolaz sprema RIS rezervoar i točku sjenčanja
+     (G-buffer 48 B + rezervoar 16 B po pikselu), drugi dispatch istog uzorka spaja vlastiti s do 8
+     susjeda (krug `širina/64`, 2–30 px), **pairwise MIS**, ciljevi bez vidljivosti, jedna zraka
+     sjene — nepristrano (512 spp −0.04 %, MIS s velikim svjetlom = procesor, miješana scena
+     +0.01 %). Uzorak `y` je u mjeri svjetla (baricentrične / smjer od središta / smjer), pa se
+     procjenjuje iz bilo koje točke. 256 svjetala, greška prema RIS-u: 48 px 1 spp 0.585/0.856,
+     4 spp 0.279/0.332; 192 px 1 spp 0.326/0.824 (2.5×), 4 spp 2.0×, 16 spp 1.3×, ali 64 spp
+     0.036/0.026 — posuđeni uzorci nemaju stratifikaciju piksela. Vremenska ponovna upotreba
+     izmjerena i izbačena (u progresivnom zbrajanju povezuje uzorke, greška raste). Zato
+     `RenderSettings::restirSamples`: most ga uključi za sve uzorke kad ih je ≤ 16 (`--bez-restir`).
+     Cijena ~15 % vremena po uzorku (lavapipe).
+  4. **Filtar na kartici i vremenska stabilnost**: OIDN bira najbrži uređaj (`OIDN_DEVICE_TYPE_DEFAULT`
+     — CUDA/HIP/SYCL kad su njihove biblioteke uz OIDN, `tools/oidn/fetch.sh --gpu`, inače CPU;
+     `LOOM_OIDN_DEVICE=cpu|cuda|hip|sycl`), preko spremnika uređaja (`oidnNewBuffer`), a log kaže
+     na čemu radi ("OIDN (CUDA)"). Ovdje nema kartice — provjeren je samo put s CPU uređajem.
+     **`Tracer::stabilize`** (Temporal.h): prošli stabilizirani kadar prebačen po dubini i objema
+     kamerama (distorzija uključena), prihvaćen samo na istoj plohi (dubina 2 %, normala 0.9) i
+     unutar šuma piksela (promjena svjetla — sjena koja putuje — odbijena); miješa se osvjetljenje
+     (boja/albedo, kao SVGF) Catmull-Romom stegnutim na susjede, pa tekstura ostaje oštra.
+     `test_tracer_temporal`: mirna kamera titranje 0.00329 → 0.00184 (56 %), greška 0.00765 →
+     0.00654; kamera u pomaku greška 0.00771 → 0.00687; kutija u pokretu bez duhova (0.01277 =
+     0.01277). Sekvence: zadano 0.5, `--stabilnost X` (0 = bez). Pristrano (vremenski prosjek).
+  5. **Render u nižoj razlučivosti + pametno povećanje — izmjereno, NE isplati se, nije u kodu.**
+     Isprobano: pola razlučivosti, OIDN, pa zajedničko bilateralno povećanje osvjetljenja (boja/albedo)
+     vođeno vodičima pune razlučivosti (albedo, normala, dubina, pokrivenost iz prolaza bez
+     odbijanja). Pod povećanja (čist ulaz) je oštri detalj svjetla manji od piksela niske
+     razlučivosti: 128×96 0.0154, 512×384 0.0071 — a puni render s OIDN-om već na 4 spp daje 0.0052
+     u istom vremenu (pola + 16 spp + povećanje 0.0077). I podjela izravno u punoj / neizravno u pola
+     razlučivosti (neizravno = puni − jednostruki put s istim sjemenom, točno) je samo izjednačena:
+     4 spp 0.0055 (0.21 s) prema 0.0052 (0.30 s), 16 spp 0.0034 (0.78 s) prema 0.0031 (0.64 s).
+     Za UHD je zato put: puna razlučivost, malo uzoraka, OIDN (na kartici) + ReSTIR do 16 spp.
+
+**Što dalje:**
+1. **Izmjeriti pravu karticu** (`loom-render projekt.usda --profil`) — sve dosad je lavapipe, gdje su
+   i "hardverske" zrake softverske (ray query 11.1 ms prema BVH 9.2 ms po uzorku).
+2. **Regeneracija putanja** na kartici ako `--profil` na pravoj kartici potvrdi prazne trake.
+3. Holdout iz procijenjene dubine snimke (`tools/depth`, treba kalibraciju mjerila) i sjene CG-a
+   na splat (normala iz dubine) — sada sjenu hvataju samo catcheri.
+
+**Poznata ograničenja — ne skrivati:**
+- Hardverske zrake za scene s pomakom ne (motion blur u hardveru je samo NVIDIA ekstenzija) — tada BVH.
+- OIDN radi na procesoru (i u gotovom kadru); na kartici je A-trous (pregled).
+- Staklene sjene su pristrane (nema fokusiranja svjetla iza leće); s *Caustics* su točne, ali
+  šumne — kao Cycles bez caustics trikova.
+- Prilagodljivo uzorkovanje zaustavlja po procijenjenoj varijanci (piksel i susjedi): područje u
+  kojem SVI pikseli rijetko pogode svijetli događaj još može stati malo pretamno (−0.14 %).
+- Magla: nema VDB-a (šum je proceduralan); majoranta je jedna po kutiji (d·(1+šum)) — u rijetkom
+  šumu puno praznih koraka delta trackinga. U prozoru pogleda vidi se samo kutija / gizmo visinske
+  magle, ne sama magla (treba composite s dubinom preko splata i mreža).
+- Filtar nije OIDN: na 64+ uzoraka čisti, na 4–16 ostavlja mrlje; sirovi CG je uvijek u EXR-u.
+- Catcher pod u neizravnom svjetlu uzima albedo ≈ linearni piksel snimke (pretpostavka jedinične
+  rasvjete poda) — boja se prelije ispravno, jakost je približna.
+- Splat se ne tracea (samo holdout i relight); iza CG-a je snimka. Holdout splata ne baca sjene.
+- Motion blur gradi scenu po odsječku (16 × BVH po kadru): za teške scene sporo.
+- Engine `Viewport` crta ravnine neprozirno (raster nema catcher).
+- Samo prvi UV skup; glTF `occlusion` mapa se namjerno ignorira (tracer zaklanjanje računa).
+
+**Editor se provjerava okom**: `loom projekt.usda --snimi x.png --render [--uzorci 32]` otvori panel,
+renderira i spremi prozor kad render završi (`--render-pogled` za engine Viewport). Pod Xvfb-om s
+lavapipeom (`VK_ICD_FILENAMES=.../lvp_icd.json xvfb-run -a ...`) radi i bez kartice.
+
 ## 8. Testni materijal — koje snimke i kako ih snimiti
 
 Cilj nije "četiri snimke" nego **četiri različita kvara**. Drona nema i neće ga biti neko vrijeme;
@@ -679,6 +935,9 @@ cd build && ctest -j1                      # 88 testova
 
 ./build/VideoSolve snimka.mp4 10 80 0 izlaz/
 ./build/ModelInfo izlaz/                   # zdravlje rješenja, bez istine
+
+./build/loom-render projekt.usda --uzorci 256 --normale   # render iz kamere (LoomTracer)
+./build/test_tracer                        # tracer protiv analitičkih odgovora, bez kartice
 ```
 
 **Ključna dokumentacija: `tools/solve/README.md`** — svako mjerenje, svaka odbačena ideja i svaki
