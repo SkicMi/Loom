@@ -44,6 +44,9 @@ Asseti su zasebni recepti (`procedura/assets/**/*.loomasset.json`, pišu ih `pro
 `recipe`. Broj u receptu ili `bounds` smije biti `{"param": ime, "scale": s, "offset": o}`. Prostor asseta: baza na y = 0,
 sredina u ishodištu, širina po X, prednja strana prema +Z. `evaluate(graph, &library)`; bez knjižnice Furnish/Place
 Assets/Asset padaju s razlogom. Editor koristi `defaultAssetLibrary()` (LOOM_ROOT_DIR/procedura/assets).
+Asset ima i `style` (basic / modern / rustic, zatvoren popis, samo dodavanje; bez polja = basic). `Furnish.style`
+daje cijeloj kući jedan stil (prazno = po seedu); kategorija bez asseta tog stila uzima basic. 51 asset: 22 basic,
+15 modern, 14 rustic.
 Kategorije: bed, nightstand, wardrobe, desk, chair, sofa, armchair, coffee_table, tv_stand, shelf, table,
 kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet, rug, floor_lamp, table_lamp, wall_cabinet.
 Placement ima i `base` (visina dna iznad poda: lampa na ormariću, gornji element) i `under` (indeks stola pod koji je
@@ -111,6 +114,8 @@ Semantika: floor, ceiling, wall_exterior, wall_interior, roof, window, door, fra
 trim, glass, road, sidewalk, curb, rope, chain_link, terrain, prop, furniture.
 
 Materijali: plaster, brick, stone, concrete, wood_planks, wood_beam, roof_tiles, roof_metal, glass, metal,
-steel_chain, asphalt, paving, rope_fiber, ground_dirt, grass, fabric, ceramic.
+steel_chain, asphalt, paving, rope_fiber, ground_dirt, grass, fabric, ceramic, lacquer, leather, linen.
+
+Stilovi namještaja: basic, modern, rustic.
 
 Imena enum parametara u receptu: `shape` = rectangle / l_shape / u_shape, `roof_type` = flat / gable / hip / shed.

@@ -1,29 +1,37 @@
 {
  "format": "loom.weaverprocedura.asset",
- "id": "sofa_basic",
- "category": "sofa",
- "style": "basic",
+ "id": "table_rustic",
+ "category": "table",
+ "style": "rustic",
  "parameters": [
   {
    "name": "width",
-   "default": 2.0,
-   "min": 1.4,
-   "max": 2.6
+   "default": 1.2,
+   "min": 0.8,
+   "max": 4.0
+  },
+  {
+   "name": "depth",
+   "default": 0.9,
+   "min": 0.7,
+   "max": 1.2
   }
  ],
  "bounds": [
   {
    "param": "width"
   },
-  0.85,
-  0.9
+  0.77,
+  {
+   "param": "depth"
+  }
  ],
- "placement": "wall",
- "clearance_front": 0.5,
+ "placement": "center",
+ "clearance_front": 0.6,
  "recipe": {
   "format": "loom.weaverprocedura.recipe",
   "schema_version": 8,
-  "name": "sofa_basic",
+  "name": "table_rustic",
   "seed": 1,
   "nodes": [
    {
@@ -39,8 +47,10 @@
       {
        "param": "width"
       },
-      0.42,
-      0.9
+      0.07,
+      {
+       "param": "depth"
+      }
      ],
      "tube_ratio": 0.25
     }
@@ -55,7 +65,7 @@
      "type": "move",
      "offset": [
       0,
-      0.21,
+      0.735,
       0
      ]
     }
@@ -89,7 +99,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -123,11 +133,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      {
-       "param": "width"
-      },
-      0.43,
-      0.2
+      0.1,
+      0.7,
+      0.1
      ],
      "tube_ratio": 0.25
     }
@@ -141,9 +149,17 @@
     "parameters": {
      "type": "move",
      "offset": [
-      0,
-      0.635,
-      -0.35
+      {
+       "param": "width",
+       "scale": -0.5,
+       "offset": 0.08
+      },
+      0.35,
+      {
+       "param": "depth",
+       "scale": -0.5,
+       "offset": 0.08
+      }
      ]
     }
    },
@@ -176,7 +192,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -210,9 +226,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.18,
-      0.2,
-      0.7
+      0.1,
+      0.7,
+      0.1
      ],
      "tube_ratio": 0.25
     }
@@ -229,10 +245,14 @@
       {
        "param": "width",
        "scale": -0.5,
-       "offset": 0.09
+       "offset": 0.08
       },
-      0.52,
-      0.1
+      0.35,
+      {
+       "param": "depth",
+       "scale": 0.5,
+       "offset": -0.08
+      }
      ]
     }
    },
@@ -265,7 +285,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -299,9 +319,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.18,
-      0.2,
-      0.7
+      0.1,
+      0.7,
+      0.1
      ],
      "tube_ratio": 0.25
     }
@@ -318,10 +338,14 @@
       {
        "param": "width",
        "scale": 0.5,
-       "offset": -0.09
+       "offset": -0.08
       },
-      0.52,
-      0.1
+      0.35,
+      {
+       "param": "depth",
+       "scale": -0.5,
+       "offset": 0.08
+      }
      ]
     }
    },
@@ -354,7 +378,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -388,12 +412,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      {
-       "param": "width",
-       "offset": -0.38
-      },
       0.1,
-      0.66
+      0.7,
+      0.1
      ],
      "tube_ratio": 0.25
     }
@@ -407,9 +428,17 @@
     "parameters": {
      "type": "move",
      "offset": [
-      0,
-      0.47,
-      0.11
+      {
+       "param": "width",
+       "scale": 0.5,
+       "offset": -0.08
+      },
+      0.35,
+      {
+       "param": "depth",
+       "scale": 0.5,
+       "offset": -0.08
+      }
      ]
     }
    },
@@ -442,7 +471,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -468,6 +497,94 @@
    },
    {
     "id": 26,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      {
+       "param": "width",
+       "offset": -0.25
+      },
+      0.08,
+      0.08
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 27,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      0,
+      0.15,
+      0
+     ]
+    }
+   },
+   {
+    "id": 28,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 29,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "wood_beam",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 30,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 31,
     "position": [
      0,
      0
@@ -599,34 +716,64 @@
     "to_port": 0
    },
    {
+    "from": 26,
+    "from_port": 0,
+    "to": 27,
+    "to_port": 0
+   },
+   {
+    "from": 27,
+    "from_port": 0,
+    "to": 28,
+    "to_port": 0
+   },
+   {
+    "from": 28,
+    "from_port": 0,
+    "to": 29,
+    "to_port": 0
+   },
+   {
+    "from": 29,
+    "from_port": 0,
+    "to": 30,
+    "to_port": 0
+   },
+   {
     "from": 5,
     "from_port": 0,
-    "to": 26,
+    "to": 31,
     "to_port": 0
    },
    {
     "from": 10,
     "from_port": 0,
-    "to": 26,
+    "to": 31,
     "to_port": 1
    },
    {
     "from": 15,
     "from_port": 0,
-    "to": 26,
+    "to": 31,
     "to_port": 2
    },
    {
     "from": 20,
     "from_port": 0,
-    "to": 26,
+    "to": 31,
     "to_port": 3
    },
    {
     "from": 25,
     "from_port": 0,
-    "to": 26,
+    "to": 31,
     "to_port": 4
+   },
+   {
+    "from": 30,
+    "from_port": 0,
+    "to": 31,
+    "to_port": 5
    }
   ]
  }

@@ -2,6 +2,7 @@
  "format": "loom.weaverprocedura.asset",
  "id": "shelf_basic",
  "category": "shelf",
+ "style": "basic",
  "parameters": [
   {
    "name": "width",

@@ -1,29 +1,37 @@
 {
  "format": "loom.weaverprocedura.asset",
- "id": "fridge_basic",
- "category": "fridge",
- "style": "basic",
+ "id": "rug_rustic",
+ "category": "rug",
+ "style": "rustic",
  "parameters": [
   {
    "name": "width",
-   "default": 0.6,
-   "min": 0.55,
-   "max": 0.9
+   "default": 2.0,
+   "min": 0.8,
+   "max": 3.0
+  },
+  {
+   "name": "depth",
+   "default": 1.4,
+   "min": 0.6,
+   "max": 2.5
   }
  ],
  "bounds": [
   {
    "param": "width"
   },
-  1.85,
-  0.65
+  0.017,
+  {
+   "param": "depth"
+  }
  ],
- "placement": "wall",
- "clearance_front": 0.8,
+ "placement": "center",
+ "clearance_front": 0.0,
  "recipe": {
   "format": "loom.weaverprocedura.recipe",
   "schema_version": 8,
-  "name": "fridge_basic",
+  "name": "rug_rustic",
   "seed": 1,
   "nodes": [
    {
@@ -39,8 +47,10 @@
       {
        "param": "width"
       },
-      1.85,
-      0.63
+      0.015,
+      {
+       "param": "depth"
+      }
      ],
      "tube_ratio": 0.25
     }
@@ -55,8 +65,8 @@
      "type": "move",
      "offset": [
       0,
-      0.925,
-      -0.01
+      0.0075,
+      0
      ]
     }
    },
@@ -89,7 +99,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "plaster",
+     "material": "leather",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -123,9 +133,15 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.03,
-      0.5,
-      0.02
+      {
+       "param": "width",
+       "offset": -0.3
+      },
+      0.002,
+      {
+       "param": "depth",
+       "offset": -0.3
+      }
      ],
      "tube_ratio": 0.25
     }
@@ -139,13 +155,9 @@
     "parameters": {
      "type": "move",
      "offset": [
-      {
-       "param": "width",
-       "scale": 0.5,
-       "offset": -0.06
-      },
-      1.1,
-      0.315
+      0,
+      0.016,
+      0
      ]
     }
    },
@@ -178,7 +190,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "metal",
+     "material": "linen",
      "filter": {
       "semantic": "",
       "use_direction": false,

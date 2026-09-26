@@ -2,6 +2,7 @@
  "format": "loom.weaverprocedura.asset",
  "id": "tv_stand_basic",
  "category": "tv_stand",
+ "style": "basic",
  "parameters": [
   {
    "name": "width",

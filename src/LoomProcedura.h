@@ -183,7 +183,7 @@ inline std::string nodeSummary(const Engine::WeaverProcedura::Node& node){
     if(const auto* interior = std::get_if<Proc::InteriorNode>(&node.payload))
         return formatSize(interior->partitionThickness) + " m partitions" + (interior->stairs ? " / stairs" : "");
     if(const auto* furnish = std::get_if<Proc::FurnishNode>(&node.payload))
-        return "seed " + std::to_string(furnish->seed) + " / fill " + formatSize(furnish->fill);
+        return (furnish->style.empty() ? std::string("style by seed") : furnish->style) + " / seed " + std::to_string(furnish->seed);
     if(const auto* asset = std::get_if<Proc::AssetNode>(&node.payload)) return asset->asset;
     return {};
 }
@@ -1270,6 +1270,12 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                 float seed = float(std::min<uint64_t>(furnish->seed, 100000));
                 if(ui.slider("Layout seed",&seed,1.0f,1000.0f)){ furnish->seed = uint64_t(std::lround(seed)); changed = true; }
                 changed |= ui.slider("Optional pieces",&furnish->fill,0.0f,1.0f);
+                int style = 0;
+                const auto& styles = Proc::styleNames();
+                for(std::size_t k = 0; k < styles.size(); ++k) if(styles[k] == furnish->style) style = int(k) + 1;
+                if(ui.choice("Style",{"By seed","Basic","Modern","Rustic"},&style) && style >= 0 && style <= int(styles.size())){
+                    furnish->style = style == 0 ? std::string() : styles[std::size_t(style - 1)]; changed = true;
+                }
                 changed |= ui.slider("Outer wall",&furnish->wallThickness,0.05f,1.0f,"m");
                 changed |= ui.slider("Partitions",&furnish->partitionThickness,0.05f,0.4f,"m");
                 ui.hint("Rules per room type; pieces come from procedura/assets. Match the walls to Walls and Interior.");

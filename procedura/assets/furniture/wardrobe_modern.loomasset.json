@@ -1,29 +1,29 @@
 {
  "format": "loom.weaverprocedura.asset",
- "id": "fridge_basic",
- "category": "fridge",
- "style": "basic",
+ "id": "wardrobe_modern",
+ "category": "wardrobe",
+ "style": "modern",
  "parameters": [
   {
    "name": "width",
-   "default": 0.6,
-   "min": 0.55,
-   "max": 0.9
+   "default": 1.6,
+   "min": 0.8,
+   "max": 2.4
   }
  ],
  "bounds": [
   {
    "param": "width"
   },
-  1.85,
-  0.65
+  2.1,
+  0.6
  ],
  "placement": "wall",
- "clearance_front": 0.8,
+ "clearance_front": 0.7,
  "recipe": {
   "format": "loom.weaverprocedura.recipe",
   "schema_version": 8,
-  "name": "fridge_basic",
+  "name": "wardrobe_modern",
   "seed": 1,
   "nodes": [
    {
@@ -39,8 +39,8 @@
       {
        "param": "width"
       },
-      1.85,
-      0.63
+      2.1,
+      0.58
      ],
      "tube_ratio": 0.25
     }
@@ -55,7 +55,7 @@
      "type": "move",
      "offset": [
       0,
-      0.925,
+      1.05,
       -0.01
      ]
     }
@@ -89,7 +89,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "plaster",
+     "material": "lacquer",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -123,8 +123,11 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.03,
-      0.5,
+      {
+       "param": "width",
+       "offset": -0.04
+      },
+      2.02,
       0.02
      ],
      "tube_ratio": 0.25
@@ -139,13 +142,9 @@
     "parameters": {
      "type": "move",
      "offset": [
-      {
-       "param": "width",
-       "scale": 0.5,
-       "offset": -0.06
-      },
-      1.1,
-      0.315
+      0,
+      1.05,
+      0.29
      ]
     }
    },
@@ -178,7 +177,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "metal",
+     "material": "glass",
      "filter": {
       "semantic": "",
       "use_direction": false,

@@ -295,7 +295,8 @@ inline std::string serialize(const Document& document){
                 << ",\"stairs\":" << (interior->stairs ? "true" : "false") << '}';
         }else if(const auto* furnish = std::get_if<Proc::FurnishNode>(&node.payload)){
             out << "{\"type\":\"furnish\",\"seed\":" << furnish->seed << ",\"wall_thickness\":" << furnish->wallThickness
-                << ",\"partition_thickness\":" << furnish->partitionThickness << ",\"fill\":" << furnish->fill << '}';
+                << ",\"partition_thickness\":" << furnish->partitionThickness << ",\"fill\":" << furnish->fill
+                << ",\"style\":" << agentJsonEscape(furnish->style) << '}';
         }else if(std::holds_alternative<Proc::PlaceAssetsNode>(node.payload)){
             out << "{\"type\":\"place_assets\"}";
         }else if(const auto* asset = std::get_if<Proc::AssetNode>(&node.payload)){
@@ -568,6 +569,7 @@ inline Document parse(const AgentJsonValue& root){
             furnish.wallThickness = readFloat(required(parameters,"wall_thickness"),"furnish.wall_thickness");
             furnish.partitionThickness = readFloat(required(parameters,"partition_thickness"),"furnish.partition_thickness");
             furnish.fill = readFloat(required(parameters,"fill"),"furnish.fill");
+            if(const AgentJsonValue* style = parameters.get("style")) furnish.style = readString(*style, "furnish.style");
             node.payload = furnish;
         }else if(type == "place_assets"){
             node.payload = Proc::PlaceAssetsNode{};

@@ -18,8 +18,8 @@ def P(name, scale=1.0, offset=0.0):
 
 
 class Asset:
-    def __init__(self, ident, category, placement="wall", clearance=0.6):
-        self.id, self.category, self.placement, self.clearance = ident, category, placement, clearance
+    def __init__(self, ident, category, placement="wall", clearance=0.6, style="basic"):
+        self.id, self.category, self.placement, self.clearance, self.style = ident, category, placement, clearance, style
         self.parameters, self.nodes, self.links, self.parts = [], [], [], []
 
     def param(self, name, default, low, high):
@@ -65,7 +65,7 @@ class Asset:
                 merged.append(m)
             parts = merged
         doc = {"format": "loom.weaverprocedura.asset", "id": self.id, "category": self.category,
-               "parameters": self.parameters, "bounds": bounds, "placement": self.placement,
+               "style": self.style, "parameters": self.parameters, "bounds": bounds, "placement": self.placement,
                "clearance_front": self.clearance,
                "recipe": {"format": "loom.weaverprocedura.recipe", "schema_version": 8, "name": self.id, "seed": 1,
                           "nodes": self.nodes, "links": self.links}}
@@ -75,6 +75,7 @@ class Asset:
 
 
 WOOD, DARK, FABRIC, METAL, CERAMIC, GLASS = "wood_planks", "wood_beam", "fabric", "metal", "ceramic", "glass"
+LACQUER, LEATHER, LINEN, STONE = "lacquer", "leather", "linen", "stone"
 
 
 def legs(a, w, d, height, inset=0.04, thick=0.05):
@@ -277,10 +278,228 @@ def wall_cabinet():
     a.save([P("width"), 0.7, 0.35])
 
 
+
+# ---- Stilovi -------------------------------------------------------------------------------
+# modern: bijeli lak, metal, staklo, niski oblici, tanke noge; rustic: tamno drvo, debele ploce i
+# noge, koza, lan, kamena radna ploca. Kategorije bez svog stila uzimaju "basic".
+
+def modern_set():
+    M = dict(style="modern")
+    a = Asset("bed_modern", "bed", clearance=0.6, **M)
+    a.param("width", 1.6, 0.8, 2.0); a.param("length", 2.0, 1.9, 2.2)
+    a.box([P("width"), 0.25, P("length")], [0, 0.125, 0.03], LACQUER)
+    a.box([P("width", 1, -0.04), 0.2, P("length", 1, -0.04)], [0, 0.35, 0.03], LINEN)
+    a.box([P("width"), 0.9, 0.04], [0, 0.45, P("length", -0.5, -0.01)], WOOD)
+    a.box([P("width", 1, -0.3), 0.1, 0.35], [0, 0.5, P("length", -0.5, 0.25)], LINEN)
+    a.save([P("width"), 0.9, P("length", 1, 0.06)])
+
+    a = Asset("nightstand_modern", "nightstand", clearance=0.3, **M)
+    a.param("width", 0.45, 0.4, 0.6)
+    a.box([P("width"), 0.3, 0.4], [0, 0.4, 0], LACQUER)
+    for sx in (-1, 1):
+        for sz in (-1, 1):
+            a.box([0.02, 0.25, 0.02], [P("width", 0.5 * sx, -0.03 * sx), 0.125, sz * 0.17], METAL)
+    a.save([P("width"), 0.55, 0.4])
+
+    a = Asset("wardrobe_modern", "wardrobe", clearance=0.7, **M)
+    a.param("width", 1.6, 0.8, 2.4)
+    a.box([P("width"), 2.1, 0.58], [0, 1.05, -0.01], LACQUER)
+    a.box([P("width", 1, -0.04), 2.02, 0.02], [0, 1.05, 0.29], GLASS)
+    a.save([P("width"), 2.1, 0.6])
+
+    for ident, cat, width in (("sofa_modern", "sofa", (2.0, 1.4, 2.6)), ("armchair_modern", "armchair", (0.85, 0.7, 1.0))):
+        a = Asset(ident, cat, clearance=0.5, **M)
+        a.param("width", *width)
+        for sx in (-1, 1):
+            for sz in (-1, 1):
+                a.box([0.04, 0.08, 0.04], [P("width", 0.5 * sx, -0.05 * sx), 0.04, sz * 0.4], METAL)
+        a.box([P("width"), 0.3, 0.9], [0, 0.23, 0], LINEN)
+        a.box([P("width"), 0.35, 0.15], [0, 0.555, -0.375], LINEN)
+        for side in (-1, 1):
+            a.box([0.08, 0.15, 0.75], [P("width", 0.5 * side, -0.04 * side), 0.455, 0.075], LINEN)
+        a.box([P("width", 1, -0.16), 0.08, 0.72], [0, 0.42, 0.08], LINEN)
+        a.save([P("width"), 0.73, 0.9])
+
+    a = Asset("coffee_table_modern", "coffee_table", placement="center", clearance=0.4, **M)
+    a.param("width", 1.1, 0.8, 1.3)
+    a.box([P("width"), 0.02, 0.6], [0, 0.39, 0], GLASS)
+    for side in (-1, 1):
+        a.box([0.03, 0.38, 0.6], [P("width", 0.5 * side, -0.015 * side), 0.19, 0], METAL)
+    a.save([P("width"), 0.4, 0.6])
+
+    a = Asset("table_modern", "table", placement="center", clearance=0.6, **M)
+    a.param("width", 1.2, 0.8, 4.0); a.param("depth", 0.8, 0.7, 1.2)
+    a.box([P("width"), 0.03, P("depth")], [0, 0.735, 0], LACQUER)
+    legs(a, "width", "depth", 0.72, 0.06, 0.035)
+    a.save([P("width"), 0.75, P("depth")])
+
+    a = Asset("chair_modern", "chair", placement="center", clearance=0.3, **M)
+    a.box([0.45, 0.04, 0.45], [0, 0.45, 0], LACQUER)
+    a.box([0.45, 0.35, 0.03], [0, 0.645, -0.21], LACQUER)
+    a.box([0.45, 0.08, 0.03], [0, 0.86, -0.21], LACQUER)
+    legs(a, 0.45, 0.45, 0.43, 0.02, 0.02)
+    a.save([0.45, 0.9, 0.45])
+
+    a = Asset("tv_stand_modern", "tv_stand", clearance=0.3, **M)
+    a.param("width", 1.6, 1.0, 2.0)
+    a.box([P("width"), 0.3, 0.4], [0, 0.25, 0], LACQUER)
+    a.box([P("width", 1, -0.1), 0.1, 0.3], [0, 0.05, -0.05], METAL)
+    a.box([P("width", 0.75), 0.62, 0.03], [0, 0.69, -0.1], GLASS)
+    a.box([0.12, 0.02, 0.12], [0, 0.41, -0.1], METAL)
+    a.save([P("width"), 1.0, 0.4])
+
+    a = Asset("desk_modern", "desk", clearance=0.8, **M)
+    a.param("width", 1.4, 1.0, 1.8); a.param("depth", 0.7, 0.6, 0.8)
+    a.box([P("width"), 0.03, P("depth")], [0, 0.735, 0], LACQUER)
+    for side in (-1, 1):
+        a.box([0.03, 0.72, P("depth", 1, -0.04)], [P("width", 0.5 * side, -0.04 * side), 0.36, 0], METAL)
+    a.save([P("width"), 0.75, P("depth")])
+
+    a = Asset("shelf_modern", "shelf", clearance=0.6, **M)
+    a.param("width", 1.2, 0.6, 1.6)
+    for sx in (-1, 1):
+        for sz in (-1, 1):
+            a.box([0.02, 2.0, 0.02], [P("width", 0.5 * sx, -0.01 * sx), 1.0, sz * 0.165], METAL)
+    for y in (0.3, 0.75, 1.2, 1.65, 1.99):
+        a.box([P("width", 1, -0.04), 0.02, 0.33], [0, y, 0], LACQUER)
+    a.box([P("width", 0.3), 0.3, 0.22], [P("width", 0.2), 0.46, 0], LINEN)
+    a.save([P("width"), 2.0, 0.35])
+
+    a = Asset("kitchen_counter_modern", "kitchen_counter", clearance=1.0, **M)
+    a.param("width", 2.4, 1.2, 4.5); a.param("fixtures", 1.0, 0.0, 1.0)
+    a.box([P("width"), 0.1, 0.5], [0, 0.05, -0.05], METAL)
+    a.box([P("width"), 0.76, 0.58], [0, 0.48, -0.01], LACQUER)
+    a.box([P("width"), 0.03, 0.6], [0, 0.875, 0], "concrete")
+    a.box([0.5, 0.004, 0.4], [P("width", -0.25), P("fixtures", 0.1, 0.792), 0], METAL)
+    a.box([0.6, 0.004, 0.5], [P("width", 0.25), P("fixtures", 0.1, 0.792), 0], GLASS)
+    a.save([P("width"), 0.894, 0.6])
+
+    a = Asset("wall_cabinet_modern", "wall_cabinet", clearance=0.0, **M)
+    a.param("width", 1.2, 0.4, 4.5)
+    a.box([P("width"), 0.7, 0.35], [0, 0.35, 0], LACQUER)
+    a.save([P("width"), 0.7, 0.35])
+
+    a = Asset("rug_modern", "rug", placement="center", clearance=0.0, **M)
+    a.param("width", 2.0, 0.8, 3.0); a.param("depth", 1.4, 0.6, 2.5)
+    a.box([P("width"), 0.012, P("depth")], [0, 0.006, 0], LINEN)
+    a.save([P("width"), 0.012, P("depth")])
+
+    a = Asset("floor_lamp_modern", "floor_lamp", clearance=0.0, **M)
+    a.cylinder([0.3, 0.02, 0.3], [0, 0.01, 0], METAL)
+    a.box([0.02, 1.4, 0.02], [0, 0.72, 0], METAL)
+    a.cylinder([0.35, 0.18, 0.35], [0, 1.51, 0], LACQUER)
+    a.save([0.35, 1.6, 0.35])
+
+
+def rustic_set():
+    R = dict(style="rustic")
+    a = Asset("bed_rustic", "bed", clearance=0.6, **R)
+    a.param("width", 1.6, 0.8, 2.0); a.param("length", 2.0, 1.9, 2.2)
+    a.box([P("width"), 0.45, P("length")], [0, 0.225, 0.05], DARK)
+    a.box([P("width", 1, -0.08), 0.22, P("length", 1, -0.08)], [0, 0.56, 0.05], LINEN)
+    a.box([P("width"), 1.1, 0.1], [0, 0.55, P("length", -0.5)], DARK)
+    for side in (-1, 1):
+        a.box([0.1, 1.2, 0.1], [P("width", 0.5 * side, -0.05 * side), 0.6, P("length", -0.5)], DARK)
+        a.box([0.1, 0.7, 0.1], [P("width", 0.5 * side, -0.05 * side), 0.35, P("length", 0.5)], DARK)
+    a.box([P("width", 1, -0.3), 0.12, 0.4], [0, 0.73, P("length", -0.5, 0.35)], LINEN)
+    a.save([P("width"), 1.2, P("length", 1, 0.1)])
+
+    a = Asset("nightstand_rustic", "nightstand", clearance=0.3, **R)
+    a.param("width", 0.5, 0.4, 0.6)
+    a.box([P("width", 1, -0.04), 0.5, 0.38], [0, 0.25, -0.01], DARK)
+    a.box([P("width"), 0.06, 0.4], [0, 0.53, 0], WOOD)
+    a.save([P("width"), 0.56, 0.4])
+
+    a = Asset("wardrobe_rustic", "wardrobe", clearance=0.7, **R)
+    a.param("width", 1.6, 0.8, 2.4)
+    a.box([P("width", 1, -0.06), 2.0, 0.56], [0, 1.0, -0.02], DARK)
+    a.box([P("width"), 0.1, 0.6], [0, 2.05, 0], DARK)
+    for side in (-1, 1):
+        a.box([P("width", 0.5, -0.08), 1.8, 0.02], [P("width", 0.25 * side, -0.005 * side), 1.0, 0.27], WOOD)
+        a.box([0.03, 0.06, 0.02], [0.08 * side, 1.1, 0.29], METAL)
+    a.save([P("width"), 2.1, 0.6])
+
+    for ident, cat, width in (("sofa_rustic", "sofa", (2.0, 1.4, 2.6)), ("armchair_rustic", "armchair", (0.9, 0.75, 1.0))):
+        a = Asset(ident, cat, clearance=0.5, **R)
+        a.param("width", *width)
+        a.box([P("width"), 0.45, 0.95], [0, 0.225, 0], LEATHER)
+        a.box([P("width"), 0.5, 0.25], [0, 0.7, -0.35], LEATHER)
+        for side in (-1, 1):
+            a.box([0.22, 0.25, 0.7], [P("width", 0.5 * side, -0.11 * side), 0.575, 0.125], LEATHER)
+        a.box([P("width", 1, -0.44), 0.12, 0.68], [0, 0.51, 0.12], LEATHER)
+        a.save([P("width"), 0.95, 0.95])
+
+    a = Asset("coffee_table_rustic", "coffee_table", placement="center", clearance=0.4, **R)
+    a.param("width", 1.1, 0.8, 1.3)
+    a.box([P("width"), 0.08, 0.65], [0, 0.44, 0], DARK)
+    legs(a, "width", 0.65, 0.4, 0.07, 0.1)
+    a.save([P("width"), 0.48, 0.65])
+
+    a = Asset("table_rustic", "table", placement="center", clearance=0.6, **R)
+    a.param("width", 1.2, 0.8, 4.0); a.param("depth", 0.9, 0.7, 1.2)
+    a.box([P("width"), 0.07, P("depth")], [0, 0.735, 0], DARK)
+    legs(a, "width", "depth", 0.7, 0.08, 0.1)
+    a.box([P("width", 1, -0.25), 0.08, 0.08], [0, 0.15, 0], DARK)
+    a.save([P("width"), 0.77, P("depth")])
+
+    a = Asset("chair_rustic", "chair", placement="center", clearance=0.3, **R)
+    a.box([0.45, 0.05, 0.45], [0, 0.45, 0], WOOD)
+    for sx in (-1, 1):
+        a.box([0.05, 0.95, 0.05], [sx * 0.2, 0.475, -0.2], DARK)
+        a.box([0.05, 0.425, 0.05], [sx * 0.2, 0.2125, 0.2], DARK)
+    for y in (0.62, 0.78, 0.92):
+        a.box([0.35, 0.05, 0.03], [0, y, -0.2], DARK)
+    a.save([0.45, 0.95, 0.45])
+
+    a = Asset("tv_stand_rustic", "tv_stand", clearance=0.3, **R)
+    a.param("width", 1.6, 1.0, 2.0)
+    a.box([P("width"), 0.55, 0.45], [0, 0.275, -0.01], DARK)
+    a.box([P("width", 1, -0.1), 0.35, 0.02], [0, 0.3, 0.225], WOOD)
+    a.box([P("width", 0.65), 0.55, 0.05], [0, 0.875, -0.1], GLASS)
+    a.save([P("width"), 1.15, 0.47])
+
+    a = Asset("desk_rustic", "desk", clearance=0.8, **R)
+    a.param("width", 1.4, 1.0, 1.8); a.param("depth", 0.7, 0.6, 0.8)
+    a.box([P("width"), 0.06, P("depth")], [0, 0.75, 0], DARK)
+    legs(a, "width", "depth", 0.72, 0.06, 0.08)
+    a.save([P("width"), 0.78, P("depth")])
+
+    a = Asset("shelf_rustic", "shelf", clearance=0.6, **R)
+    a.param("width", 1.2, 0.6, 1.6)
+    for side in (-1, 1):
+        a.box([0.06, 2.0, 0.38], [P("width", 0.5 * side, -0.03 * side), 1.0, 0], DARK)
+    for y in (0.03, 0.6, 1.15, 1.7, 1.97):
+        a.box([P("width", 1, -0.12), 0.06, 0.36], [0, y, 0], DARK)
+    a.box([P("width", 0.35), 0.3, 0.25], [P("width", -0.15), 0.21, 0], LEATHER)
+    a.save([P("width"), 2.0, 0.38])
+
+    a = Asset("kitchen_counter_rustic", "kitchen_counter", clearance=1.0, **R)
+    a.param("width", 2.4, 1.2, 4.5); a.param("fixtures", 1.0, 0.0, 1.0)
+    a.box([P("width"), 0.1, 0.5], [0, 0.05, -0.05], DARK)
+    a.box([P("width"), 0.74, 0.56], [0, 0.47, -0.02], WOOD)
+    a.box([P("width"), 0.06, 0.6], [0, 0.87, 0], STONE)
+    a.box([0.5, 0.004, 0.4], [P("width", -0.25), P("fixtures", 0.1, 0.802), 0], CERAMIC)
+    a.box([0.6, 0.004, 0.5], [P("width", 0.25), P("fixtures", 0.1, 0.802), 0], METAL)
+    a.save([P("width"), 0.904, 0.6])
+
+    a = Asset("wall_cabinet_rustic", "wall_cabinet", clearance=0.0, **R)
+    a.param("width", 1.2, 0.4, 4.5)
+    a.box([P("width"), 0.64, 0.33], [0, 0.32, -0.01], WOOD)
+    a.box([P("width"), 0.06, 0.35], [0, 0.67, 0], DARK)
+    a.save([P("width"), 0.7, 0.35])
+
+    a = Asset("rug_rustic", "rug", placement="center", clearance=0.0, **R)
+    a.param("width", 2.0, 0.8, 3.0); a.param("depth", 1.4, 0.6, 2.5)
+    a.box([P("width"), 0.015, P("depth")], [0, 0.0075, 0], LEATHER)
+    a.box([P("width", 1, -0.3), 0.002, P("depth", 1, -0.3)], [0, 0.016, 0], LINEN)
+    a.save([P("width"), 0.017, P("depth")])
+
 if __name__ == "__main__":
     for make in (bed, nightstand, wardrobe, desk, chair, sofa, coffee_table, tv_stand, shelf, table,
                  kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet, rug, floor_lamp,
                  table_lamp, wall_cabinet):
         make()
     sofa("armchair_basic", "armchair", (0.85, 0.7, 1.0))
+    modern_set()
+    rustic_set()
     print("gotovo:", len(os.listdir(os.path.join(HERE, "furniture"))), "asseta")

@@ -1386,7 +1386,7 @@ const std::vector<std::string>& materialLibrary(){
     static const std::vector<std::string> names = {
         "plaster", "brick", "stone", "concrete", "wood_planks", "wood_beam", "roof_tiles", "roof_metal",
         "glass", "metal", "steel_chain", "asphalt", "paving", "rope_fiber", "ground_dirt", "grass",
-        "fabric", "ceramic",
+        "fabric", "ceramic", "lacquer", "leather", "linen",
     };
     return names;
 }
@@ -1909,6 +1909,9 @@ ValidationResult validate(const Graph& graph){
                !finite(furnishing->partitionThickness) || furnishing->partitionThickness < 0.05f || furnishing->partitionThickness > 0.4f ||
                !finite(furnishing->fill) || furnishing->fill < 0.0f || furnishing->fill > 1.0f)
                 return {false, "furnish settings are invalid"};
+            if(!furnishing->style.empty() &&
+               std::find(styleNames().begin(), styleNames().end(), furnishing->style) == styleNames().end())
+                return {false, "unknown furniture style: " + furnishing->style};
         }else if(const auto* asset = std::get_if<AssetNode>(&node.payload)){
             if(asset->asset.empty() || asset->asset.size() > 120 || asset->parameters.size() > 32)
                 return {false, "asset node needs an asset id of 1 to 120 characters and at most 32 parameters"};

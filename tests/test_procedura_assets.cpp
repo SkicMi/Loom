@@ -49,8 +49,8 @@ int main(){
             for(const Proc::MeshVertex& v : mesh.vertices){ low = glm::min(low, v.position); high = glm::max(high, v.position); }
             const glm::vec3 wantLow{-size.x * 0.5f, 0.0f, -size.z * 0.5f}, wantHigh{size.x * 0.5f, size.y, size.z * 0.5f};
             const float off = std::max(glm::length(low - wantLow), glm::length(high - wantHigh));
-            if(off > 0.005f && boxProblem.empty())
-                boxProblem = id + fmt(" variant %d: mesh box (%.3f %.3f %.3f)-(%.3f %.3f %.3f) but bounds (%.3f %.3f %.3f)", variant,
+            if(off > 0.005f)
+                boxProblem += (boxProblem.empty() ? "" : "; ") + id + fmt(" variant %d: mesh box (%.3f %.3f %.3f)-(%.3f %.3f %.3f) but bounds (%.3f %.3f %.3f)", variant,
                                      low.x, low.y, low.z, high.x, high.y, high.z, size.x, size.y, size.z);
             for(const Proc::TriangleAttributes& t : mesh.triangles)
                 if((t.semantic == 0 || t.material == 0) && tagProblem.empty()) tagProblem = id + " has a triangle without semantic or material";
@@ -124,6 +124,42 @@ int main(){
     unplanned.links = {{f, 0, s, 0}, {s, 0, u, 0}, {u, 0, p, 0}};
     unplanned.nodes.erase(unplanned.nodes.begin() + 2);
     const Proc::EvaluationResult noPlan = Proc::evaluate(unplanned, &library);
+    // Styles: every style has the main pieces; a furnished house keeps to one style.
+    std::string missingStyled;
+    for(const std::string& style : Proc::styleNames())
+        for(const char* category : {"bed", "wardrobe", "sofa", "table", "chair", "kitchen_counter"}){
+            bool found = false;
+            for(const std::string& id : Proc::assetsInCategory(library, category)) found |= library.info(id)->style == style;
+            if(!found) missingStyled += " " + style + "/" + category;
+        }
+    report.check("every style has a bed, wardrobe, sofa, table, chair and kitchen counter", missingStyled.empty(), "missing:" + missingStyled);
+    std::string mixed;
+    for(const std::string& style : Proc::styleNames()){
+        Proc::Graph styled = houseBack.graph;
+        std::get<Proc::FurnishNode>(styled.nodes.at(3).payload).style = style;
+        const Proc::EvaluationResult result = Proc::evaluate(styled, &library);
+        int own = 0;
+        for(const Proc::Placement& piece : result.placements){
+            const std::string pieceStyle = library.info(piece.asset)->style;
+            own += pieceStyle == style;
+            if(pieceStyle != style && pieceStyle != "basic") mixed += " " + style + " house has " + piece.asset;
+        }
+        if(!result.succeeded || own < 5) mixed += " " + style + fmt(" house has %d own pieces ", own) + result.error;
+    }
+    report.check("furnish with a style uses that style's pieces, basic only where the style has none", mixed.empty(), mixed);
+    Proc::Graph unknownStyle = houseBack.graph;
+    std::get<Proc::FurnishNode>(unknownStyle.nodes.at(3).payload).style = "baroque";
+    const Proc::ValidationResult badStyle = Proc::validate(unknownStyle);
+    report.check("an unknown style is refused with its name", !badStyle.valid && badStyle.error.find("baroque") != std::string::npos, badStyle.error);
+    Recipe::Document styledDocument = houseBack;
+    std::get<Proc::FurnishNode>(styledDocument.graph.nodes.at(3).payload).style = "rustic";
+    const Recipe::Document styledBack = Recipe::parse(Recipe::serialize(styledDocument));
+    report.check("the style survives JSON", std::get<Proc::FurnishNode>(styledBack.graph.nodes.at(3).payload).style == "rustic", "");
+    bool styleRejected = false;
+    try{ Recipe::RecipeAssetLibrary broken; broken.add(R"({"format":"loom.weaverprocedura.asset","id":"x","category":"bed","style":"baroque",
+        "parameters":[],"bounds":[1,1,1],"placement":"wall","clearance_front":0,"recipe":{}})"); }
+    catch(const std::exception& problem){ styleRejected = std::string(problem.what()).find("baroque") != std::string::npos; }
+    report.check("an asset with an unknown style does not load", styleRejected, "");
     report.check("furnish without a room plan says so", !noPlan.succeeded && noPlan.error.find("RoomSplit") != std::string::npos, noPlan.error);
     return report.result();
 }

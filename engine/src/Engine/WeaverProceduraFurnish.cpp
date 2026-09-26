@@ -214,16 +214,24 @@ struct Context{
     const FurnishNode& settings;
     const AssetLibrary& library;
     Random random;
-    std::map<std::string, std::string> style;       // category -> asset, one choice per house
+    std::map<std::string, std::string> chosenAssets;   // category -> asset, one choice per house
     std::vector<Placement>& output;
     std::string error;
+    std::string style;                                  // the house's style
 
+    // The asset for a category: the house's style, else "basic", else any; chosen once per house.
     bool item(const std::string& category, const AssetParameters& wanted, Item& result){
-        auto chosen = style.find(category);
-        if(chosen == style.end()){
-            const std::vector<std::string> ids = assetsInCategory(library, category);
-            if(ids.empty()){ error = "asset library has no " + category; return false; }
-            chosen = style.emplace(category, ids[std::size_t(random.next() % ids.size())]).first;
+        auto chosen = chosenAssets.find(category);
+        if(chosen == chosenAssets.end()){
+            const std::vector<std::string> all = assetsInCategory(library, category);
+            if(all.empty()){ error = "asset library has no " + category; return false; }
+            std::vector<std::string> ids;
+            for(const std::string& wantedStyle : {style, std::string("basic")}){
+                for(const std::string& id : all) if(library.info(id)->style == wantedStyle) ids.push_back(id);
+                if(!ids.empty()) break;
+            }
+            if(ids.empty()) ids = all;
+            chosen = chosenAssets.emplace(category, ids[std::size_t(random.next() % ids.size())]).first;
         }
         const AssetInfo* info = library.info(chosen->second);
         if(!info){ error = "asset library lost " + chosen->second; return false; }
@@ -704,6 +712,11 @@ bool furnishStorage(Context& ctx, Space& space){
 
 }  // namespace
 
+const std::vector<std::string>& styleNames(){
+    static const std::vector<std::string> names = {"basic", "modern", "rustic"};
+    return names;
+}
+
 const std::vector<std::string>& furnitureCategories(){
     static const std::vector<std::string> names = {
         "bed", "nightstand", "wardrobe", "desk", "chair", "sofa", "armchair", "coffee_table", "tv_stand", "shelf",
@@ -727,7 +740,8 @@ bool furnish(const Footprint& footprint, const FurnishNode& settings, const Asse
     if(!footprint.hasPlan){ error = "Furnish needs a RoomSplit before it"; return false; }
     const InteriorPlan& plan = footprint.plan;
     std::vector<Placement> layout;
-    Context ctx{footprint, settings, library, Random(settings.seed), {}, layout, {}};
+    Context ctx{footprint, settings, library, Random(settings.seed), {}, layout, {}, settings.style};
+    if(ctx.style.empty()) ctx.style = styleNames()[std::size_t(ctx.random.next() % styleNames().size())];
 
     std::vector<glm::vec2> outline;
     for(const glm::vec2& p : footprint.outline) outline.push_back(toLocal(footprint, p));

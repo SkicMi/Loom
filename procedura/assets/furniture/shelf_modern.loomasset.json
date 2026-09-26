@@ -1,20 +1,29 @@
 {
  "format": "loom.weaverprocedura.asset",
- "id": "chair_basic",
- "category": "chair",
- "style": "basic",
- "parameters": [],
- "bounds": [
-  0.45,
-  0.9,
-  0.45
+ "id": "shelf_modern",
+ "category": "shelf",
+ "style": "modern",
+ "parameters": [
+  {
+   "name": "width",
+   "default": 1.2,
+   "min": 0.6,
+   "max": 1.6
+  }
  ],
- "placement": "center",
- "clearance_front": 0.3,
+ "bounds": [
+  {
+   "param": "width"
+  },
+  2.0,
+  0.35
+ ],
+ "placement": "wall",
+ "clearance_front": 0.6,
  "recipe": {
   "format": "loom.weaverprocedura.recipe",
   "schema_version": 8,
-  "name": "chair_basic",
+  "name": "shelf_modern",
   "seed": 1,
   "nodes": [
    {
@@ -27,9 +36,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.45,
-      0.05,
-      0.45
+      0.02,
+      2.0,
+      0.02
      ],
      "tube_ratio": 0.25
     }
@@ -43,9 +52,13 @@
     "parameters": {
      "type": "move",
      "offset": [
-      0,
-      0.45,
-      0
+      {
+       "param": "width",
+       "scale": -0.5,
+       "offset": 0.01
+      },
+      1.0,
+      -0.165
      ]
     }
    },
@@ -78,7 +91,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "wood_planks",
+     "material": "metal",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -112,9 +125,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.45,
-      0.425,
-      0.04
+      0.02,
+      2.0,
+      0.02
      ],
      "tube_ratio": 0.25
     }
@@ -128,9 +141,13 @@
     "parameters": {
      "type": "move",
      "offset": [
-      0,
-      0.6875,
-      -0.205
+      {
+       "param": "width",
+       "scale": -0.5,
+       "offset": 0.01
+      },
+      1.0,
+      0.165
      ]
     }
    },
@@ -163,7 +180,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "wood_planks",
+     "material": "metal",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -197,9 +214,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.04,
-      0.425,
-      0.04
+      0.02,
+      2.0,
+      0.02
      ],
      "tube_ratio": 0.25
     }
@@ -213,9 +230,13 @@
     "parameters": {
      "type": "move",
      "offset": [
-      -0.195,
-      0.2125,
-      -0.195
+      {
+       "param": "width",
+       "scale": 0.5,
+       "offset": -0.01
+      },
+      1.0,
+      -0.165
      ]
     }
    },
@@ -248,7 +269,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "wood_beam",
+     "material": "metal",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -282,9 +303,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.04,
-      0.425,
-      0.04
+      0.02,
+      2.0,
+      0.02
      ],
      "tube_ratio": 0.25
     }
@@ -298,9 +319,13 @@
     "parameters": {
      "type": "move",
      "offset": [
-      -0.195,
-      0.2125,
-      0.195
+      {
+       "param": "width",
+       "scale": 0.5,
+       "offset": -0.01
+      },
+      1.0,
+      0.165
      ]
     }
    },
@@ -333,7 +358,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "wood_beam",
+     "material": "metal",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -367,9 +392,12 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.04,
-      0.425,
-      0.04
+      {
+       "param": "width",
+       "offset": -0.04
+      },
+      0.02,
+      0.33
      ],
      "tube_ratio": 0.25
     }
@@ -383,9 +411,9 @@
     "parameters": {
      "type": "move",
      "offset": [
-      0.195,
-      0.2125,
-      -0.195
+      0,
+      0.3,
+      0
      ]
     }
    },
@@ -418,7 +446,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "wood_beam",
+     "material": "lacquer",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -452,9 +480,12 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.04,
-      0.425,
-      0.04
+      {
+       "param": "width",
+       "offset": -0.04
+      },
+      0.02,
+      0.33
      ],
      "tube_ratio": 0.25
     }
@@ -468,9 +499,9 @@
     "parameters": {
      "type": "move",
      "offset": [
-      0.195,
-      0.2125,
-      0.195
+      0,
+      0.75,
+      0
      ]
     }
    },
@@ -503,7 +534,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "wood_beam",
+     "material": "lacquer",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -529,6 +560,381 @@
    },
    {
     "id": 31,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      {
+       "param": "width",
+       "offset": -0.04
+      },
+      0.02,
+      0.33
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 32,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      0,
+      1.2,
+      0
+     ]
+    }
+   },
+   {
+    "id": 33,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 34,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "lacquer",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 35,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 36,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      {
+       "param": "width",
+       "offset": -0.04
+      },
+      0.02,
+      0.33
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 37,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      0,
+      1.65,
+      0
+     ]
+    }
+   },
+   {
+    "id": 38,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 39,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "lacquer",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 40,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 41,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      {
+       "param": "width",
+       "offset": -0.04
+      },
+      0.02,
+      0.33
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 42,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      0,
+      1.99,
+      0
+     ]
+    }
+   },
+   {
+    "id": 43,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 44,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "lacquer",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 45,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 46,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      {
+       "param": "width",
+       "scale": 0.3
+      },
+      0.3,
+      0.22
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 47,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      {
+       "param": "width",
+       "scale": 0.2
+      },
+      0.46,
+      0
+     ]
+    }
+   },
+   {
+    "id": 48,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 49,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "linen",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 50,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 51,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "merge"
+    }
+   },
+   {
+    "id": 52,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "merge"
+    }
+   },
+   {
+    "id": 53,
     "position": [
      0,
      0
@@ -684,40 +1090,172 @@
     "to_port": 0
    },
    {
+    "from": 31,
+    "from_port": 0,
+    "to": 32,
+    "to_port": 0
+   },
+   {
+    "from": 32,
+    "from_port": 0,
+    "to": 33,
+    "to_port": 0
+   },
+   {
+    "from": 33,
+    "from_port": 0,
+    "to": 34,
+    "to_port": 0
+   },
+   {
+    "from": 34,
+    "from_port": 0,
+    "to": 35,
+    "to_port": 0
+   },
+   {
+    "from": 36,
+    "from_port": 0,
+    "to": 37,
+    "to_port": 0
+   },
+   {
+    "from": 37,
+    "from_port": 0,
+    "to": 38,
+    "to_port": 0
+   },
+   {
+    "from": 38,
+    "from_port": 0,
+    "to": 39,
+    "to_port": 0
+   },
+   {
+    "from": 39,
+    "from_port": 0,
+    "to": 40,
+    "to_port": 0
+   },
+   {
+    "from": 41,
+    "from_port": 0,
+    "to": 42,
+    "to_port": 0
+   },
+   {
+    "from": 42,
+    "from_port": 0,
+    "to": 43,
+    "to_port": 0
+   },
+   {
+    "from": 43,
+    "from_port": 0,
+    "to": 44,
+    "to_port": 0
+   },
+   {
+    "from": 44,
+    "from_port": 0,
+    "to": 45,
+    "to_port": 0
+   },
+   {
+    "from": 46,
+    "from_port": 0,
+    "to": 47,
+    "to_port": 0
+   },
+   {
+    "from": 47,
+    "from_port": 0,
+    "to": 48,
+    "to_port": 0
+   },
+   {
+    "from": 48,
+    "from_port": 0,
+    "to": 49,
+    "to_port": 0
+   },
+   {
+    "from": 49,
+    "from_port": 0,
+    "to": 50,
+    "to_port": 0
+   },
+   {
     "from": 5,
     "from_port": 0,
-    "to": 31,
+    "to": 51,
     "to_port": 0
    },
    {
     "from": 10,
     "from_port": 0,
-    "to": 31,
+    "to": 51,
     "to_port": 1
    },
    {
     "from": 15,
     "from_port": 0,
-    "to": 31,
+    "to": 51,
     "to_port": 2
    },
    {
     "from": 20,
     "from_port": 0,
-    "to": 31,
+    "to": 51,
     "to_port": 3
    },
    {
     "from": 25,
     "from_port": 0,
-    "to": 31,
+    "to": 51,
     "to_port": 4
    },
    {
     "from": 30,
     "from_port": 0,
-    "to": 31,
+    "to": 51,
     "to_port": 5
+   },
+   {
+    "from": 35,
+    "from_port": 0,
+    "to": 51,
+    "to_port": 6
+   },
+   {
+    "from": 40,
+    "from_port": 0,
+    "to": 51,
+    "to_port": 7
+   },
+   {
+    "from": 45,
+    "from_port": 0,
+    "to": 52,
+    "to_port": 0
+   },
+   {
+    "from": 50,
+    "from_port": 0,
+    "to": 52,
+    "to_port": 1
+   },
+   {
+    "from": 51,
+    "from_port": 0,
+    "to": 53,
+    "to_port": 0
+   },
+   {
+    "from": 52,
+    "from_port": 0,
+    "to": 53,
+    "to_port": 1
    }
   ]
  }

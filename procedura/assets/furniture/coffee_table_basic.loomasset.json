@@ -2,6 +2,7 @@
  "format": "loom.weaverprocedura.asset",
  "id": "coffee_table_basic",
  "category": "coffee_table",
+ "style": "basic",
  "parameters": [
   {
    "name": "width",

@@ -2,6 +2,7 @@
  "format": "loom.weaverprocedura.asset",
  "id": "toilet_basic",
  "category": "toilet",
+ "style": "basic",
  "parameters": [],
  "bounds": [
   0.4,

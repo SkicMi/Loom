@@ -1,8 +1,8 @@
 {
  "format": "loom.weaverprocedura.asset",
- "id": "rug_basic",
+ "id": "rug_modern",
  "category": "rug",
- "style": "basic",
+ "style": "modern",
  "parameters": [
   {
    "name": "width",
@@ -21,7 +21,7 @@
   {
    "param": "width"
   },
-  0.014,
+  0.012,
   {
    "param": "depth"
   }
@@ -31,7 +31,7 @@
  "recipe": {
   "format": "loom.weaverprocedura.recipe",
   "schema_version": 8,
-  "name": "rug_basic",
+  "name": "rug_modern",
   "seed": 1,
   "nodes": [
    {
@@ -99,7 +99,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "linen",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -121,107 +121,6 @@
     "parameters": {
      "type": "uv_project",
      "tile_size": 0.5
-    }
-   },
-   {
-    "id": 6,
-    "position": [
-     0,
-     0
-    ],
-    "parameters": {
-     "type": "add_primitive",
-     "primitive": "cube",
-     "size": [
-      {
-       "param": "width",
-       "offset": -0.16
-      },
-      0.002,
-      {
-       "param": "depth",
-       "offset": -0.16
-      }
-     ],
-     "tube_ratio": 0.25
-    }
-   },
-   {
-    "id": 7,
-    "position": [
-     0,
-     0
-    ],
-    "parameters": {
-     "type": "move",
-     "offset": [
-      0,
-      0.013,
-      0
-     ]
-    }
-   },
-   {
-    "id": 8,
-    "position": [
-     0,
-     0
-    ],
-    "parameters": {
-     "type": "set_semantic",
-     "semantic": "furniture",
-     "filter": {
-      "semantic": "",
-      "use_direction": false,
-      "direction": [
-       0,
-       1,
-       0
-      ],
-      "max_angle_degrees": 30
-     }
-    }
-   },
-   {
-    "id": 9,
-    "position": [
-     0,
-     0
-    ],
-    "parameters": {
-     "type": "set_material",
-     "material": "plaster",
-     "filter": {
-      "semantic": "",
-      "use_direction": false,
-      "direction": [
-       0,
-       1,
-       0
-      ],
-      "max_angle_degrees": 30
-     }
-    }
-   },
-   {
-    "id": 10,
-    "position": [
-     0,
-     0
-    ],
-    "parameters": {
-     "type": "uv_project",
-     "tile_size": 0.5
-    }
-   },
-   {
-    "id": 11,
-    "position": [
-     0,
-     0
-    ],
-    "parameters": {
-     "type": "merge"
     }
    }
   ],
@@ -249,42 +148,6 @@
     "from_port": 0,
     "to": 5,
     "to_port": 0
-   },
-   {
-    "from": 6,
-    "from_port": 0,
-    "to": 7,
-    "to_port": 0
-   },
-   {
-    "from": 7,
-    "from_port": 0,
-    "to": 8,
-    "to_port": 0
-   },
-   {
-    "from": 8,
-    "from_port": 0,
-    "to": 9,
-    "to_port": 0
-   },
-   {
-    "from": 9,
-    "from_port": 0,
-    "to": 10,
-    "to_port": 0
-   },
-   {
-    "from": 5,
-    "from_port": 0,
-    "to": 11,
-    "to_port": 0
-   },
-   {
-    "from": 10,
-    "from_port": 0,
-    "to": 11,
-    "to_port": 1
    }
   ]
  }

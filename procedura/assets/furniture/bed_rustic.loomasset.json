@@ -1,29 +1,38 @@
 {
  "format": "loom.weaverprocedura.asset",
- "id": "sofa_basic",
- "category": "sofa",
- "style": "basic",
+ "id": "bed_rustic",
+ "category": "bed",
+ "style": "rustic",
  "parameters": [
   {
    "name": "width",
+   "default": 1.6,
+   "min": 0.8,
+   "max": 2.0
+  },
+  {
+   "name": "length",
    "default": 2.0,
-   "min": 1.4,
-   "max": 2.6
+   "min": 1.9,
+   "max": 2.2
   }
  ],
  "bounds": [
   {
    "param": "width"
   },
-  0.85,
-  0.9
+  1.2,
+  {
+   "param": "length",
+   "offset": 0.1
+  }
  ],
  "placement": "wall",
- "clearance_front": 0.5,
+ "clearance_front": 0.6,
  "recipe": {
   "format": "loom.weaverprocedura.recipe",
   "schema_version": 8,
-  "name": "sofa_basic",
+  "name": "bed_rustic",
   "seed": 1,
   "nodes": [
    {
@@ -39,8 +48,10 @@
       {
        "param": "width"
       },
-      0.42,
-      0.9
+      0.45,
+      {
+       "param": "length"
+      }
      ],
      "tube_ratio": 0.25
     }
@@ -55,8 +66,8 @@
      "type": "move",
      "offset": [
       0,
-      0.21,
-      0
+      0.225,
+      0.05
      ]
     }
    },
@@ -89,7 +100,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -124,10 +135,14 @@
      "primitive": "cube",
      "size": [
       {
-       "param": "width"
+       "param": "width",
+       "offset": -0.08
       },
-      0.43,
-      0.2
+      0.22,
+      {
+       "param": "length",
+       "offset": -0.08
+      }
      ],
      "tube_ratio": 0.25
     }
@@ -142,8 +157,8 @@
      "type": "move",
      "offset": [
       0,
-      0.635,
-      -0.35
+      0.56,
+      0.05
      ]
     }
    },
@@ -176,7 +191,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "linen",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -210,9 +225,11 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.18,
-      0.2,
-      0.7
+      {
+       "param": "width"
+      },
+      1.1,
+      0.1
      ],
      "tube_ratio": 0.25
     }
@@ -226,13 +243,12 @@
     "parameters": {
      "type": "move",
      "offset": [
+      0,
+      0.55,
       {
-       "param": "width",
-       "scale": -0.5,
-       "offset": 0.09
-      },
-      0.52,
-      0.1
+       "param": "length",
+       "scale": -0.5
+      }
      ]
     }
    },
@@ -265,7 +281,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -299,9 +315,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.18,
-      0.2,
-      0.7
+      0.1,
+      1.2,
+      0.1
      ],
      "tube_ratio": 0.25
     }
@@ -317,11 +333,14 @@
      "offset": [
       {
        "param": "width",
-       "scale": 0.5,
-       "offset": -0.09
+       "scale": -0.5,
+       "offset": 0.05
       },
-      0.52,
-      0.1
+      0.6,
+      {
+       "param": "length",
+       "scale": -0.5
+      }
      ]
     }
    },
@@ -354,7 +373,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -388,12 +407,9 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      {
-       "param": "width",
-       "offset": -0.38
-      },
       0.1,
-      0.66
+      0.7,
+      0.1
      ],
      "tube_ratio": 0.25
     }
@@ -407,9 +423,16 @@
     "parameters": {
      "type": "move",
      "offset": [
-      0,
-      0.47,
-      0.11
+      {
+       "param": "width",
+       "scale": -0.5,
+       "offset": 0.05
+      },
+      0.35,
+      {
+       "param": "length",
+       "scale": 0.5
+      }
      ]
     }
    },
@@ -442,7 +465,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "fabric",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -468,6 +491,282 @@
    },
    {
     "id": 26,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      0.1,
+      1.2,
+      0.1
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 27,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      {
+       "param": "width",
+       "scale": 0.5,
+       "offset": -0.05
+      },
+      0.6,
+      {
+       "param": "length",
+       "scale": -0.5
+      }
+     ]
+    }
+   },
+   {
+    "id": 28,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 29,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "wood_beam",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 30,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 31,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      0.1,
+      0.7,
+      0.1
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 32,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      {
+       "param": "width",
+       "scale": 0.5,
+       "offset": -0.05
+      },
+      0.35,
+      {
+       "param": "length",
+       "scale": 0.5
+      }
+     ]
+    }
+   },
+   {
+    "id": 33,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 34,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "wood_beam",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 35,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 36,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      {
+       "param": "width",
+       "offset": -0.3
+      },
+      0.12,
+      0.4
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 37,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      0,
+      0.73,
+      {
+       "param": "length",
+       "scale": -0.5,
+       "offset": 0.35
+      }
+     ]
+    }
+   },
+   {
+    "id": 38,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 39,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "linen",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 40,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 41,
     "position": [
      0,
      0
@@ -599,34 +898,124 @@
     "to_port": 0
    },
    {
+    "from": 26,
+    "from_port": 0,
+    "to": 27,
+    "to_port": 0
+   },
+   {
+    "from": 27,
+    "from_port": 0,
+    "to": 28,
+    "to_port": 0
+   },
+   {
+    "from": 28,
+    "from_port": 0,
+    "to": 29,
+    "to_port": 0
+   },
+   {
+    "from": 29,
+    "from_port": 0,
+    "to": 30,
+    "to_port": 0
+   },
+   {
+    "from": 31,
+    "from_port": 0,
+    "to": 32,
+    "to_port": 0
+   },
+   {
+    "from": 32,
+    "from_port": 0,
+    "to": 33,
+    "to_port": 0
+   },
+   {
+    "from": 33,
+    "from_port": 0,
+    "to": 34,
+    "to_port": 0
+   },
+   {
+    "from": 34,
+    "from_port": 0,
+    "to": 35,
+    "to_port": 0
+   },
+   {
+    "from": 36,
+    "from_port": 0,
+    "to": 37,
+    "to_port": 0
+   },
+   {
+    "from": 37,
+    "from_port": 0,
+    "to": 38,
+    "to_port": 0
+   },
+   {
+    "from": 38,
+    "from_port": 0,
+    "to": 39,
+    "to_port": 0
+   },
+   {
+    "from": 39,
+    "from_port": 0,
+    "to": 40,
+    "to_port": 0
+   },
+   {
     "from": 5,
     "from_port": 0,
-    "to": 26,
+    "to": 41,
     "to_port": 0
    },
    {
     "from": 10,
     "from_port": 0,
-    "to": 26,
+    "to": 41,
     "to_port": 1
    },
    {
     "from": 15,
     "from_port": 0,
-    "to": 26,
+    "to": 41,
     "to_port": 2
    },
    {
     "from": 20,
     "from_port": 0,
-    "to": 26,
+    "to": 41,
     "to_port": 3
    },
    {
     "from": 25,
     "from_port": 0,
-    "to": 26,
+    "to": 41,
     "to_port": 4
+   },
+   {
+    "from": 30,
+    "from_port": 0,
+    "to": 41,
+    "to_port": 5
+   },
+   {
+    "from": 35,
+    "from_port": 0,
+    "to": 41,
+    "to_port": 6
+   },
+   {
+    "from": 40,
+    "from_port": 0,
+    "to": 41,
+    "to_port": 7
    }
   ]
  }

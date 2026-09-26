@@ -7,7 +7,7 @@
 //   {"format":"loom.weaverprocedura.asset", "id":"bed_basic", "category":"bed",
 //    "parameters":[{"name":"width","default":1.6,"min":0.9,"max":2.0}, ...],
 //    "bounds":[{"param":"width"}, 1.0, {"param":"length","offset":0.05}],
-//    "placement":"wall", "clearance_front":0.6,
+//    "placement":"wall", "clearance_front":0.6, "style":"basic",
 //    "recipe":{ ... a loom.weaverprocedura.recipe ... }}
 //
 // A number written as {"param":name, "scale":s, "offset":o} becomes value * s + o (scale 1 and
@@ -67,6 +67,9 @@ public:
         if(info.id.empty() || info.id.size() > 120) throw std::runtime_error("asset id must contain 1 to 120 characters");
         if(assets.count(info.id)) throw std::runtime_error("two assets are called " + info.id);
         info.category = readString(required(root, "category"), "category");
+        if(const AgentJsonValue* style = root.get("style")) info.style = readString(*style, "style");
+        if(std::find(Proc::styleNames().begin(), Proc::styleNames().end(), info.style) == Proc::styleNames().end())
+            throw std::runtime_error("unknown style " + info.style + " (known: basic, modern, rustic)");
         const AgentJsonValue& parameters = required(root, "parameters");
         if(parameters.kind != AgentJsonValue::Kind::Array || parameters.array.size() > 32)
             throw std::runtime_error("asset parameters must be an array of at most 32 entries");

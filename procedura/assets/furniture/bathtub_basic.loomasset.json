@@ -2,6 +2,7 @@
  "format": "loom.weaverprocedura.asset",
  "id": "bathtub_basic",
  "category": "bathtub",
+ "style": "basic",
  "parameters": [
   {
    "name": "width",

@@ -2,6 +2,7 @@
  "format": "loom.weaverprocedura.asset",
  "id": "shoe_cabinet_basic",
  "category": "shoe_cabinet",
+ "style": "basic",
  "parameters": [
   {
    "name": "width",

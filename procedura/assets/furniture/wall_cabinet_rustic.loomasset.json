@@ -1,29 +1,29 @@
 {
  "format": "loom.weaverprocedura.asset",
- "id": "fridge_basic",
- "category": "fridge",
- "style": "basic",
+ "id": "wall_cabinet_rustic",
+ "category": "wall_cabinet",
+ "style": "rustic",
  "parameters": [
   {
    "name": "width",
-   "default": 0.6,
-   "min": 0.55,
-   "max": 0.9
+   "default": 1.2,
+   "min": 0.4,
+   "max": 4.5
   }
  ],
  "bounds": [
   {
    "param": "width"
   },
-  1.85,
-  0.65
+  0.7,
+  0.35
  ],
  "placement": "wall",
- "clearance_front": 0.8,
+ "clearance_front": 0.0,
  "recipe": {
   "format": "loom.weaverprocedura.recipe",
   "schema_version": 8,
-  "name": "fridge_basic",
+  "name": "wall_cabinet_rustic",
   "seed": 1,
   "nodes": [
    {
@@ -39,8 +39,8 @@
       {
        "param": "width"
       },
-      1.85,
-      0.63
+      0.64,
+      0.33
      ],
      "tube_ratio": 0.25
     }
@@ -55,7 +55,7 @@
      "type": "move",
      "offset": [
       0,
-      0.925,
+      0.32,
       -0.01
      ]
     }
@@ -89,7 +89,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "plaster",
+     "material": "wood_planks",
      "filter": {
       "semantic": "",
       "use_direction": false,
@@ -123,9 +123,11 @@
      "type": "add_primitive",
      "primitive": "cube",
      "size": [
-      0.03,
-      0.5,
-      0.02
+      {
+       "param": "width"
+      },
+      0.06,
+      0.35
      ],
      "tube_ratio": 0.25
     }
@@ -139,13 +141,9 @@
     "parameters": {
      "type": "move",
      "offset": [
-      {
-       "param": "width",
-       "scale": 0.5,
-       "offset": -0.06
-      },
-      1.1,
-      0.315
+      0,
+      0.67,
+      0
      ]
     }
    },
@@ -178,7 +176,7 @@
     ],
     "parameters": {
      "type": "set_material",
-     "material": "metal",
+     "material": "wood_beam",
      "filter": {
       "semantic": "",
       "use_direction": false,

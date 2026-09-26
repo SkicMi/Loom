@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <tuple>
 
@@ -77,6 +78,8 @@ int main(){
     report.check("asset library loads", library.loadError.empty() && !library.ids().empty(), library.loadError);
     int collisions = 0, outside = 0, blockedDoors = 0, coveredWindows = 0, missingPieces = 0;
     std::size_t pieces = 0;
+    std::map<std::string, int> styleCount;
+    int mixedStyles = 0;
     std::map<std::string, int> extras;   // kitchens with a corner run, rugs, lamps, wall cabinets, tucked chairs
     std::map<std::string, std::string> firstOf;   // first example of each furniture problem
     auto note = [&](const char* kind, const std::string& what){ firstOf.emplace(kind, what); };
@@ -239,6 +242,10 @@ int main(){
                     if(glm::length(nearest - local) < 0.45f){ ++coveredWindows; note("window", piece.asset + " covers a window" + house); break; }
                 }
         }
+        std::set<std::string> houseStyles;
+        for(const Proc::Placement& piece : layout) if(library.info(piece.asset)->style != "basic") houseStyles.insert(library.info(piece.asset)->style);
+        ++styleCount[houseStyles.empty() ? std::string("basic") : *houseStyles.begin()];
+        if(houseStyles.size() > 1){ ++mixedStyles; note("style", "house" + house.substr(9) + " mixes styles"); }
         for(const Proc::Placement& piece : layout){
             const std::string category = library.info(piece.asset)->category;
             if(category == "rug" || category == "floor_lamp" || category == "wall_cabinet") ++extras[category];
@@ -280,6 +287,8 @@ int main(){
     const bool allExtras = extras["rug"] > 0 && extras["floor_lamp"] > 0 && extras["wall_cabinet"] > 0 && extras["lamp on a night stand"] > 0 &&
                            extras["chair under its table"] > 0 && extras["corner kitchen"] * 5 >= extras["kitchens"];
     report.check("furniture: rugs, lamps, wall cabinets, chairs under tables, a corner run in 1 of 5 kitchens", allExtras, extraText);
+    report.check("furniture: every house keeps to one style, and every style is used", mixedStyles == 0 && styleCount.size() == Proc::styleNames().size(),
+                 fmt("%d mixed, basic %d, modern %d, rustic %d ", mixedStyles, styleCount["basic"], styleCount["modern"], styleCount["rustic"]) + firstOf["style"]);
     report.check("300 furnished houses in under 5 s", seconds < 5.0, fmt("%.2f s, %zu pieces", seconds, pieces));
     report.check("at least 85% of the hand-drawn outlines become a planned house", sketchPassed >= sketched * 85 / 100,
                  fmt("%d/%d sketches passed", sketchPassed, sketched));

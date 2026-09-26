@@ -2,6 +2,7 @@
  "format": "loom.weaverprocedura.asset",
  "id": "shower_basic",
  "category": "shower",
+ "style": "basic",
  "parameters": [
   {
    "name": "width",

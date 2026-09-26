@@ -433,9 +433,14 @@ struct AssetParameter{
 
 enum class AssetPlacement : uint8_t{ Wall, Center, Corner };
 
+// Furniture styles, a closed list like the materials (append only). Furnish gives a whole house
+// one style; a category without an asset in that style falls back to "basic".
+const std::vector<std::string>& styleNames();   // "basic", "modern", "rustic"
+
 struct AssetInfo{
     std::string id;
     std::string category;              // bed, wardrobe, sofa, ... (see furnitureCategories)
+    std::string style = "basic";       // one of styleNames()
     std::vector<AssetParameter> parameters;
     AssetPlacement placement = AssetPlacement::Wall;
     float clearanceFront = 0.0f;       // free floor the asset needs in front of it
@@ -485,6 +490,7 @@ struct FurnishNode{
     float wallThickness = 0.25f;
     float partitionThickness = 0.12f;
     float fill = 1.0f;                 // 0..1: share of the optional pieces (armchair, desk, shelves)
+    std::string style;                 // one of styleNames(); empty: chosen by seed
 };
 
 // Placements -> Mesh: builds every (asset, parameters) once and places its copies.

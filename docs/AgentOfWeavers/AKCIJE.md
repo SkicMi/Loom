@@ -12,7 +12,7 @@ Gotovo: asseti kao zasebni recepti, `AssetLibrary`, `Furnish` → Placements (po
 **Sljedeće (redom):**
 1. ~~Klik-test na Xvfb~~ — gotovo, vidi Prošle.
 2. ~~Namještaj: kutni niz, gornji elementi, tepisi, lampe, stolice pod stolom~~ — gotovo, vidi Prošle.
-3. Više stilova po kategoriji (2–3 asseta: moderan, rustikalni) → Furnish ih bira po seedu jednom po kući (već radi).
+3. ~~Stilovi~~ — gotovo, vidi Prošle.
 4. Asseti za alate/rekvizite (isti format) — kategorije izvan namještaja; AI ih uči zasebno od kuća.
 5. Faza 3 (`ProceduraGen`) može sad bilježiti i Placements u JSONL.
 
@@ -46,6 +46,20 @@ Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
 6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
 
 ## Prošle
+
+### 2026-09-26 — Stilovi namještaja (basic, modern, rustic)
+- Stil je zatvoren vokabular u engineu (`styleNames()`, samo dodavanje), polje `style` u assetu (bez polja = basic,
+  nepoznat stil ne učita se) i `FurnishNode.style` (prazno = po seedu; JSON `style`, stari recepti bez polja rade).
+  Cijela kuća dobiva jedan stil; kategorija bez asseta tog stila uzima basic. Stil je time podatak u konektoru, kako
+  je dogovoreno za arhitekturu faze 5.
+- Asseti: 15 modern (bijeli lak, lan, staklo, metalne noge, niski oblici) i 14 rustic (tamno drvo, debele ploče i
+  noge, koža, lan, krevet sa stupovima, kamena radna ploča) u `procedura/assets/napravi.py`. Novi materijali lacquer,
+  leather, linen (boje u `src/LoomPbr.h`). Panel: izbor Style (By seed / Basic / Modern / Rustic).
+- Provjera: `test_procedura_assets` 20/20 (svih 51 asseta ispunjava kutiju na min/default/max; svaki stil ima glavne
+  komade; kuća zadanog stila ne miješa stilove; nepoznat stil odbijen; JSON), `test_procedura_300` 16/16 (286/300,
+  24 956 komada, 0.73 s; stilovi 90 / 104 / 92 kuća, 0 miješanih), `test_weaverprocedura` 75/75, agent 29/29,
+  PBR 8/8. Vizualno: ista kuća u tri stila (Blender).
+- Test sada ispisuje sve assete čija se kutija ne slaže s `bounds`, ne samo prvi (tako su nađene tri greške odjednom).
 
 ### 2026-09-26 — Namještaj, drugi krug: kutna kuhinja, gornji elementi, tepisi, lampe, stolice pod stolom
 - Novi asseti (22): rug, floor_lamp, table_lamp, wall_cabinet; kitchen_counter dobio `fixtures` (0 = sudoper i ploča
