@@ -27,6 +27,9 @@
 
 namespace Loom{
 
+//Visina uvezenog lika s rigom (mesh od pete do tjemena), u metrima scene
+constexpr float characterHeightMetres = 1.80f;
+
 struct ModelImportReport{
     Warp::Id group = Warp::None;
     size_t nodes = 0, meshes = 0, materials = 0;

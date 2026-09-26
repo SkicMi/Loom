@@ -1,0 +1,45 @@
+{
+  "benchmark": "weaverprocedura-agent-actions",
+  "version": 1,
+  "captured_at_utc": "2026-09-26T12:59:30.238680+00:00",
+  "model": {
+    "base_model": "Qwen/Qwen3.5-4B (local cache)",
+    "adapter": "qwen3.5-4b-loom-v2",
+    "adapter_config_sha256": "2653bad5417593141adda5f1bcd02fe54b1da5d7c8f986d23273450366771ccb",
+    "adapter_weights_sha256": "17ba04d7eb81c3deefcd5658a2331f189386d25b3262ca7237adbf7634556cb2",
+    "training_metrics_sha256": "b7186280e0bab69d193d8e14005add201d9e966549f51ff01d16a6e4361ef9d5"
+  },
+  "system_hashes": {
+    "tool_schema_sha256": "b140f86742891acb6813abb3b187ebe50b39b108b9c9c1b0be5047379fbae1f2",
+    "system_prompt_sha256": "d0a077c1147fb77359fb301a01db7b0fab18eb38c1ca29c69d746b65bf960b92",
+    "model_runtime_sha256": "3e7de2da40013fc16ed691613857836b027957851b2d22f01e18c67f8fb87130",
+    "agent_protocol_sha256": "2aa4f14207806cfaf7cc1f178bcba976f46923ba887380315adb7df8f3ffe5d2",
+    "benchmark_runner_sha256": "52f118e84d47fc9065b8a0399db25c36e1ab8bac26462bcd1f276896012067eb"
+  },
+  "test_data": {
+    "case_file": "procedura-action-cases-v1.jsonl",
+    "case_file_sha256": "f56b9de9027d57bfdfb9310c0d9fef91fef2d02c8373d21aad3bb612600cf9d0",
+    "retrieval_chunks": 2614,
+    "retrieval_source_sha256": "c8033547b9ae09d2016f639ae181e404e209c0c53b45410ae06b616413ea2064"
+  },
+  "results": {
+    "cases": 8,
+    "end_to_end_passes": 8,
+    "end_to_end_accuracy": 1.0,
+    "raw_model_passes": 7,
+    "raw_model_accuracy": 0.875,
+    "valid_protocol": 8,
+    "host_recovered_cases": 1,
+    "unexpected_actions": 0,
+    "mean_latency_seconds": 7.007644842880836,
+    "p95_latency_seconds_nearest_rank": 33.79035106001538,
+    "slowest_case": "hr-edit-existing-recipe"
+  },
+  "interpretation": [
+    "This measures the complete local agent system on a small held-out action suite, not model intelligence in general.",
+    "End-to-end accuracy includes the deterministic host guard; raw model accuracy is reported separately.",
+    "No model training occurred for this baseline. The existing 4B LoRA adapter was evaluated.",
+    "Recipe edit requests are expected to abstain because edit tools are not exposed yet; this unsupported case had the highest latency."
+  ],
+  "detailed_report": ".cache/weaverprocedura/benchmarks/procedura-actions-v1.json"
+}

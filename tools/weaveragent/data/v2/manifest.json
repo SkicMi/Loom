@@ -1,0 +1,9 @@
+{
+  "dataset_version": "loom-agent-v2",
+  "seed": 5070,
+  "train_examples": 888,
+  "eval_examples": 12,
+  "train_sha256": "2fb1d46469503601ac19e548353fc7e8782155702a307035d370c3abdeb98b5f",
+  "eval_sha256": "9db842e18b7170c4d7421386ba3577fcb7bf2453f5bd8e20c91975a4543bc155",
+  "source": "hand-authored Loom API templates and focused boundary examples"
+}

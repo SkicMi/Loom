@@ -82,6 +82,7 @@ public:
             raw.clear();
             alive.clear();
             cuts.clear();
+            redoCuts.clear();
         }
         uploadedPath.clear();
         splatCount = 0;
@@ -128,6 +129,7 @@ public:
         }
         const size_t count = removed.size();
         if(count > 0){
+            redoCuts.clear();
             cuts.push_back(std::move(removed));
             if(size.width > 0) build(size);
         }
@@ -137,8 +139,21 @@ public:
     bool undoCut(){
         std::lock_guard<std::mutex> guard(lock);
         if(cuts.empty()) return false;
-        for(uint32_t i : cuts.back()) alive[i] = 1;
+        std::vector<uint32_t> restored = std::move(cuts.back());
         cuts.pop_back();
+        for(uint32_t i : restored) alive[i] = 1;
+        redoCuts.push_back(std::move(restored));
+        if(size.width > 0) build(size);
+        return true;
+    }
+
+    bool redoCut(){
+        std::lock_guard<std::mutex> guard(lock);
+        if(redoCuts.empty()) return false;
+        std::vector<uint32_t> removed = std::move(redoCuts.back());
+        redoCuts.pop_back();
+        for(uint32_t i : removed) alive[i] = 0;
+        cuts.push_back(std::move(removed));
         if(size.width > 0) build(size);
         return true;
     }
@@ -299,6 +314,7 @@ private:
         raw = std::move(result);
         alive.assign(raw.size(), 1);
         cuts.clear();
+        redoCuts.clear();
         problem = failure;
         loaded = failure.empty() && !raw.empty();
         loading = false;
@@ -351,6 +367,7 @@ private:
     std::vector<SplatMath::RawSplat> raw;
     std::vector<uint8_t> alive;                   //po gaussianu iz datoteke: 0 = odrezan
     std::vector<std::vector<uint32_t>> cuts;      //svako rezanje, za korak natrag
+    std::vector<std::vector<uint32_t>> redoCuts;
     std::string problem;
     bool loaded = false;
     std::atomic<bool> loading{false};

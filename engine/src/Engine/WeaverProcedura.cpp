@@ -1,12 +1,15 @@
 #include "WeaverProcedura.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <queue>
 #include <set>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace Engine::WeaverProcedura{
@@ -217,21 +220,315 @@ bool sampleCurve(const Curve& curve, float spacing, std::size_t ringLimit,
     return true;
 }
 
-enum class PortType{ Invalid, Curve, Profile, Mesh };
+bool appendBox(MeshData& mesh, const glm::vec3& center, const glm::vec3& size,
+               std::size_t maxVertices, std::string& error){
+    if(!finite(center) || !finite(size) || size.x <= 0.0f || size.y <= 0.0f || size.z <= 0.0f){
+        error = "box dimensions and center must be finite and positive";
+        return false;
+    }
+    if(mesh.vertices.size() > maxVertices || maxVertices - mesh.vertices.size() < 24){
+        error = "generated mesh exceeds the configured vertex limit";
+        return false;
+    }
+    struct Face{ glm::vec3 normal, u, v; float halfNormal, halfU, halfV; };
+    const glm::vec3 half = size * 0.5f;
+    const Face faces[] = {
+        {{ 1, 0, 0}, { 0, 0,-1}, { 0, 1, 0}, half.x, half.z, half.y},
+        {{-1, 0, 0}, { 0, 0, 1}, { 0, 1, 0}, half.x, half.z, half.y},
+        {{ 0, 1, 0}, { 1, 0, 0}, { 0, 0,-1}, half.y, half.x, half.z},
+        {{ 0,-1, 0}, { 1, 0, 0}, { 0, 0, 1}, half.y, half.x, half.z},
+        {{ 0, 0, 1}, { 1, 0, 0}, { 0, 1, 0}, half.z, half.x, half.y},
+        {{ 0, 0,-1}, {-1, 0, 0}, { 0, 1, 0}, half.z, half.x, half.y},
+    };
+    for(const Face& face : faces){
+        const uint32_t base = uint32_t(mesh.vertices.size());
+        const glm::vec3 faceCenter = center + face.normal * face.halfNormal;
+        const glm::vec3 corners[] = {
+            faceCenter - face.u * face.halfU - face.v * face.halfV,
+            faceCenter + face.u * face.halfU - face.v * face.halfV,
+            faceCenter + face.u * face.halfU + face.v * face.halfV,
+            faceCenter - face.u * face.halfU + face.v * face.halfV,
+        };
+        const float uvU = std::max(0.001f, face.halfU * 2.0f);
+        const float uvV = std::max(0.001f, face.halfV * 2.0f);
+        const glm::vec2 uvs[] = {{0,0}, {uvU,0}, {uvU,uvV}, {0,uvV}};
+        for(int i = 0; i < 4; ++i){
+            if(!finite(corners[i])){ error = "generated box vertex is not finite"; return false; }
+            mesh.vertices.push_back({corners[i], face.normal, uvs[i]});
+        }
+        mesh.indices.insert(mesh.indices.end(), {base, base + 1, base + 2,
+                                                  base, base + 2, base + 3});
+    }
+    return true;
+}
+
+bool validGridSettings(const GridNode& grid){
+    return finite(grid.width) && finite(grid.depth) && grid.width > 0.0f && grid.depth > 0.0f &&
+           grid.width <= 10000.0f && grid.depth <= 10000.0f && grid.cellsX >= 1 && grid.cellsZ >= 1 &&
+           grid.cellsX <= 128 && grid.cellsZ <= 128 &&
+           std::size_t(grid.cellsX + 1) * std::size_t(grid.cellsZ + 1) <= 16384;
+}
+
+bool validInteriorSettings(const InteriorBlockoutNode& room){
+    const float values[] = {room.roomWidth, room.roomDepth, room.corridorWidth, room.wallHeight,
+                            room.wallThickness, room.floorThickness, room.doorWidth};
+    for(float value : values) if(!finite(value) || value <= 0.0f || value > 1000.0f) return false;
+    return room.roomsPerSide >= 1 && room.roomsPerSide <= 8 &&
+           room.doorWidth < room.roomWidth - 2.0f * room.wallThickness &&
+           room.wallThickness * 2.0f < std::min(room.roomDepth, room.corridorWidth) &&
+           room.floorThickness < room.wallHeight;
+}
+
+bool validMesh(const MeshData& mesh){
+    if(mesh.vertices.empty() || mesh.indices.empty() || mesh.indices.size() % 3 != 0) return false;
+    for(const MeshVertex& vertex : mesh.vertices)
+        if(!finite(vertex.position) || !finite(vertex.normal) || !finite(vertex.uv)) return false;
+    for(uint32_t index : mesh.indices) if(index >= mesh.vertices.size()) return false;
+    return true;
+}
+
+struct FacePatch{
+    std::vector<std::size_t> triangles;
+    std::vector<uint32_t> boundary;
+    glm::vec3 normal{0.0f};
+};
+
+uint64_t edgeKey(uint32_t a, uint32_t b){
+    const uint32_t lo = std::min(a, b), hi = std::max(a, b);
+    return (uint64_t(lo) << 32u) | uint64_t(hi);
+}
+
+bool collectFacePatches(const MeshData& mesh, std::vector<FacePatch>& output, std::string& error){
+    if(!validMesh(mesh)){ error = "mesh topology or vertex data is invalid"; return false; }
+    const std::size_t triangleCount = mesh.indices.size() / 3;
+    std::vector<glm::vec3> normals(triangleCount);
+    std::unordered_map<uint64_t, std::vector<std::size_t>> edgeTriangles;
+    edgeTriangles.reserve(triangleCount * 2);
+    for(std::size_t triangle = 0; triangle < triangleCount; ++triangle){
+        const uint32_t a = mesh.indices[triangle * 3], b = mesh.indices[triangle * 3 + 1], c = mesh.indices[triangle * 3 + 2];
+        const glm::vec3 crossValue = glm::cross(mesh.vertices[b].position - mesh.vertices[a].position,
+                                                 mesh.vertices[c].position - mesh.vertices[a].position);
+        if(!normalized(crossValue, normals[triangle])){ error = "mesh contains a degenerate triangle"; return false; }
+        edgeTriangles[edgeKey(a,b)].push_back(triangle);
+        edgeTriangles[edgeKey(b,c)].push_back(triangle);
+        edgeTriangles[edgeKey(c,a)].push_back(triangle);
+    }
+
+    std::vector<uint8_t> assigned(triangleCount, 0);
+    std::vector<FacePatch> patches;
+    for(std::size_t seed = 0; seed < triangleCount; ++seed){
+        if(assigned[seed]) continue;
+        FacePatch patch;
+        patch.normal = normals[seed];
+        std::queue<std::size_t> pending;
+        pending.push(seed);
+        assigned[seed] = 1;
+        while(!pending.empty()){
+            const std::size_t triangle = pending.front(); pending.pop();
+            patch.triangles.push_back(triangle);
+            const uint32_t ids[] = {mesh.indices[triangle * 3], mesh.indices[triangle * 3 + 1], mesh.indices[triangle * 3 + 2]};
+            for(int edge = 0; edge < 3; ++edge){
+                const auto found = edgeTriangles.find(edgeKey(ids[edge], ids[(edge + 1) % 3]));
+                if(found == edgeTriangles.end()) continue;
+                for(std::size_t candidate : found->second){
+                    if(assigned[candidate] || glm::dot(normals[seed], normals[candidate]) < 0.9999f) continue;
+                    const glm::vec3 origin = mesh.vertices[ids[0]].position;
+                    const uint32_t candidateId = mesh.indices[candidate * 3];
+                    if(std::abs(glm::dot(mesh.vertices[candidateId].position - origin, normals[seed])) > 1e-4f) continue;
+                    assigned[candidate] = 1;
+                    pending.push(candidate);
+                }
+            }
+        }
+
+        std::unordered_map<uint64_t, std::pair<uint32_t,uint32_t>> boundaryEdges;
+        std::unordered_map<uint64_t, uint32_t> edgeCounts;
+        for(std::size_t triangle : patch.triangles){
+            const uint32_t ids[] = {mesh.indices[triangle * 3], mesh.indices[triangle * 3 + 1], mesh.indices[triangle * 3 + 2]};
+            for(int edge = 0; edge < 3; ++edge){
+                const uint64_t key = edgeKey(ids[edge], ids[(edge + 1) % 3]);
+                ++edgeCounts[key];
+                boundaryEdges[key] = {ids[edge], ids[(edge + 1) % 3]};
+            }
+        }
+        std::unordered_map<uint32_t, uint32_t> next;
+        for(const auto& [key, count] : edgeCounts){
+            if(count == 1){
+                const auto directed = boundaryEdges.at(key);
+                if(!next.emplace(directed.first, directed.second).second){ error = "mesh face boundary is not a simple loop"; return false; }
+            }else if(count > 2){ error = "mesh has a non-manifold face edge"; return false; }
+        }
+        if(next.size() < 3){ error = "mesh face has no closed boundary"; return false; }
+        uint32_t current = next.begin()->first;
+        const uint32_t start = current;
+        std::unordered_set<uint32_t> visited;
+        do{
+            if(!visited.insert(current).second){ error = "mesh face boundary is not a simple loop"; return false; }
+            patch.boundary.push_back(current);
+            const auto found = next.find(current);
+            if(found == next.end()){ error = "mesh face boundary is open"; return false; }
+            current = found->second;
+        }while(current != start && patch.boundary.size() <= next.size());
+        if(current != start || patch.boundary.size() != next.size()){
+            error = "mesh face boundary contains multiple loops";
+            return false;
+        }
+        patches.push_back(std::move(patch));
+    }
+    output = std::move(patches);
+    error.clear();
+    return true;
+}
+
+bool insetPolygon(const MeshData& mesh, const FacePatch& patch, float amount,
+                  std::vector<glm::vec3>& output, std::string& error){
+    const std::size_t count = patch.boundary.size();
+    std::vector<glm::vec3> points(count);
+    for(std::size_t i = 0; i < count; ++i) points[i] = mesh.vertices[patch.boundary[i]].position;
+    double signedArea = 0.0;
+    const glm::vec3 origin = points.front();
+    for(std::size_t i = 0; i < count; ++i)
+        signedArea += double(glm::dot(glm::cross(points[i]-origin, points[(i + 1) % count]-origin), patch.normal));
+    if(std::abs(signedArea) <= pointEpsilon){ error = "mesh face area is zero"; return false; }
+    const float winding = signedArea > 0.0 ? 1.0f : -1.0f;
+    int turnDirection = 0;
+    for(std::size_t i = 0; i < count; ++i){
+        const glm::vec3 first = points[(i+1)%count]-points[i];
+        const glm::vec3 second = points[(i+2)%count]-points[(i+1)%count];
+        const float turn = glm::dot(glm::cross(first,second),patch.normal) * winding;
+        if(std::abs(turn) <= 1e-6f) continue;
+        if(turnDirection == 0) turnDirection = turn > 0.0f ? 1 : -1;
+        else if((turn > 0.0f ? 1 : -1) != turnDirection){
+            error = "bevel supports convex planar faces only";
+            return false;
+        }
+    }
+    if(turnDirection <= 0){ error = "bevel supports convex planar faces only"; return false; }
+    std::vector<glm::vec3> inset(count);
+    for(std::size_t i = 0; i < count; ++i){
+        glm::vec3 incoming, outgoing;
+        if(!direction(points[(i + count - 1) % count], points[i], incoming) ||
+           !direction(points[i], points[(i + 1) % count], outgoing)){
+            error = "mesh face has a degenerate boundary edge";
+            return false;
+        }
+        const glm::vec3 inwardA = winding * glm::cross(patch.normal, incoming);
+        const glm::vec3 inwardB = winding * glm::cross(patch.normal, outgoing);
+        glm::vec3 bisector;
+        if(!normalized(inwardA + inwardB, bisector)){ error = "mesh face has an invalid corner"; return false; }
+        const float denominator = glm::dot(bisector, inwardB);
+        if(denominator <= 1e-4f){ error = "bevel does not support this concave face boundary"; return false; }
+        const float miter = amount / denominator;
+        if(!finite(miter) || miter > amount * 8.0f){ error = "bevel amount is too large for this face"; return false; }
+        inset[i] = points[i] + bisector * miter;
+    }
+    for(const glm::vec3& candidate : inset){
+        for(std::size_t edge = 0; edge < count; ++edge){
+            glm::vec3 tangent;
+            if(!direction(points[edge],points[(edge+1)%count],tangent)){
+                error = "mesh face has a degenerate boundary edge";
+                return false;
+            }
+            const glm::vec3 inward = winding * glm::cross(patch.normal,tangent);
+            if(glm::dot(candidate-points[edge],inward) < -1e-5f){
+                error = "bevel amount is too large for this face";
+                return false;
+            }
+        }
+    }
+    output = std::move(inset);
+    return true;
+}
+
+enum class PortType{ Invalid, Curve, Profile, PointGrid, Mesh, Points };
 
 PortType outputType(const Node& node, uint32_t port){
     if(port != 0) return PortType::Invalid;
     if(std::holds_alternative<CurveNode>(node.payload)) return PortType::Curve;
     if(std::holds_alternative<RectangleProfileNode>(node.payload)) return PortType::Profile;
-    if(std::holds_alternative<SweepNode>(node.payload)) return PortType::Mesh;
+    if(std::holds_alternative<GridNode>(node.payload) ||
+       std::holds_alternative<SetGridPointHeightNode>(node.payload)) return PortType::PointGrid;
+    if(std::holds_alternative<SweepNode>(node.payload) ||
+       std::holds_alternative<GridToMeshNode>(node.payload) ||
+       std::holds_alternative<InteriorBlockoutNode>(node.payload) ||
+       std::holds_alternative<AddPrimitiveNode>(node.payload)) return PortType::Mesh;
+    if(std::holds_alternative<MeshToPointNode>(node.payload) ||
+       std::holds_alternative<PointFromMeshNode>(node.payload)) return PortType::Points;
+    if(std::holds_alternative<MoveNode>(node.payload) || std::holds_alternative<RotateNode>(node.payload) ||
+       std::holds_alternative<ScaleNode>(node.payload) || std::holds_alternative<ExtrudeNode>(node.payload) ||
+       std::holds_alternative<BevelNode>(node.payload)) return PortType::Mesh;
     return PortType::Invalid;
 }
 
 PortType inputType(const Node& node, uint32_t port){
-    if(!std::holds_alternative<SweepNode>(node.payload)) return PortType::Invalid;
-    if(port == 0) return PortType::Curve;
-    if(port == 1) return PortType::Profile;
+    if(std::holds_alternative<SweepNode>(node.payload)){
+        if(port == 0) return PortType::Curve;
+        if(port == 1) return PortType::Profile;
+    }
+    if(std::holds_alternative<SetGridPointHeightNode>(node.payload) ||
+       std::holds_alternative<GridToMeshNode>(node.payload))
+        if(port == 0) return PortType::PointGrid;
+    if((std::holds_alternative<MoveNode>(node.payload) || std::holds_alternative<RotateNode>(node.payload) ||
+        std::holds_alternative<ScaleNode>(node.payload) || std::holds_alternative<ExtrudeNode>(node.payload) ||
+        std::holds_alternative<BevelNode>(node.payload) || std::holds_alternative<MeshToPointNode>(node.payload) ||
+        std::holds_alternative<PointFromMeshNode>(node.payload)) && port == 0) return PortType::Mesh;
     return PortType::Invalid;
+}
+
+glm::vec3 rotateEulerDegrees(const glm::vec3& value, const glm::vec3& degrees){
+    const glm::vec3 radians = degrees * float(pi / 180.0);
+    glm::vec3 result = rotateAround(value, {1,0,0}, radians.x);
+    result = rotateAround(result, {0,1,0}, radians.y);
+    return rotateAround(result, {0,0,1}, radians.z);
+}
+
+bool transformMesh(const MeshData& input, const glm::vec3& scale, const glm::vec3& degrees,
+                   const glm::vec3& offset, const glm::vec3& pivot,
+                   MeshData& output, std::string& error){
+    if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
+    if(!finite(scale) || !finite(degrees) || !finite(offset) || !finite(pivot) ||
+       std::abs(scale.x) < 1e-6f || std::abs(scale.y) < 1e-6f || std::abs(scale.z) < 1e-6f){
+        error = "transform values must be finite and scale cannot be zero";
+        return false;
+    }
+    MeshData generated = input;
+    for(MeshVertex& vertex : generated.vertices){
+        glm::vec3 position = pivot + (vertex.position - pivot) * scale;
+        position = pivot + rotateEulerDegrees(position - pivot, degrees) + offset;
+        const glm::vec3 scaledNormal(vertex.normal.x / scale.x,
+                                     vertex.normal.y / scale.y,
+                                     vertex.normal.z / scale.z);
+        glm::vec3 normal;
+        if(!finite(position) || !normalized(rotateEulerDegrees(scaledNormal, degrees), normal)){
+            error = "transform produced a non-finite position or invalid normal";
+            return false;
+        }
+        vertex.position = position;
+        vertex.normal = normal;
+    }
+    if(scale.x * scale.y * scale.z < 0.0f){
+        for(std::size_t i = 0; i < generated.indices.size(); i += 3)
+            std::swap(generated.indices[i + 1], generated.indices[i + 2]);
+    }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+void appendOrientedTriangle(MeshData& mesh, uint32_t a, uint32_t b, uint32_t c,
+                            const glm::vec3& desiredNormal){
+    const glm::vec3 crossValue = glm::cross(mesh.vertices[b].position - mesh.vertices[a].position,
+                                             mesh.vertices[c].position - mesh.vertices[a].position);
+    if(glm::dot(crossValue, desiredNormal) < 0.0f) std::swap(b,c);
+    mesh.indices.insert(mesh.indices.end(), {a,b,c});
+}
+
+bool validPrimitiveType(PrimitiveType primitive){
+    switch(primitive){
+        case PrimitiveType::Cube: case PrimitiveType::Plane: case PrimitiveType::Sphere:
+        case PrimitiveType::Pyramid: case PrimitiveType::Capsule: return true;
+    }
+    return false;
 }
 
 }
@@ -252,9 +549,645 @@ NodeId addNode(Graph& graph, NodePayload payload, float editorX, float editorY){
     return id;
 }
 
+bool makeGrid(const GridNode& settings, PointGrid& output, std::string& error){
+    if(!validGridSettings(settings)){
+        error = "grid dimensions must be positive and contain at most 16384 points";
+        return false;
+    }
+    PointGrid generated;
+    generated.cellsX = settings.cellsX;
+    generated.cellsZ = settings.cellsZ;
+    generated.points.reserve(std::size_t(settings.cellsX + 1) * std::size_t(settings.cellsZ + 1));
+    for(uint32_t row = 0; row <= settings.cellsZ; ++row){
+        const float z = -settings.depth * 0.5f + settings.depth * float(row) / float(settings.cellsZ);
+        for(uint32_t column = 0; column <= settings.cellsX; ++column){
+            const float x = -settings.width * 0.5f + settings.width * float(column) / float(settings.cellsX);
+            generated.points.emplace_back(x, 0.0f, z);
+        }
+    }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool gridToMesh(const PointGrid& grid, MeshData& output, std::string& error, std::size_t maxVertices){
+    if(grid.cellsX == 0 || grid.cellsZ == 0 || grid.cellsX > 128 || grid.cellsZ > 128 ||
+       std::size_t(grid.cellsX + 1) * std::size_t(grid.cellsZ + 1) != grid.points.size()){
+        error = "point grid dimensions do not match its point data";
+        return false;
+    }
+    if(grid.points.size() > maxVertices || grid.points.size() > std::size_t(std::numeric_limits<uint32_t>::max())){
+        error = "grid mesh exceeds the configured vertex limit";
+        return false;
+    }
+    for(const glm::vec3& point : grid.points){
+        if(!finite(point)){ error = "grid point coordinates must be finite"; return false; }
+    }
+
+    MeshData generated;
+    generated.vertices.resize(grid.points.size());
+    generated.indices.reserve(std::size_t(grid.cellsX) * grid.cellsZ * 6);
+    for(uint32_t row = 0; row <= grid.cellsZ; ++row){
+        for(uint32_t column = 0; column <= grid.cellsX; ++column){
+            const std::size_t index = std::size_t(row) * (grid.cellsX + 1) + column;
+            generated.vertices[index].position = grid.points[index];
+            generated.vertices[index].uv = glm::vec2(float(column) / grid.cellsX, float(row) / grid.cellsZ);
+        }
+    }
+    for(uint32_t row = 0; row < grid.cellsZ; ++row){
+        for(uint32_t column = 0; column < grid.cellsX; ++column){
+            const uint32_t a = row * (grid.cellsX + 1) + column;
+            const uint32_t b = a + 1;
+            const uint32_t c = a + grid.cellsX + 1;
+            const uint32_t d = c + 1;
+            // XZ rows wind toward +Y for the viewport's right-handed world.
+            generated.indices.insert(generated.indices.end(), {a, c, b, b, c, d});
+        }
+    }
+    for(std::size_t i = 0; i < generated.indices.size(); i += 3){
+        const uint32_t a = generated.indices[i], b = generated.indices[i + 1], c = generated.indices[i + 2];
+        const glm::vec3 normal = glm::cross(generated.vertices[b].position - generated.vertices[a].position,
+                                            generated.vertices[c].position - generated.vertices[a].position);
+        if(!finite(normal) || glm::dot(normal, normal) <= float(vectorEpsilonSquared)){
+            error = "grid contains a degenerate cell";
+            return false;
+        }
+        generated.vertices[a].normal += normal;
+        generated.vertices[b].normal += normal;
+        generated.vertices[c].normal += normal;
+    }
+    for(MeshVertex& vertex : generated.vertices){
+        glm::vec3 normal;
+        if(!normalized(vertex.normal, normal)){ error = "grid produced a degenerate normal"; return false; }
+        vertex.normal = normal;
+    }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool makeInteriorBlockout(const InteriorBlockoutNode& settings, MeshData& output,
+                          std::string& error, std::size_t maxVertices){
+    if(!validInteriorSettings(settings)){
+        error = "interior dimensions are invalid or door opening does not fit a room wall";
+        return false;
+    }
+    const float length = settings.roomsPerSide * settings.roomWidth;
+    const float halfLength = length * 0.5f;
+    const float corridorHalf = settings.corridorWidth * 0.5f;
+    const float outerZ = corridorHalf + settings.roomDepth;
+    const float wallY = settings.wallHeight * 0.5f;
+    const float wallZ = settings.wallThickness * 0.5f;
+    MeshData generated;
+    auto box = [&](float x, float y, float z, float sx, float sy, float sz){
+        return appendBox(generated, {x,y,z}, {sx,sy,sz}, maxVertices, error);
+    };
+    auto wallAlongX = [&](float start, float end, float z){
+        if(end - start <= 1e-4f) return true;
+        return box((start + end) * 0.5f, wallY, z, end - start, settings.wallHeight, settings.wallThickness);
+    };
+    auto wallAlongZ = [&](float x, float start, float end){
+        if(end - start <= 1e-4f) return true;
+        return box(x, wallY, (start + end) * 0.5f, settings.wallThickness, settings.wallHeight, end - start);
+    };
+
+    // A continuous floor slab makes the first result easy to read as a blockout.
+    if(!box(0.0f, -settings.floorThickness * 0.5f, 0.0f, length,
+            settings.floorThickness, outerZ * 2.0f)) return false;
+
+    // Outer long walls and room-end walls; the two corridor ends stay open.
+    if(!wallAlongX(-halfLength, halfLength, outerZ - wallZ) ||
+       !wallAlongX(-halfLength, halfLength, -outerZ + wallZ)) return false;
+    for(int side : {-1, 1}){
+        const float roomStartZ = side > 0 ? corridorHalf + wallZ : -outerZ + wallZ;
+        const float roomEndZ = side > 0 ? outerZ - wallZ : -corridorHalf - wallZ;
+        if(!wallAlongZ(-halfLength + wallZ, roomStartZ, roomEndZ) ||
+           !wallAlongZ(halfLength - wallZ, roomStartZ, roomEndZ)) return false;
+
+        // Room-to-corridor walls have a centered door opening in each bay.
+        for(uint32_t room = 0; room < settings.roomsPerSide; ++room){
+            const float x0 = -halfLength + room * settings.roomWidth;
+            const float x1 = x0 + settings.roomWidth;
+            const float center = (x0 + x1) * 0.5f;
+            const float gapHalf = settings.doorWidth * 0.5f;
+            const float corridorWallZ = side > 0 ? corridorHalf + wallZ : -corridorHalf - wallZ;
+            if(!wallAlongX(x0, center - gapHalf, corridorWallZ) ||
+               !wallAlongX(center + gapHalf, x1, corridorWallZ)) return false;
+        }
+
+        // Partitions separate adjacent rooms without crossing the corridor.
+        for(uint32_t divider = 1; divider < settings.roomsPerSide; ++divider){
+            const float x = -halfLength + divider * settings.roomWidth;
+            if(!wallAlongZ(x, roomStartZ, roomEndZ)) return false;
+        }
+    }
+
+    if(generated.vertices.empty() || generated.indices.empty()){
+        error = "interior blockout produced no geometry";
+        return false;
+    }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool makePrimitive(const AddPrimitiveNode& settings, MeshData& output, std::string& error,
+                   std::size_t maxVertices){
+    if(!validPrimitiveType(settings.primitive) || !finite(settings.size) ||
+       settings.size.x <= 0.0f || settings.size.y <= 0.0f || settings.size.z <= 0.0f ||
+       settings.size.x > 10000.0f || settings.size.y > 10000.0f || settings.size.z > 10000.0f){
+        error = "primitive type and dimensions must be valid and positive";
+        return false;
+    }
+    MeshData generated;
+    auto quad = [&](const std::array<glm::vec3,4>& positions){
+        glm::vec3 normal;
+        if(!normalized(glm::cross(positions[1] - positions[0], positions[2] - positions[0]), normal)) return false;
+        const uint32_t base = uint32_t(generated.vertices.size());
+        if(generated.vertices.size() > maxVertices || maxVertices - generated.vertices.size() < 4) return false;
+        for(int i = 0; i < 4; ++i)
+            generated.vertices.push_back({positions[i], normal, {float(i == 1 || i == 2), float(i >= 2)}});
+        generated.indices.insert(generated.indices.end(), {base,base+1,base+2,base,base+2,base+3});
+        return true;
+    };
+    auto triangle = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 outward){
+        glm::vec3 normal;
+        if(!normalized(glm::cross(b-a,c-a), normal)) return false;
+        if(glm::dot(normal,outward) < 0.0f){ std::swap(b,c); normal = -normal; }
+        if(generated.vertices.size() > maxVertices || maxVertices - generated.vertices.size() < 3) return false;
+        const uint32_t base = uint32_t(generated.vertices.size());
+        generated.vertices.push_back({a,normal,{0,0}});
+        generated.vertices.push_back({b,normal,{1,0}});
+        generated.vertices.push_back({c,normal,{0.5f,1}});
+        generated.indices.insert(generated.indices.end(), {base,base+1,base+2});
+        return true;
+    };
+
+    if(settings.primitive == PrimitiveType::Cube){
+        if(!appendBox(generated,{0,0,0},{1,1,1},maxVertices,error)) return false;
+    }else if(settings.primitive == PrimitiveType::Plane){
+        if(!quad({glm::vec3(-0.5f,0,-0.5f),glm::vec3(-0.5f,0,0.5f),
+                  glm::vec3(0.5f,0,0.5f),glm::vec3(0.5f,0,-0.5f)})){
+            error = "plane primitive exceeds the configured vertex limit";
+            return false;
+        }
+    }else if(settings.primitive == PrimitiveType::Pyramid){
+        constexpr float h = 0.5f;
+        const glm::vec3 base[] = {{-h,-h,-h},{h,-h,-h},{h,-h,h},{-h,-h,h}};
+        if(!quad({base[0],base[1],base[2],base[3]})){
+            error = "pyramid primitive exceeds the configured vertex limit";
+            return false;
+        }
+        const glm::vec3 tip{0,h,0};
+        for(int i = 0; i < 4; ++i){
+            const glm::vec3 a = base[i], b = base[(i+1)%4];
+            if(!triangle(a,b,tip,(a+b+tip)/3.0f)){
+                error = "pyramid primitive exceeds the configured vertex limit";
+                return false;
+            }
+        }
+    }else{
+        constexpr uint32_t segments = 32;
+        struct Ring{ float y, radius; };
+        std::vector<Ring> rings;
+        const bool capsule = settings.primitive == PrimitiveType::Capsule;
+        if(capsule){
+            for(uint32_t i = 1; i <= 8; ++i){
+                const float angle = float(pi * 0.5) * float(i) / 8.0f;
+                rings.push_back({0.5f + 0.5f * std::cos(angle), 0.5f * std::sin(angle)});
+            }
+            rings.push_back({-0.5f,0.5f});
+            for(uint32_t i = 1; i < 8; ++i){
+                const float angle = float(pi * 0.5) * float(i) / 8.0f;
+                rings.push_back({-0.5f - 0.5f * std::sin(angle), 0.5f * std::cos(angle)});
+            }
+        }else{
+            constexpr uint32_t latitudeRings = 16;
+            for(uint32_t i = 1; i < latitudeRings; ++i){
+                const float angle = float(pi) * float(i) / float(latitudeRings);
+                rings.push_back({0.5f * std::cos(angle),0.5f * std::sin(angle)});
+            }
+        }
+        const glm::vec3 top = capsule ? glm::vec3(0,1,0) : glm::vec3(0,0.5f,0);
+        const glm::vec3 bottom = capsule ? glm::vec3(0,-1,0) : glm::vec3(0,-0.5f,0);
+        const uint32_t topId = 0;
+        generated.vertices.push_back({top,{0,1,0},{0.5f,0}});
+        for(std::size_t ring = 0; ring < rings.size(); ++ring){
+            for(uint32_t segment = 0; segment <= segments; ++segment){
+                const float angle = float(2.0 * pi) * float(segment) / float(segments);
+                const glm::vec3 radial{std::cos(angle),0,std::sin(angle)};
+                const glm::vec3 position{rings[ring].radius * radial.x,rings[ring].y,rings[ring].radius * radial.z};
+                glm::vec3 normal;
+                if(!capsule) normal = glm::normalize(position);
+                else if(rings[ring].y > 0.5f) normal = glm::normalize(position - glm::vec3(0,0.5f,0));
+                else if(rings[ring].y < -0.5f) normal = glm::normalize(position - glm::vec3(0,-0.5f,0));
+                else normal = glm::normalize(glm::vec3(radial.x,0,radial.z));
+                generated.vertices.push_back({position,normal,{float(segment)/segments,1.0f-float(ring+1)/float(rings.size()+1)}});
+            }
+        }
+        const uint32_t bottomId = uint32_t(generated.vertices.size());
+        generated.vertices.push_back({bottom,{0,-1,0},{0.5f,1}});
+        if(generated.vertices.size() > maxVertices){ error = "primitive exceeds the configured vertex limit"; return false; }
+        const uint32_t stride = segments + 1;
+        for(uint32_t segment = 0; segment < segments; ++segment){
+            const uint32_t a = 1 + segment, b = a + 1;
+            appendOrientedTriangle(generated,topId,a,b,{0,1,0});
+        }
+        for(uint32_t ring = 0; ring + 1 < rings.size(); ++ring){
+            const uint32_t first = 1 + ring * stride, next = first + stride;
+            for(uint32_t segment = 0; segment < segments; ++segment){
+                const uint32_t a = first + segment, b = next + segment, c = b + 1, d = a + 1;
+                const glm::vec3 outward = glm::normalize(generated.vertices[a].position + generated.vertices[b].position +
+                                                         generated.vertices[c].position + generated.vertices[d].position -
+                                                         4.0f * glm::vec3(0,capsule ? std::clamp((rings[ring].y+rings[ring+1].y)*0.5f,-0.5f,0.5f):0,0));
+                appendOrientedTriangle(generated,a,b,c,outward);
+                appendOrientedTriangle(generated,a,c,d,outward);
+            }
+        }
+        const uint32_t lastRing = 1 + uint32_t(rings.size()-1) * stride;
+        for(uint32_t segment = 0; segment < segments; ++segment){
+            const uint32_t a = lastRing + segment, b = lastRing + segment + 1;
+            appendOrientedTriangle(generated,a,b,bottomId,{0,-1,0});
+        }
+    }
+    if(generated.empty()){ error = "primitive produced no geometry"; return false; }
+    MeshData scaled;
+    if(!transformMesh(generated,settings.size,{0,0,0},{0,0,0},{0,0,0},scaled,error)) return false;
+    output = std::move(scaled);
+    error.clear();
+    return true;
+}
+
+bool moveMesh(const MeshData& input, const MoveNode& settings, MeshData& output, std::string& error){
+    return transformMesh(input,{1,1,1},{0,0,0},settings.offset,{0,0,0},output,error);
+}
+
+bool rotateMesh(const MeshData& input, const RotateNode& settings, MeshData& output, std::string& error){
+    return transformMesh(input,{1,1,1},settings.degrees,{0,0,0},settings.pivot,output,error);
+}
+
+bool scaleMesh(const MeshData& input, const ScaleNode& settings, MeshData& output, std::string& error){
+    return transformMesh(input,settings.factor,{0,0,0},{0,0,0},settings.pivot,output,error);
+}
+
+bool extrudeFace(const MeshData& input, const ExtrudeNode& settings, MeshData& output,
+                 std::string& error, std::size_t maxVertices){
+    if(!finite(settings.distance) || std::abs(settings.distance) < 1e-6f || std::abs(settings.distance) > 10000.0f){
+        error = "extrusion distance must be finite, non-zero, and within range";
+        return false;
+    }
+    if(input.vertices.size() > maxVertices || input.vertices.size() > std::size_t(std::numeric_limits<uint32_t>::max())){
+        error = "extruded mesh exceeds the configured vertex limit";
+        return false;
+    }
+    std::vector<FacePatch> patches;
+    if(!collectFacePatches(input,patches,error)) return false;
+    const std::size_t triangleCount = input.indices.size()/3;
+    if(settings.faceIndex >= triangleCount){ error = "extrusion face index is outside the mesh"; return false; }
+    const auto selected = std::find_if(patches.begin(),patches.end(),[&](const FacePatch& patch){
+        return std::find(patch.triangles.begin(),patch.triangles.end(),settings.faceIndex) != patch.triangles.end();
+    });
+    if(selected == patches.end()){ error = "extrusion face could not be selected"; return false; }
+    std::unordered_set<std::size_t> selectedTriangles(selected->triangles.begin(),selected->triangles.end());
+    MeshData generated = input;
+    generated.indices.clear();
+    generated.indices.reserve(input.indices.size() + selected->boundary.size()*6);
+    for(std::size_t triangle = 0; triangle < triangleCount; ++triangle){
+        if(selectedTriangles.count(triangle)) continue;
+        generated.indices.insert(generated.indices.end(),input.indices.begin()+std::ptrdiff_t(triangle*3),
+                                 input.indices.begin()+std::ptrdiff_t(triangle*3+3));
+    }
+    std::unordered_map<uint32_t,uint32_t> top;
+    for(std::size_t triangle : selected->triangles){
+        for(int corner = 0; corner < 3; ++corner){
+            const uint32_t original = input.indices[triangle*3+std::size_t(corner)];
+            if(top.find(original) != top.end()) continue;
+            if(generated.vertices.size() >= maxVertices || generated.vertices.size() >= std::size_t(std::numeric_limits<uint32_t>::max())){
+                error = "extruded mesh exceeds the configured vertex limit"; return false;
+            }
+            MeshVertex vertex = input.vertices[original];
+            vertex.position += selected->normal * settings.distance;
+            if(!finite(vertex.position)){ error = "extrusion produced a non-finite vertex"; return false; }
+            top.emplace(original,uint32_t(generated.vertices.size()));
+            generated.vertices.push_back(vertex);
+        }
+    }
+    for(std::size_t triangle : selected->triangles){
+        const uint32_t a = top.at(input.indices[triangle*3]);
+        const uint32_t b = top.at(input.indices[triangle*3+1]);
+        const uint32_t c = top.at(input.indices[triangle*3+2]);
+        generated.indices.insert(generated.indices.end(),{a,b,c});
+    }
+    for(std::size_t edge = 0; edge < selected->boundary.size(); ++edge){
+        const uint32_t a = selected->boundary[edge];
+        const uint32_t b = selected->boundary[(edge+1)%selected->boundary.size()];
+        const glm::vec3 edgeDirection = input.vertices[b].position - input.vertices[a].position;
+        glm::vec3 sideNormal;
+        if(!normalized(glm::cross(edgeDirection,selected->normal),sideNormal)){ error = "extrusion has a degenerate boundary edge"; return false; }
+        if(generated.vertices.size() > maxVertices || maxVertices-generated.vertices.size() < 4){
+            error = "extruded mesh exceeds the configured vertex limit"; return false;
+        }
+        const uint32_t base = uint32_t(generated.vertices.size());
+        const float length = float(distance(input.vertices[a].position,input.vertices[b].position));
+        generated.vertices.push_back({input.vertices[a].position,sideNormal,{0,0}});
+        generated.vertices.push_back({input.vertices[b].position,sideNormal,{length,0}});
+        generated.vertices.push_back({generated.vertices[top.at(b)].position,sideNormal,{length,std::abs(settings.distance)}});
+        generated.vertices.push_back({generated.vertices[top.at(a)].position,sideNormal,{0,std::abs(settings.distance)}});
+        generated.indices.insert(generated.indices.end(),{base,base+1,base+2,base,base+2,base+3});
+    }
+    if(generated.empty()){ error = "extrusion produced no geometry"; return false; }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& output,
+               std::string& error, std::size_t maxVertices){
+    if(!finite(settings.amount) || settings.amount <= 0.0f || settings.amount > 1000.0f ||
+       settings.segments < 1 || settings.segments > 8){
+        error = "bevel amount or segment count is invalid";
+        return false;
+    }
+    if(input.vertices.size() > maxVertices){ error = "beveled mesh exceeds the configured vertex limit"; return false; }
+    std::vector<FacePatch> patches;
+    if(!collectFacePatches(input,patches,error)) return false;
+    constexpr double keyRange = 8.0e13;
+    for(const MeshVertex& vertex : input.vertices){
+        if(std::abs(double(vertex.position.x)) > keyRange || std::abs(double(vertex.position.y)) > keyRange ||
+           std::abs(double(vertex.position.z)) > keyRange){
+            error = "mesh coordinates exceed the bevel position-key range";
+            return false;
+        }
+    }
+
+    using PositionKey = std::tuple<int64_t,int64_t,int64_t>;
+    using GeometricEdge = std::pair<PositionKey,PositionKey>;
+    auto positionKey = [](const glm::vec3& p){
+        constexpr double tolerance = 1e-5;
+        return PositionKey{int64_t(std::llround(double(p.x)/tolerance)),
+                           int64_t(std::llround(double(p.y)/tolerance)),
+                           int64_t(std::llround(double(p.z)/tolerance))};
+    };
+    struct EdgeOccurrence{
+        std::size_t patch = 0;
+        uint32_t start = 0, end = 0;
+        uint32_t innerStart = 0, innerEnd = 0;
+        PositionKey startKey, endKey;
+    };
+    struct BevelPatchData{ std::vector<uint32_t> insetIds; };
+    struct CornerPath{ std::vector<uint32_t> ring; glm::vec3 normal{0.0f}; };
+
+    MeshData generated;
+    std::vector<BevelPatchData> patchData(patches.size());
+    std::map<GeometricEdge,std::vector<EdgeOccurrence>> edges;
+    for(std::size_t patchIndex = 0; patchIndex < patches.size(); ++patchIndex){
+        const FacePatch& patch = patches[patchIndex];
+        std::vector<glm::vec3> inset;
+        if(!insetPolygon(input,patch,settings.amount,inset,error)) return false;
+        const std::size_t boundaryCount = patch.boundary.size();
+        BevelPatchData& data = patchData[patchIndex];
+        data.insetIds.resize(boundaryCount);
+        for(std::size_t i = 0; i < boundaryCount; ++i){
+            if(generated.vertices.size() >= maxVertices || generated.vertices.size() >= std::size_t(std::numeric_limits<uint32_t>::max())){
+                error = "beveled mesh exceeds the configured vertex limit"; return false;
+            }
+            MeshVertex vertex = input.vertices[patch.boundary[i]];
+            vertex.position = inset[i];
+            vertex.normal = patch.normal;
+            data.insetIds[i] = uint32_t(generated.vertices.size());
+            generated.vertices.push_back(vertex);
+        }
+
+        // Replace each face with its inset cap; bevel strips bridge the cap edges.
+        for(std::size_t i = 0; i < boundaryCount; ++i){
+            const std::size_t next = (i+1)%boundaryCount;
+            const uint32_t outerA = patch.boundary[i], outerB = patch.boundary[next];
+            const uint32_t innerA = data.insetIds[i], innerB = data.insetIds[next];
+
+            const PositionKey keyA = positionKey(input.vertices[outerA].position);
+            const PositionKey keyB = positionKey(input.vertices[outerB].position);
+            const GeometricEdge key = keyA < keyB ? GeometricEdge{keyA,keyB} : GeometricEdge{keyB,keyA};
+            edges[key].push_back({patchIndex,outerA,outerB,innerA,innerB,keyA,keyB});
+        }
+        for(std::size_t i = 1; i+1 < boundaryCount; ++i)
+            appendOrientedTriangle(generated,data.insetIds[0],data.insetIds[i],data.insetIds[i+1],patch.normal);
+    }
+
+    std::map<PositionKey,std::vector<CornerPath>> cornerPaths;
+    for(const auto& [edgeKeyValue,occurrences] : edges){
+        if(occurrences.size() != 2) continue;
+        const EdgeOccurrence& first = occurrences[0];
+        const EdgeOccurrence& second = occurrences[1];
+        const glm::vec3 normalA = patches[first.patch].normal;
+        const glm::vec3 normalB = patches[second.patch].normal;
+        glm::vec3 edgeNormal;
+        if(!normalized(normalA+normalB,edgeNormal) || glm::dot(normalA,normalB) > 0.9999f) continue;
+
+        uint32_t aStart = first.innerStart, aEnd = first.innerEnd;
+        uint32_t bStart = 0, bEnd = 0;
+        if(first.startKey == second.startKey && first.endKey == second.endKey){
+            bStart = second.innerStart; bEnd = second.innerEnd;
+        }else if(first.startKey == second.endKey && first.endKey == second.startKey){
+            bStart = second.innerEnd; bEnd = second.innerStart;
+        }else{
+            error = "bevel edge endpoints do not match";
+            return false;
+        }
+
+        const glm::vec3 pStart = input.vertices[first.start].position;
+        const glm::vec3 pEnd = input.vertices[first.end].position;
+        std::vector<std::array<uint32_t,2>> rings(settings.segments+1);
+        rings.front() = {aStart,aEnd};
+        rings.back() = {bStart,bEnd};
+        for(uint32_t segment = 1; segment < settings.segments; ++segment){
+            const float t = float(segment)/float(settings.segments);
+            const float theta = t*float(pi*0.5);
+            const float bulge = settings.amount*(std::sin(theta)+std::cos(theta)-1.0f)*0.70710678f;
+            const glm::vec3 adjustment = edgeNormal*bulge;
+            if(generated.vertices.size() > maxVertices || maxVertices-generated.vertices.size() < 2){
+                error = "beveled mesh exceeds the configured vertex limit"; return false;
+            }
+            MeshVertex startVertex = input.vertices[first.start];
+            startVertex.position = glm::mix(generated.vertices[aStart].position,generated.vertices[bStart].position,t)+adjustment;
+            startVertex.normal = glm::normalize(glm::mix(normalA,normalB,t));
+            MeshVertex endVertex = input.vertices[first.end];
+            endVertex.position = glm::mix(generated.vertices[aEnd].position,generated.vertices[bEnd].position,t)+adjustment;
+            endVertex.normal = startVertex.normal;
+            rings[segment] = {uint32_t(generated.vertices.size()),uint32_t(generated.vertices.size()+1)};
+            generated.vertices.push_back(startVertex);
+            generated.vertices.push_back(endVertex);
+        }
+        for(uint32_t segment = 0; segment < settings.segments; ++segment){
+            const auto& a = rings[segment];
+            const auto& b = rings[segment+1];
+            appendOrientedTriangle(generated,a[0],a[1],b[1],edgeNormal);
+            appendOrientedTriangle(generated,a[0],b[1],b[0],edgeNormal);
+        }
+
+        CornerPath startPath, endPath;
+        startPath.normal = endPath.normal = edgeNormal;
+        for(const auto& ring : rings){ startPath.ring.push_back(ring[0]); endPath.ring.push_back(ring[1]); }
+        cornerPaths[first.startKey].push_back(std::move(startPath));
+        cornerPaths[first.endKey].push_back(std::move(endPath));
+        (void)pStart;
+        (void)pEnd;
+        (void)edgeKeyValue;
+    }
+
+    // Close the small polygon where three or more bevelled faces meet at a corner.
+    for(auto& [cornerKey,paths] : cornerPaths){
+        if(paths.size() < 3) continue;
+        std::unordered_map<uint32_t,std::vector<std::size_t>> incident;
+        for(std::size_t path = 0; path < paths.size(); ++path){
+            incident[paths[path].ring.front()].push_back(path);
+            incident[paths[path].ring.back()].push_back(path);
+        }
+        bool cycle = true;
+        for(const auto& [vertex,adjacent] : incident) if(adjacent.size() != 2){ cycle = false; break; }
+        if(!cycle) continue;
+        std::vector<uint32_t> boundary;
+        std::vector<uint8_t> used(paths.size(),0);
+        std::size_t pathIndex = 0;
+        uint32_t current = paths[pathIndex].ring.front();
+        const uint32_t start = current;
+        for(std::size_t step = 0; step <= paths.size(); ++step){
+            if(used[pathIndex]){ cycle = current == start; break; }
+            used[pathIndex] = 1;
+            const CornerPath& path = paths[pathIndex];
+            const bool forward = path.ring.front() == current;
+            if(forward){
+                boundary.insert(boundary.end(),path.ring.begin(),path.ring.end()-1);
+                current = path.ring.back();
+            }else{
+                boundary.insert(boundary.end(),path.ring.rbegin(),path.ring.rend()-1);
+                current = path.ring.front();
+            }
+            const auto found = incident.find(current);
+            if(found == incident.end()){ cycle = false; break; }
+            pathIndex = found->second[0] == pathIndex ? found->second[1] : found->second[0];
+            if(current == start){ cycle = true; break; }
+        }
+        if(!cycle || boundary.size() < 3) continue;
+        if(generated.vertices.size() >= maxVertices || generated.vertices.size() >= std::size_t(std::numeric_limits<uint32_t>::max())){
+            error = "beveled mesh exceeds the configured vertex limit"; return false;
+        }
+        glm::vec3 center{0.0f}, normal{0.0f};
+        for(uint32_t id : boundary) center += generated.vertices[id].position;
+        for(const CornerPath& path : paths) normal += path.normal;
+        center /= float(boundary.size());
+        if(!normalized(normal,normal)) normal = {0,1,0};
+        const uint32_t centerId = uint32_t(generated.vertices.size());
+        generated.vertices.push_back({center,normal,{0.5f,0.5f}});
+        for(std::size_t i = 0; i < boundary.size(); ++i)
+            appendOrientedTriangle(generated,centerId,boundary[i],boundary[(i+1)%boundary.size()],normal);
+        (void)cornerKey;
+    }
+
+    if(generated.empty() || !validMesh(generated)){ error = "bevel produced invalid mesh geometry"; return false; }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool meshToPoints(const MeshData& input, std::vector<glm::vec3>& output, std::string& error,
+                  std::size_t maxPoints){
+    if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
+    constexpr double keyRange = 8.0e13;
+    using Key = std::tuple<int64_t,int64_t,int64_t>;
+    struct Hash{
+        std::size_t operator()(const Key& key) const noexcept{
+            std::size_t hash = std::hash<int64_t>{}(std::get<0>(key));
+            hash ^= std::hash<int64_t>{}(std::get<1>(key)) + 0x9e3779b9u + (hash<<6u) + (hash>>2u);
+            hash ^= std::hash<int64_t>{}(std::get<2>(key)) + 0x9e3779b9u + (hash<<6u) + (hash>>2u);
+            return hash;
+        }
+    };
+    std::unordered_set<Key,Hash> seen;
+    std::vector<glm::vec3> generated;
+    seen.reserve(input.vertices.size());
+    generated.reserve(std::min(input.vertices.size(),maxPoints));
+    for(const MeshVertex& vertex : input.vertices){
+        const glm::vec3& p = vertex.position;
+        if(std::abs(double(p.x)) > keyRange || std::abs(double(p.y)) > keyRange || std::abs(double(p.z)) > keyRange){
+            error = "mesh coordinates exceed the mesh-to-point key range";
+            return false;
+        }
+        constexpr double positionTolerance = 1e-5;
+        const Key key{int64_t(std::llround(double(p.x)/positionTolerance)),
+                      int64_t(std::llround(double(p.y)/positionTolerance)),
+                      int64_t(std::llround(double(p.z)/positionTolerance))};
+        if(seen.emplace(key).second){
+            if(generated.size() >= maxPoints){ error = "mesh-to-point output exceeds the configured point limit"; return false; }
+            generated.push_back(p);
+        }
+    }
+    if(generated.empty()){ error = "mesh-to-point produced no points"; return false; }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool pointsFromMesh(const MeshData& input, uint32_t count, uint64_t seed,
+                    std::vector<glm::vec3>& output, std::string& error, std::size_t maxPoints){
+    if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
+    if(count == 0 || count > maxPoints){ error = "point count must be within the configured point limit"; return false; }
+    std::vector<double> cumulative;
+    cumulative.reserve(input.indices.size()/3);
+    double totalArea = 0.0;
+    for(std::size_t i = 0; i < input.indices.size(); i += 3){
+        const glm::vec3& a = input.vertices[input.indices[i]].position;
+        const glm::vec3& b = input.vertices[input.indices[i+1]].position;
+        const glm::vec3& c = input.vertices[input.indices[i+2]].position;
+        const glm::vec3 crossValue = glm::cross(b-a,c-a);
+        const double area = 0.5 * std::sqrt(double(glm::dot(crossValue,crossValue)));
+        if(!std::isfinite(area) || area <= pointEpsilon){ error = "mesh has a degenerate triangle"; return false; }
+        totalArea += area;
+        cumulative.push_back(totalArea);
+    }
+    if(!std::isfinite(totalArea) || totalArea <= pointEpsilon){ error = "mesh surface area is zero"; return false; }
+    auto nextRandom = [&seed](){
+        seed += 0x9e3779b97f4a7c15ull;
+        uint64_t value = seed;
+        value = (value ^ (value >> 30u)) * 0xbf58476d1ce4e5b9ull;
+        value = (value ^ (value >> 27u)) * 0x94d049bb133111ebull;
+        value ^= value >> 31u;
+        return double(value >> 11u) * (1.0 / 9007199254740992.0);
+    };
+    std::vector<glm::vec3> generated;
+    generated.reserve(count);
+    for(uint32_t sample = 0; sample < count; ++sample){
+        const double areaPick = nextRandom()*totalArea;
+        const std::size_t triangle = std::size_t(std::lower_bound(cumulative.begin(),cumulative.end(),areaPick)-cumulative.begin());
+        const uint32_t ia = input.indices[triangle*3], ib = input.indices[triangle*3+1], ic = input.indices[triangle*3+2];
+        const double root = std::sqrt(nextRandom()), v = nextRandom();
+        const float wa = float(1.0-root), wb = float(root*(1.0-v)), wc = float(root*v);
+        generated.push_back(input.vertices[ia].position*wa + input.vertices[ib].position*wb + input.vertices[ic].position*wc);
+    }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool makePointPreview(const std::vector<glm::vec3>& points, MeshData& output, std::string& error,
+                      std::size_t maxDisplayedPoints, float markerSize, std::size_t maxVertices){
+    if(points.empty() || maxDisplayedPoints == 0 || !finite(markerSize) || markerSize <= 0.0f){
+        error = "point preview settings are invalid"; return false;
+    }
+    MeshData generated;
+    const std::size_t stride = std::max<std::size_t>(1,(points.size()+maxDisplayedPoints-1)/maxDisplayedPoints);
+    for(std::size_t i = 0; i < points.size(); i += stride){
+        if(!appendBox(generated,points[i],glm::vec3(markerSize),maxVertices,error)) return false;
+    }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
 ValidationResult validate(const Graph& graph){
     if(graph.schemaVersion != graphSchemaVersion)
         return {false, "unsupported WeaverProcedura graph schema version"};
+    if(graph.nodes.size() > 256 || graph.links.size() > 1024)
+        return {false, "recipe exceeds the node or link limit"};
 
     std::unordered_map<NodeId, std::size_t> nodeIndex;
     nodeIndex.reserve(graph.nodes.size());
@@ -264,6 +1197,55 @@ ValidationResult validate(const Graph& graph){
         if(node.id == 0) return {false, "node ID must be non-zero"};
         if(std::holds_alternative<std::monostate>(node.payload)) return {false, "node payload type is missing"};
         if(!finite(node.editorX) || !finite(node.editorY)) return {false, "node position must be finite"};
+        if(const auto* curve = std::get_if<CurveNode>(&node.payload)){
+            if(curve->curve.points.size() > 4096) return {false, "curve exceeds the control point limit"};
+            for(const glm::vec3& point : curve->curve.points)
+                if(!finite(point)) return {false, "curve control points must be finite"};
+        }else if(const auto* profile = std::get_if<RectangleProfileNode>(&node.payload)){
+            if(!finite(profile->width) || !finite(profile->height) || profile->width <= 0.0f || profile->height <= 0.0f)
+                return {false, "rectangle profile dimensions must be positive and finite"};
+        }else if(const auto* sweep = std::get_if<SweepNode>(&node.payload)){
+            if(!finite(sweep->settings.sampleSpacing) || sweep->settings.sampleSpacing <= 0.0f ||
+               !finite(sweep->settings.referenceUp) || glm::dot(sweep->settings.referenceUp, sweep->settings.referenceUp) <= 1e-12f ||
+               sweep->settings.maxVertices == 0 || sweep->settings.maxVertices > std::size_t(std::numeric_limits<uint32_t>::max()))
+                return {false, "sweep settings are invalid"};
+        }else if(const auto* grid = std::get_if<GridNode>(&node.payload)){
+            if(!validGridSettings(*grid)) return {false, "grid settings are invalid"};
+        }else if(const auto* height = std::get_if<SetGridPointHeightNode>(&node.payload)){
+            if(!finite(height->height) || std::abs(height->height) > 10000.0f)
+                return {false, "grid point height must be finite and within range"};
+        }else if(const auto* interior = std::get_if<InteriorBlockoutNode>(&node.payload)){
+            if(!validInteriorSettings(*interior)) return {false, "interior blockout settings are invalid"};
+        }else if(const auto* primitive = std::get_if<AddPrimitiveNode>(&node.payload)){
+            if(!validPrimitiveType(primitive->primitive) || !finite(primitive->size) ||
+               primitive->size.x <= 0.0f || primitive->size.y <= 0.0f || primitive->size.z <= 0.0f ||
+               primitive->size.x > 10000.0f || primitive->size.y > 10000.0f || primitive->size.z > 10000.0f)
+                return {false, "primitive settings are invalid"};
+        }else if(const auto* move = std::get_if<MoveNode>(&node.payload)){
+            if(!finite(move->offset) || std::max({std::abs(move->offset.x),std::abs(move->offset.y),std::abs(move->offset.z)}) > 1000000.0f)
+                return {false, "move offset must be finite and within range"};
+        }else if(const auto* rotate = std::get_if<RotateNode>(&node.payload)){
+            if(!finite(rotate->degrees) || !finite(rotate->pivot) ||
+               std::max({std::abs(rotate->degrees.x),std::abs(rotate->degrees.y),std::abs(rotate->degrees.z)}) > 36000.0f ||
+               std::max({std::abs(rotate->pivot.x),std::abs(rotate->pivot.y),std::abs(rotate->pivot.z)}) > 1000000.0f)
+                return {false, "rotation values must be finite and within range"};
+        }else if(const auto* scale = std::get_if<ScaleNode>(&node.payload)){
+            if(!finite(scale->factor) || !finite(scale->pivot) ||
+               std::abs(scale->factor.x) <= 1e-6f || std::abs(scale->factor.y) <= 1e-6f || std::abs(scale->factor.z) <= 1e-6f ||
+               std::max({std::abs(scale->factor.x),std::abs(scale->factor.y),std::abs(scale->factor.z)}) > 10000.0f ||
+               std::max({std::abs(scale->pivot.x),std::abs(scale->pivot.y),std::abs(scale->pivot.z)}) > 1000000.0f)
+                return {false, "scale values must be finite, non-zero, and within range"};
+        }else if(const auto* extrude = std::get_if<ExtrudeNode>(&node.payload)){
+            if(!finite(extrude->distance) || std::abs(extrude->distance) <= 1e-6f || std::abs(extrude->distance) > 10000.0f)
+                return {false, "extrusion distance must be finite, non-zero, and within range"};
+        }else if(const auto* bevel = std::get_if<BevelNode>(&node.payload)){
+            if(!finite(bevel->amount) || bevel->amount <= 0.0f || bevel->amount > 1000.0f ||
+               bevel->segments < 1 || bevel->segments > 8)
+                return {false, "bevel amount or segment count is invalid"};
+        }else if(const auto* sample = std::get_if<PointFromMeshNode>(&node.payload)){
+            if(sample->count == 0 || sample->count > 100000)
+                return {false, "point sampling count must be between 1 and 100000"};
+        }
         if(!nodeIndex.emplace(node.id, i).second) return {false, "node IDs must be unique"};
         highestNodeId = std::max(highestNodeId, node.id);
     }
@@ -318,45 +1300,198 @@ EvaluationResult evaluate(const Graph& graph){
     const ValidationResult validation = validate(graph);
     if(!validation) return {false, 0, {}, validation.error};
 
-    const Node* output = nullptr;
+    std::unordered_set<NodeId> connectedOutputs;
+    for(const Link& link : graph.links) connectedOutputs.insert(link.from);
+    NodeId outputId = 0;
+    bool pointCloudOutput = false;
     for(const Node& node : graph.nodes){
-        if(!std::holds_alternative<SweepNode>(node.payload)) continue;
-        if(output) return {false, 0, {}, "first evaluator supports one Sweep output"};
-        output = &node;
+        if(connectedOutputs.count(node.id)) continue;
+        const PortType type = outputType(node,0);
+        if(type != PortType::Mesh && type != PortType::Points) continue;
+        if(outputId != 0) return {false, 0, {}, "recipe must contain exactly one geometry output"};
+        outputId = node.id;
+        pointCloudOutput = type == PortType::Points;
     }
-    if(!output) return {false, 0, {}, "graph needs a Sweep output node"};
+    if(outputId == 0) return {false, 0, {}, "recipe needs a mesh or point-cloud output node"};
 
-    const Link* curveLink = nullptr;
-    const Link* profileLink = nullptr;
+    std::vector<std::size_t> incoming(graph.nodes.size(), 0);
+    std::vector<std::vector<std::size_t>> outgoing(graph.nodes.size());
+    std::unordered_map<NodeId, std::size_t> graphIndices;
+    graphIndices.reserve(graph.nodes.size());
+    for(std::size_t i = 0; i < graph.nodes.size(); ++i) graphIndices.emplace(graph.nodes[i].id, i);
     for(const Link& link : graph.links){
-        if(link.to != output->id) continue;
-        if(link.toPort == 0) curveLink = &link;
-        else if(link.toPort == 1) profileLink = &link;
+        const auto from = graphIndices.find(link.from);
+        const auto to = graphIndices.find(link.to);
+        if(from == graphIndices.end() || to == graphIndices.end()) return {false, outputId, {}, "link references a missing node"};
+        const std::size_t fromIndex = from->second;
+        const std::size_t toIndex = to->second;
+        outgoing[fromIndex].push_back(toIndex);
+        ++incoming[toIndex];
     }
-    if(!curveLink || !profileLink) return {false, output->id, {}, "Sweep needs both Curve and Profile inputs"};
-
-    const Node* curveSource = nullptr;
-    const Node* profileSource = nullptr;
-    for(const Node& node : graph.nodes){
-        if(node.id == curveLink->from) curveSource = &node;
-        if(node.id == profileLink->from) profileSource = &node;
+    std::queue<std::size_t> ready;
+    for(std::size_t i = 0; i < incoming.size(); ++i) if(incoming[i] == 0) ready.push(i);
+    std::vector<std::size_t> order;
+    order.reserve(graph.nodes.size());
+    while(!ready.empty()){
+        const std::size_t index = ready.front(); ready.pop();
+        order.push_back(index);
+        for(std::size_t next : outgoing[index]) if(--incoming[next] == 0) ready.push(next);
     }
-    const auto* curveNode = curveSource ? std::get_if<CurveNode>(&curveSource->payload) : nullptr;
-    const auto* profileNode = profileSource ? std::get_if<RectangleProfileNode>(&profileSource->payload) : nullptr;
-    if(!curveNode || !profileNode) return {false, output->id, {}, "Sweep inputs must come from Curve and Rectangle Profile nodes"};
+    if(order.size() != graph.nodes.size()) return {false, outputId, {}, "graph connections must be acyclic"};
 
-    MeshData generated;
+    std::unordered_map<NodeId, PointGrid> grids;
+    std::unordered_map<NodeId, MeshData> meshes;
+    std::unordered_map<NodeId, std::vector<glm::vec3>> pointSets;
     std::string error;
-    const SweepNode& sweepNode = std::get<SweepNode>(output->payload);
-    const Profile profile = makeRectangleProfile(profileNode->width, profileNode->height);
-    if(!sweep(curveNode->curve, profile, generated, error, sweepNode.settings))
-        return {false, output->id, {}, error};
+    for(std::size_t index : order){
+        const Node& node = graph.nodes[index];
+        if(const auto* primitive = std::get_if<AddPrimitiveNode>(&node.payload)){
+            MeshData mesh;
+            if(!makePrimitive(*primitive,mesh,error)) return {false,outputId,{},error};
+            meshes.emplace(node.id,std::move(mesh));
+            continue;
+        }
+        if(const auto* source = std::get_if<GridNode>(&node.payload)){
+            PointGrid grid;
+            if(!makeGrid(*source, grid, error)) return {false, outputId, {}, error};
+            grids.emplace(node.id, std::move(grid));
+            continue;
+        }
+        if(const auto* height = std::get_if<SetGridPointHeightNode>(&node.payload)){
+            const Link* input = nullptr;
+            for(const Link& link : graph.links) if(link.to == node.id && link.toPort == 0){ input = &link; break; }
+            if(!input) return {false, outputId, {}, "Set Grid Point Height needs a Point Grid input"};
+            const auto source = grids.find(input->from);
+            if(source == grids.end()) return {false, outputId, {}, "height node input did not produce a point grid"};
+            if(height->column > source->second.cellsX || height->row > source->second.cellsZ)
+                return {false, outputId, {}, "height node point index is outside the grid"};
+            PointGrid changed = source->second;
+            changed.points[std::size_t(height->row) * (changed.cellsX + 1) + height->column].y = height->height;
+            grids.emplace(node.id, std::move(changed));
+            continue;
+        }
+        if(const auto* toMesh = std::get_if<GridToMeshNode>(&node.payload)){
+            (void)toMesh;
+            const Link* input = nullptr;
+            for(const Link& link : graph.links) if(link.to == node.id && link.toPort == 0){ input = &link; break; }
+            if(!input) return {false, outputId, {}, "Grid to Mesh needs a Point Grid input"};
+            const auto source = grids.find(input->from);
+            if(source == grids.end()) return {false, outputId, {}, "mesh input did not produce a point grid"};
+            MeshData mesh;
+            if(!gridToMesh(source->second, mesh, error)) return {false, outputId, {}, error};
+            meshes.emplace(node.id,std::move(mesh));
+            continue;
+        }
+        if(const auto* sweepNode = std::get_if<SweepNode>(&node.payload)){
+            const Link* curveLink = nullptr;
+            const Link* profileLink = nullptr;
+            for(const Link& link : graph.links){
+                if(link.to != node.id) continue;
+                if(link.toPort == 0) curveLink = &link;
+                else if(link.toPort == 1) profileLink = &link;
+            }
+            if(!curveLink || !profileLink) return {false, outputId, {}, "Sweep needs both Curve and Profile inputs"};
+            const Node* curveSource = nullptr;
+            const Node* profileSource = nullptr;
+            for(const Node& candidate : graph.nodes){
+                if(candidate.id == curveLink->from) curveSource = &candidate;
+                if(candidate.id == profileLink->from) profileSource = &candidate;
+            }
+            const auto* curve = curveSource ? std::get_if<CurveNode>(&curveSource->payload) : nullptr;
+            const auto* profile = profileSource ? std::get_if<RectangleProfileNode>(&profileSource->payload) : nullptr;
+            if(!curve || !profile) return {false, outputId, {}, "Sweep inputs must come from Curve and Rectangle Profile nodes"};
+            MeshData mesh;
+            if(!sweep(curve->curve, makeRectangleProfile(profile->width, profile->height), mesh,
+                      error, sweepNode->settings)) return {false, outputId, {}, error};
+            meshes.emplace(node.id,std::move(mesh));
+            continue;
+        }
+        if(const auto* interior = std::get_if<InteriorBlockoutNode>(&node.payload)){
+            MeshData mesh;
+            if(!makeInteriorBlockout(*interior, mesh, error)) return {false, outputId, {}, error};
+            meshes.emplace(node.id,std::move(mesh));
+            continue;
+        }
 
-    EvaluationResult result;
-    result.succeeded = true;
-    result.outputNode = output->id;
-    result.mesh = std::move(generated);
-    return result;
+        const Link* input = nullptr;
+        for(const Link& link : graph.links)
+            if(link.to == node.id && link.toPort == 0){ input = &link; break; }
+        if(const auto* move = std::get_if<MoveNode>(&node.payload)){
+            if(!input) return {false,outputId,{},"Move needs a Mesh input"};
+            const auto source = meshes.find(input->from);
+            if(source == meshes.end()) return {false,outputId,{},"Move input did not produce a mesh"};
+            MeshData changed;
+            if(!moveMesh(source->second,*move,changed,error)) return {false,outputId,{},error};
+            meshes.emplace(node.id,std::move(changed));
+            continue;
+        }
+        if(const auto* rotate = std::get_if<RotateNode>(&node.payload)){
+            if(!input) return {false,outputId,{},"Rotate needs a Mesh input"};
+            const auto source = meshes.find(input->from);
+            if(source == meshes.end()) return {false,outputId,{},"Rotate input did not produce a mesh"};
+            MeshData changed;
+            if(!rotateMesh(source->second,*rotate,changed,error)) return {false,outputId,{},error};
+            meshes.emplace(node.id,std::move(changed));
+            continue;
+        }
+        if(const auto* scale = std::get_if<ScaleNode>(&node.payload)){
+            if(!input) return {false,outputId,{},"Scale needs a Mesh input"};
+            const auto source = meshes.find(input->from);
+            if(source == meshes.end()) return {false,outputId,{},"Scale input did not produce a mesh"};
+            MeshData changed;
+            if(!scaleMesh(source->second,*scale,changed,error)) return {false,outputId,{},error};
+            meshes.emplace(node.id,std::move(changed));
+            continue;
+        }
+        if(const auto* extrude = std::get_if<ExtrudeNode>(&node.payload)){
+            if(!input) return {false,outputId,{},"Extrude needs a Mesh input"};
+            const auto source = meshes.find(input->from);
+            if(source == meshes.end()) return {false,outputId,{},"Extrude input did not produce a mesh"};
+            MeshData changed;
+            if(!extrudeFace(source->second,*extrude,changed,error)) return {false,outputId,{},error};
+            meshes.emplace(node.id,std::move(changed));
+            continue;
+        }
+        if(const auto* bevel = std::get_if<BevelNode>(&node.payload)){
+            if(!input) return {false,outputId,{},"Bevel needs a Mesh input"};
+            const auto source = meshes.find(input->from);
+            if(source == meshes.end()) return {false,outputId,{},"Bevel input did not produce a mesh"};
+            MeshData changed;
+            if(!bevelMesh(source->second,*bevel,changed,error)) return {false,outputId,{},error};
+            meshes.emplace(node.id,std::move(changed));
+            continue;
+        }
+        if(std::holds_alternative<MeshToPointNode>(node.payload)){
+            if(!input) return {false,outputId,{},"Mesh to Point needs a Mesh input"};
+            const auto source = meshes.find(input->from);
+            if(source == meshes.end()) return {false,outputId,{},"Mesh to Point input did not produce a mesh"};
+            std::vector<glm::vec3> points;
+            if(!meshToPoints(source->second,points,error)) return {false,outputId,{},error};
+            pointSets.emplace(node.id,std::move(points));
+            continue;
+        }
+        if(const auto* sample = std::get_if<PointFromMeshNode>(&node.payload)){
+            if(!input) return {false,outputId,{},"Point from Mesh needs a Mesh input"};
+            const auto source = meshes.find(input->from);
+            if(source == meshes.end()) return {false,outputId,{},"Point from Mesh input did not produce a mesh"};
+            std::vector<glm::vec3> points;
+            if(!pointsFromMesh(source->second,sample->count,sample->seed,points,error)) return {false,outputId,{},error};
+            pointSets.emplace(node.id,std::move(points));
+            continue;
+        }
+    }
+
+    if(pointCloudOutput){
+        const auto points = pointSets.find(outputId);
+        if(points == pointSets.end() || points->second.empty()) return {false,outputId,{},"recipe point-cloud output is empty"};
+        EvaluationResult result{true,outputId,{}, {}};
+        result.points = std::move(points->second);
+        result.pointCloudOutput = true;
+        return result;
+    }
+    const auto mesh = meshes.find(outputId);
+    if(mesh == meshes.end() || mesh->second.empty()) return {false,outputId,{},"recipe output mesh is empty"};
+    return {true, outputId, std::move(mesh->second), {}};
 }
 
 Profile makeRectangleProfile(float width, float height){

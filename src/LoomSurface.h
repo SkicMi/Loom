@@ -215,7 +215,8 @@ inline Warp::Transform onSurface(const SurfaceFit& fit, float size, Warp::Shape 
     Warp::Transform t;
     t.rotation = surfaceRotation(fit);
     t.scale = glm::vec3(size);
-    t.translation = fit.centre + fit.normal * (shape == Warp::Shape::Cube ? 0.5f * size : 0.0f);
+    const float halfHeight = shape == Warp::Shape::Plane ? 0.0f : shape == Warp::Shape::Capsule ? size : 0.5f * size;
+    t.translation = fit.centre + fit.normal * halfHeight;
     return t;
 }
 

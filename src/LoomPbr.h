@@ -1,6 +1,6 @@
 #pragma once
 //=============================================================================================
-// MESHEVI S PBR MATERIJALIMA U POGLEDU EDITORA: glTF modeli, kocke i ravnine iz Warpa.
+// MESHEVI S PBR MATERIJALIMA U POGLEDU EDITORA: glTF modeli i primitivna tijela iz Warpa.
 //
 // Crta se na kartici, pravim rasterom s dubinom (shaders/pbr.slang), u zasebnu metu velicine
 // pogleda - pa se slika slozi preko ploce i splata, a crte scene (kamere, tocke, strelice) idu
@@ -161,35 +161,6 @@ inline std::vector<MeshChunkData> meshChunks(const Engine::WeaverProcedura::Mesh
     }
     flush();
     return chunks;
-}
-
-//Jedinicna kocka oko ishodista (24 vrha: svaka ploha svoje normale i UV) i ravnina 1x1 u XZ
-inline Spool::GltfPrimitive unitShape(Warp::Shape shape){
-    Spool::GltfPrimitive p;
-    auto quad = [&](glm::vec3 centre, glm::vec3 u, glm::vec3 v){
-        const glm::vec3 n = glm::normalize(glm::cross(u, v));
-        const uint32_t base = uint32_t(p.vertexCount());
-        const glm::vec3 corners[4] = {centre - u - v, centre + u - v, centre + u + v, centre - u + v};
-        const float uvs[8] = {0, 1, 1, 1, 1, 0, 0, 0};
-        for(int k = 0; k < 4; ++k){
-            p.positions.insert(p.positions.end(), {corners[k].x, corners[k].y, corners[k].z});
-            p.normals.insert(p.normals.end(), {n.x, n.y, n.z});
-            p.uv0.insert(p.uv0.end(), {uvs[k * 2], uvs[k * 2 + 1]});
-        }
-        p.indices.insert(p.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
-    };
-    if(shape == Warp::Shape::Plane){
-        quad(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 0.5f), glm::vec3(0.5f, 0.0f, 0.0f));
-        return p;
-    }
-    const float h = 0.5f;
-    quad({0, 0, h}, {h, 0, 0}, {0, h, 0});      //+Z
-    quad({0, 0, -h}, {-h, 0, 0}, {0, h, 0});    //-Z
-    quad({h, 0, 0}, {0, 0, -h}, {0, h, 0});     //+X
-    quad({-h, 0, 0}, {0, 0, h}, {0, h, 0});     //-X
-    quad({0, h, 0}, {h, 0, 0}, {0, 0, -h});     //+Y
-    quad({0, -h, 0}, {h, 0, 0}, {0, 0, h});     //-Y
-    return p;
 }
 
 //Loomova Camera iz kamere pogleda: isti polozaj, isti smjer, vidno polje i glavna tocka iz
@@ -621,12 +592,11 @@ private:
     }
 
     GpuPrimitive& primitive(Warp::Shape shape){
-        std::optional<GpuPrimitive>& slot = shape == Warp::Shape::Cube ? cube : plane;
-        if(!slot){
-            slot.emplace();
-            for(MeshChunkData& chunk : meshChunks(unitShape(shape))) slot->chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices);
-        }
-        return *slot;
+        auto [found, inserted] = primitives.try_emplace(shape);
+        if(inserted)
+            for(MeshChunkData& chunk : meshChunks(unitShape(shape)))
+                found->second.chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices);
+        return found->second;
     }
 
     void build(vk::Extent2D extent){
@@ -754,7 +724,8 @@ private:
     std::map<Warp::Id, SkinningDebug> lastSkinningDebug;
     std::map<std::string, std::unique_ptr<Texture>> textures;
     std::set<std::string> failed;
-    std::optional<GpuPrimitive> cube, plane, proceduralPreviewGpu;
+    std::map<Warp::Shape, GpuPrimitive> primitives;
+    std::optional<GpuPrimitive> proceduralPreviewGpu;
     uint64_t proceduralPreviewRevision = 0;
     std::vector<std::unique_ptr<VulkanGraphicsPipeline>> pipelines;
     std::unique_ptr<VulkanGraphicsPipeline> presentPipeline;

@@ -136,9 +136,42 @@ struct Points{
     std::vector<glm::u8vec3> colours;
 };
 
-enum class Shape{ Cube, Plane };
+enum class Shape{ Cube, Plane, Sphere, Pyramid, Capsule };
 
-//Jednostavno tijelo za provjeru matchmovea: kocka jedinicne velicine oko ishodista, ravnina u XZ.
+inline const char* shapeName(Shape shape){
+    switch(shape){
+        case Shape::Cube: return "Cube";
+        case Shape::Plane: return "Plane";
+        case Shape::Sphere: return "Sphere";
+        case Shape::Pyramid: return "Pyramid";
+        case Shape::Capsule: return "Capsule";
+    }
+    return "Primitive";
+}
+
+inline const char* shapeToken(Shape shape){
+    switch(shape){
+        case Shape::Cube: return "cube";
+        case Shape::Plane: return "plane";
+        case Shape::Sphere: return "sphere";
+        case Shape::Pyramid: return "pyramid";
+        case Shape::Capsule: return "capsule";
+    }
+    return "primitive";
+}
+
+inline const char* shapeTag(Shape shape){
+    switch(shape){
+        case Shape::Cube: return "CUBE";
+        case Shape::Plane: return "PLANE";
+        case Shape::Sphere: return "SPHERE";
+        case Shape::Pyramid: return "PYRAMID";
+        case Shape::Capsule: return "CAPSULE";
+    }
+    return "PRIMITIVE";
+}
+
+//Primitivi su jedinicne geometrije oko ishodista (ravnina je u XZ; kapsula je usmjerena po Y).
 //material je indeks u Stage::materials; -1 znaci zadani materijal boje colour
 struct Mesh{
     Shape shape = Shape::Cube;

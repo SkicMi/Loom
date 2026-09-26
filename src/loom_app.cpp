@@ -43,10 +43,13 @@
     #include "LoomWeaverMotion.h"
     #include "LoomMotionPanel.h"
     #include "LoomProcedura.h"
+    #include "LoomAgentJson.h"
     #include "LoomMotionLive.h"
     #include "LoomAnimLayers.h"
     #include "LoomTimelineRange.h"
     #include "LoomTimelineRows.h"
+    #include "LoomHold.h"
+    #include "LoomTool.h"
     #include "LoomMoodboard.h"
     #include "LoomAutoRig.h"
     
@@ -64,6 +67,7 @@
     #include <GLFW/glfw3.h>
     
     #include <algorithm>
+    #include <atomic>
     #include <chrono>
     #include <ctime>
     #include <fstream>
@@ -76,6 +80,7 @@
     #include <filesystem>
     #include <limits>
     #include <mutex>
+    #include <optional>
     #include <set>
     #include <string>
     #include <thread>
@@ -182,7 +187,7 @@
     std::string kindOf(const Warp::Entity& entity){
         if(entity.camera) return "Camera";
         if(entity.points) return "Point Cloud";
-        if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "Cube" : "Plane";
+        if(entity.mesh) return Warp::shapeName(entity.mesh->shape);
         if(entity.splat) return "Gaussian Splat";
         if(entity.joint) return "Joint";
         if(entity.model) return "Model (glTF)";
@@ -204,7 +209,7 @@
         if(entity.splat) return "SPLAT";
         if(entity.joint) return "BONE";
         if(entity.points) return "POINTS";
-        if(entity.mesh) return entity.mesh->shape == Warp::Shape::Cube ? "CUBE" : "PLANE";
+        if(entity.mesh) return Warp::shapeTag(entity.mesh->shape);
         if(entity.model) return "MODEL";
         if(entity.animator) return "RIG";
         return entity.children.empty() ? "NODE" : "GROUP";
@@ -276,6 +281,7 @@
         std::string shotPath, shotResult, shotSave, shotMotion;
         std::string shotModel;                //--model: glTF na mjestu pogleda
         bool shotMascott = false;             //--mascott: lik iz desnog klika (HumanoidMascott)
+        std::vector<std::string> shotTools;   //--tool: model uvezen kao tool/weapon (velicina iz imena)
         std::vector<std::string> shotMotionText;  //--tekst: panel pokreta otvoren, jedna radnja po zastavici
         float shotSurface[4] = {0, 0, 0, 0};  //--ploha x y sirina visina: pravokutnik u pogledu, pa kocka na plohu
         bool shotSurfaceWanted = false;
@@ -295,6 +301,7 @@
             //--mascott: isti lik kao desni klik > HumanoidMascott (addHumanoidMascott), s istim uvozom -
             //izvor istine za testove, a ne rucno odabrani .glb
             else if(argument == "--mascott") shotMascott = true;
+            else if(argument == "--tool" && i + 1 < argc) shotTools.push_back(argv[++i]);   //kao Import as Tool / Weapon
             else if(argument == "--tekst" && i + 1 < argc) shotMotionText.push_back(argv[++i]);
             else if(argument == "--ploha" && i + 4 < argc){
                 for(int k = 0; k < 4; ++k) shotSurface[k] = float(std::atof(argv[++i]));
@@ -321,7 +328,7 @@
         int selectedMedia = -1;
         Focus focus = Focus::Entity;
         Warp::Id menuEntity = Warp::None;
-        std::vector<bool> entityOrbitFavorites{false, true, false, false};
+        std::set<std::string> entityOrbitFavorites;
         std::vector<bool> viewOrbitFavorites{true, false, false, true, false, false, false};
         glm::vec2 menuPixel(0.0f);            //gdje je desni klik otvorio izbornik pogleda
         int motionPathMenuFrame = -1;         //poza se dodaje na kadar putanje koji je otvorio izbornik
@@ -339,12 +346,31 @@
     
         float mediaScroll = 0.0f, hierarchyScroll = 0.0f, propertiesScroll = 0.0f;
         bool outlineVisible = true, componentsVisible = true, timelineVisible = true;
+        bool commandPaletteOpen = false;
+        std::string commandPaletteQuery;
+        int commandPaletteSelection = 0;
+        struct InspectorEntryState{
+            Warp::Id entity = Warp::None;
+            std::string name, position, rotation, scale, cameraFocal;
+        } inspectorEntry;
         bool railHoverOpen = false;
         float railReveal = 0.0f;
         static bool compassMinimized = false;
         bool animatorExpanded = true, transformExpanded = true, cameraExpanded = true;
         bool pointsExpanded = true, splatExpanded = true, splatCutExpanded = true, materialExpanded = false;
         RailPane activeRailPane = RailPane::None;
+        bool chatWorkspaceSaved = false;
+        bool chatPreviousOutline = true, chatPreviousComponents = true, chatPreviousTimeline = true;
+        std::vector<std::pair<std::string, std::string>> agentChatMessages;
+        std::string agentChatDraft;
+        float agentChatScroll = 0.0f;
+        std::string agentStatus = "Ready — the local model loads when you send your first message.";
+        std::atomic<bool> agentBusy{false};
+        std::mutex agentResponseMutex;
+        std::optional<Loom::AgentApiResponse> agentResponse;
+        std::thread agentWorker;
+        struct PendingAgentConfirmation{ Loom::AgentAction action; size_t assistantIndex = 0; };
+        std::optional<PendingAgentConfirmation> pendingAgentConfirmation;
         std::string message;                  //zadnja poruka korisniku, u alatnoj traci
         //Pokret iz teksta (LoomMotionPanel.h): panel u pogledu s radnjama, postavkama i povijescu
         Loom::MotionPanelState motionPanel;
@@ -373,6 +399,20 @@
         bool timelineTall = false;               //otvoren objekt s redovima: timeline je visi
         float timelineRowsScroll = 0.0f;
         bool timelineGutterHeld = false;         //pritisak je poceo u stupcu imena: ne scrubba ni ne odabire
+        //HVAT (LoomHold.h): sake likova u sceni i ona uz koju je predmet koji se vuce (-1 nijedna)
+        std::vector<Loom::HoldHand> holdHands;
+        int holdCandidate = -1;
+        Loom::ToolColliders toolColliders;       //Jolt collideri toolova, za prste oko drske
+        //Uvoz kao tool i tool editor
+        int importToolKind = 0;                   //0 tool, 1 weapon
+        float importToolLengthCm = 0.0f;          //0: velicina modela ostaje
+        std::filesystem::path importToolFor;      //datoteka za koju su predlozeni vrsta i velicina
+        Warp::Id toolEditorFor = Warp::None;      //tool cija je geometrija u toolEditorGeometry
+        Loom::ToolGeometry toolEditorGeometry;
+        int toolEditorGrip = 0;
+        //Hvat na timelineu: povlaci se rub (edge 0 On, 1 Off) ili je traka kliknuta (radnje iznad nje)
+        struct{ int index = -1; int edge = -1; } timelineHoldDrag;
+        int timelineHoldPicked = -1;
         Loom::TimelinePoseStrip timelinePoses;
         struct{ Warp::Id rig = Warp::None; double first = -1.0, last = -1.0; } poseRangeRequest;
         double poseRangeEnd = -1.0;             //pose blend pokrenut iz raspona: druga poza je tu
@@ -501,6 +541,15 @@
         static bool mouseReleasedEvents[uint32_t(Treadle::MouseButton::Count)]{};
         static float mousePressX[uint32_t(Treadle::MouseButton::Count)]{};
         static float mousePressY[uint32_t(Treadle::MouseButton::Count)]{};
+        static std::vector<std::string> externalDropPaths;
+        static double externalDropX = 0.0, externalDropY = 0.0;
+        static bool externalDropPending = false;
+        glfwSetDropCallback(window, [](GLFWwindow* source, int count, const char** paths){
+            externalDropPaths.clear();
+            for(int i = 0; i < count; ++i) if(paths[i] && paths[i][0]) externalDropPaths.emplace_back(paths[i]);
+            glfwGetCursorPos(source, &externalDropX, &externalDropY);
+            externalDropPending = !externalDropPaths.empty();
+        });
         glfwSetMouseButtonCallback(window, [](GLFWwindow* source, int button, int action, int){
             if(button < 0 || button >= int(Treadle::MouseButton::Count)) return;
             if(action == GLFW_PRESS){
@@ -515,7 +564,23 @@
         });
         //Tipke za polje za tekst, s PONAVLJANJEM (GLFW_REPEAT) - drzani Backspace brise dalje
         static std::vector<Treadle::KeyEvent> typedKeys;
-        glfwSetKeyCallback(window, [](GLFWwindow*, int key, int, int action, int mods){
+        static bool undoShortcutEvent = false, redoShortcutEvent = false;
+        glfwSetKeyCallback(window, [](GLFWwindow*, int key, int scancode, int action, int mods){
+            //GLFW key tokens follow US physical positions. Resolve Z/Y through the active layout
+            //so Ctrl+Z remains undo on QWERTZ keyboards where those physical tokens are swapped.
+            if(action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL)){
+                const char* name = glfwGetKeyName(key, scancode);
+                char letter = name && name[0] && !name[1]
+                    ? char(std::tolower(static_cast<unsigned char>(name[0]))) : '\0';
+                if(letter != 'z' && letter != 'y'){
+                    if(key == GLFW_KEY_Z) letter = 'z';
+                    else if(key == GLFW_KEY_Y) letter = 'y';
+                }
+                if(letter == 'z'){
+                    if(mods & GLFW_MOD_SHIFT) redoShortcutEvent = true;
+                    else undoShortcutEvent = true;
+                }else if(letter == 'y') redoShortcutEvent = true;
+            }
             if(action != GLFW_PRESS && action != GLFW_REPEAT) return;
             Treadle::KeyEvent event;
             event.shift = (mods & GLFW_MOD_SHIFT) != 0;
@@ -564,10 +629,23 @@
     
         //Strelice za pomicanje i rotacija u stupnjevima. Kutovi se pamte dok se uredjuju: kvaternion
         //natrag u Eulerove kutove nije jednoznacan, pa bi polje koje se vuce preko 90 st skocilo
-        int gizmoAxisHeld = -1, gizmoAxisHot = -1;
+        int gizmoAxisHeld = -1, gizmoAxisHot = -1, gizmoAxisPointerHeld = -1;
         glm::mat4 transformGhostStart{1.0f};
         Warp::Id transformGhostId = Warp::None;
         bool transformGhostActive = false;
+        bool localTransformSpace = false, transformSnapEnabled = false, autoKeyEnabled = false;
+        glm::vec2 transformDragStartMouse{0.0f};
+        glm::vec3 transformDragStartWorldPosition{0.0f}, transformDragAxis{1.0f, 0.0f, 0.0f};
+        glm::quat transformDragStartWorldRotation{1.0f, 0.0f, 0.0f, 0.0f};
+        glm::mat4 transformDragStartWorld{1.0f};
+        Warp::Transform transformDragStartLocal;
+        Loom::Gizmo transformDragStartGizmo;
+        int transformDragAxisIndex = -1;
+        float transformDragAccumulatedAngle = 0.0f, transformDragDisplayValue = 0.0f;
+        Warp::Id dropPlacementRoot = Warp::None;
+        bool dropPlacementActive = false;
+        glm::vec3 dropPlacementPlanePoint{0.0f}, dropPlacementPlaneNormal{0.0f, 1.0f, 0.0f};
+        std::string dropPlacementLabel;
         int pathDragIndex = -1;
         //W pomice, E okrece - kao u Mayi i Houdiniju
         enum class Tool{ Move, Rotate };
@@ -667,7 +745,7 @@
         //pikselom nema tocaka, zraka se spusti na pod (y = 0), a kad ni to ne ide, sredina scene.
         //Velicina je iz udaljenosti (solve nema metre): desetina puta do mjesta
         auto addMeshAt = [&](Warp::Shape shape, Warp::Id parent, glm::vec2 pixel, bool usePixel){
-            const char* name = shape == Warp::Shape::Cube ? "Cube" : "Plane";
+            const char* name = Warp::shapeName(shape);
             const Warp::Id id = stage.create(name, parent);
             Warp::Entity& entity = *stage.get(id);
             entity.mesh = Warp::Mesh{shape};
@@ -686,10 +764,12 @@
                 place = eye + ray * (-eye.y / ray.y);
             }
             const float distance = std::max(1e-4f, glm::length(place - eye));
-            const float size = distance * (shape == Warp::Shape::Cube ? 0.1f : 0.4f);
+            const bool plane = shape == Warp::Shape::Plane;
+            const float size = distance * (plane ? 0.4f : 0.1f);
             //Na podu kocka stoji NA njemu; na zidu ili stolu joj je sredina na plohi
+            const float groundOffset = shape == Warp::Shape::Capsule ? size : plane ? 0.0f : size * 0.5f;
             const glm::vec3 worldPosition = onSurface ? place
-                                                      : glm::vec3(place.x, shape == Warp::Shape::Cube ? size * 0.5f : 0.0f, place.z);
+                                                      : glm::vec3(place.x, groundOffset, place.z);
             const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
             entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(worldPosition, 1.0f));
             entity.local.scale = glm::vec3(size);
@@ -1028,11 +1108,11 @@
             request.constraints = outputStem.string() + ".constraints.json";
             const std::string q = " ";
             const std::string constraintsCommand = Loom::shellQuoteArgument(runner.string()) + q +
-                Loom::shellQuoteArgument(rangeTool.string()) + " constraints " + Loom::shellQuoteArgument(sourceNpz.string()) + q +
+                Loom::shellQuoteArgument(adapter.string()) + " range constraints " + Loom::shellQuoteArgument(sourceNpz.string()) + q +
                 std::to_string(first) + q + std::to_string(last) + q + Loom::shellQuoteArgument(request.constraints.string());
             const fs::path generated = request.numSamples > 1 ? outputStem : fs::path(outputStem.string() + ".npz");
             const std::string spliceCommand = Loom::shellQuoteArgument(runner.string()) + q +
-                Loom::shellQuoteArgument(rangeTool.string()) + " splice " + Loom::shellQuoteArgument(sourceNpz.string()) + q +
+                Loom::shellQuoteArgument(adapter.string()) + " range splice " + Loom::shellQuoteArgument(sourceNpz.string()) + q +
                 Loom::shellQuoteArgument(generated.string()) + q + std::to_string(first) + q + std::to_string(last);
             generatedMotionPath = outputStem;
             generatedMotionTarget = request.targetCharacter;
@@ -1048,6 +1128,50 @@
                      outputDirectory.string(), Loom::Task::WeaverMotion, 0);
             message = "Regenerating frames " + std::to_string(first) + "-" + std::to_string(last) +
                       "; everything outside stays as it was.";
+        };
+
+        //Sake svih likova u sceni koje mogu drzati predmet (LoomHold.h): kost sake i vrh srednjeg prsta
+        auto holdHandsInScene = [&]{
+            std::vector<Loom::HoldHand> hands;
+            for(const Loom::MotionCharacter& character : Loom::motionCharactersIn(stage)){
+                const Warp::Id rig = Loom::motionCharacterForEntity(stage, character.id);
+                if(rig == Warp::None) continue;
+                const auto ids = motionDirectRigJointIds(rig);
+                if(ids[13] != Warp::None) hands.push_back({rig, ids[13], ids[15], false, ids[12]});
+                if(ids[19] != Warp::None) hands.push_back({rig, ids[19], ids[21], true, ids[18]});
+            }
+            return hands;
+        };
+        //Predmet koji se smije uhvatiti: nije kost, kamera ni dio lika
+        //Drzati se mogu samo toolovi (uvezeni kao Tool / Weapon): samo oni imaju gripove i collider
+        auto holdableItem = [&](Warp::Id id){
+            const Warp::Id root = Loom::toolRootOf(stage, id);
+            return root != Warp::None && Loom::motionCharacterForEntity(stage, root) == Warp::None;
+        };
+        //Udovi za slojeve (sake po polozaju + IK), isto kao pose blend u Inspectoru
+        auto rigPoseLimbs = [&](Warp::Id rig){
+            std::vector<Loom::PoseLimb> limbs;
+            const auto limbIds = motionDirectRigJointIds(rig);
+            for(const std::array<int, 3> arm : {std::array<int, 3>{11, 12, 13}, std::array<int, 3>{17, 18, 19}})
+                if(limbIds[size_t(arm[0])] != Warp::None && limbIds[size_t(arm[1])] != Warp::None && limbIds[size_t(arm[2])] != Warp::None)
+                    limbs.push_back({limbIds[size_t(arm[0])], limbIds[size_t(arm[1])], limbIds[size_t(arm[2])], limbIds[3]});
+            return limbs;
+        };
+        //Slojevi prstiju svih hvatova na likovima iznova (LoomHandPose.h), s prstima oko collidera toola
+        auto syncHoldLayers = [&]{
+            for(const Loom::MotionCharacter& character : Loom::motionCharactersIn(stage)){
+                const Warp::Id rig = Loom::motionCharacterForEntity(stage, character.id);
+                if(rig == Warp::None) continue;
+                Loom::syncHoldHandLayers(stage, rig, rigPoseLimbs(rig), 6.0,
+                    [&](Warp::Id item) -> const Engine::Physics::Collider*{
+                        return stage.get(item) && stage.get(item)->tool ? toolColliders.of(stage, item, frame) : nullptr;
+                    });
+            }
+        };
+        auto holdHandName = [&](Warp::Id hand){
+            for(const Loom::HoldHand& candidate : holdHands) if(candidate.hand == hand) return Loom::holdHandLabel(candidate);
+            const Warp::Entity* entity = stage.get(hand);
+            return entity ? entity->name : std::string("missing bone");
         };
 
         //AUTO KEY POZE (UX korak 2): u sesiji uredjivanja poze svaki kadar na kojem je poza DIRNUTA
@@ -1728,13 +1852,21 @@
     
         //-- PBR meshevi, materijali, ploha iz odabira (LoomPbr.h, LoomEditorTools.h) -------------------
         Loom::ViewportMeshes viewportMeshes(loom);
+        struct HudLocalBounds{
+            std::string signature;
+            glm::vec3 low{0.0f}, high{0.0f};
+            bool valid = false;
+            bool approximate = false;
+            bool relativeScale = false;
+        };
+        std::unordered_map<Warp::Id, HudLocalBounds> hudBoundsCache;
         Loom::MaterialPanelState materialState;
         Loom::SurfaceTool surfaceTool;
         view.gpuMeshes = true;
     
         //Poslije uvoza modela: odabran cvor s mrezom (pa se vide njegovi materijali), a u sceni koja je
         //bila prazna pogled se uokviri na model - "Uokviri" gleda oblak tocaka, a modela bez oblaka nema
-        auto afterModelImport = [&](const Loom::ModelImportReport& report, bool wasEmpty){
+        auto afterModelImport = [&](const Loom::ModelImportReport& report, bool wasEmpty, bool frameIfEmpty = true){
             Warp::Id meshNode = report.group;
             std::vector<Warp::Id> pending{report.group};
             while(!pending.empty()){
@@ -1748,7 +1880,7 @@
             selected = meshNode;
             focus = Focus::Entity;
             extentDirty = true;
-            if(wasEmpty && stage.get(report.group)){
+            if(wasEmpty && frameIfEmpty && stage.get(report.group)){
                 const Warp::Entity& group = *stage.get(report.group);
                 const float height = std::max(1e-3f, (report.high.y - report.low.y) * group.local.scale.y);
                 view.lookThrough = Warp::None;
@@ -1763,10 +1895,17 @@
             const bool wasEmpty = stage.size() == 0;
             const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
             if(!report.problem.empty()){ message = "Auto Rig import: " + report.problem; return; }
-            afterModelImport(report, wasEmpty);
             const Warp::Id rigRoot = Loom::motionCharacterForEntity(stage, report.group);
             const Loom::MotionRigRestPose rest = Loom::motionRigRestPose(stage, rigRoot);
             const bool hasRig = !rest.joints.empty();
+            //LIK JE VISOK 1.80 M. Uvoz je "metar" pogadjao iz visine kamere (kamera / 1.5), pa je lik
+            //u praznoj sceni ispadao visok desetke jedinica i sve ostalo (predmeti u ruci, doseg) se
+            //krivo mjerilo. Lik s rigom se skalira tako da mu je mesh visok tocno 1.80
+            if(Warp::Entity* group = stage.get(report.group); group && hasRig){
+                const float height = (report.high.y - report.low.y) * group->local.scale.y;
+                if(height > 1e-6f) group->local.scale *= Loom::characterHeightMetres / height;
+            }
+            afterModelImport(report, wasEmpty);
             const bool animatorReady = hasRig && Loom::ensureRigAnimator(stage, rigRoot);
             bool naturalPose = false;
             if(animatorReady && path.filename() != "bend_preview.glb"){
@@ -1813,6 +1952,78 @@
                               path.filename().string().c_str(), report.nodes, report.meshes, report.materials);
                 message = text;
             }
+        };
+        //UVOZ KAO TOOL / WEAPON: model dobije Tool s prvim gripom, a najdulja stranica stvarnu velicinu
+        //(model s interneta je cesto u centimetrima ili "koliko god" velik). Stoji na podu
+        auto importToolAsset = [&](const fs::path& path, const Treadle::Rect& viewport, const std::string& kind, float lengthMetres){
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewport, view);
+            const bool wasEmpty = stage.size() == 0;
+            const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
+            if(!report.problem.empty()){ message = "Tool: " + report.problem; return; }
+            Warp::Entity* group = stage.get(report.group);
+            if(!group) return;
+            const Loom::ToolGeometry geometry = Loom::toolGeometry(stage, report.group, frame);
+            const glm::vec3 size = geometry.high - geometry.low;
+            const float longest = std::max({size.x, size.y, size.z}) * group->local.scale.x;
+            if(lengthMetres > 0.0f && longest > 1e-6f) group->local.scale *= lengthMetres / longest;
+            //Modeli s interneta cesto nisu oko svog ishodista (Sketchfab cvorovi s velikim pomacima), a mjesto
+            //iz importModelAtView pogadja "metar" po kameri. Tool stoji na podu, 40 cm pokraj tocke u koju
+            //pogled gleda (obicno lik), sredinom na tom mjestu
+            const glm::vec3 centre = 0.5f * (geometry.low + geometry.high);
+            const glm::vec3 place(view.orbit.target.x + 0.4f, 0.0f, view.orbit.target.z);
+            group->local.translation = place - group->local.scale * glm::vec3(centre.x, geometry.low.y, centre.z);
+            Warp::Tool tool;
+            tool.kind = kind;
+            tool.grips.push_back(Loom::defaultGrip(geometry, Loom::gripForItemName(path.stem().string())));
+            group->tool = tool;
+            afterModelImport(report, wasEmpty);
+            selected = report.group;
+            focus = Focus::Entity;
+            char text[192];
+            std::snprintf(text, sizeof(text), "%s %s: %.0f cm long. Set where it is held in the Tool editor, then drag it to a hand.",
+                          kind == "weapon" ? "Weapon" : "Tool", path.stem().string().c_str(),
+                          double(std::max({size.x, size.y, size.z}) * group->local.scale.x * 100.0f));
+            message = text;
+        };
+        auto importDroppedModel = [&](const fs::path& path, const Treadle::Rect& viewport, glm::vec2 pixel){
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewport, view);
+            const Loom::Ray ray = Loom::rayThrough(camera, pixel);
+            glm::vec3 place(0.0f);
+            glm::vec3 planeNormal(0.0f, 1.0f, 0.0f);
+            bool placedOnSurface = stage.size() > 0 && Loom::surfaceAt(stage, frame, camera, pixel, place);
+            if(!placedOnSurface && ray.direction.y < -1e-3f && ray.origin.y > 0.0f){
+                const float distance = -ray.origin.y / ray.direction.y;
+                if(distance < std::max(1.0f, extent.radius * 20.0f)){
+                    place = ray.origin + ray.direction * distance;
+                    placedOnSurface = true;
+                }
+            }
+            if(!placedOnSurface){
+                const float distance = stage.size() > 0
+                    ? std::max(1.0f, glm::length(extent.centre - ray.origin))
+                    : std::max(1.0f, view.orbit.distance);
+                place = ray.origin + ray.direction * distance;
+                const Loom::Ray centreRay = Loom::rayThrough(camera,
+                    glm::vec2(camera.frame.x + camera.frame.width * 0.5f,
+                              camera.frame.y + camera.frame.height * 0.5f));
+                planeNormal = -centreRay.direction;
+            }else if(glm::length(camera.eye - place) > 1e-4f){
+                planeNormal = glm::normalize(camera.eye - place);
+            }
+            const bool wasEmpty = stage.size() == 0;
+            const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
+            if(!report.problem.empty()){
+                message = "Model: " + report.problem;
+                return;
+            }
+            if(Warp::Entity* group = stage.get(report.group)) group->local.translation = place;
+            afterModelImport(report, wasEmpty, false);
+            dropPlacementRoot = report.group;
+            dropPlacementActive = true;
+            dropPlacementPlanePoint = place;
+            dropPlacementPlaneNormal = planeNormal;
+            dropPlacementLabel = path.filename().string();
+            message = "Placement preview: move pointer, click to place, Esc to cancel.";
         };
         auto importHumanoidAsset = [&](const fs::path& path){
             if(job.running){ message = "Wait for the current job to finish before importing a humanoid."; return; }
@@ -1962,6 +2173,16 @@
             addHumanoidMascott();
             std::printf("%s\n", message.c_str());
         }
+        for(const std::string& toolPath : shotTools){
+            int w = 0, h = 0;
+            glfwGetWindowSize(window, &w, &h);
+            const std::string stem = fs::path(toolPath).stem().string();
+            const float metres = Loom::suggestedToolLength(stem, "tool");
+            importToolAsset(toolPath, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible,
+                                                          (motionPanel.open || proceduraPanel.open), railReveal, timelineTall).viewport,
+                            Loom::gripForItemName(stem) == "pistol" || metres >= 0.3f ? "weapon" : "tool", metres);
+            std::printf("%s\n", message.c_str());
+        }
         if(!shotMotion.empty()){
             // For command-line previews, --kadar selects the displayed frame. Place the clip at
             // the scene start first, then scrub to the requested sample after import.
@@ -1977,8 +2198,23 @@
         }
     
         std::string windowTitle;
+        //The editor used mailbox presentation and rebuilt/projected the viewport continuously,
+        //which can spin at several hundred FPS on an unchanged scene. Keep event handling and
+        //background-job polling responsive while capping redraws to a steady 60 Hz.
+        const auto frameInterval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(1.0 / 60.0));
+        auto nextFrameDeadline = std::chrono::steady_clock::now();
         while(!quitting){
+            auto waitNow = std::chrono::steady_clock::now();
+            while(waitNow < nextFrameDeadline){
+                const double waitSeconds = std::chrono::duration<double>(nextFrameDeadline - waitNow).count();
+                glfwWaitEventsTimeout(waitSeconds);
+                waitNow = std::chrono::steady_clock::now();
+            }
             glfwPollEvents();
+            const auto frameStart = std::chrono::steady_clock::now();
+            nextFrameDeadline += frameInterval;
+            if(nextFrameDeadline < frameStart) nextFrameDeadline = frameStart;
             Loom::loadMoodboard(moodboard, Loom::moodboardStoragePath(projectPath, moodboardHome));
     
             //Otisak svaki kadar: prolaz kroz stablo i kljuceve, desetinka milisekunde i na 2301 kljucu
@@ -2097,6 +2333,79 @@
             if(std::fabs(revealTarget - railReveal) < 0.002f) railReveal = revealTarget;
             const Loom::EditorLayout layout = Loom::layoutEditor(float(windowWidth), float(windowHeight), outlineVisible, componentsVisible,
                                                                   timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal, timelineTall);
+
+            if(externalDropPending){
+                const std::vector<std::string> paths = std::move(externalDropPaths);
+                externalDropPaths.clear();
+                externalDropPending = false;
+                const glm::vec2 dropPixel{float(externalDropX), float(externalDropY)};
+                if(!layout.viewport.contains(dropPixel.x, dropPixel.y)){
+                    importer.show(fs::path(paths.front()).parent_path());
+                    importer.status = "Dropped assets — choose what to import.";
+                }else{
+                    std::vector<fs::path> droppedImages;
+                    bool modelDropped = false;
+                    for(const std::string& rawPath : paths){
+                        const fs::path path(rawPath);
+                        std::error_code error;
+                        if(fs::is_directory(path, error)){
+                            if(Loom::isResultDirectory(path)){
+                                std::string plate;
+                                std::string stem = path.filename().string();
+                                if(stem.size() > 5) stem.resize(stem.size() - 5);
+                                for(const fs::path& video : Loom::videosIn(path.parent_path()))
+                                    if(video.stem().string() == stem) plate = video.string();
+                                importFolder(path, plate);
+                            }else{
+                                importer.show(path);
+                                importer.status = "Dropped folder — choose assets to import.";
+                            }
+                            continue;
+                        }
+                        std::string extension = path.extension().string();
+                        std::transform(extension.begin(), extension.end(), extension.begin(),
+                            [](unsigned char c){ return char(std::tolower(c)); });
+                        if(extension == ".glb" || extension == ".gltf"){
+                            if(!modelDropped){
+                                importDroppedModel(path, layout.viewport, dropPixel);
+                                modelDropped = true;
+                            }else message = "Drop one 3D model at a time to position it.";
+                        }else if(extension == ".ply" && Loom::isGaussianPly(path.string())){
+                            importSplatFile(path);
+                        }else if(extension == ".mp4" || extension == ".mov" || extension == ".mkv" || extension == ".avi"){
+                            addVideoToProject(path);
+                            activeRailPane = RailPane::Media;
+                            message = "Added video to project media: " + path.filename().string();
+                        }else if(extension == ".bvh"){
+                            importMotion(path, motionPanel.targetCharacter);
+                            motionPanel.open = true;
+                        }else if(extension == ".png" || extension == ".jpg" || extension == ".jpeg" ||
+                                 extension == ".tga" || extension == ".bmp"){
+                            droppedImages.push_back(path);
+                        }else if(extension == ".usda" && Warp::isProjectFile(path.string())){
+                            pendingProject = path;
+                            ui.openMenu("Project");
+                        }else{
+                            message = "Can't drop this file into the scene: " + path.filename().string();
+                        }
+                    }
+                    if(!droppedImages.empty()){
+                        if(materialState.armed()){
+                            int assigned = 0;
+                            for(const fs::path& image : droppedImages)
+                                if(Loom::assignArmedImage(stage, materialState, image.string())) ++assigned;
+                            message = assigned ? "Assigned dropped texture." : "No armed material slot for dropped texture.";
+                        }else{
+                            const Loom::MaterialImportReport report = Loom::materialFromTextures(stage, droppedImages);
+                            if(report.material < 0) message = "Texture: " + report.problem;
+                            else if(const Warp::Entity* target = stage.get(selected);
+                                    target && (target->mesh || target->model) && Loom::assignMaterial(stage, selected, report.material))
+                                message = "Created and assigned material " + report.name + ".";
+                            else message = "Created material " + report.name + "; select a mesh to assign it.";
+                        }
+                    }
+                }
+            }
     
             if(playing){
                 double playbackStart = stage.startFrame, playbackEnd = stage.endFrame;
@@ -2291,21 +2600,48 @@
             }
     
             ui.begin(input, float(windowWidth), float(windowHeight));
+            const float paletteWidth = std::min(620.0f, std::max(300.0f, float(windowWidth) - 28.0f));
+            const float paletteHeight = std::min(540.0f, std::max(330.0f, float(windowHeight) - 64.0f));
+            const Treadle::Rect commandPaletteBox{
+                std::max(12.0f, (float(windowWidth) - paletteWidth) * 0.5f),
+                std::max(48.0f, (float(windowHeight) - paletteHeight) * 0.43f),
+                paletteWidth, paletteHeight};
+            if(commandPaletteOpen) ui.blockBehindModal(commandPaletteBox);
             const Treadle::Theme& theme = ui.style();
     
             //Gumb za alatnu traku i timeline: vodoravno, na zadanom mjestu. Treadleovi gumbi idu
             //u stupac, a traka je red. Vraca je li kliknut i gdje pocinje sljedeci
-            auto toolButton = [&](const std::string& label, float x, float y, float height, bool on = false){
+            auto toolButton = [&](const std::string& label, float x, float y, float height, bool on = false,
+                                  const std::string& help = std::string(),
+                                  const std::string& shortcut = std::string()){
                 const float width = Treadle::textWidth(label, theme.textScale) + 2.0f * theme.padding;
                 const Treadle::Ui::Region region = ui.region("gumb:" + label, Treadle::Rect{x, y, width, height});
                 ui.canvas().rect(region.box, on ? theme.accent : (region.hot ? theme.hot : theme.control));
                 if(on) ui.canvas().outline(region.box, 1.0f, theme.title);
                 ui.canvas().text(x + theme.padding, y + (height - Treadle::textHeight(theme.textScale)) * 0.5f,
                                  label, on ? theme.textOnAccent : theme.text, theme.textScale);
+                ui.tooltip("toolbar:" + label, help.empty() ? label : help, shortcut);
                 return std::make_pair(region.pressed, x + width + 6.0f);
             };
     
             //== ALATNA TRAKA =========================================================================
+            if(activeRailPane == RailPane::AiChat){
+                const Treadle::Rect& bar = layout.toolbar;
+                ui.canvas().rect(bar, Treadle::Color{0.045f, 0.065f, 0.050f, 1.0f});
+                ui.canvas().text(bar.x + 12.0f, bar.y + 13.0f, "WEAVER", theme.title, theme.textScale);
+                const float backWidth = Treadle::textWidth("Back to Editor", theme.textScale) + 2.0f * theme.padding;
+                const float backX = std::max(bar.x + 96.0f, bar.x + bar.width - backWidth - 12.0f);
+                auto [backToEditor, afterBack] = toolButton("Back to Editor", backX, bar.y + 7.0f, bar.height - 14.0f,
+                                                            false, "Return to the scene editor.");
+                (void)afterBack;
+                if(backToEditor){
+                    outlineVisible = chatPreviousOutline;
+                    componentsVisible = chatPreviousComponents;
+                    timelineVisible = chatPreviousTimeline;
+                    chatWorkspaceSaved = false;
+                    activeRailPane = RailPane::None;
+                }
+            }else{
             {
                 const Treadle::Rect& bar = layout.toolbar;
                 ui.canvas().rect(bar, Treadle::Color{0.045f, 0.065f, 0.050f, 1.0f});
@@ -2315,28 +2651,45 @@
                 const float y = bar.y + 7.0f, h = bar.height - 14.0f;
                 float afterBoard = bar.x + 90.0f;
                 if(proceduraPanel.open){
-                    auto [backToScene, afterBack] = toolButton("Back to Scene", bar.x + 90.0f, y, h);
+                    auto [backToScene, afterBack] = toolButton("Back to Scene", bar.x + 90.0f, y, h,
+                                                               false, "Close Procedura and return to the scene editor.");
                     afterBoard = afterBack;
                     if(backToScene){ proceduraPanel.open = false; activeRailPane = RailPane::None; }
                 }else if(motionPanel.open){
-                    auto [backToScene, afterBack] = toolButton("Back to Scene", bar.x + 90.0f, y, h);
+                    auto [backToScene, afterBack] = toolButton("Back to Scene", bar.x + 90.0f, y, h,
+                                                               false, "Close Animator and return to the scene editor.");
                     if(backToScene) motionPanel.open = false;
-                    auto [playPause, afterPlayback] = toolButton(playing ? "Pause" : "Play", afterBack, y, h, playing);
+                    auto [playPause, afterPlayback] = toolButton(playing ? "Pause" : "Play", afterBack, y, h, playing,
+                                                                  playing ? "Pause timeline playback." : "Play the current animation.", "Space");
                     if(playPause) playing = !playing;
-                    auto [saveButton, afterSave] = toolButton(dirty ? "Save *" : "Save", afterPlayback, y, h, dirty);
+                    auto [saveButton, afterSave] = toolButton(dirty ? "Save *" : "Save", afterPlayback, y, h, dirty,
+                                                               "Save the current project.", "Ctrl+S");
                     if(saveButton) saveProjectNow();
                     afterBoard = afterSave;
                 }else{
-                    auto [moveTool, afterMove] = toolButton("W", bar.x + 90.0f, y, h, tool == Tool::Move);
+                    auto [moveTool, afterMove] = toolButton("W", bar.x + 90.0f, y, h, tool == Tool::Move,
+                                                            "Move the selected object in the viewport.", "W");
                     if(moveTool) tool = Tool::Move;
-                    auto [rotateTool, afterRotateTool] = toolButton("E", afterMove, y, h, tool == Tool::Rotate);
+                    auto [rotateTool, afterRotateTool] = toolButton("E", afterMove, y, h, tool == Tool::Rotate,
+                                                                    "Rotate the selected object in the viewport.", "E");
                     if(rotateTool) tool = Tool::Rotate;
+                    auto [spaceButton, afterSpace] = toolButton(localTransformSpace ? "Local" : "World",
+                                                               afterRotateTool, y, h, localTransformSpace,
+                                                               "Switch transform axes between local and world space.");
+                    if(spaceButton) localTransformSpace = !localTransformSpace;
+                    auto [snapButton, afterSnap] = toolButton("Snap", afterSpace, y, h, transformSnapEnabled,
+                                                              "Toggle transform snapping.");
+                    if(snapButton) transformSnapEnabled = !transformSnapEnabled;
                     //Ploha iz odabira: vucenjem u pogledu se oznaci komad plohe (LoomEditorTools.h)
-                    auto [surfaceButton, afterRotate] = toolButton("S", afterRotateTool, y, h, surfaceTool.active);
+                    auto [surfaceButton, afterRotate] = toolButton("S", afterSnap, y, h, surfaceTool.active,
+                                                                   "Drag over a surface to place geometry.", "S");
                     if(surfaceButton) surfaceTool.active = !surfaceTool.active;
-                    auto [fit, afterFit] = toolButton("Frame (F)", afterRotate + 12.0f, y, h);
+                    auto [fit, afterFit] = toolButton("Frame (F)", afterRotate + 12.0f, y, h, false,
+                                                      "Frame the selected object or the whole scene.", "F");
                     if(fit){ view.lookThrough = Warp::None; Loom::frameAll(stage.size() ? stage : live, frame, view.orbit); }
-                    auto [through, afterThrough] = toolButton("Camera (0)", afterFit, y, h, view.lookThrough != Warp::None);
+                    auto [through, afterThrough] = toolButton("Camera (0)", afterFit, y, h,
+                                                              view.lookThrough != Warp::None,
+                                                              "Look through the selected camera or exit camera view.", "0");
                     if(through){
                         if(view.lookThrough != Warp::None) view.lookThrough = Warp::None;
                         else{
@@ -2344,15 +2697,20 @@
                             view.lookThrough = chosen && chosen->camera ? selected : firstCamera();
                         }
                     }
-                    auto [plateButton, afterPlate] = toolButton("Plate (V)", afterThrough, y, h, showPlate);
+                    auto [plateButton, afterPlate] = toolButton("Plate (V)", afterThrough, y, h, showPlate,
+                                                                "Show or hide the camera footage plate.", "V");
                     if(plateButton) showPlate = !showPlate;
-                    auto [rigButton, afterRig] = toolButton("Auto Rig", afterPlate + 12.0f, y, h);
+                    auto [rigButton, afterRig] = toolButton("Auto Rig", afterPlate + 12.0f, y, h, false,
+                                                            "Generate a skeleton and skin weights for a model.");
                     if(rigButton) openAutoRig();
-                    auto [saveButton, afterSave] = toolButton(dirty ? "Save *" : "Save", afterRig + 12.0f, y, h, dirty);
+                    auto [saveButton, afterSave] = toolButton(dirty ? "Save *" : "Save", afterRig + 12.0f, y, h, dirty,
+                                                               "Save the current project.", "Ctrl+S");
                     if(saveButton) saveProjectNow();
-                    auto [newButton, afterNew] = toolButton("New", afterSave, y, h);
+                    auto [newButton, afterNew] = toolButton("New", afterSave, y, h, false,
+                                                            "Create a new scene.");
                     if(newButton) ui.openMenu("New");
-                    auto [boardButton, afterBoardNormal] = toolButton("Moodboard (M)", afterNew, y, h, moodboard.open);
+                    auto [boardButton, afterBoardNormal] = toolButton("Moodboard (M)", afterNew, y, h, moodboard.open,
+                                                                      "Open or close the project moodboard.", "M");
                     if(boardButton) setMoodboardOpen(!moodboard.open);
                     afterBoard = afterBoardNormal;
                 }
@@ -2447,11 +2805,90 @@
                                      fitted, colour, statusScale);
                 }
             }
+            }
     
             const float drawerWidth = std::min(layout.viewport.width,
                 std::clamp(layout.viewport.width * 0.30f, 260.0f, 360.0f));
             const Treadle::Rect drawerBox{layout.viewport.x + layout.viewport.width - drawerWidth, layout.viewport.y,
                                            drawerWidth, layout.viewport.height};
+            auto toggleRailPane = [&](RailPane pane){
+                if(pane != RailPane::AiChat && activeRailPane == RailPane::AiChat && chatWorkspaceSaved){
+                    outlineVisible = chatPreviousOutline;
+                    componentsVisible = chatPreviousComponents;
+                    timelineVisible = chatPreviousTimeline;
+                    chatWorkspaceSaved = false;
+                    activeRailPane = RailPane::None;
+                }
+                if(pane == RailPane::AiChat){
+                    if(activeRailPane == RailPane::AiChat){
+                        if(chatWorkspaceSaved){
+                            outlineVisible = chatPreviousOutline;
+                            componentsVisible = chatPreviousComponents;
+                            timelineVisible = chatPreviousTimeline;
+                        }
+                        chatWorkspaceSaved = false;
+                        activeRailPane = RailPane::None;
+                    }else{
+                        chatPreviousOutline = outlineVisible;
+                        chatPreviousComponents = componentsVisible;
+                        chatPreviousTimeline = timelineVisible;
+                        chatWorkspaceSaved = true;
+                        outlineVisible = false;
+                        componentsVisible = false;
+                        timelineVisible = false;
+                        terminal.visible = false;
+                        compositor.open = false;
+                        motionPanel.open = false;
+                        proceduraPanel.open = false;
+                        autoRig.open = false;
+                        activeRailPane = RailPane::AiChat;
+                    }
+                }else if(pane == RailPane::Timeline){
+                    proceduraPanel.open = false;
+                    timelineVisible = !timelineVisible;
+                }else if(pane == RailPane::Terminal){
+                    proceduraPanel.open = false;
+                    terminal.visible = !terminal.visible;
+                    if(terminal.visible) terminal.unreadError = false;
+                }else if(pane == RailPane::Compositor){
+                    //COMPOSITOR: vlastiti radni prostor; prvi put zadani graf nad plocom kamere
+                    proceduraPanel.open = false;
+                    compositor.open = !compositor.open;
+                    if(compositor.open){
+                        motionPanel.open = false;
+                        autoRig.open = false;
+                        std::string video;
+                        if(const Warp::Entity* through = stage.get(view.lookThrough); through && through->camera) video = through->camera->plate;
+                        if(video.empty() && !browser.videos.empty()) video = browser.videos.front().string();
+                        Loom::compositorDefaultGraph(compositor, video);
+                    }
+                }else if(pane == RailPane::Motion){
+                    compositor.open = false;
+                    proceduraPanel.open = false;
+                    if(motionPanel.open){ motionPanel.open = false; autoRig.open = false; }
+                    else openMotionWorkflow();
+                }else if(pane == RailPane::Procedura){
+                    compositor.open = false;
+                    motionPanel.open = false;
+                    autoRig.open = false;
+                    proceduraPanel.open = !proceduraPanel.open;
+                    if(proceduraPanel.open) frameProceduraCurve();
+                    activeRailPane = proceduraPanel.open ? RailPane::Procedura : RailPane::None;
+                }else if(pane == RailPane::Scene || pane == RailPane::Components){
+                    proceduraPanel.open = false;
+                    motionPanel.open = false;
+                    autoRig.open = false;
+                    if(pane == RailPane::Scene) outlineVisible = !outlineVisible;
+                    else componentsVisible = !componentsVisible;
+                    activeRailPane = RailPane::None;
+                }else{
+                    proceduraPanel.open = false;
+                    motionPanel.open = false;
+                    autoRig.open = false;
+                    activeRailPane = activeRailPane == pane ? RailPane::None : pane;
+                }
+            };
+            if(activeRailPane != RailPane::AiChat){
             {
                 Treadle::DrawList& canvas = ui.canvas();
                 canvas.rect(layout.rail, theme.panel);
@@ -2467,51 +2904,17 @@
                         const Treadle::Rect box{layout.rail.x + 6.0f, layout.rail.y + 8.0f + float(row) * stride,
                                                 side, std::min(54.0f, stride - 3.0f)};
                         const Treadle::Ui::Region hit = ui.region("loom-rail-" + label, box);
-                        if(hit.pressed){
-                            if(pane == RailPane::Timeline){
-                                proceduraPanel.open = false;
-                                timelineVisible = !timelineVisible;
-                            }else if(pane == RailPane::Terminal){
-                                proceduraPanel.open = false;
-                                terminal.visible = !terminal.visible;
-                                if(terminal.visible) terminal.unreadError = false;
-                            }else if(pane == RailPane::Compositor){
-                                //COMPOSITOR: vlastiti radni prostor; prvi put zadani graf nad plocom kamere
-                                proceduraPanel.open = false;
-                                compositor.open = !compositor.open;
-                                if(compositor.open){
-                                    motionPanel.open = false;
-                                    autoRig.open = false;
-                                    std::string video;
-                                    if(const Warp::Entity* through = stage.get(view.lookThrough); through && through->camera) video = through->camera->plate;
-                                    if(video.empty() && !browser.videos.empty()) video = browser.videos.front().string();
-                                    Loom::compositorDefaultGraph(compositor, video);
-                                }
-                            }else if(pane == RailPane::Motion){
-                                compositor.open = false;
-                                proceduraPanel.open = false;
-                                if(motionPanel.open){ motionPanel.open = false; autoRig.open = false; }
-                                else openMotionWorkflow();
-                            }else if(pane == RailPane::Procedura){
-                                compositor.open = false;
-                                motionPanel.open = false;
-                                autoRig.open = false;
-                                proceduraPanel.open = !proceduraPanel.open;
-                                if(proceduraPanel.open) frameProceduraCurve();
-                                activeRailPane = proceduraPanel.open ? RailPane::Procedura : RailPane::None;
-                            }else if(pane == RailPane::Scene || pane == RailPane::Components){
-                                proceduraPanel.open = false;
-                                motionPanel.open = false;
-                                autoRig.open = false;
-                                if(pane == RailPane::Scene) outlineVisible = !outlineVisible;
-                                else componentsVisible = !componentsVisible;
-                                activeRailPane = RailPane::None;
-                            }else{
-                                proceduraPanel.open = false;
-                                motionPanel.open = false;
-                                autoRig.open = false;
-                                activeRailPane = activeRailPane == pane ? RailPane::None : pane;
-                            }
+                        if(hit.pressed) toggleRailPane(pane);
+                        if(hit.hot){
+                            const char* fullName = pane == RailPane::Media ? "Media" : pane == RailPane::Scene ? "Scene Atlas" :
+                                pane == RailPane::Components ? "Inspector" : pane == RailPane::Motion ? "Motion" :
+                                pane == RailPane::Procedura ? "Procedura" : pane == RailPane::Timeline ? "Timeline" :
+                                pane == RailPane::Terminal ? "Terminal" : pane == RailPane::AiChat ? "AI Chat" : "Compositor";
+                            const int shortcutIndex = pane == RailPane::Media ? 1 : pane == RailPane::Scene ? 2 :
+                                pane == RailPane::Components ? 3 : pane == RailPane::Motion ? 4 :
+                                pane == RailPane::Procedura ? 5 : pane == RailPane::Timeline ? 6 :
+                                pane == RailPane::Terminal ? 7 : pane == RailPane::AiChat ? 8 : 9;
+                            ui.tooltip("rail:" + label, fullName, "F" + std::to_string(shortcutIndex));
                         }
                         const bool active = pane == RailPane::Compositor ? compositor.open : pane == RailPane::Motion ? motionPanel.open :
                             (pane == RailPane::Procedura ? proceduraPanel.open :
@@ -2611,6 +3014,8 @@
                                 Treadle::Color{theme.text.r, theme.text.g, theme.text.b, handleAlpha});
             }
         }
+
+            }
 
         //== MEDIA ================================================================================
         if(activeRailPane == RailPane::Media){
@@ -2723,8 +3128,188 @@
         }
 
         if(activeRailPane == RailPane::AiChat){
-            ui.dock("AI CHAT", drawerBox);
-            ui.label("In Progress");
+            //Complete background inference on the editor thread. Only this thread touches Warp::Stage.
+            if(!agentBusy.load() && agentWorker.joinable()){
+                agentWorker.join();
+                std::optional<Loom::AgentApiResponse> ready;
+                {
+                    std::lock_guard<std::mutex> guard(agentResponseMutex);
+                    ready = std::move(agentResponse);
+                    agentResponse.reset();
+                }
+                if(ready){
+                    if(!ready->error.empty()){
+                        agentStatus = ready->error;
+                        agentChatMessages.emplace_back("assistant", ready->error);
+                    }else{
+                        std::string reply = ready->reply;
+                        bool sceneChanged = false;
+                        size_t confirmationIndex = agentChatMessages.size();
+                        for(const Loom::AgentPendingAction& proposed : ready->actions){
+                            Loom::AgentControlState controlState;
+                            controlState.selected = selected;
+                            controlState.frame = frame;
+                            controlState.orbit = view.orbit;
+                            controlState.lookThrough = view.lookThrough;
+                            Loom::AgentActionResult actionResult = Loom::executeAgentAction(
+                                stage, controlState, proposed.action, false);
+                            selected = controlState.selected;
+                            frame = controlState.frame;
+                            view.orbit = controlState.orbit;
+                            view.lookThrough = controlState.lookThrough;
+                            if(proposed.action.tool.rfind("scene.", 0) == 0) focus = Focus::Entity;
+                            if(actionResult.confirmationRequired || proposed.confirmationRequired){
+                                pendingAgentConfirmation = PendingAgentConfirmation{proposed.action, confirmationIndex};
+                                reply += "\n\n" + actionResult.message + " Confirm before I continue.";
+                                continue;
+                            }
+                            if(actionResult.succeeded){
+                                reply += "\n\n" + actionResult.message;
+                                sceneChanged = sceneChanged || proposed.action.tool.rfind("scene.", 0) == 0;
+                                if(actionResult.proceduraGraph && actionResult.proceduraPreview){
+                                    proceduraPanel.graph = std::move(*actionResult.proceduraGraph);
+                                    proceduraPanel.recipeName = std::move(actionResult.proceduraRecipeName);
+                                    proceduraPanel.expandedNodes.clear();
+                                    for(const Engine::WeaverProcedura::Node& node : proceduraPanel.graph.nodes)
+                                        proceduraPanel.expandedNodes[node.id] = true;
+                                    proceduraPanel.selectedCurveNodeId = 0;
+                                    proceduraPanel.selectedControlPoint = -1;
+                                    proceduraPanel.contextCurveNodeId = 0;
+                                    proceduraPanel.contextControlPoint = -1;
+                                    proceduraPanel.previewMesh = std::move(*actionResult.proceduraPreview);
+                                    proceduraPanel.previewReady = true;
+                                    proceduraPanel.previewVisible = true;
+                                    proceduraPanel.graphDirty = false;
+                                    proceduraPanel.previewError.clear();
+                                    proceduraPanel.recipeStatus = "Created by Weaver. Save Recipe to export this graph.";
+                                    ++proceduraPanel.previewRevision;
+
+                                    if(!proceduraPanel.previewMesh.vertices.empty()){
+                                        glm::vec3 minimum(std::numeric_limits<float>::max());
+                                        glm::vec3 maximum(std::numeric_limits<float>::lowest());
+                                        for(const Engine::WeaverProcedura::MeshVertex& vertex : proceduraPanel.previewMesh.vertices){
+                                            minimum = glm::min(minimum, vertex.position);
+                                            maximum = glm::max(maximum, vertex.position);
+                                        }
+                                        view.orbit.target = (minimum + maximum) * 0.5f;
+                                        const float radius = glm::length(maximum - minimum) * 0.5f;
+                                        view.orbit.distance = std::clamp(radius * 3.2f, 2.0f, 100000.0f);
+                                        view.lookThrough = Warp::None;
+                                    }
+                                    reply += "\nPreview is visible in the viewport. Open Procedura and use Save Recipe to export it.";
+                                }
+                                if(!actionResult.entities.empty()){
+                                    for(const Loom::AgentEntityInfo& entity : actionResult.entities)
+                                        reply += "\n" + entity.path + "  ·  " + entity.type +
+                                                 (entity.visible ? "  ·  visible" : "  ·  hidden");
+                                }else if(proposed.action.tool == "scene.list_entities"){
+                                    reply += "\n(Scene is empty.)";
+                                }
+                            }else reply += "\n\n" + actionResult.message;
+                        }
+                        agentChatMessages.emplace_back("assistant", reply);
+                        if(pendingAgentConfirmation) pendingAgentConfirmation->assistantIndex = agentChatMessages.size() - 1;
+                        if(sceneChanged){
+                            extentDirty = true;
+                            history.track(stage, false);
+                        }
+                        agentStatus = pendingAgentConfirmation ? "Waiting for your confirmation." : "Ready";
+                    }
+                }
+            }
+
+            const float composerHeight = std::min(185.0f, drawerBox.height * 0.42f);
+            const float chatGap = 4.0f;
+            const Treadle::Rect chatHistoryBox{drawerBox.x, drawerBox.y, drawerBox.width,
+                std::max(0.0f, drawerBox.height - composerHeight - chatGap)};
+            const Treadle::Rect chatComposerBox{drawerBox.x, chatHistoryBox.y + chatHistoryBox.height + chatGap,
+                drawerBox.width, composerHeight};
+            ui.dock("AI CHAT", chatHistoryBox, &agentChatScroll);
+            ui.caption("WEAVER  ·  LOCAL LOOM AGENT");
+            ui.status(agentBusy.load() ? "Loading model or thinking…" : agentStatus,
+                      agentBusy.load() ? theme.accent : (pendingAgentConfirmation ? theme.warning : theme.dim));
+            const Warp::Entity* chatSelection = stage.get(selected);
+            std::string liveSceneLabel = std::to_string(stage.size()) + " objects  ·  frame " + std::to_string(int(frame));
+            if(chatSelection) liveSceneLabel += "  ·  selected " + stage.path(chatSelection->id);
+            else if(stage.size() == 0) liveSceneLabel += "  ·  empty scene";
+            ui.caption("LIVE SCENE");
+            ui.hint(liveSceneLabel);
+            ui.separator();
+            const size_t firstMessage = agentChatMessages.size() > 14 ? agentChatMessages.size() - 14 : 0;
+            for(size_t i = firstMessage; i < agentChatMessages.size(); ++i){
+                const bool fromUser = agentChatMessages[i].first == "user";
+                ui.caption(fromUser ? "YOU" : "WEAVER");
+                ui.hint(agentChatMessages[i].second);
+                if(!fromUser && ui.setClipboard &&
+                   ui.button("agent-chat-copy-" + std::to_string(i), "Copy answer")){
+                    ui.setClipboard(agentChatMessages[i].second);
+                    agentStatus = "Answer copied to clipboard.";
+                }
+            }
+            if(agentChatMessages.empty())
+                ui.hint("Ask in Croatian or English. I can change the live scene and create grid or hallway Recipes that preview in the viewport.");
+            if(pendingAgentConfirmation){
+                ui.separator();
+                ui.status("Deletion needs confirmation.", theme.warning);
+                const int confirmationChoice = ui.buttonRow({"Confirm delete", "Cancel"});
+                if(confirmationChoice >= 0){
+                    if(confirmationChoice == 0){
+                        Loom::AgentControlState controlState;
+                        controlState.selected = selected; controlState.frame = frame;
+                        controlState.orbit = view.orbit; controlState.lookThrough = view.lookThrough;
+                        Loom::AgentActionResult deleted = Loom::executeAgentAction(
+                            stage, controlState, pendingAgentConfirmation->action, true);
+                        selected = controlState.selected; frame = controlState.frame;
+                        view.orbit = controlState.orbit; view.lookThrough = controlState.lookThrough;
+                        if(pendingAgentConfirmation->assistantIndex < agentChatMessages.size())
+                            agentChatMessages[pendingAgentConfirmation->assistantIndex].second += "\n\n" + deleted.message;
+                        if(deleted.succeeded){ extentDirty = true; history.track(stage, false); }
+                        agentStatus = deleted.message;
+                    }else{
+                        if(pendingAgentConfirmation->assistantIndex < agentChatMessages.size())
+                            agentChatMessages[pendingAgentConfirmation->assistantIndex].second += "\n\nCancelled.";
+                        agentStatus = "Deletion cancelled.";
+                    }
+                    pendingAgentConfirmation.reset();
+                }
+            }
+
+            auto sendAgentMessage = [&]{
+                if(agentBusy.load() || pendingAgentConfirmation || agentChatDraft.empty()) return;
+                const std::string prompt = agentChatDraft;
+                agentChatDraft.clear();
+                agentChatMessages.emplace_back("user", prompt);
+                std::vector<std::pair<std::string, std::string>> conversation;
+                const size_t first = agentChatMessages.size() > 24 ? agentChatMessages.size() - 24 : 0;
+                for(size_t i = first; i < agentChatMessages.size(); ++i)
+                    conversation.push_back(agentChatMessages[i]);
+                const fs::path root(LOOM_ROOT_DIR);
+                const std::string sceneContextJson = Loom::agentSceneContextJson(stage, selected, frame);
+                agentBusy.store(true);
+                agentStatus = "Starting the local Weaver service…";
+                agentWorker = std::thread([root, conversation = std::move(conversation), sceneContextJson,
+                                           &agentResponseMutex, &agentResponse, &agentBusy]() mutable{
+                    Loom::AgentApiResponse response;
+                    try{ response = Loom::callLocalAgentApi(root, conversation, sceneContextJson); }
+                    catch(const std::exception& error){ response.error = error.what(); }
+                    {
+                        std::lock_guard<std::mutex> guard(agentResponseMutex);
+                        agentResponse = std::move(response);
+                    }
+                    agentBusy.store(false);
+                });
+            };
+
+            ui.dock("ASK WEAVER", chatComposerBox);
+            Treadle::Ui::TextFieldConfig chatField;
+            chatField.lines = 3;
+            chatField.maxLength = 4000;
+            chatField.placeholder = "Ask Loom to make or change something…";
+            chatField.enterSubmits = true;
+            const Treadle::Ui::TextFieldResult chatResult = ui.textField("loom-agent-chat-input", &agentChatDraft, chatField);
+            if(chatResult.submitted) sendAgentMessage();
+            if(ui.primaryButton(agentBusy.load() ? "Weaver is working…" : "Send", !agentBusy.load() && !pendingAgentConfirmation && !agentChatDraft.empty()))
+                sendAgentMessage();
         }
         Warp::Id hoveredAtlasId = Warp::None;
         Treadle::Rect hoveredAtlasRect;
@@ -2735,6 +3320,7 @@
             const Treadle::Rect addBox{layout.hierarchy.x + layout.hierarchy.width - 33.0f,
                                         layout.hierarchy.y + 5.0f, 24.0f, 24.0f};
             const Treadle::Ui::Region addHit = ui.region("scene-atlas-add", addBox);
+            ui.tooltip("scene-atlas-add", "Add an object, camera, or model to the scene.");
             ui.canvas().rect(addBox, addHit.hot ? theme.hot : theme.control);
             ui.canvas().outline(addBox, 1.0f, theme.accent);
             ui.canvas().text(addBox.x + (addBox.width - Treadle::textWidth("+", theme.textScale)) * 0.5f,
@@ -2794,7 +3380,7 @@
 
         //== COMPONENTS =============================================================================
         if((componentsVisible || motionPanel.open || proceduraPanel.open) && !compositor.open){
-            ui.dock("INSTRUMENT DECK", layout.properties, &propertiesScroll);
+            ui.dock("INSPECTOR", layout.properties, &propertiesScroll);
         {
             Warp::Entity* entity = focus == Focus::Entity ? stage.get(selected) : nullptr;
             const Warp::Entity* atlasPreview = hoveredAtlasId != Warp::None ? stage.get(hoveredAtlasId) : nullptr;
@@ -2836,7 +3422,27 @@
                     selected = hierarchyIds[size_t(breadcrumbClick)];
                     focus = Focus::Entity;
                 }
+                if(inspectorEntry.entity != entity->id || !ui.wantsKeyboard()){
+                    inspectorEntry.entity = entity->id;
+                    inspectorEntry.name = entity->name;
+                    const Warp::Transform current = stage.localAt(entity->id, frame);
+                    inspectorEntry.position = vectorText(current.translation);
+                    inspectorEntry.rotation = vectorText(glm::degrees(glm::eulerAngles(current.rotation)));
+                    inspectorEntry.scale = vectorText(current.scale);
+                    inspectorEntry.cameraFocal = entity->camera ? number(entity->camera->focalPixels) : std::string();
+                }
                 ui.selectionCard(entity->name, kindOf(*entity), sceneAccent(*entity), entity->visible);
+                Treadle::Ui::TextFieldConfig nameField;
+                nameField.label = "Object name";
+                nameField.placeholder = "Name this object";
+                if(ui.textField("inspector-object-name", &inspectorEntry.name, nameField).submitted){
+                    if(!inspectorEntry.name.empty() && stage.rename(entity->id, inspectorEntry.name)){
+                        message = "Renamed to " + inspectorEntry.name;
+                    }else{
+                        inspectorEntry.name = entity->name;
+                        message = "That object name is already in use.";
+                    }
+                }
                 //Grupa lika iz pokreta: vidi se odakle je pokret
                 if(!entity->children.empty() && stage.get(entity->children.front()) &&
                    stage.get(entity->children.front())->joint && !entity->joint){
@@ -3284,12 +3890,36 @@
                 const Warp::AnimatorTrack* activeBoneTrack = entity->joint ? stage.activeAnimatorTrack(entity->id) : nullptr;
                 const bool editingAnimatorBone = entity->joint && rigEntity && rigEntity->animator && rigEntity->animator->enabled &&
                     rigEntity->animator->activeAnimation < rigEntity->animator->animations.size();
+                const Warp::Track<glm::vec3>* translationTrack = activeBoneTrack ? &activeBoneTrack->translationKeys : &entity->translationKeys;
+                const Warp::Track<glm::quat>* rotationTrack = activeBoneTrack ? &activeBoneTrack->rotationKeys : &entity->rotationKeys;
+                const Warp::Track<glm::vec3>* scaleTrack = activeBoneTrack ? &activeBoneTrack->scaleKeys : &entity->scaleKeys;
+                auto hasKeyHere = [&](const auto* track){
+                    const double at = std::round(frame);
+                    const auto found = std::lower_bound(track->times.begin(), track->times.end(), at - 1e-4);
+                    return found != track->times.end() && std::fabs(*found - at) <= 1e-4;
+                };
+                const bool positionKeyHere = hasKeyHere(translationTrack);
+                const bool rotationKeyHere = hasKeyHere(rotationTrack);
+                const bool scaleKeyHere = hasKeyHere(scaleTrack);
                 if(editingAnimatorBone) ui.label("Bone edits key the selected Animator clip at this frame.");
                 bool edited = false;
                 float translation[3] = {local.translation.x, local.translation.y, local.translation.z};
-                if(ui.dragVector("Position", translation, extent.radius * 0.004f)){
+                if(ui.dragVector(positionKeyHere ? "Position  ◆" : "Position  ◇", translation, extent.radius * 0.004f)){
                     local.translation = glm::vec3(translation[0], translation[1], translation[2]);
                     edited = true;
+                    inspectorEntry.position = vectorText(local.translation);
+                }
+                Treadle::Ui::TextFieldConfig exactTransformField;
+                exactTransformField.label = positionKeyHere ? "Position XYZ  ◆" : "Position XYZ  ◇";
+                exactTransformField.labelFraction = 0.40f;
+                exactTransformField.placeholder = "x y z  ·  Enter";
+                if(ui.textField("inspector-position-exact", &inspectorEntry.position, exactTransformField).submitted){
+                    float values[3];
+                    if(Loom::parseMaterialFloats(inspectorEntry.position, values, 3)){
+                        local.translation = glm::vec3(values[0], values[1], values[2]);
+                        inspectorEntry.position = vectorText(local.translation);
+                        edited = true;
+                    }else message = "Position needs three numbers (X Y Z).";
                 }
                 if(eulerFor != entity->id || eulerFrame != frame){
                     eulerCache = glm::degrees(glm::eulerAngles(local.rotation));
@@ -3297,16 +3927,39 @@
                     eulerFrame = frame;
                 }
                 float rotation[3] = {eulerCache.x, eulerCache.y, eulerCache.z};
-                if(ui.dragVector("Rotation (deg)", rotation, 0.5f)){
+                if(ui.dragVector(rotationKeyHere ? "Rotation (deg)  ◆" : "Rotation (deg)  ◇", rotation, 0.5f)){
                     eulerCache = glm::vec3(rotation[0], rotation[1], rotation[2]);
                     local.rotation = glm::normalize(glm::quat(glm::radians(eulerCache)));
                     edited = true;
+                    inspectorEntry.rotation = vectorText(eulerCache);
+                }
+                exactTransformField.label = rotationKeyHere ? "Rotation XYZ°  ◆" : "Rotation XYZ°  ◇";
+                exactTransformField.placeholder = "degrees  ·  Enter";
+                if(ui.textField("inspector-rotation-exact", &inspectorEntry.rotation, exactTransformField).submitted){
+                    float values[3];
+                    if(Loom::parseMaterialFloats(inspectorEntry.rotation, values, 3)){
+                        eulerCache = glm::vec3(values[0], values[1], values[2]);
+                        local.rotation = glm::normalize(glm::quat(glm::radians(eulerCache)));
+                        inspectorEntry.rotation = vectorText(eulerCache);
+                        edited = true;
+                    }else message = "Rotation needs three degree values (X Y Z).";
                 }
                 float scale[3] = {local.scale.x, local.scale.y, local.scale.z};
                 const float scaleSpeed = std::max(1e-5f, (std::fabs(scale[0]) + std::fabs(scale[1]) + std::fabs(scale[2])) * 0.0015f);
-                if(ui.dragVector("Scale", scale, scaleSpeed)){
+                if(ui.dragVector(scaleKeyHere ? "Scale  ◆" : "Scale  ◇", scale, scaleSpeed)){
                     local.scale = glm::vec3(scale[0], scale[1], scale[2]);
                     edited = true;
+                    inspectorEntry.scale = vectorText(local.scale);
+                }
+                exactTransformField.label = scaleKeyHere ? "Scale XYZ  ◆" : "Scale XYZ  ◇";
+                exactTransformField.placeholder = "x y z  ·  Enter";
+                if(ui.textField("inspector-scale-exact", &inspectorEntry.scale, exactTransformField).submitted){
+                    float values[3];
+                    if(Loom::parseMaterialFloats(inspectorEntry.scale, values, 3)){
+                        local.scale = glm::vec3(values[0], values[1], values[2]);
+                        inspectorEntry.scale = vectorText(local.scale);
+                        edited = true;
+                    }else message = "Scale needs three numbers (X Y Z).";
                 }
                 //Jednoliko mjerilo: za kocku, i za grupu solvea kad se scena svodi na metre
                 float uniform = 1.0f;
@@ -3314,20 +3967,40 @@
                     local.scale *= uniform;
                     edited = true;
                 }
-                if(edited) stage.setLocalAt(entity->id, frame, local);
-                const Warp::Track<glm::vec3>* translationTrack = activeBoneTrack ? &activeBoneTrack->translationKeys : &entity->translationKeys;
-                const Warp::Track<glm::quat>* rotationTrack = activeBoneTrack ? &activeBoneTrack->rotationKeys : &entity->rotationKeys;
-                const Warp::Track<glm::vec3>* scaleTrack = activeBoneTrack ? &activeBoneTrack->scaleKeys : &entity->scaleKeys;
-                const bool hasTransformKeys = !translationTrack->empty() || !rotationTrack->empty() || !scaleTrack->empty();
-                if(hasTransformKeys) ui.label("(Animated properties get a key at this frame)");
+                if(edited){
+                    stage.setLocalAt(entity->id, frame, local);
+                    if(autoKeyEnabled) stage.keyAll(entity->id, frame);
+                }
+                const Warp::AnimatorTrack* keyedBoneTrack = entity->joint ? stage.activeAnimatorTrack(entity->id) : nullptr;
+                const Warp::Track<glm::vec3>* keyedTranslation = keyedBoneTrack ? &keyedBoneTrack->translationKeys : &entity->translationKeys;
+                const Warp::Track<glm::quat>* keyedRotation = keyedBoneTrack ? &keyedBoneTrack->rotationKeys : &entity->rotationKeys;
+                const Warp::Track<glm::vec3>* keyedScale = keyedBoneTrack ? &keyedBoneTrack->scaleKeys : &entity->scaleKeys;
+                const bool currentPositionKey = hasKeyHere(keyedTranslation);
+                const bool currentRotationKey = hasKeyHere(keyedRotation);
+                const bool currentScaleKey = hasKeyHere(keyedScale);
+                ui.value("Keys at frame " + std::to_string(int(std::round(frame))),
+                    std::string(currentPositionKey ? "◆ P" : "◇ P") + "   " +
+                    (currentRotationKey ? "◆ R" : "◇ R") + "   " +
+                    (currentScaleKey ? "◆ S" : "◇ S"));
+                const bool hasTransformKeys = !keyedTranslation->empty() || !keyedRotation->empty() || !keyedScale->empty();
+                if(autoKeyEnabled) ui.hint("AUTO KEY ON · changed transforms are keyed at this frame.");
+                else if(hasTransformKeys) ui.hint("Animated transforms use keys at this frame; press K to key all.");
                 if(hasTransformKeys){
-                    ui.value("Keyframes", std::to_string(std::max({translationTrack->size(), rotationTrack->size(), scaleTrack->size()})));
+                    ui.value("Keyframes", std::to_string(std::max({keyedTranslation->size(), keyedRotation->size(), keyedScale->size()})));
                 }
                 }
                 if(entity->camera && ui.componentHeader("CAMERA", {0.16f, 0.86f, 1.0f, 1.0f}, &cameraExpanded)){
+                    Treadle::Ui::TextFieldConfig focalField;
+                    focalField.label = "Focal pixels";
+                    focalField.placeholder = "positive number  ·  Enter";
+                    if(ui.textField("inspector-camera-focal", &inspectorEntry.cameraFocal, focalField).submitted){
+                        float value[1];
+                        if(Loom::parseMaterialFloats(inspectorEntry.cameraFocal, value, 1) && value[0] > 0.0f){
+                            entity->camera->focalPixels = value[0];
+                            inspectorEntry.cameraFocal = number(value[0]);
+                        }else message = "Camera focal length must be a positive number.";
+                    }
                     char text[64];
-                    std::snprintf(text, sizeof(text), "%.0f px", double(entity->camera->focalPixels));
-                    ui.value("Focal length", text);
                     std::snprintf(text, sizeof(text), "%u x %u", entity->camera->width, entity->camera->height);
                     ui.value("Frame size", text);
                     if(!entity->camera->plate.empty()){
@@ -3417,7 +4090,8 @@
                     }
                     if(cutPending){
                         ui.value("Cut (unsaved)", std::to_string(viewportSplat.cutAway()));
-                        if(ui.button("Undo Cut")) viewportSplat.undoCut();
+                        if(ui.button("Undo Cut") && !history.undoExternal(stage))
+                            message = "Undo the latest action before undoing this cut.";
                         if(ui.button("Save Cut Splat")){
                             const std::string out = Loom::cutOutputPath(entity->splat->path);
                             const std::string problem = viewportSplat.saveCut(out);
@@ -3464,10 +4138,20 @@
                                  fs::path(proxySplat->splat->path).parent_path().string(), Loom::Task::Proxy, 0);
                         message = "Fitting a blocker box to what is inside...";
                     }
-                    if(ui.button("Delete Inside")) message = "Deleted " + std::to_string(viewportSplat.cutBox(box, true));
-                    if(ui.button("Delete Outside")) message = "Deleted " + std::to_string(viewportSplat.cutBox(box, false));
+                    auto cutSplat = [&](bool inside){
+                        const size_t deleted = viewportSplat.cutBox(box, inside);
+                        if(deleted > 0){
+                            history.recordExternal(stage, [&](bool redo){
+                                return redo ? viewportSplat.redoCut() : viewportSplat.undoCut();
+                            }, deleted * sizeof(uint32_t));
+                        }
+                        message = "Deleted " + std::to_string(deleted);
+                    };
+                    if(ui.button("Delete Inside")) cutSplat(true);
+                    if(ui.button("Delete Outside")) cutSplat(false);
                     if(viewportSplat.hasCuts()){
-                        if(ui.button("Undo Cut")) viewportSplat.undoCut();
+                        if(ui.button("Undo Cut") && !history.undoExternal(stage))
+                            message = "Undo the latest action before undoing this cut.";
                         ui.label("Save from the splat's properties.");
                     }
                 }
@@ -3496,33 +4180,48 @@
                         Treadle::Color{selectionTint.r, selectionTint.g, selectionTint.b, 0.14f});
 
             const float rowY = area.y + 8.0f, rowH = 26.0f;
-            auto [toStart, a1] = toolButton("|<", area.x + 10.0f, rowY, rowH);
+            auto [toStart, a1] = toolButton("|<", area.x + 10.0f, rowY, rowH, false,
+                                            "Jump to the first frame.", "Home");
             if(toStart) frame = stage.startFrame;
-            auto [back, a2] = toolButton("<", a1, rowY, rowH);
+            auto [back, a2] = toolButton("<", a1, rowY, rowH, false,
+                                         "Step one frame backward.", "Left");
             if(back) frame = std::max(stage.startFrame, std::floor(frame) - 1.0);
-            auto [play, a3] = toolButton(playing ? "Pause" : "Play", a2, rowY, rowH, playing);
+            auto [play, a3] = toolButton(playing ? "Pause" : "Play", a2, rowY, rowH, playing,
+                                         playing ? "Pause timeline playback." : "Play the current animation.", "Space");
             if(play) togglePlayback();
-            auto [forward, a4] = toolButton(">", a3, rowY, rowH);
+            auto [forward, a4] = toolButton(">", a3, rowY, rowH, false,
+                                            "Step one frame forward.", "Right");
             if(forward) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
-            auto [toEnd, a5] = toolButton(">|", a4, rowY, rowH);
+            auto [toEnd, a5] = toolButton(">|", a4, rowY, rowH, false,
+                                         "Jump to the last frame.", "End");
             if(toEnd) frame = stage.endFrame;
 
             //Kljucevi odabranog: skok, postavljanje, brisanje
             const bool haveEntity = stage.get(selected) != nullptr;
-            auto [previousKey, b1] = toolButton("<K", a5 + 16.0f, rowY, rowH);
-            auto [nextKey, b2] = toolButton("K>", b1, rowY, rowH);
-            auto [setKey, b3] = toolButton("Key (K)", b2, rowY, rowH);
-            auto [dropKey, b4] = toolButton("Delete Key", b3, rowY, rowH);
+            auto [previousKey, b1] = toolButton("<K", a5 + 16.0f, rowY, rowH, false,
+                                                "Jump to the previous key on the selected object.");
+            auto [nextKey, b2] = toolButton("K>", b1, rowY, rowH, false,
+                                            "Jump to the next key on the selected object.");
+            auto [setKey, b3] = toolButton("Key (K)", b2, rowY, rowH, false,
+                                           "Set transform keys for the selected object.", "K");
+            auto [dropKey, b4] = toolButton("Del Key", b3, rowY, rowH, false,
+                                            "Delete keys at the current frame.", "Delete");
+            auto [autoKeyToggle, b5] = toolButton("Auto Key", b4, rowY, rowH, autoKeyEnabled,
+                                                  "Create keys automatically while editing.");
             double jump = 0.0;
             if(previousKey && haveEntity && stage.neighbourKey(selected, frame, -1, jump)) frame = jump;
             if(nextKey && haveEntity && stage.neighbourKey(selected, frame, +1, jump)) frame = jump;
             if(setKey && haveEntity) stage.keyAll(selected, std::round(frame));
             if(dropKey && haveEntity) stage.eraseKeysAt(selected, std::round(frame));
+            if(autoKeyToggle) autoKeyEnabled = !autoKeyEnabled;
 
             //Raspon: od i do glave, ili cijelo - od prvog do zadnjeg kljuca u sceni
-            auto [rangeFrom, c1] = toolButton("From", b4 + 16.0f, rowY, rowH);
-            auto [rangeTo, c2] = toolButton("To", c1, rowY, rowH);
-            auto [rangeAll, c3] = toolButton("All", c2, rowY, rowH);
+            auto [rangeFrom, c1] = toolButton("From", b5 + 10.0f, rowY, rowH, false,
+                                              "Set the timeline start to the current frame.");
+            auto [rangeTo, c2] = toolButton("To", c1, rowY, rowH, false,
+                                            "Set the timeline end to the current frame.");
+            auto [rangeAll, c3] = toolButton("All", c2, rowY, rowH, false,
+                                             "Fit the timeline range to all keys and clips.");
             if(rangeFrom) stage.startFrame = std::min(std::round(frame), stage.endFrame - 1.0);
             if(rangeTo) stage.endFrame = std::max(std::round(frame), stage.startFrame + 1.0);
             if(rangeAll){
@@ -3544,7 +4243,10 @@
             char text[96];
             std::snprintf(text, sizeof(text), "Frame %d   (%.0f - %.0f, %.0f fps)", int(std::floor(frame)),
                           stage.startFrame, stage.endFrame, stage.framesPerSecond);
-            canvas.text(c3 + 16.0f, rowY + 6.0f, text, theme.text, theme.textScale);
+            const float frameTextWidth = Treadle::textWidth(text, theme.textScale);
+            const float frameTextX = std::max(c3 + 12.0f, area.x + area.width - frameTextWidth - 12.0f);
+            if(frameTextX >= c3 + 8.0f && frameTextX + frameTextWidth <= area.x + area.width - 6.0f)
+                canvas.text(frameTextX, rowY + 6.0f, text, theme.text, theme.textScale);
 
             //Traka: kadrovi, kljucevi odabranog, glava
             const float trackTop = rowY + rowH + 12.0f;
@@ -3556,7 +4258,11 @@
             const Treadle::Rect track{area.x + 16.0f, trackTop, area.width - 32.0f, stageTrackHeight};
             const Treadle::Rect rootTrack{track.x, track.y + track.height + 4.0f, track.width, rootTrackHeight};
             //Redovi (LoomTimelineRows.h): lik s klipom, ili odabrani objekt. Imena redova idu u lijevi stupac
-            const Warp::Id rowsRig = timelineRangeRig();
+            //Odabrani predmet s hvatom ima svoje redove (trake hvata), cak i kad je lik cilj Animatora
+            const Warp::Entity* holdItem = stage.get(selected);
+            if(holdItem && holdItem->holds.empty()) holdItem = nullptr;
+            if(!holdItem) timelineHoldPicked = -1;
+            const Warp::Id rowsRig = holdItem ? Warp::None : timelineRangeRig();
             const Warp::Id rowsId = rowsRig != Warp::None ? rowsRig : selected;
             const bool showRows = stage.get(rowsId) != nullptr;
             const float labelGutter = showRows ? 160.0f : (motionPanel.open ? 62.0f : 0.0f);
@@ -3719,6 +4425,26 @@
                         const float x = xOf(t);
                         if(x >= contentTrack.x && x <= contentTrack.x + contentTrack.width) diamond(x, mid, 7.0f, editColour);
                     }
+                    //TRAKE HVATA: od On do Off, s rubovima za povlacenje; iza Off tanka crta (predmet stoji)
+                    if(holdItem){
+                        if(holdHands.empty()) holdHands = holdHandsInScene();
+                        for(size_t i = 0; i < holdItem->holds.size(); ++i){
+                            const Warp::Hold& hold = holdItem->holds[i];
+                            const float left = std::max(contentTrack.x, xOf(hold.onFrame));
+                            const float right = std::min(contentTrack.x + contentTrack.width, xOf(hold.offFrame));
+                            if(right < left) continue;
+                            const bool picked = int(i) == timelineHoldPicked;
+                            const Treadle::Color holdColour{0.36f, 0.72f, 1.0f, picked ? 0.75f : 0.45f};
+                            canvas.rect(left, mid - 8.0f, std::max(2.0f, right - left), 16.0f, holdColour);
+                            canvas.rect(left, mid - 10.0f, 3.0f, 20.0f, Treadle::Color{0.55f, 0.85f, 1.0f, 1.0f});
+                            canvas.rect(right - 3.0f, mid - 10.0f, 3.0f, 20.0f, Treadle::Color{0.55f, 0.85f, 1.0f, 1.0f});
+                            canvas.text(left + 6.0f, mid - 7.0f, Treadle::fitText("in " + holdHandName(hold.hand), right - left - 12.0f, rowText),
+                                        theme.text, rowText);
+                            const double nextOn = i + 1 < holdItem->holds.size() ? holdItem->holds[i + 1].onFrame : timelineEnd;
+                            const float dropEnd = std::min(contentTrack.x + contentTrack.width, xOf(nextOn));
+                            if(dropEnd > right) canvas.rect(right, mid - 1.0f, dropEnd - right, 2.0f, Treadle::Color{0.55f, 0.85f, 1.0f, 0.35f});
+                        }
+                    }
                     //Kljucevi sesije uredjivanja poze (auto key) - jos nisu sloj, pa svijetli s obrubom
                     if(poseEdit.active && poseEdit.rig == rowsRig){
                         std::vector<double> sessionKeys;
@@ -3746,10 +4472,12 @@
                         if(y < bonesTop - 0.5f || y + boneRowHeight > rowsBottom + 0.5f) continue;
                         const bool picked = row.target != Warp::None && row.target == selected;
                         canvas.rect(track.x, y, track.width, boneRowHeight - 1.0f,
-                                    picked ? Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.16f}
-                                           : (i % 2 ? Treadle::Color{0.095f, 0.113f, 0.086f, 1.0f} : Treadle::Color{0.108f, 0.128f, 0.098f, 1.0f}));
+                                    picked ? Treadle::Color{0.18f, 0.22f, 0.16f, 1.0f} :
+                                    (i % 2 ? Treadle::Color{0.09f, 0.11f, 0.085f, 1.0f} :
+                                             Treadle::Color{0.12f, 0.14f, 0.11f, 1.0f}));
                         const float indent = 8.0f + float(std::min(row.depth, 10)) * 6.0f;
-                        canvas.text(track.x + indent, y + 2.0f, Treadle::fitText(row.label, labelGutter - indent - 4.0f, rowText),
+                        canvas.text(track.x + indent, y + 2.0f,
+                                    Treadle::fitText(row.label, labelGutter - indent - 4.0f, rowText),
                                     picked ? theme.text : theme.dim, rowText);
                         const float rowMid = y + (boneRowHeight - 1.0f) * 0.5f;
                         std::vector<float> xs;
@@ -3758,13 +4486,15 @@
                             if(x >= contentTrack.x && x <= contentTrack.x + contentTrack.width) xs.push_back(x);
                         }
                         for(const Loom::TimelineKeySpan& keySpan : Loom::mergeTimelineKeys(xs, 3.0f)){
-                            if(keySpan.bar()) canvas.rect(keySpan.x0, rowMid - 2.0f, keySpan.x1 - keySpan.x0 + 1.0f, 4.0f,
-                                                          Treadle::Color{0.52f, 0.66f, 0.50f, 0.55f});
-                            else canvas.rect(keySpan.x0 - 1.0f, rowMid - 4.0f, 2.0f, 8.0f, Treadle::Color{0.70f, 0.82f, 0.66f, 0.9f});
+                            if(keySpan.bar())
+                                canvas.rect(keySpan.x0, rowMid - 2.0f, keySpan.x1 - keySpan.x0 + 1.0f, 4.0f,
+                                            Treadle::Color{0.86f, 0.72f, 0.30f, 0.55f});
+                            else diamond(keySpan.x0, rowMid, 4.2f, editColour);
                         }
                         for(double t : row.edits){
                             const float x = xOf(t);
-                            if(x >= contentTrack.x && x <= contentTrack.x + contentTrack.width) diamond(x, rowMid, 5.5f, editColour);
+                            if(x >= contentTrack.x && x <= contentTrack.x + contentTrack.width)
+                                diamond(x, rowMid, 5.5f, editColour);
                         }
                     }
                     if(timelineRows.empty())
@@ -3831,9 +4561,9 @@
                     canvas.text(contentTrack.x + 5.0f, pathTop + 2.0f, "Click to add a waypoint", theme.dim, 1.0f);
                 }else{
                     for(size_t i = 1; i < motionPanel.rootWaypoints.size(); ++i){
-                        canvas.line(xOf(sceneFrameFromMotionFrame(motionPanel.rootWaypoints[i - 1].frame)), markerY,
-                                    xOf(sceneFrameFromMotionFrame(motionPanel.rootWaypoints[i].frame)), markerY,
-                                    2.0f, theme.accent);
+                        const float left = xOf(sceneFrameFromMotionFrame(motionPanel.rootWaypoints[i - 1].frame));
+                        const float right = xOf(sceneFrameFromMotionFrame(motionPanel.rootWaypoints[i].frame));
+                        if(right > left) canvas.line(left, markerY, right, markerY, 2.0f, theme.accent);
                     }
                     for(size_t i = 0; i < motionPanel.rootWaypoints.size(); ++i){
                         const Loom::MotionRootWaypoint& key = motionPanel.rootWaypoints[i];
@@ -4028,12 +4758,32 @@
                     motionPanel.timelineDragDisplayEndFrame = 0.0;
                 }
             }
+            if(showMotionPathTrack)
+                canvas.rect(head - 1.0f, rootTrack.y, 2.0f, rootTrack.height, Treadle::Color{0.95f, 0.35f, 0.30f, 0.88f});
             const Treadle::Ui::Region scrub = ui.region("timeline", track);
+            ui.tooltip("timeline-scrub", "Click or drag to move the playhead.");
             //ODABIR RASPONA (LoomTimelineRange.h): kad je odabran lik s animacijom, povlacenje ispod
             //ravnala oznaci raspon, a klik i dalje pomice playhead. Ravnalo je uvijek cisti scrub
             const Warp::Id rangeRig = timelineRangeRig();
             if(rangeRig == Warp::None) timelineRange.clear();
             if(scrub.pressed) timelineRangeOnRuler = scrub.mouseY < track.y + 14.0f || rangeRig == Warp::None;
+            //HVAT na timelineu: rub trake se povlaci (On/Off), klik na traku otvara radnje iznad nje
+            if(scrub.pressed && holdItem && objectTop >= 0.0f && scrub.mouseX >= contentTrack.x &&
+               scrub.mouseY >= objectTop && scrub.mouseY < objectTop + objectRowHeight){
+                for(size_t i = 0; i < holdItem->holds.size() && timelineHoldDrag.index < 0; ++i){
+                    const float on = xOf(holdItem->holds[i].onFrame), off = xOf(holdItem->holds[i].offFrame);
+                    if(std::fabs(scrub.mouseX - on) <= 6.0f) timelineHoldDrag = {int(i), 0};
+                    else if(std::fabs(scrub.mouseX - off) <= 6.0f) timelineHoldDrag = {int(i), 1};
+                    else if(scrub.mouseX > on && scrub.mouseX < off){ timelineHoldPicked = int(i); timelineGutterHeld = true; }
+                }
+                if(timelineHoldDrag.index >= 0){ timelineHoldPicked = timelineHoldDrag.index; timelineGutterHeld = true; }
+            }
+            if(timelineHoldDrag.index >= 0){
+                if(scrub.held && holdItem){
+                    const double at = stage.startFrame + double((std::max(scrub.mouseX, contentTrack.x) - contentTrack.x) / contentTrack.width) * span;
+                    Loom::moveHoldEdge(*stage.get(selected), size_t(timelineHoldDrag.index), timelineHoldDrag.edge, at);
+                }else{ timelineHoldDrag = {}; syncHoldLayers(); }
+            }
             //Stupac imena: strelica/ime objekta otvara redove, red kosti odabere kost (za Fix pose)
             if(scrub.pressed && showRows && scrub.mouseX < contentTrack.x && scrub.mouseY >= track.y + 14.0f){
                 timelineGutterHeld = true;
@@ -4114,6 +4864,118 @@
                         timelineRegenOpen = false;
                     }
                 }
+            }
+        }
+
+        //== TOOL EDITOR: gdje se tool drzi i kako (gripovi), vrsta i stvarna velicina =================
+        if(const Warp::Id toolRoot = Loom::toolRootOf(stage, selected);
+           toolRoot != Warp::None && !motionPanel.open && layout.viewport.width > 360.0f){
+            Warp::Entity* toolEntity = stage.get(toolRoot);
+            Warp::Tool& tool = *toolEntity->tool;
+            if(toolEditorFor != toolRoot){
+                toolEditorFor = toolRoot;
+                toolEditorGeometry = Loom::toolGeometry(stage, toolRoot, frame);
+                toolEditorGrip = 0;
+            }
+            const Loom::ToolGeometry& geometry = toolEditorGeometry;
+            const glm::vec3 size = geometry.high - geometry.low;
+            const float scale = toolEntity->local.scale.x;
+            bool changed = false;
+            ui.panel("TOOL EDITOR  /  " + toolEntity->name, layout.viewport.x + 10.0f, layout.viewport.y + 230.0f, 310.0f);
+            if(const int kind = ui.pills({"Tool", "Weapon"}, tool.kind == "weapon" ? 1 : 0); kind >= 0){
+                tool.kind = kind ? "weapon" : "tool";
+            }
+            float lengthCm = std::round(std::max({size.x, size.y, size.z}) * scale * 100.0f);
+            if(ui.slider("Real size", &lengthCm, 1.0f, 250.0f, " cm") && std::max({size.x, size.y, size.z}) > 1e-6f)
+                toolEntity->local.scale = glm::vec3(std::round(lengthCm) / 100.0f / std::max({size.x, size.y, size.z}));
+            if(tool.grips.empty()) tool.grips.push_back(Loom::defaultGrip(geometry, "grip"));
+            toolEditorGrip = std::clamp(toolEditorGrip, 0, int(tool.grips.size()) - 1);
+            std::vector<std::string> gripNames;
+            for(size_t g = 0; g < tool.grips.size(); ++g) gripNames.push_back("Grip " + std::to_string(g + 1));
+            gripNames.push_back("+");
+            if(const int pick = ui.pills(gripNames, toolEditorGrip); pick >= 0){
+                if(pick == int(tool.grips.size())){ tool.grips.push_back(Loom::defaultGrip(geometry, "grip")); changed = true; }
+                toolEditorGrip = pick;
+            }
+            Warp::Grip& grip = tool.grips[size_t(toolEditorGrip)];
+            //Kako: poza prstiju i ruka
+            std::vector<std::string> presetNames;
+            int presetIndex = 0;
+            for(size_t p = 0; p < Loom::gripPresets().size(); ++p){
+                presetNames.push_back(Loom::gripPresets()[p].label);
+                if(grip.preset == Loom::gripPresets()[p].name) presetIndex = int(p);
+            }
+            if(ui.choice("Hand pose", presetNames, &presetIndex)){ grip.preset = Loom::gripPresets()[size_t(presetIndex)].name; changed = true; }
+            int handIndex = std::clamp(grip.hand, 0, 2);
+            if(ui.choice("Hand", {"Any", "Right", "Left"}, &handIndex)){ grip.hand = handIndex; changed = true; }
+            //Gdje: polozaj uz najduzu os, smjer drske, strana dlana, debljina
+            const glm::vec3 axis = glm::normalize(grip.axis);
+            //Polozaj duz osi drske (ne osi kutije - model moze lezati dijagonalno u svom sustavu)
+            float alongLow = 0.0f, alongHigh = 0.0f;
+            Loom::toolExtentAlong(geometry, grip.point, axis, alongLow, alongHigh);
+            const float alongLength = std::max(alongHigh - alongLow, 1e-9f);
+            float percent = -alongLow / alongLength * 100.0f;
+            if(ui.slider("Along the tool", &percent, 0.0f, 100.0f, " %")){
+                grip.point += axis * (alongLow + std::clamp(percent, 0.0f, 100.0f) / 100.0f * alongLength);
+                changed = true;
+            }
+            const float autoThickness = Loom::handleRadius(geometry, Warp::Grip{grip.name, grip.point, grip.axis, grip.palm, 0.0f, grip.preset, grip.hand},
+                                                           1.0f / std::max(scale, 1e-9f));
+            float thicknessCm = grip.thickness * scale * 100.0f;
+            if(ui.slider("Handle radius", &thicknessCm, 0.0f, 6.0f, " cm")){ grip.thickness = std::max(0.0f, thicknessCm) / 100.0f / std::max(scale, 1e-6f); changed = true; }
+            char autoText[96];
+            std::snprintf(autoText, sizeof(autoText), "0 = measured from the model (%.1f cm).", double(autoThickness * scale * 100.0f));
+            ui.hint(autoText);
+            const int action = ui.buttonRow({"Flip", "Turn palm", "Delete"});
+            if(action == 0){ grip.axis = -grip.axis; changed = true; }
+            if(action == 1){ grip.palm = glm::angleAxis(glm::radians(90.0f), axis) * grip.palm; changed = true; }
+            if(action == 2 && tool.grips.size() > 1){ tool.grips.erase(tool.grips.begin() + toolEditorGrip); toolEditorGrip = 0; changed = true; }
+            ui.hint("Flip: the thumb side points the other way (blade, barrel). Turn palm: which side of the handle the palm touches.");
+            //Hvatovi ovog toola odmah preuzmu promjenu: drska iznova u dlan, prsti iznova oko nje
+            if(changed){
+                if(holdHands.empty()) holdHands = holdHandsInScene();
+                for(Warp::Hold& hold : toolEntity->holds){
+                    const Warp::Grip& used = tool.grips.front();
+                    for(const Loom::HoldHand& hand : holdHands){
+                        if(hand.hand != hold.hand) continue;
+                        Loom::HandFrame handFrame;
+                        if(!Loom::handFrameAt(stage, hand, hold.onFrame, handFrame)) break;
+                        const glm::mat4 world = Loom::gripAlignedWorld(stage.worldMatrix(toolRoot, hold.onFrame), used,
+                                                                       Loom::handleRadius(geometry, used, 1.0f / std::max(scale, 1e-9f)) * scale, handFrame);
+                        hold.offset = glm::inverse(stage.worldMatrix(hold.hand, hold.onFrame)) * world;
+                        hold.grip = used.preset;
+                        break;
+                    }
+                }
+                if(!toolEntity->holds.empty()) syncHoldLayers();
+            }
+        }
+
+        //Radnje nad kliknutim hvatom (traka na timelineu): pusti ovdje, obrisi
+        if(timelineVisible && timelineHoldPicked >= 0){
+            Warp::Entity* item = stage.get(selected);
+            if(!item || size_t(timelineHoldPicked) >= item->holds.size()) timelineHoldPicked = -1;
+            else{
+                const Warp::Hold hold = item->holds[size_t(timelineHoldPicked)];
+                const float barWidth = 360.0f;
+                ui.panel("HOLD  /  " + holdHandName(hold.hand) + "  /  " + std::to_string(int(hold.onFrame)) + " - " +
+                         std::to_string(int(hold.offFrame)),
+                         layout.timeline.x + std::max(8.0f, (layout.timeline.width - barWidth) * 0.5f), layout.timeline.y - 94.0f - 44.0f, barWidth);
+                const double here = std::round(frame);
+                const bool canRelease = here >= hold.onFrame && here < hold.offFrame;
+                const int picked = ui.buttonRow({canRelease ? "Release here" : "Release (move playhead)", "Delete", "X"});
+                if(picked == 0 && canRelease){
+                    Loom::releaseItem(stage, selected, here);
+                    syncHoldLayers();
+                    message = item->name + " is released at frame " + std::to_string(int(here)) + " and stays where the hand left it.";
+                }
+                if(picked == 1){
+                    item->holds.erase(item->holds.begin() + timelineHoldPicked);
+                    syncHoldLayers();
+                    message = "Hold deleted; " + item->name + " moves on its own again.";
+                    timelineHoldPicked = -1;
+                }
+                if(picked == 2) timelineHoldPicked = -1;
             }
         }
 
@@ -4314,13 +5176,93 @@
            !ui.menuOpen("Entity") && !ui.menuOpen("View") && activeRailPane != RailPane::Media){
             const Warp::Entity* hudEntity = stage.get(selected);
             if(hudEntity && hudEntity->visible && selected != view.lookThrough){
+                auto geometrySignature = [](const Warp::Entity& entity){
+                    if(entity.mesh) return std::string("mesh:") + std::to_string(int(entity.mesh->shape));
+                    if(entity.model) return std::string("model:") + entity.model->path + ":" +
+                        std::to_string(entity.model->mesh) + ":" + std::to_string(entity.model->skin);
+                    if(entity.points) return std::string("points:") +
+                        std::to_string(reinterpret_cast<std::uintptr_t>(entity.points->positions.data())) + ":" +
+                        std::to_string(entity.points->positions.size());
+                    if(entity.splat) return std::string("splat:") + entity.splat->path;
+                    return std::string{};
+                };
+                auto localBoundsFor = [&](const Warp::Entity& entity) -> HudLocalBounds&{
+                    const std::string signature = geometrySignature(entity);
+                    HudLocalBounds& bounds = hudBoundsCache[entity.id];
+                    if(bounds.signature == signature && (bounds.valid || signature.empty())) return bounds;
+                    bounds = HudLocalBounds{};
+                    bounds.signature = signature;
+                    if(signature.empty()) return bounds;
+                    bounds.low = glm::vec3(std::numeric_limits<float>::max());
+                    bounds.high = glm::vec3(-std::numeric_limits<float>::max());
+                    auto include = [&](const glm::vec3& point){
+                        if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) return;
+                        bounds.low = glm::min(bounds.low, point);
+                        bounds.high = glm::max(bounds.high, point);
+                        bounds.valid = true;
+                    };
+                    if(entity.mesh){
+                        const Spool::GltfPrimitive primitive = Loom::unitShape(entity.mesh->shape);
+                        for(size_t i = 0; i + 2 < primitive.positions.size(); i += 3)
+                            include(glm::vec3(primitive.positions[i], primitive.positions[i + 1], primitive.positions[i + 2]));
+                    }else if(entity.model){
+                        const Spool::GltfScene* modelScene = viewportMeshes.scene(entity.model->path);
+                        if(modelScene && entity.model->mesh >= 0 && size_t(entity.model->mesh) < modelScene->meshes.size()){
+                            for(const Spool::GltfPrimitive& primitive : modelScene->meshes[size_t(entity.model->mesh)].primitives)
+                                for(size_t i = 0; i + 2 < primitive.positions.size(); i += 3)
+                                    include(glm::vec3(primitive.positions[i], primitive.positions[i + 1], primitive.positions[i + 2]));
+                            bounds.approximate = entity.model->skin >= 0;
+                        }
+                    }else if(entity.points){
+                        for(const glm::vec3& point : entity.points->positions) include(point);
+                        bounds.relativeScale = true;
+                    }else if(entity.splat && viewportSplat.path() == entity.splat->path){
+                        glm::vec3 centre;
+                        float radius = 0.0f;
+                        if(viewportSplat.bounds(centre, radius)){
+                            include(centre - glm::vec3(radius));
+                            include(centre + glm::vec3(radius));
+                            bounds.approximate = true;
+                            bounds.relativeScale = true;
+                        }
+                    }
+                    return bounds;
+                };
+                glm::vec3 worldLow(std::numeric_limits<float>::max());
+                glm::vec3 worldHigh(-std::numeric_limits<float>::max());
+                bool haveWorldBounds = false, approximateWorldBounds = false, relativeWorldScale = false;
+                std::vector<Warp::Id> boundsPending{selected};
+                size_t boundsVisited = 0;
+                while(!boundsPending.empty() && boundsVisited++ < stage.size()){
+                    const Warp::Id id = boundsPending.back();
+                    boundsPending.pop_back();
+                    const Warp::Entity* part = stage.get(id);
+                    if(!part) continue;
+                    boundsPending.insert(boundsPending.end(), part->children.begin(), part->children.end());
+                    HudLocalBounds& local = localBoundsFor(*part);
+                    if(!local.valid) continue;
+                    const glm::mat4 world = stage.worldMatrix(id, frame);
+                    for(int corner = 0; corner < 8; ++corner){
+                        const glm::vec3 point(
+                            corner & 1 ? local.high.x : local.low.x,
+                            corner & 2 ? local.high.y : local.low.y,
+                            corner & 4 ? local.high.z : local.low.z);
+                        const glm::vec3 transformed(world * glm::vec4(point, 1.0f));
+                        worldLow = glm::min(worldLow, transformed);
+                        worldHigh = glm::max(worldHigh, transformed);
+                    }
+                    haveWorldBounds = true;
+                    approximateWorldBounds = approximateWorldBounds || local.approximate;
+                    relativeWorldScale = relativeWorldScale || local.relativeScale;
+                }
                 const Loom::ViewCamera hudCamera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
                 glm::vec2 hudPixel;
                 const glm::vec3 hudWorld(stage.worldMatrix(selected, frame)[3]);
                 if(Loom::project(hudCamera, hudWorld, hudPixel) &&
                    layout.viewport.contains(hudPixel.x, hudPixel.y) &&
-                   layout.viewport.width > 300.0f && layout.viewport.height > 220.0f){
-                    constexpr float hudWidth = 238.0f, hudHeight = 146.0f;
+                   layout.viewport.width > 240.0f && layout.viewport.height > 230.0f){
+                    const float hudWidth = std::min(320.0f, layout.viewport.width - 16.0f);
+                    constexpr float hudHeight = 214.0f;
                     float hudX = hudPixel.x + 22.0f;
                     if(hudX + hudWidth > layout.viewport.x + layout.viewport.width - 8.0f)
                         hudX = hudPixel.x - hudWidth - 22.0f;
@@ -4334,6 +5276,25 @@
                     const Treadle::Color baseAccent = sceneAccent(*hudEntity);
                     ui.panel("OBJECT HUD / " + hudType, hudX, hudY, hudWidth);
                     ui.value("Selected", Treadle::fitText(hudEntity->name, hudWidth - 42.0f, theme.textScale));
+                    if(haveWorldBounds){
+                        const glm::vec3 dimensions = glm::max(worldHigh - worldLow, glm::vec3(0.0f));
+                        char meters[96], centimetres[96];
+                        const char* estimated = approximateWorldBounds ? "~" : "";
+                        std::snprintf(meters, sizeof(meters), "%s%.2f × %.2f × %.2f m", estimated,
+                                      double(dimensions.x), double(dimensions.y), double(dimensions.z));
+                        std::snprintf(centimetres, sizeof(centimetres), "%s%.0f × %.0f × %.0f cm", estimated,
+                                      double(dimensions.x * 100.0f), double(dimensions.y * 100.0f),
+                                      double(dimensions.z * 100.0f));
+                        ui.label("WORLD SIZE  /  X × Y × Z");
+                        ui.label(Treadle::fitText(meters, hudWidth - 26.0f, theme.textScale));
+                        ui.label(Treadle::fitText(centimetres, hudWidth - 26.0f, theme.textScale));
+                        if(relativeWorldScale)
+                            ui.hint("Relative solve scale · assumes 1 world unit = 1 m.");
+                    }else if(hudEntity->camera){
+                        ui.hint("Camera has no physical body bounds.");
+                    }else{
+                        ui.hint("Geometry bounds are loading or unavailable.");
+                    }
                     const int hudAction = ui.buttonRow({"Focus", hudEntity->camera ? "Camera" : "Motion", "More"});
                     if(hudAction == 0){
                         view.lookThrough = Warp::None;
@@ -4416,6 +5377,24 @@
                     case Loom::ImportKind::Model:{
                         if(ui.button("Import Model")){ importModelAsset(path, layout.viewport); done = true; }
                         if(ui.button("Import as Humanoid (auto-rig if needed)") && !job.running){ importHumanoidAsset(path); done = true; }
+                        //Tool / Weapon: predmet koji lik moze drzati. Vrsta i velicina iz imena, mogu se promijeniti
+                        ui.caption("HOLDABLE: TOOL / WEAPON");
+                        if(importToolFor != path){
+                            importToolFor = path;
+                            const std::string stem = path.stem().string();
+                            const float metres = Loom::suggestedToolLength(stem, "tool");
+                            importToolKind = Loom::gripForItemName(stem) == "pistol" || metres >= 0.3f ? 1 : 0;
+                            importToolLengthCm = std::round(metres * 100.0f);
+                        }
+                        if(const int kindPick = ui.pills({"Tool", "Weapon"}, importToolKind); kindPick >= 0) importToolKind = kindPick;
+                        ui.slider("Real size", &importToolLengthCm, 0.0f, 250.0f, " cm");
+                        importToolLengthCm = std::round(importToolLengthCm);
+                        ui.hint(importToolLengthCm <= 0.0f ? "0 keeps the model's own size."
+                                                           : "The longest side becomes this long - models from the internet are often far too big.");
+                        if(ui.button(importToolKind ? "Import as Weapon" : "Import as Tool")){
+                            importToolAsset(path, layout.viewport, importToolKind ? "weapon" : "tool", importToolLengthCm / 100.0f);
+                            done = true;
+                        }
                         break;
                     }
                     case Loom::ImportKind::Splat:
@@ -4579,7 +5558,19 @@
                 motionPathMenuFrame = motionPathContextFrame;
                 ui.openMenuAt("Motion Path", float(rightClickX), float(rightClickY));
             }else{
-                ui.openMenu("View");
+                const Loom::ViewCamera contextCamera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
+                const Warp::Id hit = Loom::pickEntity(stage, frame, contextCamera,
+                    glm::vec2(float(rightClickX), float(rightClickY)),
+                    [&](const std::string& path){ return viewportMeshes.scene(path); });
+                if(hit != Warp::None){
+                    selected = hit;
+                    focus = Focus::Entity;
+                    menuEntity = hit;
+                    ui.openMenuAt("Entity", float(rightClickX), float(rightClickY));
+                }else{
+                    menuEntity = Warp::None;
+                    ui.openMenuAt("View", float(rightClickX), float(rightClickY));
+                }
             }
             menuPixel = glm::vec2(float(rightClickX), float(rightClickY));
         }
@@ -4587,7 +5578,7 @@
             const float popupWidth = 220.0f;
             float x = float(cursorX) + 20.0f;
             if(x + popupWidth > float(windowWidth)) x = float(cursorX) - popupWidth - 20.0f;
-            const float y = std::clamp(float(cursorY) - 22.0f, 4.0f, std::max(4.0f, float(windowHeight) - 150.0f));
+            const float y = std::clamp(float(cursorY) - 22.0f, 4.0f, std::max(4.0f, float(windowHeight) - 270.0f));
             ui.openMenuAt(id, x, y);
         };
         if(ui.beginMenu("Motion Path")){
@@ -4791,24 +5782,90 @@
         {
             if(ui.menuOpen("Entity")){
                 const Warp::Entity* entity = stage.get(menuEntity);
-                const int action = ui.orbitMenu("Entity",
-                    {"Camera View", "Add", "Text to Motion", "Delete"},
-                    {entity && entity->camera, entity != nullptr, entity != nullptr, entity != nullptr},
-                    {"0", "", "", "Del"}, &entityOrbitFavorites);
-                if(action == 0 && entity && entity->camera) view.lookThrough = menuEntity;
-                else if(action == 1 && entity) openContextSubmenu("Entity Add");
-                else if(action == 2 && entity) openMotionWorkflow();
-                else if(action == 3 && entity) removeSelected(menuEntity);
+                if(entity){
+                    enum class EntityMenuAction{Focus, Reset, Key, Add, ToggleVisibility, CameraView, TextToMotion, Delete};
+                    std::vector<std::string> labels;
+                    std::vector<std::string> shortcuts;
+                    std::vector<EntityMenuAction> actions;
+                    auto addEntityAction = [&](const std::string& label, EntityMenuAction action, const std::string& shortcut = ""){
+                        labels.push_back(label);
+                        shortcuts.push_back(shortcut);
+                        actions.push_back(action);
+                    };
+                    addEntityAction("Focus Selected", EntityMenuAction::Focus, "F");
+                    addEntityAction("Reset Transform", EntityMenuAction::Reset);
+                    addEntityAction("Set Key", EntityMenuAction::Key, "K");
+                    addEntityAction("Add Child", EntityMenuAction::Add);
+                    addEntityAction(entity->visible ? "Hide" : "Show", EntityMenuAction::ToggleVisibility);
+                    if(entity->camera) addEntityAction(view.lookThrough == menuEntity ? "Exit Camera View" : "Camera View",
+                                                       EntityMenuAction::CameraView, "0");
+                    if(entity->mesh || entity->model) addEntityAction("Text to Motion", EntityMenuAction::TextToMotion);
+                    addEntityAction("Delete", EntityMenuAction::Delete, "Del");
+                    std::vector<bool> enabled(labels.size(), true);
+                    std::vector<bool> favorites(labels.size(), false);
+                    for(size_t i = 0; i < labels.size(); ++i)
+                        favorites[i] = entityOrbitFavorites.count(labels[i]) != 0;
+                    const int action = ui.orbitMenu("Entity", labels, enabled, shortcuts, &favorites);
+                    for(size_t i = 0; i < labels.size(); ++i){
+                        if(favorites[i]) entityOrbitFavorites.insert(labels[i]);
+                        else entityOrbitFavorites.erase(labels[i]);
+                    }
+                    if(action >= 0 && action < int(actions.size())){
+                        switch(actions[size_t(action)]){
+                            case EntityMenuAction::Focus:{
+                                view.lookThrough = Warp::None;
+                                view.orbit.target = glm::vec3(stage.worldMatrix(menuEntity, frame)[3]);
+                                selected = menuEntity;
+                                focus = Focus::Entity;
+                                break;
+                            }
+                            case EntityMenuAction::Reset:
+                                stage.setLocalAt(menuEntity, frame, Warp::Transform{});
+                                extentDirty = true;
+                                break;
+                            case EntityMenuAction::Key:
+                                stage.keyAll(menuEntity, std::round(frame));
+                                break;
+                            case EntityMenuAction::Add:
+                                openContextSubmenu("Entity Add");
+                                break;
+                            case EntityMenuAction::ToggleVisibility:
+                                if(Warp::Entity* mutableEntity = stage.get(menuEntity)) mutableEntity->visible = !mutableEntity->visible;
+                                break;
+                            case EntityMenuAction::CameraView:
+                                view.lookThrough = view.lookThrough == menuEntity ? Warp::None : menuEntity;
+                                break;
+                            case EntityMenuAction::TextToMotion:
+                                openMotionWorkflow();
+                                break;
+                            case EntityMenuAction::Delete:
+                                removeSelected(menuEntity);
+                                break;
+                        }
+                    }
+                }
             }
+            bool openEntityPrimitiveMenu = false;
+            bool openAtlasPrimitiveMenu = false;
             if(ui.beginMenu("Entity Add")){
                 ui.menuItem("ADD OBJECT", false);
                 ui.menuSeparator();
-                if(ui.menuItem("Cube Here")) addMesh(Warp::Shape::Cube, menuEntity);
-                if(ui.menuItem("Plane Here")) addMesh(Warp::Shape::Plane, menuEntity);
+                if(ui.menuItem("Add Primitive")) openEntityPrimitiveMenu = true;
                 if(ui.menuItem("Camera from View")) addCameraHere(menuEntity);
                 if(ui.menuItem("Empty")) addEmpty(menuEntity);
                 ui.menuSeparator();
                 if(ui.menuItem("Import...  (Ctrl+I)")) openImporter();
+                ui.endMenu();
+            }
+            if(openEntityPrimitiveMenu) openContextSubmenu("Entity Primitive");
+            if(ui.beginMenu("Entity Primitive")){
+                ui.menuItem("ADD PRIMITIVE", false);
+                ui.menuSeparator();
+                if(ui.menuItem("Cube")) addMesh(Warp::Shape::Cube, menuEntity);
+                if(ui.menuItem("Sphere")) addMesh(Warp::Shape::Sphere, menuEntity);
+                if(ui.menuItem("Plane")) addMesh(Warp::Shape::Plane, menuEntity);
+                if(ui.menuItem("Pyramid")) addMesh(Warp::Shape::Pyramid, menuEntity);
+                if(ui.menuItem("Capsule")) addMesh(Warp::Shape::Capsule, menuEntity);
                 ui.endMenu();
             }
             if(ui.beginMenu("Atlas")){
@@ -4817,9 +5874,19 @@
                 if(ui.menuItem("Import...  (Ctrl+I)")) openImporter();
                 ui.menuSeparator();
                 if(ui.menuItem("Add Camera from View")) addCameraHere(Warp::None);
-                if(ui.menuItem("Add Cube")) addMesh(Warp::Shape::Cube, Warp::None);
-                if(ui.menuItem("Add Plane")) addMesh(Warp::Shape::Plane, Warp::None);
+                if(ui.menuItem("Add Primitive")) openAtlasPrimitiveMenu = true;
                 if(ui.menuItem("Add Empty")) addEmpty(Warp::None);
+                ui.endMenu();
+            }
+            if(openAtlasPrimitiveMenu) openContextSubmenu("Atlas Primitive");
+            if(ui.beginMenu("Atlas Primitive")){
+                ui.menuItem("ADD PRIMITIVE", false);
+                ui.menuSeparator();
+                if(ui.menuItem("Cube")) addMesh(Warp::Shape::Cube, Warp::None);
+                if(ui.menuItem("Sphere")) addMesh(Warp::Shape::Sphere, Warp::None);
+                if(ui.menuItem("Plane")) addMesh(Warp::Shape::Plane, Warp::None);
+                if(ui.menuItem("Pyramid")) addMesh(Warp::Shape::Pyramid, Warp::None);
+                if(ui.menuItem("Capsule")) addMesh(Warp::Shape::Capsule, Warp::None);
                 ui.endMenu();
             }
         }
@@ -4836,6 +5903,7 @@
             ui.endMenu();
         }
         {
+            bool openViewPrimitiveMenu = false;
             if(ui.menuOpen("View")){
                 const int action = ui.orbitMenu("View",
                     {"Add", "HumanoidMascott", "Text to Motion", "Frame All",
@@ -4855,11 +5923,21 @@
             if(ui.beginMenu("View Add")){
                 ui.menuItem("ADD TO SCENE", false);
                 ui.menuSeparator();
-                if(ui.menuItem("Cube Here")) addMeshAt(Warp::Shape::Cube, Warp::None, menuPixel, true);
-                if(ui.menuItem("Plane Here")) addMeshAt(Warp::Shape::Plane, Warp::None, menuPixel, true);
+                if(ui.menuItem("Add Primitive")) openViewPrimitiveMenu = true;
                 if(ui.menuItem("Camera from View")) addCameraHere(Warp::None);
                 ui.menuSeparator();
                 if(ui.menuItem("Import...  (Ctrl+I)")) openImporter();
+                ui.endMenu();
+            }
+            if(openViewPrimitiveMenu) openContextSubmenu("View Primitive");
+            if(ui.beginMenu("View Primitive")){
+                ui.menuItem("ADD PRIMITIVE", false);
+                ui.menuSeparator();
+                if(ui.menuItem("Cube")) addMeshAt(Warp::Shape::Cube, Warp::None, menuPixel, true);
+                if(ui.menuItem("Sphere")) addMeshAt(Warp::Shape::Sphere, Warp::None, menuPixel, true);
+                if(ui.menuItem("Plane")) addMeshAt(Warp::Shape::Plane, Warp::None, menuPixel, true);
+                if(ui.menuItem("Pyramid")) addMeshAt(Warp::Shape::Pyramid, Warp::None, menuPixel, true);
+                if(ui.menuItem("Capsule")) addMeshAt(Warp::Shape::Capsule, Warp::None, menuPixel, true);
                 ui.endMenu();
             }
         }
@@ -4923,6 +6001,7 @@
                 const auto compass = ui.region("stage-compass", compassHitBox);
                 const Treadle::Rect toggleBox{compassHitBox.x + compassW - 27.0f, compassHitBox.y + 5.0f, 21.0f, 21.0f};
                 const auto compassToggle = ui.region("stage-compass-toggle", toggleBox);
+                ui.tooltip("stage-compass-toggle", compassMinimized ? "Expand the stage compass." : "Collapse the stage compass.");
                 if(compassToggle.pressed) compassMinimized = !compassMinimized;
                 const float compassH = compassMinimized ? 34.0f : 166.0f;
                 const Treadle::Rect compassBox{compassHitBox.x, compassHitBox.y, compassW, compassH};
@@ -5191,7 +6270,8 @@
                 lensViewport.contains(float(cursorX), float(cursorY));
             if(lensCanOpen){
                 const Loom::ViewCamera lensCamera = Loom::viewCameraFor(stage, frame, lensViewport, view);
-                Warp::Id hoveredId = Loom::pickEntity(stage, frame, lensCamera, glm::vec2(float(cursorX), float(cursorY)));
+                Warp::Id hoveredId = Loom::pickEntity(stage, frame, lensCamera, glm::vec2(float(cursorX), float(cursorY)),
+                    [&](const std::string& path){ return viewportMeshes.scene(path); });
                 if(hoveredId == Warp::None){
                     float bestRatio = 1.0f;
                     stage.walk([&](const Warp::Entity& entity, int){
@@ -5256,7 +6336,7 @@
                         componentInfo = "POINT CLOUD   " + std::to_string(lensEntity->points->positions.size()) + " POINTS";
                     }else if(lensEntity->mesh){
                         componentInfo = std::string("MESH   ") +
-                            (lensEntity->mesh->shape == Warp::Shape::Cube ? "CUBE" : "PLANE");
+                            Warp::shapeTag(lensEntity->mesh->shape);
                     }else if(lensEntity->model){
                         componentInfo = "MODEL COMPONENT";
                     }else if(lensEntity->joint){
@@ -5400,6 +6480,10 @@
             auto terminalButton = [&](const std::string& id, const std::string& label, float x){
                 const Treadle::Rect button{x, area.y + 5.0f, 58.0f, 25.0f};
                 const auto hit = ui.region(id, button);
+                const std::string help = label == "Clear" ? "Clear terminal output." :
+                    label == "Follow" ? "Keep the newest terminal output in view." :
+                    label == "Paused" ? "Resume following terminal output." : "Close the terminal panel.";
+                ui.tooltip("terminal:" + id, help);
                 canvas.rect(button, hit.hot ? theme.hot : theme.control);
                 canvas.outline(button, 1.0f, theme.panelEdge);
                 canvas.text(x + 8.0f, area.y + 9.0f, label, theme.text, theme.textScale * 0.62f);
@@ -6101,12 +7185,156 @@
                 compositor.timelineFrames = 0;
             }
         }
+        if(commandPaletteOpen){
+            enum class PaletteAction{
+                Save, Import, AddCube, AddPlane, AddCamera, AddEmpty, FrameSelection, TogglePlayback,
+                SetKey, Undo, Redo, ToggleGrid, TogglePaths, TogglePoints, ToggleCamera,
+                OpenMotion, OpenAutoRig, OpenMedia, OpenScene, OpenInspector, DeleteSelection
+            };
+            struct PaletteCommand{ PaletteAction action; const char* label; const char* group; const char* shortcut; const char* keywords; };
+            static constexpr PaletteCommand commands[] = {
+                {PaletteAction::Save, "Save Project", "Project", "Ctrl+S", "save write"},
+                {PaletteAction::Import, "Import Asset", "Project", "Ctrl+I", "open file model video image"},
+                {PaletteAction::AddCube, "Add Cube", "Scene", "", "create mesh geometry"},
+                {PaletteAction::AddPlane, "Add Plane", "Scene", "", "create mesh floor"},
+                {PaletteAction::AddCamera, "Add Camera from View", "Scene", "", "create lens camera"},
+                {PaletteAction::AddEmpty, "Add Empty", "Scene", "", "create null group"},
+                {PaletteAction::FrameSelection, "Frame Selection", "Viewport", "F", "focus view fit camera"},
+                {PaletteAction::TogglePlayback, "Play / Pause", "Timeline", "Space", "animation playback"},
+                {PaletteAction::SetKey, "Set Keyframe", "Timeline", "K", "key animate transform"},
+                {PaletteAction::Undo, "Undo", "Edit", "Ctrl+Z", "history back"},
+                {PaletteAction::Redo, "Redo", "Edit", "Ctrl+Shift+Z", "history forward"},
+                {PaletteAction::ToggleGrid, "Toggle Grid", "Viewport", "", "show hide floor"},
+                {PaletteAction::TogglePaths, "Toggle Camera Paths", "Viewport", "", "show hide tracks paths"},
+                {PaletteAction::TogglePoints, "Toggle Points", "Viewport", "", "show hide point cloud"},
+                {PaletteAction::ToggleCamera, "Toggle Camera View", "Viewport", "0", "look through camera"},
+                {PaletteAction::OpenMotion, "Open Motion Workspace", "Workspace", "", "animate motion rig"},
+                {PaletteAction::OpenAutoRig, "Open Auto Rig", "Workspace", "", "rig model humanoid"},
+                {PaletteAction::OpenMedia, "Open Media Browser", "Workspace", "", "files assets media"},
+                {PaletteAction::OpenScene, "Show Scene Atlas", "Workspace", "", "hierarchy objects"},
+                {PaletteAction::OpenInspector, "Show Inspector", "Workspace", "", "properties components"},
+                {PaletteAction::DeleteSelection, "Delete Selection", "Edit", "Del", "remove object"}
+            };
+            auto finishPalette = [&]{
+                commandPaletteOpen = false;
+                commandPaletteQuery.clear();
+                commandPaletteSelection = 0;
+                ui.blurTextField();
+                ui.closeMenu();
+            };
+            auto runPaletteAction = [&](PaletteAction action){
+                finishPalette();
+                switch(action){
+                    case PaletteAction::Save: saveProjectNow(); break;
+                    case PaletteAction::Import: openImporter(); break;
+                    case PaletteAction::AddCube: addMesh(Warp::Shape::Cube, Warp::None); break;
+                    case PaletteAction::AddPlane: addMesh(Warp::Shape::Plane, Warp::None); break;
+                    case PaletteAction::AddCamera: addCameraHere(Warp::None); break;
+                    case PaletteAction::AddEmpty: addEmpty(Warp::None); break;
+                    case PaletteAction::FrameSelection:{
+                        view.lookThrough = Warp::None;
+                        const Warp::Entity* entity = stage.get(selected);
+                        if(entity && (entity->mesh || entity->camera)){
+                            view.orbit.target = glm::vec3(stage.worldMatrix(selected, frame)[3]);
+                            view.orbit.distance = extent.radius * 0.8f;
+                        }else Loom::frameAll(stage.size() ? stage : live, frame, view.orbit);
+                        break;
+                    }
+                    case PaletteAction::TogglePlayback: togglePlayback(); break;
+                    case PaletteAction::SetKey: if(stage.get(selected)) stage.keyAll(selected, std::round(frame)); break;
+                    case PaletteAction::Undo:
+                        if(history.undo(stage)){
+                            if(!stage.get(selected)) selected = Warp::None;
+                            extentDirty = true;
+                            message = "Undo";
+                        }
+                        break;
+                    case PaletteAction::Redo:
+                        if(history.redo(stage)){
+                            if(!stage.get(selected)) selected = Warp::None;
+                            extentDirty = true;
+                            message = "Redo";
+                        }
+                        break;
+                    case PaletteAction::ToggleGrid: view.showGrid = !view.showGrid; break;
+                    case PaletteAction::TogglePaths: view.showPaths = !view.showPaths; break;
+                    case PaletteAction::TogglePoints: view.showPoints = !view.showPoints; break;
+                    case PaletteAction::ToggleCamera:{
+                        const Warp::Entity* entity = stage.get(selected);
+                        const Warp::Id camera = entity && entity->camera ? selected : firstCamera();
+                        if(camera != Warp::None) view.lookThrough = view.lookThrough == camera ? Warp::None : camera;
+                        else message = "No camera in the scene.";
+                        break;
+                    }
+                    case PaletteAction::OpenMotion: openMotionWorkflow(); break;
+                    case PaletteAction::OpenAutoRig: openAutoRig(); break;
+                    case PaletteAction::OpenMedia: activeRailPane = RailPane::Media; break;
+                    case PaletteAction::OpenScene: outlineVisible = true; break;
+                    case PaletteAction::OpenInspector: componentsVisible = true; break;
+                    case PaletteAction::DeleteSelection:
+                        if(stage.get(selected)) removeSelected(selected);
+                        break;
+                }
+            };
+            auto lower = [](std::string value){
+                std::transform(value.begin(), value.end(), value.begin(),
+                    [](unsigned char c){ return char(std::tolower(c)); });
+                return value;
+            };
+            ui.canvas().rect(Treadle::Rect{0.0f, 0.0f, float(windowWidth), float(windowHeight)},
+                             Treadle::Color{0.008f, 0.015f, 0.010f, 0.70f});
+            ui.beginModalContent();
+            ui.panel("COMMAND PALETTE   /   Ctrl+K", commandPaletteBox.x, commandPaletteBox.y, commandPaletteBox.width);
+            Treadle::Ui::TextFieldConfig searchConfig;
+            searchConfig.placeholder = "Search actions, tools, and scene objects...";
+            searchConfig.maxLength = 160;
+            searchConfig.arrowNavigates = true;
+            const Treadle::Ui::TextFieldResult searchResult = ui.textField("command-palette-search", &commandPaletteQuery, searchConfig);
+            const std::string query = lower(commandPaletteQuery);
+            std::vector<const PaletteCommand*> matches;
+            for(const PaletteCommand& command : commands){
+                const std::string haystack = lower(std::string(command.label) + " " + command.group + " " + command.shortcut + " " + command.keywords);
+                if(query.empty() || haystack.find(query) != std::string::npos) matches.push_back(&command);
+            }
+            ui.caption("ACTIONS  ·  " + std::to_string(matches.size()) + " MATCHES");
+            constexpr size_t visibleCommands = 9;
+            const size_t visibleCount = std::min(visibleCommands, matches.size());
+            if(searchResult.changed) commandPaletteSelection = 0;
+            if(visibleCount > 0){
+                commandPaletteSelection = std::clamp(commandPaletteSelection, 0, int(visibleCount) - 1);
+                if(searchResult.navigation != 0){
+                    const int count = int(visibleCount);
+                    commandPaletteSelection = (commandPaletteSelection + searchResult.navigation + count) % count;
+                }
+            }else commandPaletteSelection = 0;
+            int chosenCommand = -1;
+            for(size_t i = 0; i < visibleCount; ++i){
+                const PaletteCommand& command = *matches[i];
+                std::string row = std::string(command.label) + "   ·   " + command.group;
+                if(command.shortcut[0]) row += "   " + std::string(command.shortcut);
+                if(ui.selectable(Treadle::fitText(row, commandPaletteBox.width - 46.0f, theme.textScale),
+                                 int(i) == commandPaletteSelection)){
+                    chosenCommand = int(i);
+                    commandPaletteSelection = int(i);
+                }
+            }
+            if(matches.empty()) ui.hint("No matching action. Try a shorter search.");
+            else if(matches.size() > visibleCount)
+                ui.hint(std::to_string(matches.size() - visibleCount) + " more actions — type to narrow the list.");
+            ui.hint("↑ / ↓ select  ·  Enter run  ·  click an action  ·  Esc close");
+
+            if(searchResult.submitted && !matches.empty()) chosenCommand = commandPaletteSelection;
+            if(chosenCommand >= 0 && size_t(chosenCommand) < visibleCount)
+                runPaletteAction(matches[size_t(chosenCommand)]->action);
+            if(ui.modalDismissed()) finishPalette();
+        }
         ui.end();
         ui.style() = moodboardBaseTheme;
 
         //== POGLED: mis i tipke, tek kad suicelje nije uzelo mis ==================================
         const Treadle::Rect& viewportRect = layout.viewport;
-        const bool overViewport = viewportRect.contains(float(cursorX), float(cursorY)) && !ui.wantsMouse() && !compositor.open;
+        const bool overViewport = viewportRect.contains(float(cursorX), float(cursorY)) && !ui.wantsMouse() &&
+                                  !compositor.open && !dropPlacementActive;
         if(followAnimatorPreview && !(motionPanel.open && motionPanel.flowMode != 2 && motionPanel.rootPathEnabled)){
             const Warp::Id followRoot = Loom::motionCharacterForEntity(stage, selected);
             const Warp::Entity* followEntity = stage.get(followRoot);
@@ -6126,15 +7354,28 @@
             }
         }
         const Loom::ViewCamera pickCamera = Loom::viewCameraFor(stage, frame, viewportRect, view);
+        const glm::vec2 mouse{float(cursorX), float(cursorY)};
+        if(dropPlacementActive && stage.contains(dropPlacementRoot) && viewportRect.contains(mouse.x, mouse.y)){
+            const Loom::Ray ray = Loom::rayThrough(pickCamera, mouse);
+            const float denominator = glm::dot(ray.direction, dropPlacementPlaneNormal);
+            if(std::fabs(denominator) > 1e-5f){
+                const float distance = glm::dot(dropPlacementPlanePoint - ray.origin, dropPlacementPlaneNormal) / denominator;
+                if(distance > 0.0f){
+                    Warp::Entity* root = stage.get(dropPlacementRoot);
+                    if(root) root->local.translation = ray.origin + distance * ray.direction;
+                }
+            }
+        }
 
         //Strelice odabranog: vide se i hvataju prije okretanja pogleda
         const Warp::Entity* chosen = stage.get(selected);
         Loom::Gizmo gizmo;
         if(chosen && chosen->visible && selected != view.lookThrough && focus == Focus::Entity &&
-           !proceduraPanel.open){
-            gizmo = Loom::gizmoFor(pickCamera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
+           !proceduraPanel.open && !dropPlacementActive){
+            const glm::quat orientation = localTransformSpace
+                ? rotationOf(stage.worldMatrix(selected, frame)) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            gizmo = Loom::gizmoFor(pickCamera, glm::vec3(stage.worldMatrix(selected, frame)[3]), orientation);
         }
-        const glm::vec2 mouse{float(cursorX), float(cursorY)};
         gizmoAxisHot = gizmoAxisHeld >= 0 ? gizmoAxisHeld
                      : !overViewport ? -1
                      : tool == Tool::Move ? Loom::gizmoAxisAt(pickCamera, gizmo, mouse) : Loom::ringAxisAt(pickCamera, gizmo, mouse);
@@ -6299,45 +7540,166 @@
                 viewportSplat.forEachCentre(0.3f, [&](const glm::vec3& p){ visit(glm::vec3(world * glm::vec4(p, 1.0f))); });
             }, leftPressed, leftReleased);
 
-        //Lijevi: strelica pomice, klik bira, vucenje okrece
-        if(leftPressed && !surfaceTool.active){
+        //Lijevi: hvata transformacijski axis, postavlja placement preview ili bira objekt.
+        const bool confirmDropPlacement = dropPlacementActive && leftPressed &&
+                                          viewportRect.contains(mouse.x, mouse.y);
+        if(confirmDropPlacement){
+            dropPlacementActive = false;
+            dropPlacementRoot = Warp::None;
+            message = "Placed " + dropPlacementLabel + ".";
+            dropPlacementLabel.clear();
+        }
+        if(leftPressed && !surfaceTool.active && !confirmDropPlacement){
             leftInViewport = overViewport && !pathGesture &&
                              !proceduraPointGesture && !proceduraPointClicked;
             dragging = false;
             pressX = leftClickX; pressY = leftClickY;
-            gizmoAxisHeld = leftInViewport ? gizmoAxisHot : -1;
+            gizmoAxisPointerHeld = leftInViewport ? gizmoAxisHot : -1;
+            gizmoAxisHeld = gizmoAxisPointerHeld;
             transformGhostActive = gizmoAxisHeld >= 0 && chosen && tool == Tool::Move;
             transformGhostId = transformGhostActive ? selected : Warp::None;
             if(transformGhostActive) transformGhostStart = stage.worldMatrix(selected, frame);
+            //Sake se procitaju jednom na pocetku vucenja predmeta; vuce li se do neke, vidi se dolje
+            holdCandidate = -1;
+            if(transformGhostActive && holdableItem(selected)) holdHands = holdHandsInScene();
+            if(gizmoAxisHeld >= 0 && chosen){
+                transformDragStartMouse = mouse;
+                transformDragAxisIndex = gizmoAxisHeld;
+                transformDragStartGizmo = gizmo;
+                transformDragAxis = Loom::gizmoAxis(gizmo, gizmoAxisHeld);
+                transformDragStartLocal = stage.localAt(selected, frame);
+                const glm::mat4 worldMatrix = stage.worldMatrix(selected, frame);
+                transformDragStartWorldPosition = glm::vec3(worldMatrix[3]);
+                transformDragStartWorld = worldMatrix;
+                transformDragStartWorldRotation = rotationOf(worldMatrix);
+                transformDragAccumulatedAngle = 0.0f;
+                transformDragDisplayValue = 0.0f;
+            }
         }
         if(!leftDown){
+            //HVAT: predmet pusten uz osvijetljenu saku. Hvat traje do kraja klipa lika (ili scene)
+            if(holdCandidate >= 0 && size_t(holdCandidate) < holdHands.size() && holdableItem(selected)){
+                const Loom::HoldHand hand = holdHands[size_t(holdCandidate)];
+                const Warp::Id item = Loom::toolRootOf(stage, selected);
+                const double at = std::round(frame);
+                double end = stage.endFrame;
+                if(const Warp::AnimationClip* clip = Loom::activeTimelineClip(stage, hand.rig)) end = std::max(clip->endFrame, at);
+                //Drska gripa (tool editor) sjedne u dlan: os drske uz saku, dlan na strani gripa
+                glm::mat4 world = stage.worldMatrix(item, at);
+                std::string preset = "grip";
+                const Warp::Entity* toolEntity = stage.get(item);
+                Loom::HandFrame handFrame;
+                if(toolEntity && toolEntity->tool && !toolEntity->tool->grips.empty() && Loom::handFrameAt(stage, hand, at, handFrame)){
+                    size_t chosen = 0;
+                    for(size_t g = 0; g < toolEntity->tool->grips.size(); ++g){
+                        const int wants = toolEntity->tool->grips[g].hand;
+                        if(wants == 0 || (wants == 1) == hand.right){ chosen = g; break; }
+                    }
+                    const Warp::Grip grip = toolEntity->tool->grips[chosen];
+                    const float scale = glm::length(glm::vec3(world[0]));
+                    world = Loom::gripAlignedWorld(world, grip, Loom::handleRadius(Loom::toolGeometry(stage, item, at), grip, 1.0f / scale) * scale, handFrame);
+                    preset = grip.preset;
+                }
+                if(Loom::grabItemAt(stage, item, hand.hand, at, end, world)){
+                    for(Warp::Hold& hold : stage.get(item)->holds) if(hold.onFrame == at) hold.grip = preset;
+                    syncHoldLayers();
+                    message = stage.get(item)->name + " is in the " + Loom::holdHandLabel(hand) + " from frame " +
+                              std::to_string(int(at)) + ". Drag the ends of the hold on the timeline to change when.";
+                    selected = item;
+                    focus = Focus::Entity;
+                }
+            }
+            holdCandidate = -1;
             gizmoAxisHeld = -1;
+            gizmoAxisPointerHeld = -1;
+            transformDragAxisIndex = -1;
             transformGhostActive = false;
             transformGhostId = Warp::None;
         }
-        if(leftDown && gizmoAxisHeld >= 0 && chosen && tool == Tool::Rotate){
-            //Okretanje oko osi SVIJETA kroz srediste odabranog; u lokalnu rotaciju kroz roditelja
-            const float angle = Loom::ringDrag(pickCamera, gizmo, gizmoAxisHeld, glm::vec2(float(lastX), float(lastY)), mouse);
-            if(angle != 0.0f){
-                const glm::quat world = rotationOf(stage.worldMatrix(selected, frame));
+        int forcedAxis = -1;
+        if(!ui.wantsKeyboard()){
+            if(glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) forcedAxis = 0;
+            else if(glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) forcedAxis = 1;
+            else if(glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) forcedAxis = 2;
+        }
+        const bool controlSnap = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                                 glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+        const bool snapTransform = transformSnapEnabled || controlSnap;
+        if(leftDown && gizmoAxisPointerHeld >= 0 && chosen && gizmo.visible){
+            const int desiredAxis = forcedAxis >= 0 ? forcedAxis : gizmoAxisPointerHeld;
+            if(desiredAxis != gizmoAxisHeld){
+                gizmoAxisHeld = desiredAxis;
+                transformDragStartMouse = mouse;
+                transformDragAxisIndex = desiredAxis;
+                transformDragStartGizmo = gizmo;
+                transformDragAxis = Loom::gizmoAxis(gizmo, desiredAxis);
+                transformDragStartLocal = stage.localAt(selected, frame);
+                const glm::mat4 worldMatrix = stage.worldMatrix(selected, frame);
+                transformDragStartWorldPosition = glm::vec3(worldMatrix[3]);
+                transformDragStartWorld = worldMatrix;
+                transformDragStartWorldRotation = rotationOf(worldMatrix);
+                transformDragAccumulatedAngle = 0.0f;
+                transformDragDisplayValue = 0.0f;
+            }
+        }
+        if(leftDown && gizmoAxisHeld >= 0 && chosen && tool == Tool::Rotate && !dropPlacementActive){
+            const glm::vec2 from = leftPressed ? mouse : glm::vec2(float(lastX), float(lastY));
+            transformDragAccumulatedAngle += Loom::ringDrag(pickCamera, transformDragStartGizmo,
+                                                             transformDragAxisIndex, from, mouse);
+            const float snapRadians = glm::radians(15.0f);
+            const float angle = snapTransform
+                ? std::round(transformDragAccumulatedAngle / snapRadians) * snapRadians
+                : transformDragAccumulatedAngle;
+            transformDragDisplayValue = glm::degrees(angle);
+            if(std::fabs(angle) > 1e-7f){
                 const glm::quat parent = chosen->parent == Warp::None ? glm::quat(1.0f, 0.0f, 0.0f, 0.0f)
-                                                                     : rotationOf(stage.worldMatrix(chosen->parent, frame));
-                Warp::Transform local = stage.localAt(selected, frame);
-                local.rotation = glm::normalize(glm::inverse(parent) * glm::angleAxis(angle, Loom::gizmoAxis(gizmoAxisHeld)) * world);
-                stage.setLocalAt(selected, frame, local);
-                eulerFrame = -1.0;              //kutovi u svojstvima se procitaju iznova
+                    : rotationOf(stage.worldMatrix(chosen->parent, frame));
+                Warp::Transform local = transformDragStartLocal;
+                local.rotation = glm::normalize(glm::inverse(parent) *
+                    glm::angleAxis(angle, transformDragAxis) * transformDragStartWorldRotation);
+                //Predmet u ruci: okret mijenja kako ga saka drzi (pomak hvata), ne kljuceve
+                if(Loom::holdAt(*chosen, frame) >= 0){
+                    glm::mat4 desired = glm::mat4_cast(glm::normalize(glm::angleAxis(angle, transformDragAxis) * transformDragStartWorldRotation));
+                    for(int c = 0; c < 3; ++c) desired[c] *= glm::length(glm::vec3(transformDragStartWorld[c]));
+                    desired[3] = transformDragStartWorld[3];
+                    Loom::moveHeldItem(stage, selected, frame, desired);
+                }else{
+                    stage.setLocalAt(selected, frame, local);
+                    if(autoKeyEnabled) stage.keyAll(selected, frame);
+                }
+                eulerFrame = -1.0;
             }
             dragging = true;
-        }else if(leftDown && gizmoAxisHeld >= 0 && chosen){
-            const float amount = Loom::gizmoDrag(pickCamera, gizmo, gizmoAxisHeld,
-                                                 glm::vec2(float(cursorX - lastX), float(cursorY - lastY)));
-            if(amount != 0.0f){
-                const glm::vec3 world = gizmo.origin + Loom::gizmoAxis(gizmoAxisHeld) * amount;
-                const glm::mat4 parentWorld = chosen->parent == Warp::None ? glm::mat4(1.0f)
-                                                                          : stage.worldMatrix(chosen->parent, frame);
-                Warp::Transform local = stage.localAt(selected, frame);
-                local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(world, 1.0f));
+        }else if(leftDown && gizmoAxisHeld >= 0 && chosen && !dropPlacementActive){
+            float amount = Loom::gizmoDrag(pickCamera, transformDragStartGizmo, transformDragAxisIndex,
+                                           mouse - transformDragStartMouse);
+            if(snapTransform) amount = std::round(amount / 0.25f) * 0.25f;
+            transformDragDisplayValue = amount;
+            const glm::vec3 worldPosition = transformDragStartWorldPosition + transformDragAxis * amount;
+            const glm::mat4 parentWorld = chosen->parent == Warp::None ? glm::mat4(1.0f)
+                                                                      : stage.worldMatrix(chosen->parent, frame);
+            Warp::Transform local = transformDragStartLocal;
+            local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(worldPosition, 1.0f));
+            const int heldHere = Loom::holdAt(*chosen, frame);
+            if(heldHere >= 0){
+                //Predmet u ruci: pomak mijenja gdje ga saka drzi, ne kljuceve (hvat bi ih nadjacao)
+                glm::mat4 desired = transformDragStartWorld;
+                desired[3] = glm::vec4(worldPosition, 1.0f);
+                Loom::moveHeldItem(stage, selected, frame, desired);
+            }else{
                 stage.setLocalAt(selected, frame, local);
+                if(autoKeyEnabled) stage.keyAll(selected, frame);
+            }
+            //Saka uz koju je predmet (ne ona koja ga vec drzi - to je samo namjestanje u ruci)
+            holdCandidate = -1;
+            if(tool == Tool::Move && holdableItem(selected)){
+                //Saci se prinosi DRSKA: blizina od tocke gripa (tool editor), ne od ishodista modela
+                glm::vec3 reachPoint = worldPosition;
+                if(const Warp::Id root = Loom::toolRootOf(stage, selected); root != Warp::None && !stage.get(root)->tool->grips.empty())
+                    reachPoint = glm::vec3(stage.worldMatrix(root, frame) * glm::vec4(stage.get(root)->tool->grips.front().point, 1.0f));
+                const int near = Loom::nearestHoldHandOnScreen(stage, holdHands, selected, reachPoint, frame, 28.0f,
+                    [&](const glm::vec3& p, glm::vec2& pixel){ return Loom::project(pickCamera, p, pixel); });
+                if(near >= 0 && !(heldHere >= 0 && chosen->holds[size_t(heldHere)].hand == holdHands[size_t(near)].hand)) holdCandidate = near;
             }
             dragging = true;                    //nije klik: ne bira nista kad se pusti
         }else if(leftDown && leftInViewport){
@@ -6349,7 +7711,8 @@
             }
         }
         if(leftReleased && leftInViewport && !dragging){
-            selected = Loom::pickEntity(stage, frame, pickCamera, glm::vec2(float(cursorX), float(cursorY)));
+            selected = Loom::pickEntity(stage, frame, pickCamera, glm::vec2(float(cursorX), float(cursorY)),
+                [&](const std::string& path){ return viewportMeshes.scene(path); });
             focus = Focus::Entity;
         }
         if(!leftDown) leftInViewport = false;
@@ -6379,35 +7742,48 @@
         lastX = cursorX; lastY = cursorY;
 
         //A step is taken when no gesture is in progress: a whole drag is one undo
-        history.track(stage, leftDown || middleDown || rightDown || ui.wantsKeyboard());
-
-        if(ui.wantsKeyboard()){
-            //Tipke pripadaju polju za tekst: precaci se ne okidaju (W u opisu ne mijenja alat), ali se
-            //stanje tipki ipak procita da se ne okinu kasnije, kad polje izgubi fokus
-            for(int key : {GLFW_KEY_SPACE, GLFW_KEY_K, GLFW_KEY_V, GLFW_KEY_B, GLFW_KEY_W, GLFW_KEY_E, GLFW_KEY_S,
-                           GLFW_KEY_RIGHT, GLFW_KEY_LEFT, GLFW_KEY_HOME, GLFW_KEY_END, GLFW_KEY_F, GLFW_KEY_0,
-                           GLFW_KEY_KP_0, GLFW_KEY_DELETE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_ESCAPE,
-                           GLFW_KEY_Z, GLFW_KEY_Y, GLFW_KEY_I, GLFW_KEY_M}) keys.pressed(window, key);
-        }else{
-        if(moodboard.open && keys.pressed(window, GLFW_KEY_ESCAPE)) setMoodboardOpen(false);
-        if(keys.pressed(window, GLFW_KEY_M)) setMoodboardOpen(!moodboard.open);
-        if(keys.pressed(window, GLFW_KEY_SPACE)) togglePlayback();
-        if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
-        if(keys.pressed(window, GLFW_KEY_V)) showPlate = !showPlate;
-        if(keys.pressed(window, GLFW_KEY_B)) showSplat = !showSplat;
-        if(keys.pressed(window, GLFW_KEY_W)) tool = Tool::Move;
-        if(keys.pressed(window, GLFW_KEY_E)) tool = Tool::Rotate;
+        history.track(stage, leftDown || middleDown || rightDown || ui.wantsKeyboard() || dropPlacementActive);
         const bool control = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                              glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-        //S sam pali alat plohe, Ctrl+S sprema - ista tipka, pa se pita jednom
-        const bool sKey = keys.pressed(window, GLFW_KEY_S);
-        if(sKey && control) saveProjectNow();
-        //Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo (LoomUndo.h)
-        if(keys.pressed(window, GLFW_KEY_I) && control) openImporter();
-        const bool zKey = keys.pressed(window, GLFW_KEY_Z);
-        const bool yKey = keys.pressed(window, GLFW_KEY_Y);
-        if(control && (zKey || yKey)){
-            const bool redo = yKey || shift;
+        const bool commandPaletteShortcut = control && keys.pressed(window, GLFW_KEY_K);
+        if(commandPaletteShortcut){
+            commandPaletteOpen = !commandPaletteOpen;
+            ui.closeMenu();
+            if(commandPaletteOpen){
+                commandPaletteQuery.clear();
+                commandPaletteSelection = 0;
+                ui.focusTextField("command-palette-search");
+            }else{
+                commandPaletteQuery.clear();
+                commandPaletteSelection = 0;
+                ui.blurTextField();
+            }
+        }
+        const bool escapePressed = keys.pressed(window, GLFW_KEY_ESCAPE);
+        if(dropPlacementActive && escapePressed){
+            const Warp::Id cancelled = dropPlacementRoot;
+            if(stage.contains(cancelled)) stage.remove(cancelled);
+            dropPlacementActive = false;
+            dropPlacementRoot = Warp::None;
+            dropPlacementLabel.clear();
+            selected = Warp::None;
+            focus = Focus::Entity;
+            extentDirty = true;
+            message = "Dropped model placement cancelled.";
+        }
+        if(commandPaletteOpen && escapePressed){
+            commandPaletteOpen = false;
+            commandPaletteQuery.clear();
+            commandPaletteSelection = 0;
+            ui.blurTextField();
+        }
+        //History is global to scene editing: text fields and the command palette must not swallow it.
+        const bool undoKey = undoShortcutEvent;
+        const bool redoKey = redoShortcutEvent;
+        undoShortcutEvent = false;
+        redoShortcutEvent = false;
+        if(undoKey || redoKey){
+            const bool redo = redoKey;
             if(redo ? history.redo(stage) : history.undo(stage)){
                 if(!stage.get(selected)) selected = Warp::None;
                 if(view.lookThrough != Warp::None && !stage.get(view.lookThrough)) view.lookThrough = Warp::None;
@@ -6418,7 +7794,43 @@
                 message = redo ? "Nothing to redo" : "Nothing to undo";
             }
         }
-        else if(sKey) surfaceTool.active = !surfaceTool.active;
+        if(commandPaletteOpen || ui.wantsKeyboard()){
+            //Tipke pripadaju polju za tekst: precaci se ne okidaju (W u opisu ne mijenja alat), ali se
+            //stanje tipki ipak procita da se ne okinu kasnije, kad polje izgubi fokus
+            for(int key : {GLFW_KEY_SPACE, GLFW_KEY_K, GLFW_KEY_V, GLFW_KEY_B, GLFW_KEY_W, GLFW_KEY_E, GLFW_KEY_S,
+                           GLFW_KEY_RIGHT, GLFW_KEY_LEFT, GLFW_KEY_HOME, GLFW_KEY_END, GLFW_KEY_F, GLFW_KEY_0,
+                           GLFW_KEY_KP_0, GLFW_KEY_DELETE, GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER, GLFW_KEY_ESCAPE,
+                           GLFW_KEY_I, GLFW_KEY_M,
+                           GLFW_KEY_F1, GLFW_KEY_F2, GLFW_KEY_F3, GLFW_KEY_F4, GLFW_KEY_F5,
+                           GLFW_KEY_F6, GLFW_KEY_F7, GLFW_KEY_F8, GLFW_KEY_F9}) keys.pressed(window, key);
+        }else{
+        const bool railF1 = keys.pressed(window, GLFW_KEY_F1);
+        const bool railF2 = keys.pressed(window, GLFW_KEY_F2);
+        const bool railF3 = keys.pressed(window, GLFW_KEY_F3);
+        const bool railF4 = keys.pressed(window, GLFW_KEY_F4);
+        const bool railF5 = keys.pressed(window, GLFW_KEY_F5);
+        const bool railF6 = keys.pressed(window, GLFW_KEY_F6);
+        const bool railF7 = keys.pressed(window, GLFW_KEY_F7);
+        const bool railF8 = keys.pressed(window, GLFW_KEY_F8);
+        const bool railF9 = keys.pressed(window, GLFW_KEY_F9);
+        const RailPane shortcutPane = railF1 ? RailPane::Media : railF2 ? RailPane::Scene :
+            railF3 ? RailPane::Components : railF4 ? RailPane::Motion : railF5 ? RailPane::Procedura :
+            railF6 ? RailPane::Timeline : railF7 ? RailPane::Terminal : railF8 ? RailPane::AiChat :
+            railF9 ? RailPane::Compositor : RailPane::None;
+        if(shortcutPane != RailPane::None) toggleRailPane(shortcutPane);
+        if(moodboard.open && escapePressed) setMoodboardOpen(false);
+        if(keys.pressed(window, GLFW_KEY_M)) setMoodboardOpen(!moodboard.open);
+        if(keys.pressed(window, GLFW_KEY_SPACE)) togglePlayback();
+        if(keys.pressed(window, GLFW_KEY_K) && stage.get(selected)) stage.keyAll(selected, std::round(frame));
+        if(keys.pressed(window, GLFW_KEY_V)) showPlate = !showPlate;
+        if(keys.pressed(window, GLFW_KEY_B)) showSplat = !showSplat;
+        if(keys.pressed(window, GLFW_KEY_W)) tool = Tool::Move;
+        if(keys.pressed(window, GLFW_KEY_E)) tool = Tool::Rotate;
+        //S sam pali alat plohe, Ctrl+S sprema - ista tipka, pa se pita jednom
+        const bool sKey = keys.pressed(window, GLFW_KEY_S);
+        if(sKey && control) saveProjectNow();
+        if(keys.pressed(window, GLFW_KEY_I) && control) openImporter();
+        if(sKey && !control) surfaceTool.active = !surfaceTool.active;
         if(keys.pressed(window, GLFW_KEY_RIGHT)) frame = std::min(stage.endFrame, std::floor(frame) + 1.0);
         if(keys.pressed(window, GLFW_KEY_LEFT)) frame = std::max(stage.startFrame, std::floor(frame) - 1.0);
         if(keys.pressed(window, GLFW_KEY_HOME)) frame = stage.startFrame;
@@ -6455,7 +7867,7 @@
                 removeSelected(selected);
             }
         }
-        if(keys.pressed(window, GLFW_KEY_ESCAPE)){
+        if(escapePressed){
             if(ui.menuOpen("View") || ui.menuOpen("Media") || ui.menuOpen("Entity") || ui.menuOpen("Procedura Point") ||
                ui.menuOpen("Project") || ui.menuOpen("New") || ui.menuOpen("Autosave") ||
                ui.menuOpen("Exit") || ui.menuOpen("Atlas") ||
@@ -6655,6 +8067,47 @@
             if(splatShownId != Warp::None && Loom::isCube(stage.get(selected))){
                 Loom::paintBoxWire(overlay, camera, stage.worldMatrix(selected, frame), {1.0f, 0.82f, 0.30f, 0.95f});
             }
+            //GRIPOVI odabranog toola: os drske (od malog prsta prema palcu), strana dlana i obruc drske
+            if(const Warp::Id toolRoot = Loom::toolRootOf(stage, selected); toolRoot != Warp::None && toolEditorFor == toolRoot){
+                const Warp::Entity* toolEntity = stage.get(toolRoot);
+                const glm::mat4 world = stage.worldMatrix(toolRoot, frame);
+                const float scale = glm::length(glm::vec3(world[0]));
+                for(size_t g = 0; g < toolEntity->tool->grips.size(); ++g){
+                    const Warp::Grip& grip = toolEntity->tool->grips[g];
+                    const bool active = int(g) == toolEditorGrip;
+                    const Treadle::Color colour = active ? Treadle::Color{0.40f, 0.85f, 1.0f, 1.0f} : Treadle::Color{0.40f, 0.85f, 1.0f, 0.45f};
+                    const glm::vec3 centre(world * glm::vec4(grip.point, 1.0f));
+                    const glm::vec3 axis = glm::normalize(glm::vec3(world * glm::vec4(grip.axis, 0.0f)));
+                    glm::vec3 palm = glm::vec3(world * glm::vec4(grip.palm, 0.0f));
+                    palm = glm::normalize(palm - axis * glm::dot(palm, axis));
+                    const float radius = Loom::handleRadius(toolEditorGeometry, grip, 1.0f / std::max(scale, 1e-9f)) * scale;
+                    Loom::segment(overlay, camera, centre - axis * 0.05f, centre + axis * 0.07f, 2.5f, colour);
+                    Loom::segment(overlay, camera, centre + axis * 0.07f, centre + axis * 0.05f + palm * 0.012f, 2.5f, colour);
+                    Loom::segment(overlay, camera, centre, centre + palm * (radius + 0.04f), 2.0f, Treadle::Color{1.0f, 0.78f, 0.25f, 0.95f});
+                    const glm::vec3 side = glm::cross(axis, palm);
+                    for(int i = 0; i < 20; ++i){
+                        const float a0 = float(i) / 20.0f * 6.2831853f, a1 = float(i + 1) / 20.0f * 6.2831853f;
+                        Loom::segment(overlay, camera, centre + (palm * std::cos(a0) + side * std::sin(a0)) * radius,
+                                      centre + (palm * std::cos(a1) + side * std::sin(a1)) * radius, 1.5f, colour);
+                    }
+                }
+            }
+            //HVAT: saka uz koju je predmet zasvijetli; pusti se i predmet je u ruci
+            if(holdCandidate >= 0 && size_t(holdCandidate) < holdHands.size() && gizmoAxisHeld >= 0){
+                const Loom::HoldHand& hand = holdHands[size_t(holdCandidate)];
+                const glm::vec3 palm = Loom::holdPalmPoint(stage, hand, frame);
+                glm::vec2 centre;
+                if(Loom::project(camera, palm, centre)){
+                    const Treadle::Color glow{1.0f, 0.78f, 0.25f, 0.95f};
+                    const float radius = 18.0f;
+                    for(int i = 0; i < 28; ++i){
+                        const float a0 = float(i) / 28.0f * 6.2831853f, a1 = float(i + 1) / 28.0f * 6.2831853f;
+                        overlay.line(centre.x + std::cos(a0) * radius, centre.y + std::sin(a0) * radius,
+                                     centre.x + std::cos(a1) * radius, centre.y + std::sin(a1) * radius, 2.5f, glow);
+                    }
+                    overlay.text(centre.x + radius + 6.0f, centre.y - 8.0f, "GRAB: " + Loom::holdHandLabel(hand), glow, theme.textScale);
+                }
+            }
             if(transformGhostActive && transformGhostId == selected && gizmoAxisHeld >= 0 && tool == Tool::Move){
                 const Warp::Entity* ghostEntity = stage.get(transformGhostId);
                 if(ghostEntity){
@@ -6696,10 +8149,61 @@
                     }
                 }
             }
+            if(dropPlacementActive && stage.contains(dropPlacementRoot)){
+                const glm::vec3 placementWorld(stage.worldMatrix(dropPlacementRoot, frame)[3]);
+                glm::vec2 placementPixel;
+                if(Loom::project(camera, placementWorld, placementPixel) &&
+                   viewportRect.contains(placementPixel.x, placementPixel.y)){
+                    const Treadle::Color placementAccent{1.0f, 0.78f, 0.24f, 0.98f};
+                    overlay.outline(Treadle::Rect{placementPixel.x - 8.0f, placementPixel.y - 8.0f, 16.0f, 16.0f},
+                                    2.0f, placementAccent);
+                    overlay.line(placementPixel.x - 13.0f, placementPixel.y, placementPixel.x + 13.0f,
+                                 placementPixel.y, 1.0f, placementAccent);
+                    overlay.line(placementPixel.x, placementPixel.y - 13.0f, placementPixel.x,
+                                 placementPixel.y + 13.0f, 1.0f, placementAccent);
+                }
+                const float scale = std::max(1.7f, theme.textScale * 0.68f);
+                const std::string hint = "PLACE " + dropPlacementLabel + "  ·  CLICK TO CONFIRM  ·  ESC CANCEL";
+                const float boxWidth = std::min(viewportRect.width - 16.0f, Treadle::textWidth(hint, scale) + 20.0f);
+                const float boxX = viewportRect.x + 8.0f;
+                const float boxY = viewportRect.y + viewportRect.height - Treadle::textHeight(scale) - 22.0f;
+                overlay.rect(Treadle::Rect{boxX, boxY, boxWidth, Treadle::textHeight(scale) + 12.0f},
+                             {0.035f, 0.055f, 0.043f, 0.94f});
+                overlay.outline(Treadle::Rect{boxX, boxY, boxWidth, Treadle::textHeight(scale) + 12.0f},
+                                1.0f, {1.0f, 0.78f, 0.24f, 0.96f});
+                overlay.text(boxX + 9.0f, boxY + 6.0f,
+                             Treadle::fitText(hint, boxWidth - 18.0f, scale),
+                             {1.0f, 0.86f, 0.53f, 1.0f}, scale);
+            }
+            if(leftDown && gizmoAxisHeld >= 0 && chosen && !dropPlacementActive){
+                const char axis = gizmoAxisHeld == 0 ? 'X' : gizmoAxisHeld == 1 ? 'Y' : 'Z';
+                char value[96];
+                if(tool == Tool::Move)
+                    std::snprintf(value, sizeof(value), "MOVE %c  %+.3f u", axis, double(transformDragDisplayValue));
+                else
+                    std::snprintf(value, sizeof(value), "ROTATE %c  %+.1f deg", axis, double(transformDragDisplayValue));
+                const float scale = std::max(1.7f, theme.textScale * 0.72f);
+                const std::string title = localTransformSpace ? "LOCAL" : "WORLD";
+                const std::string snapLabel = (transformSnapEnabled || controlSnap) ? "  SNAP" : "";
+                const float width = std::max(Treadle::textWidth(value, scale), Treadle::textWidth(title + snapLabel, scale)) + 20.0f;
+                const float height = 2.0f * Treadle::textHeight(scale) + 16.0f;
+                const float x = std::clamp(mouse.x + 18.0f, viewportRect.x + 8.0f,
+                                           viewportRect.x + viewportRect.width - width - 8.0f);
+                const float y = std::clamp(mouse.y + 16.0f, viewportRect.y + 8.0f,
+                                           viewportRect.y + viewportRect.height - height - 8.0f);
+                overlay.rect(Treadle::Rect{x, y, width, height}, {0.035f, 0.055f, 0.043f, 0.94f});
+                overlay.outline(Treadle::Rect{x, y, width, height}, 1.0f, {0.74f, 0.60f, 0.27f, 0.96f});
+                overlay.text(x + 10.0f, y + 5.0f, value, {0.96f, 0.83f, 0.44f, 1.0f}, scale);
+                overlay.text(x + 10.0f, y + 5.0f + Treadle::textHeight(scale), title + snapLabel,
+                             {0.84f, 0.91f, 0.81f, 1.0f}, scale);
+            }
             const Warp::Entity* chosenNow = stage.get(selected);
-            if(!editingPath && !proceduraPanel.open && chosenNow && chosenNow->visible &&
+            if(!dropPlacementActive && !editingPath && !proceduraPanel.open && chosenNow && chosenNow->visible &&
                selected != view.lookThrough && focus == Focus::Entity){
-                const Loom::Gizmo shown = Loom::gizmoFor(camera, glm::vec3(stage.worldMatrix(selected, frame)[3]));
+                const glm::quat orientation = localTransformSpace
+                    ? rotationOf(stage.worldMatrix(selected, frame)) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+                const Loom::Gizmo shown = Loom::gizmoFor(camera,
+                    glm::vec3(stage.worldMatrix(selected, frame)[3]), orientation);
                 if(tool == Tool::Move) Loom::paintGizmo(overlay, camera, shown, gizmoAxisHot);
                 else Loom::paintRings(overlay, camera, shown, gizmoAxisHot);
             }
@@ -6816,7 +8320,7 @@
             const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, viewportRect, view);
             meshArea = camera.rect;
             const float nearPlane = std::max(1e-5f, extent.radius * 1e-3f);
-            const Engine::WeaverProcedura::MeshData* proceduralPreview = proceduraPanel.open && proceduraPanel.previewReady
+            const Engine::WeaverProcedura::MeshData* proceduralPreview = proceduraPanel.previewVisible && proceduraPanel.previewReady
                 ? &proceduraPanel.previewMesh : nullptr;
             meshesActive = viewportMeshes.prepare(stage, frame, camera, pixelScaleX, nearPlane,
                 std::max(100.0f, extent.radius * 500.0f), proceduralPreview, proceduraPanel.previewRevision);
@@ -6941,6 +8445,7 @@
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
+    if(agentWorker.joinable()) agentWorker.join();
     if(worker.joinable()) worker.join();
     plateStream.close();
     loom.waitIdle();

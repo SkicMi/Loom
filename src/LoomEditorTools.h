@@ -23,6 +23,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -51,8 +54,31 @@ inline std::vector<std::filesystem::path> imageFilesIn(const std::filesystem::pa
 struct MaterialPanelState{
     int armedMaterial = -1;             //materijal i mapa koja ceka sliku iz media prozora
     int armedSlot = -1;                 //0 boja, 1 metalnost-hrapavost, 2 normal, 3 occlusion, 4 emisija
+    int numericMaterial = -1;
+    std::string colourEntry, metallicEntry, roughnessEntry, emissionEntry, emissionStrengthEntry;
     bool armed() const {return armedMaterial >= 0 && armedSlot >= 0;}
 };
+
+inline std::string materialFloatText(float value){
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.6g", double(value));
+    return text;
+}
+
+inline bool parseMaterialFloats(const std::string& text, float* values, size_t count){
+    if(!values || count == 0) return false;
+    const char* cursor = text.c_str();
+    for(size_t i = 0; i < count; ++i){
+        while(*cursor == ' ' || *cursor == '\t' || *cursor == ',' || *cursor == ';') ++cursor;
+        char* end = nullptr;
+        const float value = std::strtof(cursor, &end);
+        if(end == cursor || !std::isfinite(value)) return false;
+        values[i] = value;
+        cursor = end;
+    }
+    while(*cursor == ' ' || *cursor == '\t' || *cursor == ',' || *cursor == ';') ++cursor;
+    return *cursor == '\0';
+}
 
 inline Warp::TextureSlot& materialSlot(Warp::Material& m, int slot){
     switch(slot){
@@ -106,11 +132,20 @@ inline void bindingRow(Treadle::Ui& ui, Warp::Stage& stage, const std::string& l
 inline void editMaterial(Treadle::Ui& ui, Warp::Stage& stage, int index, MaterialPanelState& state){
     if(index < 0 || size_t(index) >= stage.materials.size()) return;
     Warp::Material& m = stage.materials[size_t(index)];
+    if(state.numericMaterial != index || !ui.wantsKeyboard()){
+        state.numericMaterial = index;
+        state.colourEntry = materialFloatText(m.baseColor.r) + " " + materialFloatText(m.baseColor.g) + " " + materialFloatText(m.baseColor.b);
+        state.metallicEntry = materialFloatText(m.metallic);
+        state.roughnessEntry = materialFloatText(m.roughness);
+        state.emissionEntry = materialFloatText(m.emissive.r) + " " + materialFloatText(m.emissive.g) + " " + materialFloatText(m.emissive.b);
+        state.emissionStrengthEntry = materialFloatText(m.emissiveStrength);
+    }
 
     float colour[3] = {m.baseColor.r, m.baseColor.g, m.baseColor.b};
     if(ui.dragVector("Color", colour, 0.004f)){
         for(float& c : colour) c = std::clamp(c, 0.0f, 1.0f);
         m.baseColor = glm::vec4(colour[0], colour[1], colour[2], m.baseColor.a);
+        state.colourEntry = materialFloatText(colour[0]) + " " + materialFloatText(colour[1]) + " " + materialFloatText(colour[2]);
     }
     ui.slider("Metallic", &m.metallic, 0.0f, 1.0f);
     ui.slider("Roughness", &m.roughness, 0.0f, 1.0f);
@@ -118,8 +153,56 @@ inline void editMaterial(Treadle::Ui& ui, Warp::Stage& stage, int index, Materia
     if(ui.dragVector("Emission", emissive, 0.004f)){
         for(float& c : emissive) c = std::clamp(c, 0.0f, 1.0f);
         m.emissive = glm::vec3(emissive[0], emissive[1], emissive[2]);
+        state.emissionEntry = materialFloatText(emissive[0]) + " " + materialFloatText(emissive[1]) + " " + materialFloatText(emissive[2]);
     }
     ui.slider("Emission Strength", &m.emissiveStrength, 0.0f, 20.0f);
+
+    ui.caption("EXACT VALUES · ENTER TO APPLY");
+    Treadle::Ui::TextFieldConfig exactField;
+    exactField.lines = 1;
+    exactField.labelFraction = 0.43f;
+    exactField.label = "Base color RGB";
+    if(ui.textField("material-exact-color", &state.colourEntry, exactField).submitted){
+        float values[3];
+        if(parseMaterialFloats(state.colourEntry, values, 3)){
+            for(float& value : values) value = std::clamp(value, 0.0f, 1.0f);
+            m.baseColor = glm::vec4(values[0], values[1], values[2], m.baseColor.a);
+            state.colourEntry = materialFloatText(values[0]) + " " + materialFloatText(values[1]) + " " + materialFloatText(values[2]);
+        }
+    }
+    exactField.label = "Metallic";
+    if(ui.textField("material-exact-metallic", &state.metallicEntry, exactField).submitted){
+        float value[1];
+        if(parseMaterialFloats(state.metallicEntry, value, 1)){
+            m.metallic = std::clamp(value[0], 0.0f, 1.0f);
+            state.metallicEntry = materialFloatText(m.metallic);
+        }
+    }
+    exactField.label = "Roughness";
+    if(ui.textField("material-exact-roughness", &state.roughnessEntry, exactField).submitted){
+        float value[1];
+        if(parseMaterialFloats(state.roughnessEntry, value, 1)){
+            m.roughness = std::clamp(value[0], 0.0f, 1.0f);
+            state.roughnessEntry = materialFloatText(m.roughness);
+        }
+    }
+    exactField.label = "Emission RGB";
+    if(ui.textField("material-exact-emission", &state.emissionEntry, exactField).submitted){
+        float values[3];
+        if(parseMaterialFloats(state.emissionEntry, values, 3)){
+            for(float& value : values) value = std::clamp(value, 0.0f, 1.0f);
+            m.emissive = glm::vec3(values[0], values[1], values[2]);
+            state.emissionEntry = materialFloatText(values[0]) + " " + materialFloatText(values[1]) + " " + materialFloatText(values[2]);
+        }
+    }
+    exactField.label = "Emission strength";
+    if(ui.textField("material-exact-emission-strength", &state.emissionStrengthEntry, exactField).submitted){
+        float value[1];
+        if(parseMaterialFloats(state.emissionStrengthEntry, value, 1)){
+            m.emissiveStrength = std::clamp(value[0], 0.0f, 20.0f);
+            state.emissionStrengthEntry = materialFloatText(m.emissiveStrength);
+        }
+    }
 
     int alpha = int(m.alphaMode);
     if(ui.choice("Alpha Mode", {"Opaque", "Mask", "Blend"}, &alpha)) m.alphaMode = Warp::Material::Alpha(alpha);
@@ -238,7 +321,7 @@ inline void paintSurfaceTool(const SurfaceTool& tool, const ViewCamera& camera, 
 //velika 70 % krace strane komada
 inline Warp::Id placeOnSurface(Warp::Stage& stage, const SurfaceTool& tool, Warp::Shape shape){
     if(!tool.fit.valid) return Warp::None;
-    const Warp::Id id = stage.create(shape == Warp::Shape::Cube ? "Cube" : "Plane");
+    const Warp::Id id = stage.create(Warp::shapeName(shape));
     Warp::Entity& entity = *stage.get(id);
     entity.mesh = Warp::Mesh{shape};
     if(shape == Warp::Shape::Cube){

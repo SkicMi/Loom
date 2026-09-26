@@ -1,0 +1,227 @@
+{
+  "benchmark": "weaverprocedura-vocabulary",
+  "version": 2,
+  "started_at_utc": "2026-09-26T11:00:09.412405+00:00",
+  "completed_at_utc": "2026-09-26T11:01:46.046574+00:00",
+  "adapter": {
+    "path": "/home/danijel/Desktop/Loom/.cache/weaverprocedura/adapters/qwen3.5-4b-loom-v2",
+    "base_model_id": "Qwen/Qwen3.5-4B",
+    "base_model_revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+    "dataset_version": "loom-agent-v2",
+    "adapter_config_sha256": "2653bad5417593141adda5f1bcd02fe54b1da5d7c8f986d23273450366771ccb",
+    "adapter_weights_sha256": "17ba04d7eb81c3deefcd5658a2331f189386d25b3262ca7237adbf7634556cb2",
+    "training_metrics_sha256": "b7186280e0bab69d193d8e14005add201d9e966549f51ff01d16a6e4361ef9d5",
+    "system_prompt_sha256": "82eaeaf0c0cedbbc49e392179953a7fb4907787b9e7c6608032857b8274e5d7b",
+    "model_runtime_sha256": "72d675f2150119c2d3e5bff18f33958d2d59b0b478549c50707972cff2a3f76f",
+    "agent_protocol_sha256": "c46c32bce75f2794995c10f4e066153c8db5adb2f4583c38fbc1bf6c39d1e70b",
+    "tool_schema_sha256": "bd71eb37a11230a401f619f7d256cca1dedb490e894a5bee4483dd8b353e09d1",
+    "benchmark_runner_sha256": "6c5bbd22b3844c9ec5e8e19bbe10d12785df9e5d56b13f5cf9ef0b73c27304af"
+  },
+  "vocabulary_sha256": "e20d12554e168f66732b2d4c931e21e940d1b5f0c8a48d34a0ca7ec522dc33bf",
+  "test_cases_sha256": "98f4e21f5523bc2b85ffde4e17a6de9f1c1840392f07415379361ffdb83b9cc5",
+  "full_suite_cases": 40,
+  "retrieval_index": {
+    "source_files": 518,
+    "chunks": 2533,
+    "source_sha256": "0ea6f659517d18a3da1505ec2e3b8cc4a56b7c652c9a774b094f484eafbf1227",
+    "git_revision": "4db582a290e4fa3f78529f385c4ec6bb0a70b515"
+  },
+  "cases": 40,
+  "case_passes": 13,
+  "case_accuracy": 0.325,
+  "fact_groups_passed": 55,
+  "fact_groups_total": 117,
+  "fact_coverage": 0.4700854700854701,
+  "forbidden_claim_groups": 7,
+  "forbidden_claim_hits": 4,
+  "unexpected_actions": 0,
+  "mean_latency_seconds": 2.415453546376375,
+  "p95_latency_seconds": 3.1992604009865317,
+  "by_concept": {
+    "graph": {
+      "status": "implemented",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "node": {
+      "status": "implemented",
+      "passed": 2,
+      "total": 2,
+      "languages": {
+        "hr": true,
+        "en": true
+      }
+    },
+    "link": {
+      "status": "implemented",
+      "passed": 1,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": true
+      }
+    },
+    "curve": {
+      "status": "implemented",
+      "passed": 2,
+      "total": 2,
+      "languages": {
+        "hr": true,
+        "en": true
+      }
+    },
+    "control_point": {
+      "status": "implemented",
+      "passed": 2,
+      "total": 2,
+      "languages": {
+        "hr": true,
+        "en": true
+      }
+    },
+    "open_path": {
+      "status": "implemented",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "closed_path": {
+      "status": "implemented",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "profile": {
+      "status": "implemented",
+      "passed": 2,
+      "total": 2,
+      "languages": {
+        "hr": true,
+        "en": true
+      }
+    },
+    "rectangle_profile": {
+      "status": "implemented",
+      "passed": 1,
+      "total": 2,
+      "languages": {
+        "hr": true,
+        "en": false
+      }
+    },
+    "sweep": {
+      "status": "implemented",
+      "passed": 1,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": true
+      }
+    },
+    "sample_spacing": {
+      "status": "implemented",
+      "passed": 1,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": true
+      }
+    },
+    "end_caps": {
+      "status": "implemented",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "mesh_output": {
+      "status": "implemented",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "seed": {
+      "status": "stored_not_evaluated",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "road_preview": {
+      "status": "composed_preview_only",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "street_network": {
+      "status": "reserved_not_exposed",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "building_generator": {
+      "status": "reserved_not_exposed",
+      "passed": 1,
+      "total": 2,
+      "languages": {
+        "hr": true,
+        "en": false
+      }
+    },
+    "rope_generator": {
+      "status": "reserved_not_exposed",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "chain_generator": {
+      "status": "reserved_not_exposed",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    },
+    "smooth_spline": {
+      "status": "reserved_not_exposed",
+      "passed": 0,
+      "total": 2,
+      "languages": {
+        "hr": false,
+        "en": false
+      }
+    }
+  },
+  "notes": [
+    "Live retrieval-grounded vocabulary QA only; not a scene action benchmark or mesh quality benchmark.",
+    "This is the v2 baseline captured before current-scene-context and UX changes.",
+    "13 of 40 cases passed; 55 of 117 fact groups passed; 4 forbidden-claim hits."
+  ]
+}

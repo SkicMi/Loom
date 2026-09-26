@@ -114,7 +114,9 @@ public:
 
     void prim(const Stage& stage, const Entity& entity, int depth){
         const char* type = entity.camera ? "Camera" : entity.points ? "Points"
-                         : entity.mesh ? (entity.mesh->shape == Shape::Cube ? "Cube" : "Mesh") : "Xform";
+                         : entity.mesh ? (entity.mesh->shape == Shape::Cube ? "Cube"
+                            : entity.mesh->shape == Shape::Sphere ? "Sphere"
+                            : entity.mesh->shape == Shape::Capsule ? "Capsule" : "Mesh") : "Xform";
         indent(depth); out << "def " << type << ' '; string(entity.name); out << "\n";
         indent(depth); out << "{\n";
         const int in = depth + 1;
@@ -166,6 +168,16 @@ public:
             const Mesh& mesh = *entity.mesh;
             if(mesh.shape == Shape::Cube){
                 indent(in); out << "double size = 1\n";
+            }else if(mesh.shape == Shape::Sphere){
+                indent(in); out << "float radius = 0.5\n";
+            }else if(mesh.shape == Shape::Capsule){
+                indent(in); out << "float radius = 0.5\n";
+                indent(in); out << "float height = 1\n";
+            }else if(mesh.shape == Shape::Pyramid){
+                indent(in); out << "int[] faceVertexCounts = [4, 3, 3, 3, 3]\n";
+                indent(in); out << "int[] faceVertexIndices = [0, 3, 2, 1, 1, 0, 4, 2, 1, 4, 3, 2, 4, 0, 3, 4]\n";
+                indent(in); out << "point3f[] points = [(-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, -0.5, 0.5), (-0.5, -0.5, 0.5), (0, 0.5, 0)]\n";
+                indent(in); out << "custom token loom:shape = \"pyramid\"\n";
             }else{
                 indent(in); out << "int[] faceVertexCounts = [4]\n";
                 indent(in); out << "int[] faceVertexIndices = [0, 3, 2, 1]\n";
@@ -458,9 +470,13 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
         }
         entity.points = std::move(points);
     }
-    if(prim.type == "Cube" || (prim.type == "Mesh" && textOf(prim, "loom:shape") == "plane")){
+    const std::string primitiveToken = textOf(prim, "loom:shape");
+    const bool isPrimitive = prim.type == "Cube" || prim.type == "Sphere" || prim.type == "Capsule" ||
+        (prim.type == "Mesh" && (primitiveToken == "plane" || primitiveToken == "pyramid"));
+    if(isPrimitive){
         Mesh mesh;
-        mesh.shape = prim.type == "Cube" ? Shape::Cube : Shape::Plane;
+        mesh.shape = prim.type == "Cube" ? Shape::Cube : prim.type == "Sphere" ? Shape::Sphere :
+                     prim.type == "Capsule" ? Shape::Capsule : primitiveToken == "pyramid" ? Shape::Pyramid : Shape::Plane;
         if(const usda::Attribute* c = prim.find("primvars:displayColor")){
             if(!c->value.items.empty()) mesh.colour = asVector(c->value.items[0], mesh.colour);
         }

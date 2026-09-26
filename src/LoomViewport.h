@@ -20,6 +20,7 @@
 // pada na isti piksel na kojem bi pala u snimci
 //=============================================================================================
 #include "LoomProgress.h"
+#include "LoomGeometry.h"
 
 #include <Treadle/Draw.h>
 #include <Warp/Stage.h>
@@ -30,6 +31,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <functional>
+#include <limits>
 #include <vector>
 
 namespace Loom{
@@ -342,9 +346,22 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
                 quads.push_back({glm::vec3(world * glm::vec4(c[side[0]], 1.0f)), glm::vec3(world * glm::vec4(c[side[1]], 1.0f)),
                                  glm::vec3(world * glm::vec4(c[side[2]], 1.0f)), glm::vec3(world * glm::vec4(c[side[3]], 1.0f))});
             }
-        }else{
+        }else if(entity.mesh->shape == Warp::Shape::Plane){
             quads.push_back({glm::vec3(world * glm::vec4(-0.5f, 0.0f, -0.5f, 1.0f)), glm::vec3(world * glm::vec4(0.5f, 0.0f, -0.5f, 1.0f)),
                              glm::vec3(world * glm::vec4(0.5f, 0.0f, 0.5f, 1.0f)), glm::vec3(world * glm::vec4(-0.5f, 0.0f, 0.5f, 1.0f))});
+        }else{
+            const Spool::GltfPrimitive primitive = unitShape(entity.mesh->shape);
+            auto point = [&](uint32_t index){
+                const size_t offset = size_t(index) * 3;
+                return glm::vec3(world * glm::vec4(primitive.positions[offset], primitive.positions[offset + 1],
+                                                   primitive.positions[offset + 2], 1.0f));
+            };
+            for(size_t i = 0; i + 2 < primitive.indices.size(); i += 3){
+                const glm::vec3 a = point(primitive.indices[i]);
+                const glm::vec3 b = point(primitive.indices[i + 1]);
+                const glm::vec3 c = point(primitive.indices[i + 2]);
+                quads.push_back({a, b, c, c});
+            }
         }
         for(const auto& quad : quads){
             Face face;
@@ -358,10 +375,11 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
             for(int k = 0; k < 4; ++k) edges.push_back({quad[k], quad[(k + 1) % 4], isSelected});
             if(!visible) continue;
             //Samo stranice okrenute kameri; ravnina se vidi s obje strane
-            const glm::vec3 normal = glm::normalize(glm::cross(quad[1] - quad[0], quad[3] - quad[0]));
+            const glm::vec3 third = glm::dot(quad[3] - quad[0], quad[3] - quad[0]) < 1e-10f ? quad[2] : quad[3];
+            const glm::vec3 normal = glm::normalize(glm::cross(quad[1] - quad[0], third - quad[0]));
             const glm::vec3 centre = (quad[0] + quad[1] + quad[2] + quad[3]) * 0.25f;
             const bool facing = glm::dot(normal, camera.eye - centre) > 0.0f;
-            if(entity.mesh->shape == Warp::Shape::Cube && !facing) continue;
+            if(entity.mesh->shape != Warp::Shape::Plane && !facing) continue;
             if(state.gpuMeshes) continue;           //plohu crta kartica, ovdje samo bridovi
             const float shade = 0.45f + 0.55f * std::fabs(glm::dot(normal, light));
             face.depth = depthSum * 0.25f;
@@ -420,18 +438,167 @@ inline bool surfaceAt(const Warp::Stage& stage, double frame, const ViewCamera& 
     return true;
 }
 
-//Entitet pod misem: kamera po vrhu piramide, tijelo po sredistu. Najblizi unutar 16 piksela
-inline Warp::Id pickEntity(const Warp::Stage& stage, double frame, const ViewCamera& camera, glm::vec2 mouse){
-    Warp::Id best = Warp::None;
-    float bestDistance = 16.0f;
+namespace viewport{
+
+//Povrsina trokuta na ekranu i dubina najblize tocke. Rubovi dobivaju mali hit-target kako
+//odabir ne bi trazio piksel-precizno ciljanje tanke siluete.
+inline float triangleHitDistance(glm::vec2 p, const glm::vec2 (&v)[3], const float (&z)[3], float& hitDepth){
+    const glm::vec2 a = v[1] - v[0], b = v[2] - v[0], q = p - v[0];
+    const float determinant = a.x * b.y - a.y * b.x;
+    if(std::fabs(determinant) > 1e-5f){
+        const float u = (q.x * b.y - q.y * b.x) / determinant;
+        const float w = (a.x * q.y - a.y * q.x) / determinant;
+        if(u >= 0.0f && w >= 0.0f && u + w <= 1.0f){
+            hitDepth = z[0] * (1.0f - u - w) + z[1] * u + z[2] * w;
+            return 0.0f;
+        }
+    }
+
+    float best = std::numeric_limits<float>::max();
+    for(int edge = 0; edge < 3; ++edge){
+        const int next = (edge + 1) % 3;
+        const glm::vec2 d = v[next] - v[edge];
+        const float lengthSquared = glm::dot(d, d);
+        const float t = lengthSquared > 1e-6f
+            ? std::clamp(glm::dot(p - v[edge], d) / lengthSquared, 0.0f, 1.0f) : 0.0f;
+        const float distance = glm::length(p - (v[edge] + d * t));
+        if(distance < best){ best = distance; hitDepth = z[edge] + (z[next] - z[edge]) * t; }
+    }
+    return best;
+}
+
+template<class VisitPrimitive>
+inline bool projectedGeometryHit(const ViewCamera& camera, glm::vec2 mouse, const glm::mat4& world,
+                                 VisitPrimitive&& visit, float& outDistance, float& outDepth){
+    constexpr float hitSlop = 9.0f;
+    bool hit = false;
+    outDistance = std::numeric_limits<float>::max();
+    outDepth = std::numeric_limits<float>::max();
+    visit([&](const Spool::GltfPrimitive& primitive){
+        const size_t vertexCount = primitive.vertexCount();
+        std::vector<glm::vec2> pixels(vertexCount);
+        std::vector<float> depths(vertexCount);
+        std::vector<uint8_t> visible(vertexCount, 0);
+        float left = std::numeric_limits<float>::max(), top = left;
+        float right = -left, bottom = -left;
+        for(size_t index = 0; index < vertexCount; ++index){
+            const size_t offset = index * 3;
+            const glm::vec3 local(primitive.positions[offset], primitive.positions[offset + 1], primitive.positions[offset + 2]);
+            if(!project(camera, glm::vec3(world * glm::vec4(local, 1.0f)), pixels[index], &depths[index])) continue;
+            visible[index] = 1;
+            left = std::min(left, pixels[index].x); right = std::max(right, pixels[index].x);
+            top = std::min(top, pixels[index].y); bottom = std::max(bottom, pixels[index].y);
+        }
+        if(left > right || mouse.x < left - hitSlop || mouse.x > right + hitSlop ||
+           mouse.y < top - hitSlop || mouse.y > bottom + hitSlop) return;
+
+        const size_t count = primitive.indices.empty() ? primitive.vertexCount() : primitive.indices.size();
+        for(size_t i = 0; i + 2 < count; i += 3){
+            glm::vec2 trianglePixels[3];
+            float triangleDepths[3];
+            bool triangleVisible = true;
+            for(size_t k = 0; k < 3; ++k){
+                const size_t index = primitive.indices.empty() ? i + k : primitive.indices[i + k];
+                if(index >= vertexCount || !visible[index]){ triangleVisible = false; break; }
+                trianglePixels[k] = pixels[index];
+                triangleDepths[k] = depths[index];
+            }
+            if(!triangleVisible) continue;
+            float depth = 0.0f;
+            const float distance = triangleHitDistance(mouse, trianglePixels, triangleDepths, depth);
+            if(distance > hitSlop) continue;
+            //Pogodi li se ploha, dubina odabire prednji objekt. Kod ruba prvo vrijedi blizina
+            //na ekranu, pa dubina - ne preskacemo tanku siluetu zbog povrsine iza nje.
+            if(distance < outDistance - 0.5f ||
+               (std::fabs(distance - outDistance) <= 0.5f && depth < outDepth)){
+                outDistance = distance;
+                outDepth = depth;
+                hit = true;
+            }
+        }
+    });
+    return hit;
+}
+
+inline const Spool::GltfPrimitive& pickUnitShape(Warp::Shape shape){
+    static const Spool::GltfPrimitive cube = unitShape(Warp::Shape::Cube);
+    static const Spool::GltfPrimitive plane = unitShape(Warp::Shape::Plane);
+    static const Spool::GltfPrimitive sphere = unitShape(Warp::Shape::Sphere);
+    static const Spool::GltfPrimitive pyramid = unitShape(Warp::Shape::Pyramid);
+    static const Spool::GltfPrimitive capsule = unitShape(Warp::Shape::Capsule);
+    switch(shape){
+        case Warp::Shape::Cube: return cube;
+        case Warp::Shape::Plane: return plane;
+        case Warp::Shape::Sphere: return sphere;
+        case Warp::Shape::Pyramid: return pyramid;
+        case Warp::Shape::Capsule: return capsule;
+    }
+    return cube;
+}
+
+} // namespace viewport
+
+//Odabir koristi vidljive povrsine umjesto samo sredista. Jednostavan callback daje pristup
+//CPU geometriji ucitanih glTF modela bez povezivanja viewporta s rendererom.
+inline Warp::Id pickEntity(const Warp::Stage& stage, double frame, const ViewCamera& camera, glm::vec2 mouse,
+                           const std::function<const Spool::GltfScene*(const std::string&)>& modelScene = {}){
+    if(!camera.rect.contains(mouse.x, mouse.y)) return Warp::None;
+    struct Candidate{ Warp::Id id = Warp::None; float distance = 0.0f; float depth = 0.0f; };
+    Candidate bestSurface, bestFallback;
+    constexpr float centreHitRadius = 14.0f;
     stage.walk([&](const Warp::Entity& entity, int){
         if(!entity.visible || (!entity.camera && !entity.mesh && !entity.joint && !entity.model)) return;
+        const glm::mat4 world = stage.worldMatrix(entity.id, frame);
+        float distance = std::numeric_limits<float>::max(), depth = 0.0f;
+        bool surface = false;
+
+        if(entity.mesh){
+            const Spool::GltfPrimitive& primitive = viewport::pickUnitShape(entity.mesh->shape);
+            surface = viewport::projectedGeometryHit(camera, mouse, world,
+                [&](auto&& use){ use(primitive); }, distance, depth);
+        }else if(entity.model && modelScene){
+            if(const Spool::GltfScene* scene = modelScene(entity.model->path);
+               scene && entity.model->mesh >= 0 && size_t(entity.model->mesh) < scene->meshes.size()){
+                const Spool::GltfMesh& mesh = scene->meshes[size_t(entity.model->mesh)];
+                surface = viewport::projectedGeometryHit(camera, mouse, world,
+                    [&](auto&& use){ for(const Spool::GltfPrimitive& primitive : mesh.primitives) use(primitive); }, distance, depth);
+            }
+        }
+
+        if(surface){
+            if(bestSurface.id == Warp::None || distance < bestSurface.distance - 0.5f ||
+               (std::fabs(distance - bestSurface.distance) <= 0.5f && depth < bestSurface.depth)){
+                bestSurface = {entity.id, distance, depth};
+            }
+            return;
+        }
+
         glm::vec2 pixel;
-        if(!project(camera, glm::vec3(stage.worldMatrix(entity.id, frame)[3]), pixel)) return;
-        const float distance = glm::length(pixel - mouse);
-        if(distance < bestDistance){ bestDistance = distance; best = entity.id; }
+        float centreDepth = 0.0f;
+        if(!project(camera, glm::vec3(world[3]), pixel, &centreDepth)) return;
+        float fallbackDistance = glm::length(pixel - mouse);
+        if(entity.joint){
+            const Warp::Entity* parent = stage.get(entity.parent);
+            if(parent && parent->joint){
+                glm::vec2 from, to;
+                if(project(camera, glm::vec3(stage.worldMatrix(parent->id, frame)[3]), from) &&
+                   project(camera, glm::vec3(world[3]), to)){
+                    const glm::vec2 d = to - from;
+                    const float lengthSquared = glm::dot(d, d);
+                    const float t = lengthSquared > 1e-5f ? std::clamp(glm::dot(mouse - from, d) / lengthSquared, 0.0f, 1.0f) : 0.0f;
+                    fallbackDistance = std::min(fallbackDistance, glm::length(mouse - (from + d * t)));
+                }
+            }
+        }
+        //Dok se glTF ucitava, omoguci odabir po sidru; kamera nema plohu nego vidljivu oznaku.
+        if(fallbackDistance <= centreHitRadius &&
+           (bestFallback.id == Warp::None || fallbackDistance < bestFallback.distance ||
+            (fallbackDistance == bestFallback.distance && centreDepth < bestFallback.depth))){
+            bestFallback = {entity.id, fallbackDistance, centreDepth};
+        }
     });
-    return best;
+    if(bestSurface.id != Warp::None) return bestSurface.id;
+    return bestFallback.id;
 }
 
 //=============================================================================================
@@ -444,13 +611,16 @@ inline Warp::Id pickEntity(const Warp::Stage& stage, double frame, const ViewCam
 //=============================================================================================
 struct Gizmo{
     glm::vec3 origin{0.0f};
-    float length = 1.0f;            //u svijetu, tako da na ekranu bude 90 px
+    glm::mat3 basis{1.0f};         //lokalne osi pretvorene u svjetske; identitet je World
+    float length = 1.0f;           //u svijetu, tako da na ekranu bude 90 px
     bool visible = false;
 };
 
-inline Gizmo gizmoFor(const ViewCamera& camera, const glm::vec3& origin){
+inline Gizmo gizmoFor(const ViewCamera& camera, const glm::vec3& origin,
+                      const glm::quat& orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f)){
     Gizmo gizmo;
     gizmo.origin = origin;
+    gizmo.basis = glm::mat3_cast(glm::normalize(orientation));
     glm::vec2 pixel;
     float depth = 0.0f;
     if(!project(camera, origin, pixel, &depth)) return gizmo;
@@ -463,6 +633,10 @@ inline glm::vec3 gizmoAxis(int axis){
     return axis == 0 ? glm::vec3(1, 0, 0) : axis == 1 ? glm::vec3(0, 1, 0) : glm::vec3(0, 0, 1);
 }
 
+inline glm::vec3 gizmoAxis(const Gizmo& gizmo, int axis){
+    return glm::normalize(gizmo.basis[std::clamp(axis, 0, 2)]);
+}
+
 //Os pod misem, -1 kad nijedna. Udaljenost od duzine na ekranu, do 8 px
 inline int gizmoAxisAt(const ViewCamera& camera, const Gizmo& gizmo, glm::vec2 mouse){
     if(!gizmo.visible) return -1;
@@ -472,7 +646,7 @@ inline int gizmoAxisAt(const ViewCamera& camera, const Gizmo& gizmo, glm::vec2 m
     float bestDistance = 8.0f;
     for(int axis = 0; axis < 3; ++axis){
         glm::vec2 tip;
-        if(!project(camera, gizmo.origin + gizmoAxis(axis) * gizmo.length, tip)) continue;
+        if(!project(camera, gizmo.origin + gizmoAxis(gizmo, axis) * gizmo.length, tip)) continue;
         const glm::vec2 d = tip - origin;
         const float lengthSquared = glm::dot(d, d);
         if(lengthSquared < 1.0f) continue;          //os gleda ravno u kameru: ne da se vuci
@@ -487,7 +661,7 @@ inline int gizmoAxisAt(const ViewCamera& camera, const Gizmo& gizmo, glm::vec2 m
 inline float gizmoDrag(const ViewCamera& camera, const Gizmo& gizmo, int axis, glm::vec2 mouseDelta){
     glm::vec2 origin, tip;
     if(axis < 0 || !project(camera, gizmo.origin, origin) ||
-       !project(camera, gizmo.origin + gizmoAxis(axis) * gizmo.length, tip)) return 0.0f;
+       !project(camera, gizmo.origin + gizmoAxis(gizmo, axis) * gizmo.length, tip)) return 0.0f;
     const glm::vec2 d = tip - origin;
     const float lengthSquared = glm::dot(d, d);
     if(lengthSquared < 1.0f) return 0.0f;
@@ -499,7 +673,7 @@ inline void paintGizmo(Treadle::DrawList& list, const ViewCamera& camera, const 
     const Treadle::Color colours[3] = {{1.0f, 0.16f, 0.28f, 1.0f}, {0.18f, 1.0f, 0.42f, 1.0f}, {0.24f, 0.52f, 1.0f, 1.0f}};
     for(int axis = 0; axis < 3; ++axis){
         const Treadle::Color colour = axis == hotAxis ? Treadle::Color{1.0f, 1.0f, 0.6f, 1.0f} : colours[axis];
-        const glm::vec3 tip = gizmo.origin + gizmoAxis(axis) * gizmo.length;
+        const glm::vec3 tip = gizmo.origin + gizmoAxis(gizmo, axis) * gizmo.length;
         Treadle::Color glow{colour.r, colour.g, colour.b, 0.22f};
         segment(list, camera, gizmo.origin, tip, axis == hotAxis ? 9.0f : 7.0f, glow);
         segment(list, camera, gizmo.origin, tip, axis == hotAxis ? 3.5f : 2.5f, colour);
@@ -538,7 +712,7 @@ inline Ray rayThrough(const ViewCamera& camera, glm::vec2 pixel){
 
 //Tocke kruga oko osi, polumjera iz gizma (90 px na ekranu kad je okomit na pogled)
 inline glm::vec3 ringPoint(const Gizmo& gizmo, int axis, float angle){
-    const glm::vec3 a = gizmoAxis((axis + 1) % 3), b = gizmoAxis((axis + 2) % 3);
+    const glm::vec3 a = gizmoAxis(gizmo, (axis + 1) % 3), b = gizmoAxis(gizmo, (axis + 2) % 3);
     return gizmo.origin + (a * std::cos(angle) + b * std::sin(angle)) * gizmo.length;
 }
 
@@ -571,7 +745,7 @@ inline int ringAxisAt(const ViewCamera& camera, const Gizmo& gizmo, glm::vec2 mo
 //Za koliko radijana se okrenuti oko osi kad mis ode iz from u to. Desno pravilo oko +osi
 inline float ringDrag(const ViewCamera& camera, const Gizmo& gizmo, int axis, glm::vec2 from, glm::vec2 to){
     if(axis < 0 || !gizmo.visible) return 0.0f;
-    const glm::vec3 normal = gizmoAxis(axis);
+    const glm::vec3 normal = gizmoAxis(gizmo, axis);
     const Ray a = rayThrough(camera, from), b = rayThrough(camera, to);
     const float facingA = glm::dot(a.direction, normal), facingB = glm::dot(b.direction, normal);
     if(std::fabs(facingA) > 0.08f && std::fabs(facingB) > 0.08f){

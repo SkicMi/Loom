@@ -34,6 +34,9 @@ void Ui::begin(const Input& newInput, float width, float height){
     ++frameNumber;
     fieldClaimedPress = false;
     fieldSeen = false;
+    modalActive = false;
+    modalContentActive = false;
+    modalDismissedValue = false;
 
     bool anyPress = false;
     for(uint32_t button = 0; button < uint32_t(MouseButton::Count); ++button){
@@ -63,6 +66,10 @@ void Ui::begin(const Input& newInput, float width, float height){
     pointerOverUi = false;
     lastRowRightPressed = false;
     lastRowHoveredValue = false;
+    tooltipCandidateId = 0;
+    tooltipCandidateText.clear();
+    tooltipCandidateShortcut.clear();
+    tooltipCandidateActive = false;
 
     //OTVOREN IZBORNIK UZIMA KLIK prije svih widgeta ovog kadra. Klik u njemu ide samo njegovim
     //stavkama; klik pokraj njega ga zatvori i nestane - ne smije usput kliknuti ono ispod
@@ -91,6 +98,52 @@ void Ui::end(){
     if(focusedField && ((pressed[uint32_t(MouseButton::Left)] && !fieldClaimedPress) || !fieldSeen)){
         focusedField = 0;
         selectingWithMouse = false;
+    }
+
+    const bool mouseDown = input.down[uint32_t(MouseButton::Left)] ||
+                           input.down[uint32_t(MouseButton::Right)] ||
+                           input.down[uint32_t(MouseButton::Middle)];
+    if(!tooltipCandidateActive || mouseDown){
+        tooltipHoverId = 0;
+    }else if(tooltipHoverId != tooltipCandidateId){
+        tooltipHoverId = tooltipCandidateId;
+        tooltipHoverSince = input.timeSeconds;
+    }else if(input.timeSeconds - tooltipHoverSince >= 0.45f){
+        const float scale = std::clamp(theme.textScale * 0.76f, 1.7f, 2.4f);
+        const float padding = 9.0f;
+        const float shortcutScale = scale * 0.78f;
+        const float shortcutWidth = tooltipCandidateShortcut.empty() ? 0.0f
+            : textWidth(tooltipCandidateShortcut, shortcutScale) + 12.0f;
+        const float maxWidth = std::max(100.0f, std::min(420.0f, screenWidth - 16.0f));
+        const float textRoom = std::max(48.0f, maxWidth - padding * 2.0f - shortcutWidth -
+                                                 (shortcutWidth > 0.0f ? 8.0f : 0.0f));
+        const std::string label = fitText(tooltipCandidateText, textRoom, scale);
+        const float labelWidth = textWidth(label, scale);
+        const float width = std::min(maxWidth, padding * 2.0f + labelWidth + shortcutWidth +
+                                                 (shortcutWidth > 0.0f ? 8.0f : 0.0f));
+        const float height = textHeight(scale) + padding * 1.5f;
+        float x = input.mouseX + 16.0f;
+        float y = input.mouseY + 20.0f;
+        if(x + width > screenWidth - 8.0f) x = input.mouseX - width - 14.0f;
+        if(y + height > screenHeight - 8.0f) y = input.mouseY - height - 14.0f;
+        x = std::clamp(x, 8.0f, std::max(8.0f, screenWidth - width - 8.0f));
+        y = std::clamp(y, 8.0f, std::max(8.0f, screenHeight - height - 8.0f));
+
+        const Rect box{x, y, width, height};
+        overlay.rect(box, Color{theme.panel.r * 0.82f, theme.panel.g * 0.82f,
+                                theme.panel.b * 0.82f, 0.99f});
+        overlay.outline(box, 1.0f, theme.accent);
+        overlay.text(x + padding, y + (height - textHeight(scale)) * 0.5f,
+                     label, theme.title, scale);
+        if(shortcutWidth > 0.0f){
+            const float keyX = x + width - padding - shortcutWidth;
+            const Rect key{keyX, y + 4.0f, shortcutWidth, height - 8.0f};
+            overlay.rect(key, Color{theme.active.r, theme.active.g, theme.active.b, 0.12f});
+            overlay.outline(key, 0.8f, Color{theme.active.r, theme.active.g, theme.active.b, 0.50f});
+            overlay.text(key.x + (key.width - textWidth(tooltipCandidateShortcut, shortcutScale)) * 0.5f,
+                         key.y + (key.height - textHeight(shortcutScale)) * 0.5f,
+                         tooltipCandidateShortcut, theme.active, shortcutScale);
+        }
     }
 
     //Izbornik ide na kraj: crtac crta redom, pa je zadnje nacrtano na vrhu
@@ -232,7 +285,8 @@ Ui::Row Ui::nextRow(float height){
         row.visible = row.box.y >= contentTop - 0.5f &&
                       row.box.y + height <= panelBox.y + panelBox.height - theme.padding * 0.5f + 0.5f;
     }
-    row.hot = row.visible && row.box.contains(input.mouseX, input.mouseY);
+    row.hot = row.visible && modalAllows(row.box) && row.box.contains(input.mouseX, input.mouseY);
+    if(row.hot) tooltipCandidateActive = false;
     lastRowRightPressed = row.hot && pressed[uint32_t(MouseButton::Right)];
     lastRowHoveredValue = row.hot;
     lastRowBox = row.box;
@@ -267,9 +321,13 @@ void Ui::separator(){
 }
 
 bool Ui::button(const std::string& text){
+    return button(text, text);
+}
+
+bool Ui::button(const std::string& idText, const std::string& text){
     const Row row = nextRow(theme.rowHeight);
     if(!row.visible) return false;
-    const uint64_t id = idFor(text);
+    const uint64_t id = idFor(idText);
 
     const bool held = activeId == id;
     if(row.hot && pressed[uint32_t(MouseButton::Left)]) activeId = id;
@@ -992,7 +1050,7 @@ bool Ui::menuItem(const std::string& text, bool enabled){
     if(!inMenu) return false;
     const Rect box{menuBuilding.x + 2.0f, cursorY, menuBuilding.width - 4.0f, theme.rowHeight};
     cursorY += theme.rowHeight;
-    const bool hot = enabled && box.contains(input.mouseX, input.mouseY);
+    const bool hot = enabled && modalAllows(box) && box.contains(input.mouseX, input.mouseY);
     if(hot) list.rect(box, theme.hot);
     drawLabelIn(box, text, enabled ? theme.text : theme.dim);
     menuWidestText = std::max(menuWidestText, textWidth(text, theme.textScale));
@@ -1202,7 +1260,8 @@ Ui::Region Ui::region(const std::string& id, const Rect& box){
     region.box = box;
     region.mouseX = input.mouseX;
     region.mouseY = input.mouseY;
-    region.hot = box.contains(input.mouseX, input.mouseY);
+    region.hot = modalAllows(box) && box.contains(input.mouseX, input.mouseY);
+    if(region.hot) tooltipCandidateActive = false;
     const uint64_t rid = idFor("region:" + id);
     if(region.hot && pressed[uint32_t(MouseButton::Left)]){
         activeId = rid;
@@ -1211,12 +1270,22 @@ Ui::Region Ui::region(const std::string& id, const Rect& box){
     region.held = activeId == rid && input.down[uint32_t(MouseButton::Left)];
     region.rightPressed = region.hot && pressed[uint32_t(MouseButton::Right)];
     region.wheel = region.hot ? input.wheel : 0.0f;
+    lastRowHoveredValue = region.hot;
+    lastRowBox = box;
     if(region.hot || region.held) pointerOverUi = true;
     return region;
 }
 
+void Ui::tooltip(const std::string& id, const std::string& text, const std::string& shortcut){
+    if(text.empty() || !lastRowHoveredValue || !modalAllows(lastRowBox)) return;
+    tooltipCandidateId = idFor("tooltip:" + id);
+    tooltipCandidateText = text;
+    tooltipCandidateShortcut = shortcut;
+    tooltipCandidateActive = true;
+}
+
 bool Ui::dragField(uint64_t id, const Rect& box, float* target, float speed){
-    const bool hot = box.contains(input.mouseX, input.mouseY);
+    const bool hot = modalAllows(box) && box.contains(input.mouseX, input.mouseY);
     if(hot && pressed[uint32_t(MouseButton::Left)]){
         activeId = id;
         dragLastX = input.mouseX;
@@ -1375,6 +1444,39 @@ void Ui::focusTextField(const std::string& id){
     pendingFocus = id;
 }
 
+void Ui::blurTextField(){
+    focusedField = 0;
+    pendingFocus.clear();
+    selectingWithMouse = false;
+}
+
+void Ui::blockBehindModal(const Rect& box){
+    modalActive = true;
+    modalContentActive = false;
+    modalBox = box;
+    modalDismissedValue = false;
+    activeId = 0;
+    pointerOverUi = true;
+    const bool inside = box.contains(input.mouseX, input.mouseY);
+    if(inside) return;
+    if(pressed[uint32_t(MouseButton::Left)] || pressed[uint32_t(MouseButton::Right)] ||
+       pressed[uint32_t(MouseButton::Middle)]) modalDismissedValue = true;
+    for(uint32_t button = 0; button < uint32_t(MouseButton::Count); ++button){
+        pressed[button] = false;
+        menuPressed[button] = false;
+    }
+}
+
+void Ui::beginModalContent(){
+    if(modalActive) modalContentActive = true;
+}
+
+bool Ui::modalAllows(const Rect& box) const{
+    if(!modalActive) return true;
+    return modalContentActive && modalBox.contains(input.mouseX, input.mouseY) &&
+           modalBox.contains(box.x, box.y) && modalBox.contains(box.x + box.width, box.y + box.height);
+}
+
 Ui::TextFieldResult Ui::textField(const std::string& id, std::string* text, const TextFieldConfig& config){
     TextFieldResult result;
     if(!text) return result;
@@ -1397,7 +1499,15 @@ Ui::TextFieldResult Ui::textField(const std::string& id, std::string* text, cons
         return result;
     }
 
-    const Rect box = row.box;
+    Rect box = row.box;
+    if(!config.label.empty()){
+        const float labelWidth = std::clamp(box.width * config.labelFraction, 64.0f, box.width * 0.55f);
+        list.text(box.x, box.y + (box.height - textHeight(theme.textScale)) * 0.5f,
+                  fitText(config.label, labelWidth - 6.0f, theme.textScale), theme.dim, theme.textScale);
+        box.x += labelWidth;
+        box.width -= labelWidth;
+    }
+    const bool modalHit = modalAllows(box);
     const float innerX = box.x + theme.padding * 0.7f;
     const float innerY = box.y + theme.padding * 0.5f;
     const float innerWidth = std::max(10.0f, box.width - theme.padding * 1.4f);
@@ -1410,7 +1520,7 @@ Ui::TextFieldResult Ui::textField(const std::string& id, std::string* text, cons
     };
 
     //-- mis: fokus, kursor, odabir vucenjem ----------------------------------------------------
-    if(row.hot && pressed[uint32_t(MouseButton::Left)]){
+    if(row.hot && modalHit && pressed[uint32_t(MouseButton::Left)]){
         if(focusedField != fieldId){ scrollLine = 0; }
         focusedField = fieldId;
         fieldClaimedPress = true;
@@ -1419,7 +1529,7 @@ Ui::TextFieldResult Ui::textField(const std::string& id, std::string* text, cons
         selectingWithMouse = true;
         preferredX = -1.0f;
     }
-    const bool focused = focusedField == fieldId;
+    const bool focused = modalHit && focusedField == fieldId;
     if(focused){
         fieldSeen = true;
         if(caret == std::string::npos || caret > s.size()) caret = anchor = s.size();
@@ -1478,6 +1588,10 @@ Ui::TextFieldResult Ui::textField(const std::string& id, std::string* text, cons
                     if(!event.shift) anchor = caret;
                     break;
                 case Key::Up: case Key::Down:{
+                    if(config.arrowNavigates){
+                        result.navigation = event.key == Key::Up ? -1 : 1;
+                        break;
+                    }
                     if(preferredX < 0.0f) preferredX = textWidth(displayed(s, lines[line].start, caret), scale);
                     const int target = int(line) + (event.key == Key::Up ? -1 : 1);
                     if(target < 0) caret = 0;

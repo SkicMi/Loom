@@ -17,3 +17,6 @@ view*.png
 
 # Mape za gradnju s drugim postavkama (sanitizeri, release, tsan)
 build-*/
+
+# Generirani cache Unslotha (trening agenta)
+unsloth_compiled_cache/

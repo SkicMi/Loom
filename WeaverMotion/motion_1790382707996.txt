@@ -1,0 +1,15 @@
+# model	Kimodo-SOMA-RP-v1.1
+# target	2
+# first_heading_angle	0
+# root_margin	0.04
+# transition_frames	5
+# movement_preset	Walk
+# contact_settings	automatic
+# foot_contact_ik	on
+# kimodo_postprocess	on
+# root_path	external constraints
+# workflow	recipe + live
+# pose_keys	0
+# fast_path_override	off
+A person jump while pointing the gun	9
+# regenerated_from	/home/danijel/Desktop/Loom/WeaverMotion/motion_1790369311054/motion_1790369311054_00.bvh	82-200

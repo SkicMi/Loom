@@ -1,0 +1,246 @@
+{
+  "protocol": "loom-agent-actions",
+  "version": 1,
+  "actions": [
+    {
+      "name": "scene.list_entities",
+      "description": "Return the current live entity paths, names, types, visibility, and parent relationships. With no parent, list the full hierarchy; with a parent path, include that entity and its descendants.",
+      "arguments": {
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional exact parent path; null lists root entities."
+        }
+      },
+      "required": [],
+      "confirmation": false,
+      "readOnly": true
+    },
+    {
+      "name": "scene.create_primitive",
+      "description": "Create a Loom unit cube or XZ plane at the local origin or supplied local translation, optionally named, colored, and parented.",
+      "arguments": {
+        "primitive": {
+          "type": "string",
+          "enum": [
+            "cube",
+            "plane"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Optional entity name; Loom chooses Cube or Plane when omitted."
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Exact scene path, or null for root."
+        },
+        "translation": {
+          "type": "array",
+          "items": "finite number",
+          "length": 3
+        },
+        "color": {
+          "type": "array",
+          "items": "finite number from 0 to 1",
+          "length": 3,
+          "description": "Optional solid viewport RGB color."
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "confirmation": false
+    },
+    {
+      "name": "scene.set_transform",
+      "description": "Set one or more local transform channels at the current timeline frame.",
+      "arguments": {
+        "target": {
+          "type": "string",
+          "description": "Exact scene path or selected."
+        },
+        "translation": {
+          "type": "array",
+          "items": "finite number",
+          "length": 3
+        },
+        "rotation_degrees": {
+          "type": "array",
+          "items": "finite number",
+          "length": 3
+        },
+        "scale": {
+          "type": "array",
+          "items": "positive finite number",
+          "length": 3
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "confirmation": false
+    },
+    {
+      "name": "scene.rename",
+      "description": "Rename one scene entity while Loom keeps sibling names unique.",
+      "arguments": {
+        "target": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 80
+        }
+      },
+      "required": [
+        "target",
+        "name"
+      ],
+      "confirmation": false
+    },
+    {
+      "name": "scene.set_visibility",
+      "description": "Show or hide one scene entity.",
+      "arguments": {
+        "target": {
+          "type": "string"
+        },
+        "visible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target",
+        "visible"
+      ],
+      "confirmation": false
+    },
+    {
+      "name": "scene.delete",
+      "description": "Delete one entity and all of its children. The host must ask for confirmation first.",
+      "arguments": {
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "confirmation": true
+    },
+    {
+      "name": "timeline.set_playhead",
+      "description": "Move Loom's playhead to a frame within the project range.",
+      "arguments": {
+        "frame": {
+          "type": "number",
+          "finite": true
+        }
+      },
+      "required": [
+        "frame"
+      ],
+      "confirmation": false
+    },
+    {
+      "name": "viewport.frame_entity",
+      "description": "Move the viewport orbit camera to frame an exact scene path or the current selection.",
+      "arguments": {
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "confirmation": false
+    },
+    {
+      "name": "procedura.create_recipe",
+      "description": "Build and evaluate a typed WeaverProcedura graph, then show its generated mesh in the viewport. Supported generators are a triangulated grid surface with optional absolute point heights, and a hallway with rooms on both sides. The graph becomes the current editable Recipe in the Procedura panel; use Save Recipe there to export it.",
+      "arguments": {
+        "generator": {
+          "type": "string",
+          "enum": ["grid_surface", "interior_blockout"]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Optional Recipe name."
+        },
+        "width": {
+          "type": "number",
+          "description": "Grid width in meters; grid_surface only. Default 8."
+        },
+        "depth": {
+          "type": "number",
+          "description": "Grid depth in meters; grid_surface only. Default 8."
+        },
+        "cells_x": {
+          "type": "integer",
+          "description": "Grid cell count along X, 1–128; grid_surface only. Default 4."
+        },
+        "cells_z": {
+          "type": "integer",
+          "description": "Grid cell count along Z, 1–128; grid_surface only. Default 4."
+        },
+        "point_heights": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "Optional absolute Y heights for zero-based grid points. Coordinates must fit cells_x/cells_z.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "column": {"type": "integer", "minimum": 0},
+              "row": {"type": "integer", "minimum": 0},
+              "height": {"type": "number", "minimum": -10000, "maximum": 10000}
+            },
+            "required": ["column", "row", "height"],
+            "additionalProperties": false
+          }
+        },
+        "rooms_per_side": {
+          "type": "integer",
+          "description": "Room bays per side of the central corridor, 1–8; interior_blockout only. Default 2."
+        },
+        "room_width": {
+          "type": "number",
+          "description": "Room width in meters; interior_blockout only. Default 4."
+        },
+        "room_depth": {
+          "type": "number",
+          "description": "Room depth in meters; interior_blockout only. Default 4."
+        },
+        "corridor_width": {
+          "type": "number",
+          "description": "Central corridor width in meters; interior_blockout only. Default 2."
+        },
+        "wall_height": {
+          "type": "number",
+          "description": "Wall height in meters; interior_blockout only. Default 3."
+        },
+        "wall_thickness": {
+          "type": "number",
+          "description": "Wall thickness in meters; interior_blockout only. Default 0.15."
+        },
+        "floor_thickness": {
+          "type": "number",
+          "description": "Floor slab thickness in meters; interior_blockout only. Default 0.12."
+        },
+        "door_width": {
+          "type": "number",
+          "description": "Door opening width in meters; interior_blockout only. Default 0.9."
+        }
+      },
+      "required": ["generator"],
+      "confirmation": false
+    }
+  ]
+}

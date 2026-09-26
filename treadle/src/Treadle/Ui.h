@@ -78,6 +78,8 @@ class Ui{
 
     //Vraca true u kadru u kojem je kliknut
     bool button(const std::string& text);
+    //Jedinstveni stabilni ID odvaja identitet widgeta od teksta, npr. Copy na svakoj poruci.
+    bool button(const std::string& id, const std::string& text);
 
     //Vodoravno poredani gumbi, jedan red. Vraca indeks kliknutog ili -1
     int buttonRow(const std::vector<std::string>& labels);
@@ -169,21 +171,32 @@ class Ui{
         std::string placeholder;        //sivo, dok je polje prazno
         size_t maxLength = 4096;        //u bajtovima
         bool enterSubmits = true;
+        bool arrowNavigates = false;    //Up/Down se prijave pozivatelju umjesto pomicanja kursora
+        std::string label;              //neobavezna oznaka lijevo od polja
+        float labelFraction = 0.36f;    //udio sirine retka koji zauzima oznaka
     };
     struct TextFieldResult{
         bool changed = false;
         bool submitted = false;
         bool focused = false;
+        int navigation = 0;             //-1 gore, +1 dolje
     };
     TextFieldResult textField(const std::string& id, std::string* text, const TextFieldConfig& config);
     TextFieldResult textField(const std::string& id, std::string* text);
 
     //Fokus na polje iz koda (npr. kad se panel otvori)
     void focusTextField(const std::string& id);
+    void blurTextField();
 
-    //Pripada li tipkovnica polju za tekst. Aplikacija tada ne smije tipke tumaciti kao precace -
-    //inace "W" u opisu pokreta prebaci alat na pomicanje
-    bool wantsKeyboard() const {return focusedField != 0;}
+    //Modalna ploha blokira interakcije iza sebe; sadrzaj modala ukljucuje se neposredno prije
+    //crtanja samog dijaloga. Klik na pozadinu biljezi se kao zahtjev za zatvaranje.
+    void blockBehindModal(const Rect& box);
+    void beginModalContent();
+    bool modalDismissed() const {return modalDismissedValue;}
+
+    //Pripada li tipkovnica polju za tekst ili otvorenom modalu. Aplikacija tada ne tumaci tipke
+    //kao precace - inace "W" u opisu pokreta prebaci alat na pomicanje
+    bool wantsKeyboard() const {return focusedField != 0 || modalActive;}
 
     //Medjuspremnik sustava; aplikacija ga spoji na GLFW. Bez njih Ctrl+C/V radi unutar Treadlea
     std::function<std::string()> getClipboard;
@@ -234,6 +247,9 @@ class Ui{
         float wheel = 0.0f;         //kotacic nad povrsinom
     };
     Region region(const std::string& id, const Rect& box);
+    //Prikaze odlozeni savjet za zadnji widget/povrsinu, ali samo dok je pokazivac nad njom.
+    //Poziva se odmah nakon button/checkbox/region i sl.; ID ostaje stabilan kroz kadrove.
+    void tooltip(const std::string& id, const std::string& text, const std::string& shortcut = {});
     DrawList& canvas(){return list;}
 
     //-- rezultat ----------------------------------------------------------------------------
@@ -281,6 +297,13 @@ class Ui{
     uint64_t activeId = 0;
     bool pointerOverUi = false;
 
+    //Tooltip priprema widget u ovom kadru; hover vrijeme zivi izmedju kadrova.
+    uint64_t tooltipCandidateId = 0;
+    std::string tooltipCandidateText, tooltipCandidateShortcut;
+    bool tooltipCandidateActive = false;
+    uint64_t tooltipHoverId = 0;
+    float tooltipHoverSince = 0.0f;
+
     //Usidrena ploha
     bool panelDocked = false;
     float contentTop = 0.0f;      //prvi piksel ispod naslova
@@ -298,11 +321,16 @@ class Ui{
     int scrollLine = 0;
     bool fieldClaimedPress = false;
     bool fieldSeen = false;
+    bool modalActive = false;
+    bool modalContentActive = false;
+    bool modalDismissedValue = false;
+    Rect modalBox;
     bool selectingWithMouse = false;
     float preferredX = -1.0f;           //gore/dolje zadrzavaju stupac
     std::string localClipboard;
     float dragLastX = 0.0f;       //gdje je mis bio prosli kadar, dok se broj vuce
     bool dragField(uint64_t id, const Rect& box, float* target, float speed);
+    bool modalAllows(const Rect& box) const;
 
     //Izbornik. Velicina je iz PROSLOG kadra: pozadina se crta prije stavki, a klik se mora znati
     //odbiti prije nego sto ijedan widget ovog kadra pita za njega

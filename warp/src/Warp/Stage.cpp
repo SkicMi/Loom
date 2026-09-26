@@ -408,6 +408,10 @@ uint64_t Stage::fingerprint() const{
     Hasher h;
     h.add(startFrame); h.add(endFrame); h.add(framesPerSecond);
     walk([&](const Entity& e, int depth){
+        //Identity and parent catch reparenting or replacing an entity with an identically named
+        //one; depth and traversal order alone can produce the same old fingerprint.
+        h.add(e.id); h.add(e.parent); h.add(e.children.size());
+        if(!e.children.empty()) h.bytes(e.children.data(), e.children.size() * sizeof(Id));
         h.add(depth);
         h.text(e.name);
         h.add(e.visible);
@@ -433,9 +437,12 @@ uint64_t Stage::fingerprint() const{
         h.add(e.model.has_value());
         if(e.model){ h.text(e.model->path); h.add(e.model->mesh); h.add(e.model->skin); h.add(e.model->materials.size());
                      for(int m : e.model->materials) h.add(m);
+                     h.add(e.model->skinJoints.size());
+                     for(Id joint : e.model->skinJoints) h.add(joint);
                      h.add(e.model->skinJointPaths.size()); for(const std::string& path : e.model->skinJointPaths) h.text(path); }
         h.add(e.holds.size());
         for(const Hold& hold : e.holds){
+            h.add(hold.hand);
             h.text(contains(hold.hand) ? path(hold.hand) : hold.handPath);
             h.add(hold.onFrame); h.add(hold.offFrame); h.add(hold.offset); h.text(hold.grip);
         }
@@ -454,6 +461,7 @@ uint64_t Stage::fingerprint() const{
                 auto tracks = [&](const std::vector<AnimatorTrack>& list){
                     h.add(list.size());
                     for(const AnimatorTrack& track : list){
+                        h.add(track.target);
                         h.text(contains(track.target) ? path(track.target) : track.targetPath);
                         h.add(track.rootMotion);
                         h.track(track.translationKeys); h.track(track.rotationKeys); h.track(track.scaleKeys);

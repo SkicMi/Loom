@@ -2000,12 +2000,14 @@ inline MotionPanelAction drawMotionPanel(Treadle::Ui& ui, MotionPanelState& stat
 
     const Treadle::Rect closeButton{area.x + area.width - 65.0f, area.y + 4.0f, 25.0f, 25.0f};
     const auto closeHit = ui.region("motion-window-close", closeButton);
+    ui.tooltip("motion-close", "Close Animator and return to the scene editor.");
     ui.canvas().rect(closeButton, closeHit.hot ? theme.hot : theme.control);
     ui.canvas().outline(closeButton, 1.0f, closeHit.hot ? theme.warning : theme.panelEdge);
     ui.canvas().text(closeButton.x + 8.0f, closeButton.y + 4.0f, "X", theme.title, theme.textScale * 0.68f);
     if(closeHit.pressed) action.close = true;
     const Treadle::Rect helpButton{area.x + area.width - 34.0f, area.y + 4.0f, 25.0f, 25.0f};
     const auto helpHit = ui.region("motion-help-button", helpButton);
+    ui.tooltip("motion-help", "Show help for Create, Direct, Review, and rig controls.");
     ui.canvas().rect(helpButton, helpHit.hot ? theme.hot : theme.control);
     ui.canvas().outline(helpButton, 1.0f, state.helpOpen ? theme.accent : theme.panelEdge);
     ui.canvas().text(helpButton.x + 8.0f, helpButton.y + 3.0f, "?", theme.title, theme.textScale * 0.78f);

@@ -17,13 +17,16 @@
 // solve (C0257: 266 k points, about 6 MB); cameras with 2301 keys are ~100 KB. The stack keeps
 // at least 20 steps and drops the oldest past 768 MB, so a huge cloud cannot eat the machine.
 //
-// Not in here, on purpose: the view camera, the selection and splat cuts (those have their own
-// undo in LoomSplat.h, because they change a file-sized buffer, not the scene).
+// View navigation and selection are not document edits. Large splat cuts enter this same ordered
+// history through a reversible callback, without copying the file-sized Gaussian buffer.
 //=============================================================================================
 #include <Warp/Stage.h>
 
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <optional>
+#include <utility>
 
 namespace Loom{
 
@@ -57,11 +60,25 @@ public:
         if(busy) return false;
         const uint64_t print = stage.fingerprint();
         if(print == settledPrint) return false;
-        push(undoStack, settled, settledPrint);
-        for(const Step& step : redoStack) used -= std::min(used, step.bytes);
-        redoStack.clear();
+        pushScene(undoStack, settled, settledPrint);
+        clear(redoStack);
         settled = stage;
         settledPrint = print;
+        trim();
+        return true;
+    }
+
+    //Non-Stage edits (currently splat cuts) share the same ordered undo/redo history.
+    //The callback receives true for redo and false for undo.
+    bool recordExternal(const Warp::Stage& stage, std::function<bool(bool)> apply, size_t bytes = 0){
+        if(!apply) return false;
+        track(stage, false);
+        clear(redoStack);
+        Step step;
+        step.external = std::move(apply);
+        step.bytes = bytes;
+        undoStack.push_back(std::move(step));
+        used += bytes;
         trim();
         return true;
     }
@@ -70,7 +87,13 @@ public:
     bool undo(Warp::Stage& stage){
         track(stage, false);
         if(undoStack.empty()) return false;
-        push(redoStack, settled, settledPrint);
+        if(undoStack.back().external){
+            if(!undoStack.back().external(false)) return false;
+            redoStack.push_back(std::move(undoStack.back()));
+            undoStack.pop_back();
+            return true;
+        }
+        pushScene(redoStack, settled, settledPrint);
         restore(undoStack, stage);
         return true;
     }
@@ -78,9 +101,22 @@ public:
     bool redo(Warp::Stage& stage){
         track(stage, false);
         if(redoStack.empty()) return false;
-        push(undoStack, settled, settledPrint);
+        if(redoStack.back().external){
+            if(!redoStack.back().external(true)) return false;
+            undoStack.push_back(std::move(redoStack.back()));
+            redoStack.pop_back();
+            return true;
+        }
+        pushScene(undoStack, settled, settledPrint);
         restore(redoStack, stage);
         return true;
+    }
+
+    //The dedicated Undo Cut controls should only consume the latest event when it is a cut.
+    bool undoExternal(Warp::Stage& stage){
+        track(stage, false);
+        if(undoStack.empty() || !undoStack.back().external) return false;
+        return undo(stage);
     }
 
     size_t undoSteps() const {return undoStack.size();}
@@ -91,11 +127,20 @@ public:
     void limit(size_t steps, size_t bytes){ minimumSteps = steps; budget = bytes; trim(); }
 
 private:
-    struct Step{ Warp::Stage stage; uint64_t print; size_t bytes; };
+    struct Step{
+        std::optional<Warp::Stage> stage;
+        uint64_t print = 0;
+        size_t bytes = 0;
+        std::function<bool(bool)> external;
+    };
 
-    void push(std::deque<Step>& to, const Warp::Stage& stage, uint64_t print){
+    void pushScene(std::deque<Step>& to, const Warp::Stage& stage, uint64_t print){
         const size_t bytes = sceneBytes(stage);
-        to.push_back(Step{stage, print, bytes});
+        Step step;
+        step.stage = stage;
+        step.print = print;
+        step.bytes = bytes;
+        to.push_back(std::move(step));
         used += bytes;
     }
 
@@ -103,9 +148,15 @@ private:
         Step step = std::move(from.back());
         from.pop_back();
         used -= std::min(used, step.bytes);
-        stage = step.stage;
-        settled = std::move(step.stage);
+        if(!step.stage) return;
+        stage = *step.stage;
+        settled = std::move(*step.stage);
         settledPrint = step.print;
+    }
+
+    void clear(std::deque<Step>& steps){
+        for(const Step& step : steps) used -= std::min(used, step.bytes);
+        steps.clear();
     }
 
     //Oldest undo steps go first; redo is short-lived and cleared by the next edit anyway
