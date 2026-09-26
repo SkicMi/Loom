@@ -790,6 +790,21 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
      `LOOM_SAMPLES_PER_DISPATCH`. Koherencija se sad broji po koraku petlje. Mješovita scena:
      aktivnih traka 74 % → 83 %; lavapipe (val 8): magla s lampama 537.7 → 487.6 ms po uzorku,
      visinska magla 199.7 → 186.6 ms. Na kartici s valom 32/64 očekivano više — izmjeriti.
+  2. **Wavefront po materijalu — NE radi se** (izmjereno i obrazloženo): svi materijali idu kroz isti
+     uber-BSDF (`makeBsdf/evalBsdf/sampleBsdf`), pa razni materijali u valu ne razdvajaju kod, samo
+     čitanja tekstura; izmjereno 1.2–2.1 materijala po valu. Prazne trake zbog putanja različite
+     duljine rješava regeneracija (1.). Puni wavefront s redovima = prepisivanje tracera bez dobitka.
+  3. **ReSTIR DI na kartici** (prvi pogodak): glavni prolaz sprema RIS rezervoar i točku sjenčanja
+     (G-buffer 48 B + rezervoar 16 B po pikselu), drugi dispatch istog uzorka spaja vlastiti s do 8
+     susjeda (krug `širina/64`, 2–30 px), **pairwise MIS**, ciljevi bez vidljivosti, jedna zraka
+     sjene — nepristrano (512 spp −0.04 %, MIS s velikim svjetlom = procesor, miješana scena
+     +0.01 %). Uzorak `y` je u mjeri svjetla (baricentrične / smjer od središta / smjer), pa se
+     procjenjuje iz bilo koje točke. 256 svjetala, greška prema RIS-u: 48 px 1 spp 0.585/0.856,
+     4 spp 0.279/0.332; 192 px 1 spp 0.326/0.824 (2.5×), 4 spp 2.0×, 16 spp 1.3×, ali 64 spp
+     0.036/0.026 — posuđeni uzorci nemaju stratifikaciju piksela. Vremenska ponovna upotreba
+     izmjerena i izbačena (u progresivnom zbrajanju povezuje uzorke, greška raste). Zato
+     `RenderSettings::restirSamples`: most ga uključi za sve uzorke kad ih je ≤ 16 (`--bez-restir`).
+     Cijena ~15 % vremena po uzorku (lavapipe).
 
 **Što dalje:**
 1. **Izmjeriti pravu karticu** (`loom-render projekt.usda --profil`) — sve dosad je lavapipe, gdje su

@@ -23,7 +23,7 @@ namespace TracerGpu{
 namespace{
 
 constexpr uint32_t None = 0xFFFFFFFFu;
-constexpr uint32_t TraceBindings = 30;
+constexpr uint32_t TraceBindings = 32;
 constexpr uint32_t ResolveBindings = 7;
 constexpr uint32_t FinishBindings = 16;
 
@@ -411,6 +411,15 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     onCard(treeLeaf.data(), treeLeaf.size() * sizeof(uint32_t), true);      //27
     onCard(infinite.data(), infinite.size() * sizeof(glm::vec4), true);     //28
     zeroed(16 * 4 * sizeof(uint32_t));                                      //29 koherencija (profiliranje)
+    //30, 31 ReSTIR: tocka sjencanja (3 uint4 po pikselu) i vlastiti rezervoar (uint4) - 64 B po
+    //pikselu. Bez ReSTIR-a prazni. Citaju se tek kad ih glavni prolaz uzorka upise
+    auto scratch = [&](vk::DeviceSize count){
+        const vk::DeviceSize size = std::max<vk::DeviceSize>(count, 16);
+        buffers->owned.push_back(std::make_shared<VulkanBuffer>(device, size, usage, MemoryUsage::GPU_ONLY));
+        bytes += size;
+    };
+    scratch(settings.restirSamples > 0 ? pixels * 3 * 16 : 0);               //30
+    scratch(settings.restirSamples > 0 ? pixels * 16 : 0);                   //31
     buffers->display.emplace(device, std::max<vk::DeviceSize>(pixels * 4, 16), usage, MemoryUsage::GPU_ONLY);
 
     if(rayQuery){
@@ -541,6 +550,8 @@ float GpuTracer::progress() const{
 }
 
 uint32_t GpuTracer::chunk() const{
+    //ReSTIR: poslije svakog uzorka ide ponovna upotreba cijele slike
+    if(sample < settings.restirSamples) return 1u;
     const uint32_t ramp = std::min(samplesPerDispatch, std::max(1u, sample));
     return std::max(1u, std::min({ramp, 8u - sample % 8u, settings.samples - std::min(sample, settings.samples)}));
 }
@@ -549,13 +560,21 @@ uint32_t GpuTracer::record(uint32_t rows){
     uint32_t sent = 0;
     while(rows > 0 && !finished()){
         const uint32_t count = chunk();
+        const bool restir = sample < settings.restirSamples;
         const uint32_t band = std::min(std::max(1u, rows / count), size[1] - row);
-        TracePush push{sample, row, band, profiling ? 1u : 0u, count};
+        TracePush push{sample, row, band, (profiling ? 1u : 0u) | (restir ? 4u : 0u), count};
         loom.renderer.dispatch(*buffers->trace, (size[0] + 7) / 8, (band + 7) / 8, 1, &push, sizeof(push));
         row += band;
         rows -= std::min(rows, band * count);
         sent += band * count;
-        if(row >= size[1]){ row = 0; sample += count; }
+        if(row >= size[1]){
+            if(restir){
+                TracePush reuse{sample, 0, size[1], (profiling ? 1u : 0u) | 2u | 4u, 1u};
+                loom.renderer.dispatch(*buffers->trace, (size[0] + 7) / 8, (size[1] + 7) / 8, 1, &reuse, sizeof(reuse));
+            }
+            row = 0;
+            sample += count;
+        }
     }
     return sent;
 }

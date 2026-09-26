@@ -4,4 +4,7 @@
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void computeMain(uint3 id : SV_DispatchThreadID){ tracePixel(id); }
+void computeMain(uint3 id : SV_DispatchThreadID){
+    if((push.flags & 2u) != 0u) restirReuse(id);
+    else tracePixel(id);
+}

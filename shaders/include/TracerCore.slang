@@ -74,7 +74,7 @@ struct Push{
     uint sampleIndex;       // prvi uzorak ovog dispatcha
     uint rowStart;
     uint rowCount;
-    uint flags;             // 1: brojati koherenciju (GpuTracer::setProfiling)
+    uint flags;             // 1: brojati koherenciju (GpuTracer::setProfiling), 2: ReSTIR ponovna upotreba, 4: ReSTIR uzorak
     uint sampleCount;       // uzoraka po pikselu u ovom dispatchu (regeneracija putanja)
 };
 
@@ -175,8 +175,8 @@ float3 normalAt(uint vertex, float3 fallback){
 // Hardverske zrake: jedan BLAS s dvije geometrije - 0 obicni neprozirni trokuti, 1 trokuti sa
 // zastavicama (alfa, catcher, kamera, sjena, staklo) koje filtrira ista accept() kao BVH put.
 // slotOf: (geometrija, primitiv) -> slot BVH-a, pa se sve ostalo cita kao i prije
-[[vk::binding(30,0)]] RaytracingAccelerationStructure sceneAccel;
-[[vk::binding(31,0)]] StructuredBuffer<uint> slotOf;
+[[vk::binding(32,0)]] RaytracingAccelerationStructure sceneAccel;
+[[vk::binding(33,0)]] StructuredBuffer<uint> slotOf;
 // Hardverski test presjeka nije nas: s ishodistem tik uz plohu (pomak ~1e-6 scene) zna vratiti
 // samu plohu na t ~ 0. Najmanji t je zato malo veci od pomaka ishodista
 float rayQueryMinT(){ return 1e-5 * paramsBuffer[0].lens2.w; }
@@ -199,6 +199,18 @@ void basis(float3 n, out float3 t, out float3 b){
     const float c = n.x * n.y * a;
     t = float3(1.0 + s * n.x * n.x * a, s * c, -s * n.x);
     b = float3(c, s + n.y * n.y * a, -n.y);
+}
+
+// oktaedarsko kodiranje jedinicnog vektora u dva broja (ReSTIR: smjer uzorka i normale)
+float2 signNotZero(float2 v){ return float2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0); }
+float2 octEncode(float3 n){
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    return n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * signNotZero(n.xy);
+}
+float3 octDecode(float2 e){
+    float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));
+    if(n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * signNotZero(n.xy);
+    return normalize(n);
 }
 
 float powerHeuristic3(float mine, float a, float b){
@@ -1254,6 +1266,7 @@ struct LightSample{
     bool delta;
     uint light;         // izabrano svjetlo i vjerojatnost izbora (pdf / pick = gustoca svjetla)
     float pick;
+    float2 y;           // uzorak u mjeri svjetla (ReSTIR): baricentricke, smjer od sredista ili smjer
 };
 
 uint pickLight(uint count, float choice){
@@ -1369,7 +1382,7 @@ float3 trianglePoint(Light light, float2 u, out float b1, out float b2){
 
 bool sampleLightIndex(Params P, uint index, float pick, float3 p, float2 u, out LightSample ls){
     ls.wi = float3(0.0, 1.0, 0.0); ls.distance = INF; ls.value = float3(0.0); ls.pdf = 0.0; ls.delta = false;
-    ls.light = index; ls.pick = pick;
+    ls.light = index; ls.pick = pick; ls.y = float2(0.0);
     const Light light = lights[index];
     const uint kind = asuint(light.radiance.w);
     const uint lightFlags = asuint(light.cone.w);
@@ -1379,6 +1392,7 @@ bool sampleLightIndex(Params P, uint index, float pick, float3 p, float2 u, out 
         ls.value = skySample(P, u, ls.wi, pdf);
         if(!(pdf > 0.0)) return false;
         ls.pdf = pdf * pick;
+        ls.y = octEncode(ls.wi);
         return true;
     }
     if(kind == LIGHT_SUN){
@@ -1387,6 +1401,7 @@ bool sampleLightIndex(Params P, uint index, float pick, float3 p, float2 u, out 
             return true;
         }
         ls.wi = sampleCone(light.axis.xyz, light.axis.w, u);
+        ls.y = octEncode(ls.wi);
         ls.value = light.radiance.rgb;
         ls.pdf = pick / (2.0 * PI * light.cone.x);
         return true;
@@ -1410,6 +1425,7 @@ bool sampleLightIndex(Params P, uint index, float pick, float3 p, float2 u, out 
         ls.wi = sampleCone(axis, 1.0 - omc, u);
         float t;
         ls.distance = hitSphere(p, ls.wi, light.position.xyz, radius, INF, t) ? t : d - radius;
+        ls.y = octEncode(normalize(p + ls.wi * ls.distance - light.position.xyz));
         ls.value = light.radiance.rgb * falloff;
         ls.pdf = pick / (2.0 * PI * omc);
         return true;
@@ -1419,6 +1435,7 @@ bool sampleLightIndex(Params P, uint index, float pick, float3 p, float2 u, out 
     const float3 e1 = triangles[slot * 3 + 1].xyz, e2 = triangles[slot * 3 + 2].xyz;
     float b1, b2;
     const float3 q = trianglePoint(light, u, b1, b2);
+    ls.y = float2(b1, b2);
     const float3 toLight = q - p;
     const float dist2 = dot(toLight, toLight);
     if(dist2 <= 0.0) return false;
@@ -1439,7 +1456,7 @@ bool sampleLightIndex(Params P, uint index, float pick, float3 p, float2 u, out 
 
 bool sampleLight(Params P, float3 p, float3 n, float choice, float2 u, out LightSample ls){
     ls.wi = float3(0.0, 1.0, 0.0); ls.distance = INF; ls.value = float3(0.0); ls.pdf = 0.0; ls.delta = false;
-    ls.light = 0; ls.pick = 1.0;
+    ls.light = 0; ls.pick = 1.0; ls.y = float2(0.0);
     if(P.counts.x == 0) return false;
     uint index;
     float pick;
@@ -1561,6 +1578,321 @@ struct PathResult{
     float3 lit, shadowed;
     float3 albedo, normal;
 };
+
+//=============================================================================================
+// ReSTIR DI (Bitterli 2020, GRIS - Lin 2022) - samo prvi pogodak na plohi, samo kartica.
+//
+// GLAVNI PROLAZ: na prvom pogotku umjesto izravnog svjetla RIS iz istih kandidata spremi
+// rezervoar (uzorak svjetla y, tezina W, M) i tocku sjencanja (G-buffer); put ide dalje.
+// PONOVNA UPOTREBA (drugi dispatch istog uzorka): vlastiti rezervoar je kanonski, uz njega do 8
+// susjeda iz istog uzorka u krugu koji raste sa slikom. Pairwise MIS: povjerenje kanonskog se
+// dijeli na parove, u paru balance heuristika - tezine su particija jedinice za svaki y, ciljevi
+// bez vidljivosti, na kraju jedna zraka sjene: NEPRISTRANO. Izbor jednim stratificiranim brojem.
+// BEZ vremenske ponovne upotrebe: izmjereno, u progresivnom zbrajanju povezuje uzastopne uzorke i
+// greska na 4-64 spp raste. Zato ReSTIR vrijedi za malo uzoraka (GpuTracer: prvih restirSamples).
+//
+// y je u mjeri svjetla: trokut = baricentricke (povrsina), kugla = smjer od sredista (povrsina
+// kugle), sunce/nebo = smjer (prostorni kut), tocka = nista (brojanje). Cilj u toj mjeri je
+// lum(f Le w) J, J = cos_l / d^2 za povrsinska svjetla - pa se uzorak moze procijeniti iz bilo
+// koje tocke. w je MIS tezina prema BSDF pogotku (ista funkcija kao prije), zato BSDF strana ostaje ista.
+//
+// G-buffer: pozicija u floatu, normale oktaedarski 16 bita, materijal u half - relativna
+// greska ~1e-3 u cilju i MIS tezini (ne u samom uzorku).
+//=============================================================================================
+[[vk::binding(30,0)]] RWStructuredBuffer<uint4> restirSurfaces;    // piksel x 3: tocka sjencanja ovog uzorka
+[[vk::binding(31,0)]] RWStructuredBuffer<uint4> restirReservoirs;  // piksel: vlastiti rezervoar ovog uzorka
+
+#ifndef RESTIR_NEIGHBORS
+#define RESTIR_NEIGHBORS 8
+#endif
+static uint restirPixel = 0;
+// radijus susjeda raste sa slikom: na UHD-u je susjedni piksel blizu u prostoru
+float restirRadius(Params P){ return clamp(P.lens2.y / 64.0, 2.0, 30.0); }
+static bool restirWrote = false;
+
+bool restirOn(Params P){ return (push.flags & 4u) != 0; }      // ovaj uzorak (GpuTracer: prvih restirSamples)
+
+uint packOct16(float3 n){
+    const float2 e = clamp(octEncode(n), -1.0, 1.0);
+    const int2 q = int2(round(e * 32767.0));
+    return (uint(q.x) & 0xFFFFu) | (uint(q.y) << 16);
+}
+float3 unpackOct16(uint v){
+    const int x = int(v << 16) >> 16, y = int(v) >> 16;
+    return octDecode(float2(float(x), float(y)) / 32767.0);
+}
+uint packHalves(float a, float b){ return f32tof16(a) | (f32tof16(b) << 16); }
+float2 unpackHalves(uint v){ return float2(f16tof32(v & 0xFFFFu), f16tof32(v >> 16)); }
+
+struct RestirSurface{
+    float3 p, ng, ns, wo, baseColor;
+    float metallic, roughness, ior, specular, transmission, clearcoat, clearcoatRoughness;
+    bool outside, valid;
+    float lumPath;
+};
+
+void packSurface(RestirSurface g, out uint4 a, out uint4 b, out uint4 c){
+    a = uint4(asuint(g.p.x), asuint(g.p.y), asuint(g.p.z), asuint(g.lumPath));
+    b = uint4(packOct16(g.ng), packOct16(g.ns), packOct16(g.wo), packHalves(g.outside ? g.ior : -g.ior, g.clearcoatRoughness));
+    c = uint4(packHalves(g.baseColor.r, g.baseColor.g), packHalves(g.baseColor.b, g.metallic),
+              packHalves(g.roughness, g.specular), packHalves(g.transmission, g.clearcoat));
+}
+RestirSurface unpackSurface(uint4 a, uint4 b, uint4 c){
+    RestirSurface g;
+    g.p = float3(asfloat(a.x), asfloat(a.y), asfloat(a.z));
+    g.lumPath = asfloat(a.w);
+    g.ng = unpackOct16(b.x); g.ns = unpackOct16(b.y); g.wo = unpackOct16(b.z);
+    const float2 iorCoat = unpackHalves(b.w);
+    g.valid = iorCoat.x != 0.0;
+    g.outside = iorCoat.x > 0.0;
+    g.ior = max(1.0001, abs(iorCoat.x));
+    g.clearcoatRoughness = iorCoat.y;
+    const float2 c0 = unpackHalves(c.x), c1 = unpackHalves(c.y), c2 = unpackHalves(c.z), c3 = unpackHalves(c.w);
+    g.baseColor = float3(c0.x, c0.y, c1.x);
+    g.metallic = c1.y; g.roughness = c2.x; g.specular = c2.y; g.transmission = c3.x; g.clearcoat = c3.y;
+    return g;
+}
+uint surfaceSlot(uint pixel){ return pixel * 3u; }
+RestirSurface loadSurface(Params P, uint pixel){
+    const uint s = surfaceSlot(pixel);
+    return unpackSurface(restirSurfaces[s], restirSurfaces[s + 1], restirSurfaces[s + 2]);
+}
+void storeSurface(Params P, uint pixel, RestirSurface g){
+    uint4 a, b, c;
+    packSurface(g, a, b, c);
+    const uint s = surfaceSlot(pixel);
+    restirSurfaces[s] = a; restirSurfaces[s + 1] = b; restirSurfaces[s + 2] = c;
+}
+
+// rezervoar: (y, W, svjetlo 24 bita | M 8 bita)
+struct Reservoir{ float2 y; float W; uint light; float M; };
+uint4 packReservoir(Reservoir r){
+    return uint4(asuint(r.y.x), asuint(r.y.y), asuint(r.W), (r.light & 0xFFFFFFu) | (uint(clamp(r.M, 0.0, 255.0)) << 24));
+}
+Reservoir unpackReservoir(uint4 v){
+    Reservoir r;
+    r.y = float2(asfloat(v.x), asfloat(v.y)); r.W = asfloat(v.z); r.light = v.w & 0xFFFFFFu; r.M = float(v.w >> 24);
+    return r;
+}
+
+// Uzorak y svjetla `index` gledan iz g: doprinos s MIS tezinom i bez nje (vec puta J)
+struct RestirEval{ float3 wi; float dist; float3 withW; float3 noW; bool side; float J; };
+bool restirEvaluate(Params P, RestirSurface g, uint index, float2 y, out RestirEval e){
+    e.wi = float3(0.0, 1.0, 0.0); e.dist = INF; e.withW = float3(0.0); e.noW = float3(0.0); e.side = true; e.J = 1.0;
+    if(!g.valid || index >= P.counts.x) return false;
+    const Light light = lights[index];
+    const uint kind = asuint(light.radiance.w);
+    const uint lightFlags = asuint(light.cone.w);
+    const bool delta = (lightFlags & 1u) != 0, spot = (lightFlags & 2u) != 0;
+    float3 value = float3(0.0);
+    float ownPdf = 0.0;
+    bool isDelta = false;
+    if(kind == LIGHT_SKY){
+        e.wi = octDecode(y);
+        value = skyRadiance(P, e.wi);
+        ownPdf = skyDensity(P, e.wi);
+    }else if(kind == LIGHT_SUN){
+        if(delta){ e.wi = light.axis.xyz; value = light.radiance.rgb; isDelta = true; }
+        else{
+            e.wi = octDecode(y);
+            if(dot(e.wi, light.axis.xyz) < light.axis.w) return false;
+            value = light.radiance.rgb;
+            ownPdf = 1.0 / (2.0 * PI * light.cone.x);
+        }
+    }else if(kind == LIGHT_SPHERE){
+        const float3 toCentre = light.position.xyz - g.p;
+        const float d2 = dot(toCentre, toCentre);
+        if(d2 <= 0.0) return false;
+        const float d = sqrt(d2);
+        const float3 axis = toCentre / d;
+        const float falloff = spot ? spotFalloff(dot(-axis, light.axis.xyz), light.cone.y, light.cone.z) : 1.0;
+        if(falloff <= 0.0) return false;
+        if(delta){
+            e.wi = axis; e.dist = d; value = light.radiance.rgb * falloff / d2; isDelta = true;
+        }else{
+            const float radius = light.position.w;
+            if(d <= radius * 1.0001) return false;
+            const float3 normal = octDecode(y);
+            const float3 q = light.position.xyz + normal * radius;
+            const float3 v = q - g.p;
+            const float dist2 = dot(v, v);
+            const float dist = sqrt(dist2);
+            e.wi = v / dist;
+            const float cosLight = -dot(normal, e.wi);
+            if(cosLight <= 0.0) return false;
+            value = light.radiance.rgb * falloff;
+            ownPdf = 1.0 / (2.0 * PI * oneMinusCosFromSin2(radius * radius / d2));
+            e.J = cosLight / dist2;
+            e.dist = dist;
+        }
+    }else{
+        const uint slot = asuint(light.pick.z);
+        const float3 e1 = triangles[slot * 3 + 1].xyz, e2 = triangles[slot * 3 + 2].xyz;
+        const float3 q = triangles[slot * 3].xyz + e1 * y.x + e2 * y.y;
+        const float3 v = q - g.p;
+        const float dist2 = dot(v, v);
+        if(dist2 <= 0.0) return false;
+        const float dist = sqrt(dist2);
+        e.wi = v / dist;
+        const float3 nl = normalize(cross(e1, e2));
+        const uint original = asuint(triangles[slot * 3].w);
+        const Material m = materials[triangleInfo[original].w];
+        const float cosLight = m.mode.y != 0 ? abs(dot(nl, e.wi)) : -dot(nl, e.wi);
+        if(cosLight < 1e-6) return false;
+        value = m.emission.rgb;
+        if(m.textures.w >= 0) value *= sampleTexture(uint(m.textures.w), uvOf(original, y.x, y.y)).rgb;
+        ownPdf = dist2 / (cosLight * light.pick.w);
+        e.J = cosLight / dist2;
+        e.dist = dist;
+    }
+    float3 tangentX, tangentY;
+    basis(g.ns, tangentX, tangentY);
+    const float3 wiLocal = float3(dot(e.wi, tangentX), dot(e.wi, tangentY), dot(e.wi, g.ns));
+    e.side = dot(e.wi, g.ng) > 0.0;
+    if(e.side != (wiLocal.z > 0.0)) return false;
+    const float3 woLocal = float3(dot(g.wo, tangentX), dot(g.wo, tangentY), dot(g.wo, g.ns));
+    const Bsdf bsdf = makeBsdf(g.baseColor, g.metallic, g.roughness, g.ior, g.specular, g.transmission, g.clearcoat,
+                               g.clearcoatRoughness, woLocal, g.outside ? g.ior : 1.0 / g.ior);
+    float bsdfPdf;
+    const float3 f = evalBsdf(bsdf, wiLocal, bsdfPdf);
+    e.noW = f * value * e.J;
+    float w = 1.0;
+    if(!isDelta){
+        const float3 receiver = g.transmission > 0.0 ? float3(0.0) : g.ng;
+        w = powerHeuristic(choiceProbability(P, index, g.p, receiver) * ownPdf, bsdfPdf);
+    }
+    e.withW = e.noW * w;
+    return luminance(e.withW) > 0.0;
+}
+float restirTarget(Params P, RestirSurface g, Reservoir r){
+    if(!(r.W > 0.0)) return 0.0;
+    RestirEval e;
+    return restirEvaluate(P, g, r.light, r.y, e) ? luminance(e.withW) : 0.0;
+}
+
+// Glavni prolaz, prvi pogodak: RIS kandidati u rezervoar (cilj iz spremljene tocke, pa je isti u
+// ponovnoj upotrebi) i G-buffer
+void restirCandidates(Params P, RestirSurface exact, uint sampleIndex, inout Sampler sampler, uint candidates){
+    uint4 a, b, c;
+    packSurface(exact, a, b, c);
+    const RestirSurface g = unpackSurface(a, b, c);
+    const float3 receiver = exact.transmission > 0.0 ? float3(0.0) : exact.ng;
+    Reservoir r;
+    r.y = float2(0.0); r.W = 0.0; r.light = 0; r.M = 1.0;
+    float weightSum = 0.0, chosenTarget = 0.0;
+    for(uint k = 0; k < candidates; ++k){
+        LightSample ls;
+        const float2 choice = sampler.next2D();
+        const float2 u = sampler.next2D();
+        if(!sampleLight(P, exact.p, receiver, choice.x, u, ls)) continue;
+        RestirEval e;
+        if(!restirEvaluate(P, g, ls.light, ls.y, e)) continue;
+        const float target = luminance(e.withW);
+        const float source = ls.pdf * e.J;
+        if(!(target > 0.0) || !(source > 0.0)) continue;
+        weightSum += target / source;
+        if(choice.y * weightSum < target / source){ r.y = ls.y; r.light = ls.light; chosenTarget = target; }
+    }
+    r.W = chosenTarget > 0.0 ? weightSum / (float(candidates) * chosenTarget) : 0.0;
+    storeSurface(P, restirPixel, g);
+    restirReservoirs[restirPixel] = packReservoir(r);
+    restirWrote = true;
+}
+
+// Ponovna upotreba: jedan piksel, poslije glavnog prolaza cijele slike za ovaj uzorak
+void restirReuse(uint3 id){
+    const Params P = paramsBuffer[0];
+    const uint width = uint(P.lens2.y), height = uint(P.lens2.z);
+    const uint x = id.x, y = id.y;
+    if(x >= width || y >= height) return;
+    const uint pixel = y * width + x;
+    const uint sampleIndex = push.sampleIndex;
+    const RestirSurface c = loadSurface(P, pixel);
+    if(!c.valid) return;
+    const uint pixelSeed = hash1(hash1(x * 0x9E3779B1u ^ y) ^ (y * 0x85EBCA77u)) ^ hash1(P.extra.x);
+    VolumeRng rng;
+    rng.state = hash2(pixelSeed ^ hash2(sampleIndex, 0x7f4a7c15u), 0x94d049bbu);
+
+    const Reservoir own = unpackReservoir(restirReservoirs[pixel]);
+    const float cameraDistance = length(c.p - P.cameraPos.xyz);
+    // susjedi iz istog uzorka: izbor ovisi samo o tockama, ne o uzorcima y
+    Reservoir others[RESTIR_NEIGHBORS];
+    RestirSurface domains[RESTIR_NEIGHBORS];
+    uint count = 0;
+    for(uint k = 0; k < RESTIR_NEIGHBORS; ++k){
+        const float angle = 2.0 * PI * rng.next(), radius = 1.0 + restirRadius(P) * sqrt(rng.next());
+        const int nx = int(x) + int(round(cos(angle) * radius)), ny = int(y) + int(round(sin(angle) * radius));
+        if(nx < 0 || ny < 0 || nx >= int(width) || ny >= int(height)) continue;
+        const uint q = uint(ny) * width + uint(nx);
+        if(q == pixel) continue;
+        const RestirSurface g = loadSurface(P, q);
+        if(!g.valid) continue;
+        if(dot(g.ng, c.ng) < 0.9 || abs(length(g.p - P.cameraPos.xyz) - cameraDistance) > 0.1 * cameraDistance) continue;
+        others[count] = unpackReservoir(restirReservoirs[q]);
+        domains[count] = g;
+        count += 1;
+    }
+
+    // pairwise MIS: kanonski dijeli povjerenje na parove. Tezine svih ulaza, pa JEDAN izbor
+    // stratificiranim brojem (Sobol piksela, zasebna dimenzija): uzastopni uzorci ostaju
+    // stratificirani kao bez ReSTIR-a
+    const float Mc = 1.0;
+    float Mtot = Mc;
+    for(uint j = 0; j < count; ++j) Mtot += others[j].M;
+    const float share = count > 0 ? Mc / float(count) : Mc;
+    const float targetOwn = restirTarget(P, c, own);
+    float canonicalWeight = count > 0 ? 0.0 : 1.0;
+    float weights[RESTIR_NEIGHBORS + 1];
+    float targets[RESTIR_NEIGHBORS + 1];
+    for(uint j = 0; j < count; ++j){
+        const Reservoir r = others[j];
+        const float pair = (r.M + share) / Mtot;
+        const float atOwner = restirTarget(P, domains[j], r);
+        const float atHere = restirTarget(P, c, r);
+        const float denominator = r.M * atOwner + share * atHere;
+        const float m = denominator > 0.0 ? pair * r.M * atOwner / denominator : 0.0;
+        weights[j] = max(0.0, m * atHere * r.W);
+        targets[j] = atHere;
+        const float ownAtOther = restirTarget(P, domains[j], own);
+        const float ownDenominator = share * targetOwn + r.M * ownAtOther;
+        if(ownDenominator > 0.0) canonicalWeight += pair * share * targetOwn / ownDenominator;
+    }
+    weights[count] = max(0.0, canonicalWeight * targetOwn * own.W);
+    targets[count] = targetOwn;
+    float weightSum = 0.0;
+    for(uint j = 0; j <= count; ++j) weightSum += weights[j];
+    Sampler stratified;
+    stratified.seed = pixelSeed; stratified.index = sampleIndex; stratified.dimension = 977u;
+    float pickAt = stratified.next2D().x * weightSum;
+    Reservoir chosen = own;
+    float chosenTarget = targetOwn;
+    for(uint j = 0; j <= count; ++j){
+        if(!(weights[j] > 0.0)) continue;
+        chosen = j < count ? others[j] : own;
+        chosenTarget = targets[j];
+        pickAt -= weights[j];
+        if(pickAt < 0.0) break;
+    }
+    Reservoir result = chosen;
+    result.W = chosenTarget > 0.0 ? weightSum / chosenTarget : 0.0;
+
+    float3 contribution = float3(0.0);
+    RestirEval e;
+    if(result.W > 0.0 && restirEvaluate(P, c, result.light, result.y, e)){
+        const float sceneRadius = P.lens2.w;
+        const float epsilonScale = max(1e-6 * sceneRadius, 1e-7);
+        const float limit = e.dist >= INF ? INF : e.dist * (1.0 - 1e-4);
+        bool crossed;
+        const float3 through = shadowTransmittance(offsetPoint(c.p, c.ng, e.side, epsilonScale), e.wi, limit, 2u,
+                                                   (P.extra.z & 1u) != 0, pixelSeed, sampleIndex, 211u, asuint(P.holdout.z), crossed);
+        // kroz staklo nema BSDF para (kao prije): bez MIS tezine
+        contribution = (crossed ? e.noW : e.withW) * through * result.W;
+    }else result.W = 0.0;
+    accCg[pixel] = accCg[pixel] + float4(contribution, 0.0);
+    const float lum = c.lumPath + luminance(contribution);
+    accAlbedo[pixel] = accAlbedo[pixel] + float4(0.0, 0.0, 0.0, lum);
+    accNormal[pixel] = accNormal[pixel] + float4(0.0, 0.0, 0.0, lum * lum);
+}
 
 // STANJE PUTANJE: sve sto tijelo petlje odbijanja nosi iz koraka u korak. trace() je startPath +
 // stepPath do kraja; tracePixel vrti vise uzoraka u jednoj petlji (regeneracija putanja)
@@ -1762,7 +2094,7 @@ bool stepBody(Params P, uint pixelSeed, uint sampleIndex, uint depth, inout Path
                 // RIS kao na plohi (Renderer.cpp)
                 LightSample chosen;
                 chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
-                chosen.light = 0; chosen.pick = 1.0;
+                chosen.light = 0; chosen.pick = 1.0; chosen.y = float2(0.0);
                 float chosenPhase = 0.0, chosenTarget = 0.0, weightSum = 0.0;
                 for(uint k = 0; k < candidates; ++k){
                     LightSample ls;
@@ -1989,9 +2321,18 @@ bool stepBody(Params P, uint pixelSeed, uint sampleIndex, uint depth, inout Path
 
     //-- izravno svjetlo (RIS, Renderer.cpp) ---------------------------------------------------------
     const float3 receiver = transmission > 0.0 ? float3(0.0) : ng;
-    {
+    if(depth == 0 && restirOn(P)){
+        // ReSTIR: izravno svjetlo prvog pogotka racuna prolaz ponovne upotrebe
+        RestirSurface exact;
+        exact.p = p; exact.ng = ng; exact.ns = ns; exact.wo = wo; exact.baseColor = baseColor;
+        exact.metallic = metallic; exact.roughness = roughness; exact.ior = ior; exact.specular = material.layers.x;
+        exact.transmission = transmission; exact.clearcoat = clearcoat; exact.clearcoatRoughness = material.layers.w;
+        exact.outside = outside; exact.valid = true; exact.lumPath = 0.0;
+        restirCandidates(P, exact, sampleIndex, sampler, candidates);
+    }else{
         LightSample chosen;
         chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
+        chosen.light = 0; chosen.pick = 1.0; chosen.y = float2(0.0);
         float3 chosenF = float3(0.0);
         float chosenBsdfPdf = 0.0, chosenTarget = 0.0, weightSum = 0.0;
         bool chosenSide = false;
@@ -2138,6 +2479,14 @@ void tracePixel(uint3 id){
     if(x >= width || id.y >= push.rowCount || y >= height) return;
     const uint pixel = y * width + x;
     const uint pixelSeed = hash1(hash1(x * 0x9E3779B1u ^ y) ^ (y * 0x85EBCA77u)) ^ hash1(P.extra.x);
+    // ReSTIR: tocka ovog uzorka je nevazeca dok je prvi pogodak ne upise (i kad piksel stoji)
+    const bool reuse = restirOn(P);
+    restirPixel = pixel;
+    restirWrote = false;
+    if(reuse){
+        restirSurfaces[surfaceSlot(pixel) + 1u] = uint4(0u);
+        restirReservoirs[pixel] = uint4(0u);
+    }
     // prilagodljivo (Renderer::adaptiveCheckpoint): bitovi 1/2 gotov na parnoj/neparnoj provjeri, 4 stao.
     // Susjedi se citaju s PROSLE provjere - taj bit u ovom dispatchu nitko ne pise
     uint state = adaptive[pixel];
@@ -2164,7 +2513,7 @@ void tracePixel(uint3 id){
     // zavrsi odmah pocne sljedeci uzorak istog piksela, pa val ne ceka najdulju putanju za svaki
     // uzorak posebno (od dubine 2 bilo je samo 35 % aktivnih traka). Uzorci su isti kao trace()
     // za svaki indeks; zbroji se skupe lokalno i upisu jednom
-    const uint count = max(1u, push.sampleCount);
+    const uint count = reuse ? 1u : max(1u, push.sampleCount);
     const float2 centre = float2(float(x) + 0.5, float(y) + 0.5);
     float4 cg = float4(0.0), background = float4(0.0), lit = float4(0.0), shadowed = float4(0.0);
     float4 albedoSum = float4(0.0), normalSum = float4(0.0);
@@ -2185,8 +2534,18 @@ void tracePixel(uint3 id){
         shadowed.rgb += r.shadowed;
         shadowed.w += 1.0;
         const float lum = luminance(r.radiance + r.background + r.inscatter);
-        albedoSum += float4(r.albedo, lum);
-        normalSum += float4(r.normal, lum * lum);
+        if(reuse && restirWrote){
+            // luminanciju za prilagodljivo zbroji ponovna upotreba (s izravnim svjetlom)
+            const uint slot = surfaceSlot(pixel);
+            uint4 head = restirSurfaces[slot];
+            head.w = asuint(lum);
+            restirSurfaces[slot] = head;
+            albedoSum += float4(r.albedo, 0.0);
+            normalSum += float4(r.normal, 0.0);
+        }else{
+            albedoSum += float4(r.albedo, lum);
+            normalSum += float4(r.normal, lum * lum);
+        }
         done += 1;
         if(done >= count) break;
         path = startPath(P, centre, push.sampleIndex + done, pixelSeed);

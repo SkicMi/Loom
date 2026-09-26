@@ -98,6 +98,9 @@ struct RenderOptions{
     bool caustics = false;
     //Ekviangularno uzorkovanje u magli prema lokalnim svjetlima (RenderSettings::equiangular)
     bool equiangular = true;
+    //ReSTIR DI na kartici kad je uzoraka po pikselu najvise 16 (tamo 1.2-2.5x manja greska;
+    //na vise uzoraka stratificirani RIS konvergira brze) - RenderSettings::restirSamples
+    bool restir = true;
     bool denoise = true;
     //Auto: Intel OIDN kad je ucitan (tools/oidn/fetch.sh), inace A-trous
     Tracer::Denoiser denoiser = Tracer::Denoiser::Auto;
@@ -1378,6 +1381,7 @@ private:
                 settings.adaptiveThreshold = std::max(0.0f, options.noiseThreshold);
                 settings.glassShadows = !options.caustics;
                 settings.equiangular = options.equiangular;
+                settings.restirSamples = options.restir && settings.samples <= 16 ? settings.samples : 0;
                 settings.threads = options.threads;
                 settings.seed = slice * 7919u;          //svaki odsjecak svoj sum, inace bi se isti uzorci ponovili
                 Tracer::Frame raw;

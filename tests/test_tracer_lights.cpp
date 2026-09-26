@@ -6,6 +6,8 @@
 //   SUM        na 16 uzoraka greska prema analitickoj: po snazi > stablo > stablo + RIS (8)
 //   KARTICA    stablo i RIS na kartici = procesor (ista greska)
 //   MIS        ploha svijetli i BSDF-om: jedno veliko svjetlo i mnogo malih - bez pristranosti
+//   RESTIR     kartica s ponovnom upotrebom rezervoara: srednja = analiticka, greska na 1 i 4
+//              spp manja od RIS-a; s velikim svjetlom (MIS s BSDF-om) srednja = procesor
 #include "TestHarness.h"
 
 #include "Core/LoomConfig.h"
@@ -21,7 +23,7 @@
 
 namespace{
 
-constexpr uint32_t Size = 48;
+uint32_t Size = 48;
 constexpr float Albedo = 0.6f;
 
 Tracer::Scene field(bool withArea = false){
@@ -151,6 +153,37 @@ int main(){
         error(many.readFrame(false), truth, &biasCard);
         report.check("kartica", std::abs(eCard / eRis - 1.0) < 0.15 && std::abs(biasCard) < 0.01,
                      fmt("16 spp: kartica %.3f, procesor %.3f; 512 spp srednja %+.2f %%", eCard, eRis, 100 * biasCard));
+
+        auto withRestir = [](Tracer::RenderSettings st){ st.restirSamples = st.samples; return st; };
+        TracerGpu::GpuTracer restir(loom, pipelines, Tracer::compile(field()), withRestir(settingsFor(16, true, 8)));
+        restir.renderAll();
+        const double eRestir = error(restir.readFrame(false), truth);
+        TracerGpu::GpuTracer restirOne(loom, pipelines, Tracer::compile(field()), withRestir(settingsFor(1, true, 8)));
+        restirOne.renderAll();
+        TracerGpu::GpuTracer risOne(loom, pipelines, Tracer::compile(field()), settingsFor(1, true, 8));
+        risOne.renderAll();
+        const double eRestirOne = error(restirOne.readFrame(false), truth), eRisOne = error(risOne.readFrame(false), truth);
+        TracerGpu::GpuTracer restirMany(loom, pipelines, Tracer::compile(field()), withRestir(settingsFor(512, true, 8)));
+        restirMany.renderAll();
+        double biasRestir;
+        error(restirMany.readFrame(false), truth, &biasRestir);
+        TracerGpu::GpuTracer restirFour(loom, pipelines, Tracer::compile(field()), withRestir(settingsFor(4, true, 8)));
+        restirFour.renderAll();
+        TracerGpu::GpuTracer risFour(loom, pipelines, Tracer::compile(field()), settingsFor(4, true, 8));
+        risFour.renderAll();
+        const double eRestirFour = error(restirFour.readFrame(false), truth), eRisFour = error(risFour.readFrame(false), truth);
+        report.check("ReSTIR: nepristrano, manje suma na malo uzoraka",
+                     std::abs(biasRestir) < 0.01 && eRestirOne < 0.8 * eRisOne && eRestirFour < 0.95 * eRisFour,
+                     fmt("512 spp srednja %+.2f %%; greska 1 spp %.3f (RIS %.3f), 4 spp %.3f (RIS %.3f), 16 spp %.3f (RIS %.3f)",
+                         100 * biasRestir, eRestirOne, eRisOne, eRestirFour, eRisFour, eRestir, eCard));
+        TracerGpu::GpuTracer restirArea(loom, pipelines, Tracer::compile(field(true)), withRestir(settingsFor(1024, true, 8)));
+        restirArea.renderAll();
+        const Tracer::Frame areaCard = restirArea.readFrame(false);
+        const Tracer::Frame areaCpu = onCpu(field(true), settingsFor(1024, true, 8));
+        double a = 0.0, b = 0.0;
+        for(size_t i = 0; i < areaCpu.pixelCount(); ++i){ a += areaCpu.cg[i * 4 + 1]; b += areaCard.cg[i * 4 + 1]; }
+        report.check("ReSTIR: MIS s velikim svjetlom", std::abs(b / a - 1.0) < 0.01,
+                     fmt("srednja: procesor %.5f, kartica ReSTIR %.5f", a / double(areaCpu.pixelCount()), b / double(areaCpu.pixelCount())));
         report.checkNoValidationMessages();
     }
     return report.result();

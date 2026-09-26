@@ -318,6 +318,19 @@ int main(){
         report.check("hardverske zrake", check.usesRayQuery() == available && rmse(rq, bvh) < noise && rmse(rq, cpu) < noise,
                      fmt("%s; RMSE ray query - BVH %.4f, ray query - procesor %.4f, sum %.4f; 64x48x256: ray query %.2f s, BVH %.2f s (lavapipe)",
                          available ? "kartica ih ima" : "kartica ih nema - oba puta su BVH", rmse(rq, bvh), rmse(rq, cpu), noise, rqSeconds, bvhSeconds));
+
+        //ReSTIR na svakom uzorku: staklo (zraka sjene kroz staklo), tekstura, metal, nebo i sunce -
+        //srednja slika = procesor
+        Tracer::RenderSettings restirSettings;
+        restirSettings.samples = 256; restirSettings.restirSamples = 256; restirSettings.indirectClamp = 16.0f;
+        TracerGpu::GpuTracer restir(loom, pipelines, Tracer::compile(mixed(0.3f)), restirSettings);
+        restir.renderAll();
+        const Tracer::Frame reused = restir.readFrame(false);
+        double meanReused = 0.0, meanCpu = 0.0;
+        for(size_t i = 0; i < cpu.pixelCount(); ++i)
+            for(int k = 0; k < 3; ++k){ meanReused += reused.cg[i * 4 + size_t(k)]; meanCpu += cpu.cg[i * 4 + size_t(k)]; }
+        report.check("ReSTIR = procesor", std::abs(meanReused / meanCpu - 1.0) < 0.01 && rmse(reused, cpu) < 2.0 * noise,
+                     fmt("srednja %+.2f %%, RMSE prema procesoru %.4f (sum %.4f)", 100.0 * (meanReused / meanCpu - 1.0), rmse(reused, cpu), noise));
     }
 
     //-- 4c. koherencija (profiliranje): koliko bi razvrstavanje po materijalu (wavefront) dobilo ------

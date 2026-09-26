@@ -78,6 +78,11 @@ struct RenderSettings{
     //(Kulla & Fajardo 2012): stozac reflektora i sjaj oko lampe bez tockastog suma. false: samo
     //slobodni put (za usporedbu)
     bool equiangular = true;
+    //ReSTIR DI na prvom pogotku za PRVIH restirSamples uzoraka (samo kartica - GpuTracer; procesor
+    //ga ne radi): izravno svjetlo iz vlastitih, susjednih i proslih rezervoara (pairwise MIS,
+    //nepristrano). Brza cista prva slika; poslije toga obican RIS, koji stratificiran brze
+    //konvergira (posudjeni uzorci susjeda nemaju stratifikaciju piksela). 0 = iskljuceno
+    uint32_t restirSamples = 0;
 };
 
 //Koliko kandidata stvarno (RenderSettings::lightCandidates, 0 = prema broju lokalnih svjetala)
