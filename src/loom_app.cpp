@@ -45,6 +45,7 @@
     #include "LoomProcedura.h"
     #include "LoomMotionLive.h"
     #include "LoomAnimLayers.h"
+    #include "LoomTimelineRange.h"
     #include "LoomMoodboard.h"
     #include "LoomAutoRig.h"
     
@@ -356,6 +357,13 @@
             std::vector<Loom::PoseKey> keys;    //uredjene poze po kadrovima; izmedju njih pretapanje
         } poseEdit;
         int poseKeyEnding = 0;                  //0: povratak u pokret iza zadnjeg kljuca, 1: drzi pozu
+        //Odabir raspona na timelineu (LoomTimelineRange.h) i radnje iznad njega
+        Loom::TimelineRange timelineRange;
+        bool timelineRangeOnRuler = false;      //gesta je pocela na ravnalu: cisti scrub
+        bool timelineRegenOpen = false;
+        std::string timelineRegenPrompt;
+        struct{ Warp::Id rig = Warp::None; double first = -1.0, last = -1.0; } poseRangeRequest;
+        double poseRangeEnd = -1.0;             //pose blend pokrenut iz raspona: druga poza je tu
         int poseBlendStep = 0;                  //0 nista, 3 prva poza, 4 druga poza
         double poseBlendFirst = -1.0, poseBlendSecond = -1.0;
         bool poseBlendOptionsOpen = false;
@@ -1026,6 +1034,25 @@
                      outputDirectory.string(), Loom::Task::WeaverMotion, 0);
             message = "Regenerating frames " + std::to_string(first) + "-" + std::to_string(last) +
                       "; everything outside stays as it was.";
+        };
+
+        //Lik ciji se klip moze uredjivati s timelinea: odabrani (ili lik u Animatoru) s barem jednim klipom
+        auto timelineRangeRig = [&]() -> Warp::Id{
+            for(Warp::Id candidate : {Loom::motionCharacterForEntity(stage, selected),
+                                      Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter)}){
+                const Warp::Entity* entity = stage.get(candidate);
+                if(entity && entity->animator && !entity->animator->animations.empty()) return candidate;
+            }
+            return Warp::None;
+        };
+        //Take (BVH) aktivnog klipa lika i kadar scene na kojem pocinje; prazno kad klip nije iz Kimoda
+        auto timelineTakeOf = [&](Warp::Id rig) -> std::pair<fs::path, double>{
+            const Warp::Entity* entity = stage.get(rig);
+            if(!entity || !entity->animator || entity->animator->animations.empty()) return {};
+            const size_t index = std::min(entity->animator->activeAnimation, entity->animator->animations.size() - 1);
+            const auto found = takeByClip.find({rig, index});
+            if(found == takeByClip.end() || !fs::is_regular_file(found->second)) return {};
+            return {found->second, entity->animator->animations[index].startFrame};
         };
 
         auto startMotionBricksGeneration = [&](){
@@ -2919,6 +2946,7 @@
                                 animatorRigDrag.control = -1;
                             };
                             auto cancelPoseBlend = [&]{
+                                poseRangeEnd = -1.0;
                                 if(poseEdit.active)
                                     if(Warp::Entity* owner = stage.get(poseEdit.rig); owner && owner->animator &&
                                        poseEdit.animation < owner->animator->animations.size())
@@ -2956,7 +2984,19 @@
                             };
                             //Sesiju smije zatvoriti i netko drugi (Escape, zatvaranje Animatora): tada
                             //koraci poze nemaju sto uredjivati i tok se vrati na pocetak
-                            if(poseBlendStep != 0 && !poseEdit.active) poseBlendStep = 0;
+                            if(poseBlendStep != 0 && !poseEdit.active){ poseBlendStep = 0; poseRangeEnd = -1.0; }
+                            //Radnja "Fix pose" s timelinea: sesija krece na pocetku raspona, a druga
+                            //poza je vec zadana krajem raspona - ne treba je trazeti playheadom
+                            if(poseRangeRequest.rig == animatorRig && poseRangeRequest.first >= active.startFrame &&
+                               poseRangeRequest.last <= active.endFrame && !poseEdit.active){
+                                beginPoseSession(poseRangeRequest.first);
+                                goToPoseFrame(poseRangeRequest.first);
+                                poseBlendFirst = poseRangeRequest.first;
+                                poseBlendSecond = -1.0;
+                                poseRangeEnd = poseRangeRequest.last;
+                                poseBlendStep = 3;
+                                poseRangeRequest = {};
+                            }
                             const bool editTarget = !poseEdit.active || (poseEdit.rig == animatorRig &&
                                                                          poseEdit.animation == animator.activeAnimation);
                             const std::string here = std::to_string(int(poseFrame));
@@ -2977,7 +3017,15 @@
                                                     : "Move the playhead inside the clip.");
                             }else if(poseBlendStep == 3){
                                 ui.status("Pose 1 - frame " + std::to_string(int(poseBlendFirst)) + ": fix it in the viewport", theme.accent);
-                                if(poseFrame == poseBlendFirst || !frameInClip){
+                                if(poseRangeEnd >= 0.0){
+                                    if(ui.primaryButton("NEXT: POSE FRAME " + std::to_string(int(poseRangeEnd)))){
+                                        storeCurrentKey();
+                                        poseBlendSecond = poseRangeEnd;
+                                        goToPoseFrame(poseRangeEnd);
+                                        poseBlendStep = 4;
+                                        poseRangeEnd = -1.0;
+                                    }
+                                }else if(poseFrame == poseBlendFirst || !frameInClip){
                                     ui.hint("Then move the playhead to where the second pose goes.");
                                 }else if(ui.primaryButton("SECOND POSE AT FRAME " + here)){
                                     storeCurrentKey();
@@ -3841,10 +3889,74 @@
                 }
             }
             const Treadle::Ui::Region scrub = ui.region("timeline", track);
-            if(scrub.held && scrub.mouseX >= contentTrack.x){
-                const double f = stage.startFrame + double((scrub.mouseX - contentTrack.x) / contentTrack.width) * span;
-                frame = std::clamp(std::round(f), stage.startFrame, stage.endFrame);
-                playing = false;
+            //ODABIR RASPONA (LoomTimelineRange.h): kad je odabran lik s animacijom, povlacenje ispod
+            //ravnala oznaci raspon, a klik i dalje pomice playhead. Ravnalo je uvijek cisti scrub
+            const Warp::Id rangeRig = timelineRangeRig();
+            if(rangeRig == Warp::None) timelineRange.clear();
+            if(scrub.pressed) timelineRangeOnRuler = scrub.mouseY < track.y + 14.0f || rangeRig == Warp::None;
+            auto frameAtX = [&](float x){
+                const double f = stage.startFrame + double((std::max(x, contentTrack.x) - contentTrack.x) / contentTrack.width) * span;
+                return std::clamp(std::round(f), stage.startFrame, stage.endFrame);
+            };
+            if(timelineRangeOnRuler){
+                if(scrub.held && scrub.mouseX >= contentTrack.x){
+                    frame = frameAtX(scrub.mouseX);
+                    playing = false;
+                }
+            }else{
+                const Loom::TimelineRangeInput gesture = Loom::updateTimelineRange(
+                    timelineRange, scrub.pressed, scrub.held, scrub.mouseX, frameAtX);
+                if(gesture.setPlayhead){ frame = gesture.playhead; playing = false; }
+            }
+            if(timelineRange.active){
+                const float left = xOf(timelineRange.first), right = xOf(timelineRange.last);
+                canvas.rect(left, track.y, std::max(2.0f, right - left), track.height,
+                            Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.20f});
+                canvas.rect(left, track.y, 2.0f, track.height, theme.accent);
+                canvas.rect(right - 2.0f, track.y, 2.0f, track.height, theme.accent);
+            }
+            if(timelineRange.active && !timelineRange.dragging && rangeRig != Warp::None){
+                //Radnje iznad odabira: plutaju nad donjim rubom pogleda, sredisnje nad rasponom
+                const float barWidth = timelineRegenOpen ? 420.0f : 330.0f;
+                const float barHeight = timelineRegenOpen ? 196.0f : 94.0f;
+                const float centre = (xOf(timelineRange.first) + xOf(timelineRange.last)) * 0.5f;
+                const float barX = std::clamp(centre - barWidth * 0.5f, area.x + 8.0f, area.x + area.width - barWidth - 8.0f);
+                ui.panel("FRAMES " + std::to_string(int(timelineRange.first)) + " - " + std::to_string(int(timelineRange.last)),
+                         barX, area.y - barHeight - 44.0f, barWidth);   //iznad trake SCENE PULSE pogleda
+                const int picked = ui.buttonRow({"Fix pose", "Regenerate", "X"});
+                if(picked == 0){
+                    //Pose blend (LoomPoseBlend.h) s pocetkom i krajem raspona; Inspector nastavi
+                    poseRangeRequest = {rangeRig, timelineRange.first, timelineRange.last};
+                    selected = rangeRig;
+                    focus = Focus::Entity;
+                    timelineRange.clear();
+                    timelineRegenOpen = false;
+                    message = "Fix the pose at the first frame in the viewport, then press NEXT in the Inspector.";
+                }
+                if(picked == 1) timelineRegenOpen = !timelineRegenOpen;
+                if(picked == 2){ timelineRange.clear(); timelineRegenOpen = false; }
+                if(timelineRegenOpen && timelineRange.active){
+                    Treadle::Ui::TextFieldConfig field;
+                    field.lines = 2;
+                    field.maxLength = 400;
+                    field.placeholder = "What should happen here? (empty: same prompt as the take)";
+                    ui.textField("timeline-regen-prompt", &timelineRegenPrompt, field);
+                    const auto take = timelineTakeOf(rangeRig);
+                    if(take.first.empty()){
+                        ui.hint("This clip is not a Kimodo take, so it cannot be partly regenerated.");
+                    }else if(ui.primaryButton("REGENERATE FRAMES " + std::to_string(int(timelineRange.first)) + "-" +
+                                              std::to_string(int(timelineRange.last)), !job.running)){
+                        //Kadrovi scene u kadrove takea (30 Hz) - kimodo_range.py radi u njima
+                        const double takeStart = take.second;
+                        auto takeFrame = [&](double sceneFrame){
+                            return int(std::lround((sceneFrame - takeStart) * Loom::kimodoMotionFps / std::max(1.0, stage.framesPerSecond)));
+                        };
+                        startMotionRangeRegeneration(take.first, std::max(0, takeFrame(timelineRange.first)),
+                                                     std::max(0, takeFrame(timelineRange.last)), timelineRegenPrompt, takeStart);
+                        timelineRange.clear();
+                        timelineRegenOpen = false;
+                    }
+                }
             }
         }
 
