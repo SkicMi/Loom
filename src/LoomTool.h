@@ -213,7 +213,11 @@ inline bool pistolGrip(const ToolGeometry& geometry, const ToolAxes& frame, Warp
     return true;
 }
 
-inline Warp::Grip defaultGrip(const ToolGeometry& geometry, const std::string& preset){
+//unitsPerMetre (1 / mjerilo toola; 0 = ne zna se): sa stitnikom saka sjedne UZ stitnik kao prava -
+//sredina dlana 7 cm ispod ruba stitnika (pola sirine sake 1.80 m lika i kaziprst ne na stitniku;
+//5.5 cm je na macu stavilo kaziprst na stitnik). Bez mjerila (i kad je drska kraca od sake)
+//grip je na sredini drske - tako je bio i prije, pa je na macu dlan zavrsio uz jabuku
+inline Warp::Grip defaultGrip(const ToolGeometry& geometry, const std::string& preset, float unitsPerMetre = 0.0f){
     Warp::Grip grip;
     grip.preset = preset;
     if(geometry.empty()) return grip;
@@ -242,8 +246,20 @@ inline Warp::Grip defaultGrip(const ToolGeometry& geometry, const std::string& p
     else if(widest >= bins - 2){ at = 0.15f; toward = +1; }     //glava na gornjem kraju: drska na donjem
     else{
         const float guard = (float(widest) + 0.5f) / float(bins);
-        if(guard <= 0.5f){ at = 0.5f * (guard - 0.5f / float(bins)); toward = +1; }
-        else{ at = 0.5f * (guard + 0.5f / float(bins) + 1.0f); toward = -1; }
+        //Tocan rub stitnika prema drsci: krajnji vrh sirine vise od 60 % stitnika uz najsiri odsjecak
+        //(24 odsjecka su pregruba - rub bi pao i do 4 cm u drsku)
+        const bool below = guard <= 0.5f;
+        float edge = below ? 1.0f : 0.0f;
+        for(const glm::vec3& v : geometry.mesh.vertices){
+            const float t = (glm::dot(v - frame.centre, axis) - low) / length;
+            if(std::fabs(t - guard) > 3.0f / float(bins)) continue;
+            if(glm::length((v - frame.centre) - axis * glm::dot(v - frame.centre, axis)) < 0.6f * width[size_t(widest)]) continue;
+            edge = below ? std::min(edge, t) : std::max(edge, t);
+        }
+        const float middle = below ? 0.5f * edge : 0.5f * (edge + 1.0f);
+        const float halfHand = unitsPerMetre > 0.0f ? 0.07f * unitsPerMetre / length : -1.0f;
+        if(below){ at = halfHand > 0.0f ? std::max(middle, edge - halfHand) : middle; toward = +1; }
+        else{ at = halfHand > 0.0f ? std::min(middle, edge + halfHand) : middle; toward = -1; }
     }
     const int bin = std::clamp(int(at * float(bins)), 0, bins - 1);
     const glm::vec3 offset = count[size_t(bin)] > 0 ? sum[size_t(bin)] / float(count[size_t(bin)]) : glm::vec3(0.0f);
@@ -413,8 +429,14 @@ inline glm::mat4 heldWorld(const Warp::Stage& stage, Warp::Id item, Warp::Grip& 
     };
     glm::mat4 best = world, candidate;
     float bestScore = std::numeric_limits<float>::max();
+    //Os gripa gleda prema stitniku/glavi: pozitivan pomak gura saku NA stitnik, gdje se prsti "dobro"
+    //omotaju oko sipke stitnika (na macu je saka tako zavrsila na stitniku, kaziprst uz ostricu). Grip
+    //je vec uz stitnik (defaultGrip), pa se trazi samo prema drugom kraju. Pistolj: srednji prst treba
+    //moci i naprijed, ispod branika okidaca
+    const bool pistol = grip.preset == "pistol";
     for(const float push : {0.0f, 0.01f})
         for(const float slide : {0.0f, -0.015f, -0.03f, 0.015f}){
+            if(slide > 0.0f && !pistol) continue;
             const float score = scoreAt(slide, push, candidate);
             if(score < bestScore){ bestScore = score; best = candidate; }
         }

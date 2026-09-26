@@ -123,9 +123,13 @@ int main(){
         sword.low = {-0.05f, 0.0f, -0.015f};
         sword.high = {0.05f, 1.0f, 0.015f};
         const Warp::Grip swordGrip = Loom::defaultGrip(sword, "grip");
-        report.check("mac: grip na sredini drske (ispod stitnika), os prema ostrici",
-                     std::fabs(swordGrip.point.y - 0.1f) < 0.03f && glm::dot(swordGrip.axis, glm::vec3(0, 1, 0)) > 0.999f,
+        report.check("mac bez mjerila: grip na sredini drske (ispod stitnika), os prema ostrici",
+                     std::fabs(swordGrip.point.y - 0.1f) < 0.01f && glm::dot(swordGrip.axis, glm::vec3(0, 1, 0)) > 0.999f,
                      fmt("y %.3f, os %.0f", swordGrip.point.y, swordGrip.axis.y));
+        //S mjerilom saka sjedne uz stitnik kao prava: sredina dlana 7 cm ispod ruba stitnika (y 0.2)
+        const Warp::Grip nearGuard = Loom::defaultGrip(sword, "grip", 1.0f);
+        report.check("mac u metrima: dlan 7 cm ispod stitnika", std::fabs(nearGuard.point.y - 0.13f) < 0.005f,
+                     fmt("y %.3f (ocekivano 0.130)", nearGuard.point.y));
     }
     Warp::Grip middle = first;
     middle.point = glm::vec3(0.0f);

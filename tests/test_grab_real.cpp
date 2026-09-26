@@ -138,8 +138,11 @@ int main(){
         report.check((label + ": drska u dlanu (os do 1 cm od ocekivanog), dijagonalno 10-35 st").c_str(),
                      std::fabs(r.palm - r.palmExpected) < 1.0f && r.angle > 10.0f && r.angle < 35.0f,
                      fmt("dlan %.1f / %.1f cm, kut %.0f st", r.palm, r.palmExpected, r.angle));
-        report.check((label + ": prsti omotani (linija kosti vrha do 1.2 cm od drske, srednji preko 130 st oko osi), bez prodora").c_str(),
-                     r.farthest < 1.2f && r.wrap > 130.0f && !r.penetrates,
+        //Omatanje oko osi ovisi o debljini drske: saka je na macu uz stitnik, na kozni omot (polumjer
+        //1.7-2.5 cm, izmjereno), ne na tanki prsten uz jabuku (1.3 cm, ondje je bilo 170 st). Vrhovi do
+        //drske su glavna mjera; omatanje samo da prsti nisu ostali ispruzeni
+        report.check((label + ": prsti omotani (linija kosti vrha do 1.2 cm od drske, srednji preko 100 st oko osi), bez prodora").c_str(),
+                     r.farthest < 1.2f && r.wrap > 100.0f && !r.penetrates,
                      fmt("vrhovi %.1f cm, omatanje %.0f st, prodor %d", r.farthest, r.wrap, int(r.penetrates)));
         report.check((label + ": palac uz drsku (do 1.5 cm)").c_str(), r.thumb < 1.5f, fmt("%.1f cm", r.thumb));
         report.check((label + ": plosnati dio u dlanu, ostrica naprijed (sirina 70-90 st od normale dlana)").c_str(),
@@ -159,7 +162,7 @@ int main(){
         group->local.translation = glm::vec3(0.4f, 0.0f, 0.3f);
         Warp::Tool tool;
         tool.kind = "weapon";
-        tool.grips.push_back(Loom::defaultGrip(geometry, "grip"));
+        tool.grips.push_back(Loom::defaultGrip(geometry, "grip", 1.0f / group->local.scale.x));
         group->tool = tool;
         checkGrab(grab(stage, sword.group, "mac"), "mac");
     }else std::printf("   mac preskocen: nema %s\n", swordPath.string().c_str());

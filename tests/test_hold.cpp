@@ -112,5 +112,43 @@ int main(){
     report.check("projekt spremi i procita hvat", same && worst < 1e-5f && loaded.fingerprint() == s.stage.fingerprint(),
                  fmt("%s najvise %.2e m", error.c_str(), worst));
     std::filesystem::remove(path);
+    //Pogled na saku: kost tijela (bedro) tocno izmedju sake i zeljenog smjera kamere -> drugi smjer, bez
+    //zaklanjanja; bez bedra ostaje zeljeni smjer
+    {
+        Warp::Stage body;
+        const Warp::Id rig = body.create("Rig");
+        const Warp::Id pelvis = body.create("pelvis", rig);
+        body.get(pelvis)->joint = Warp::Joint{};
+        body.get(pelvis)->local.translation = glm::vec3(0.0f, 1.0f, 0.0f);
+        const Warp::Id arm = body.create("lowerarm", pelvis);
+        body.get(arm)->joint = Warp::Joint{};
+        body.get(arm)->local.translation = glm::vec3(0.3f, -0.1f, 0.0f);
+        const Warp::Id wrist = body.create("hand", arm);
+        body.get(wrist)->joint = Warp::Joint{};
+        body.get(wrist)->local.translation = glm::vec3(0.0f, -0.25f, 0.0f);
+        const Loom::HoldHand viewHand{rig, wrist, Warp::None, true, arm};
+        const glm::vec3 want(0.0f, 0.0f, 1.0f);
+        const glm::vec3 open = Loom::holdViewDirection(body, viewHand, 1.0, 0.6f, want);
+        //Bedro: odsjecak ispred sake po +z, od 20 do 50 cm
+        const Warp::Id thigh = body.create("thigh", pelvis);
+        body.get(thigh)->joint = Warp::Joint{};
+        body.get(thigh)->local.translation = glm::vec3(0.3f, -0.1f, 0.3f);
+        const Warp::Id knee = body.create("calf", thigh);
+        body.get(knee)->joint = Warp::Joint{};
+        body.get(knee)->local.translation = glm::vec3(0.0f, -0.5f, 0.0f);
+        const glm::vec3 blocked = Loom::holdViewDirection(body, viewHand, 1.0, 0.6f, want);
+        const glm::vec3 palm = Loom::holdPalmPoint(body, viewHand, 1.0);
+        float clearance = 1e9f;
+        const glm::vec3 a(body.worldMatrix(thigh, 1.0)[3]), b(body.worldMatrix(knee, 1.0)[3]);
+        for(int i = 0; i <= 20; ++i){
+            const glm::vec3 p = palm + blocked * 0.6f * (0.15f + 0.85f * float(i) / 20.0f);
+            const glm::vec3 ab = b - a;
+            const float t = std::clamp(glm::dot(p - a, ab) / glm::dot(ab, ab), 0.0f, 1.0f);
+            clearance = std::min(clearance, glm::length(p - (a + ab * t)));
+        }
+        report.check("pogled na saku: bez bedra zeljeni smjer, s bedrom zaobidje ga",
+                     glm::dot(open, want) > 0.9f && clearance > 0.15f,
+                     fmt("slobodno cos %.2f, s bedrom razmak %.2f m", glm::dot(open, want), clearance));
+    }
     return report.result();
 }

@@ -1241,6 +1241,8 @@
             if(Loom::HandFrame handFrame; Loom::handFrameAt(stage, hand, frame, handFrame))
                 from = handFrame.across - handFrame.normal * 0.1f + glm::vec3(0.0f, 0.35f, 0.0f);
             from = glm::normalize(from);
+            //Iz tog smjera tijelo (bedro uz saku u A-pozi) zna zakloniti saku: najslobodniji pogled blizu njega
+            from = Loom::holdViewDirection(stage, hand, frame, std::max(0.3f, handSize * 6.0f), from);
             view.lookThrough = Warp::None;
             view.orbit.target = palm;
             view.orbit.distance = std::max(0.3f, handSize * 6.0f);
@@ -2151,7 +2153,12 @@
                 grip.hand = held.hand;
                 tool.grips.push_back(grip);
             }
-            if(tool.grips.empty()) tool.grips.push_back(Loom::defaultGrip(geometry, Loom::gripForItemName(path.stem().string())));
+            if(tool.grips.empty()){
+                //Mjerilo toola u svijetu (predmet je pod Scene_Root): grip uz stitnik treba metre
+                const float worldScale = glm::length(glm::vec3(stage.worldMatrix(report.group, frame)[0]));
+                tool.grips.push_back(Loom::defaultGrip(geometry, Loom::gripForItemName(path.stem().string()),
+                                                       worldScale > 1e-9f ? 1.0f / worldScale : 0.0f));
+            }
             group->tool = tool;
             afterModelImport(report, wasEmpty);
             selected = report.group;
@@ -4210,7 +4217,9 @@
                     const Loom::ToolGeometry& geometry = toolEditorGeometry;
                     const glm::vec3 size = geometry.high - geometry.low;
                     const float scale = toolEntity->local.scale.x;
-                    if(tool.grips.empty()) tool.grips.push_back(Loom::defaultGrip(geometry, Loom::gripForItemName(toolEntity->name)));
+                    const float toolWorldScale = glm::length(glm::vec3(stage.worldMatrix(toolRoot, frame)[0]));
+                    const float toolUnitsPerMetre = toolWorldScale > 1e-9f ? 1.0f / toolWorldScale : 0.0f;
+                    if(tool.grips.empty()) tool.grips.push_back(Loom::defaultGrip(geometry, Loom::gripForItemName(toolEntity->name), toolUnitsPerMetre));
                     toolEditorGrip = std::clamp(toolEditorGrip, 0, int(tool.grips.size()) - 1);
                     bool changed = false;
                     if(holdHands.empty()) holdHands = holdHandsInScene();
@@ -4315,7 +4324,7 @@
                         for(size_t g = 0; g < tool.grips.size(); ++g) gripNames.push_back("Grip " + std::to_string(g + 1));
                         gripNames.push_back("+");
                         if(const int pick = ui.pills(gripNames, toolEditorGrip); pick >= 0){
-                            if(pick == int(tool.grips.size())){ tool.grips.push_back(Loom::defaultGrip(geometry, grip.preset)); changed = true; }
+                            if(pick == int(tool.grips.size())){ tool.grips.push_back(Loom::defaultGrip(geometry, grip.preset, toolUnitsPerMetre)); changed = true; }
                             toolEditorGrip = pick;
                         }
                         Warp::Grip& edited = tool.grips[size_t(toolEditorGrip)];
@@ -4328,7 +4337,7 @@
                         char autoText[96];
                         std::snprintf(autoText, sizeof(autoText), "0 = measured from the model (%.1f cm).", double(autoThickness * scale * 100.0f));
                         ui.hint(autoText);
-                        if(ui.button("Find the handle again")){ edited = Loom::defaultGrip(geometry, edited.preset); changed = true; }
+                        if(ui.button("Find the handle again")){ edited = Loom::defaultGrip(geometry, edited.preset, toolUnitsPerMetre); changed = true; }
                         if(tool.grips.size() > 1 && ui.button("Delete this grip")){ tool.grips.erase(tool.grips.begin() + toolEditorGrip); toolEditorGrip = 0; changed = true; }
                     }
                     //Hvatovi ovog toola odmah preuzmu promjenu: drska iznova u dlan, prsti iznova oko nje

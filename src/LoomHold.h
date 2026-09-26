@@ -97,6 +97,58 @@ inline int nearestHoldHandOnScreen(const Warp::Stage& stage, const std::vector<H
     return best;
 }
 
+//POGLED NA SAKU: smjer od dlana prema kameri s kojeg tijelo ne zaklanja saku. Prvi pogled (sa strane
+//palca) je u A-pozi, sa sakom uz bedro, gledao kroz nogu. Isproba se 12 smjerova oko sake na tri
+//visine; mjera je najmanji razmak crte pogleda (bez zadnjih 15 % uz dlan) od kostiju lika bez same sake
+//i podlaktice. Najslobodniji pobijedi, uz blagu prednost za `preferred`
+inline glm::vec3 holdViewDirection(const Warp::Stage& stage, const HoldHand& hand, double frame, float distance,
+                                   const glm::vec3& preferred){
+    const glm::vec3 palm = holdPalmPoint(stage, hand, frame);
+    //Kosti tijela kao odsjecci zglob - roditelj; saka i sve ispod nje, i podlaktica, ne racunaju se
+    auto underHand = [&](Warp::Id id){
+        for(Warp::Id walk = id; walk != Warp::None;){
+            if(walk == hand.hand || walk == hand.forearm) return true;
+            const Warp::Entity* e = stage.get(walk);
+            walk = e ? e->parent : Warp::None;
+        }
+        return false;
+    };
+    std::vector<std::pair<glm::vec3, glm::vec3>> bones;
+    stage.walk([&](const Warp::Entity& e, int){
+        if(!e.joint || underHand(e.id)) return;
+        const Warp::Entity* parent = stage.get(e.parent);
+        if(!parent || !parent->joint) return;
+        if(hand.rig != Warp::None){
+            bool inRig = false;
+            for(Warp::Id walk = e.id; walk != Warp::None && !inRig;){ inRig = walk == hand.rig; const Warp::Entity* w = stage.get(walk); walk = w ? w->parent : Warp::None; }
+            if(!inRig) return;
+        }
+        bones.push_back({glm::vec3(stage.worldMatrix(e.id, frame)[3]), glm::vec3(stage.worldMatrix(e.parent, frame)[3])});
+    });
+    auto pointSegment = [](const glm::vec3& p, const glm::vec3& a, const glm::vec3& b){
+        const glm::vec3 ab = b - a;
+        const float t = glm::dot(ab, ab) > 1e-12f ? std::clamp(glm::dot(p - a, ab) / glm::dot(ab, ab), 0.0f, 1.0f) : 0.0f;
+        return glm::length(p - (a + ab * t));
+    };
+    const glm::vec3 want = glm::length(preferred) > 1e-6f ? glm::normalize(preferred) : glm::vec3(0.0f, 0.3f, 1.0f);
+    glm::vec3 best = want;
+    float bestScore = -1e9f;
+    for(const float pitch : {0.15f, 0.45f, -0.15f})
+        for(int k = 0; k < 12; ++k){
+            const float yaw = float(k) / 12.0f * 6.2831853f;
+            const glm::vec3 dir = glm::normalize(glm::vec3(std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch)));
+            float clearance = 1e9f;
+            for(int i = 0; i <= 10; ++i){
+                const glm::vec3 p = palm + dir * distance * (0.15f + 0.85f * float(i) / 10.0f);
+                for(const auto& [a, b] : bones) clearance = std::min(clearance, pointSegment(p, a, b));
+            }
+            //Razmak preko ~pola udaljenosti je dovoljan: dalje odlucuje prednost smjera
+            const float score = std::min(clearance, 0.5f * distance) + 0.05f * distance * glm::dot(dir, want);
+            if(score > bestScore){ bestScore = score; best = dir; }
+        }
+    return best;
+}
+
 //Hvat koji drzi predmet u ovom kadru (on <= kadar <= off), ili -1
 inline int holdAt(const Warp::Entity& item, double frame){
     for(size_t i = 0; i < item.holds.size(); ++i)
