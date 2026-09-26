@@ -523,6 +523,12 @@ add_dependencies(LoomDesk LoomShaders VideoSolve)
 
 # loom-render - render projekta iz kamere bez prozora (LoomTracer). Isti most kao gumb Render u
 # editoru (src/LoomRender.h), ali bez Vulkana: radi i na stroju bez kartice i zaslona
+#AgentOfWeavers: podaci za trening iz Procedura pravila, bez prozora (src/procedura_gen.cpp)
+add_executable(ProceduraGen src/procedura_gen.cpp)
+set_target_properties(ProceduraGen PROPERTIES OUTPUT_NAME procedura-gen)
+target_link_libraries(ProceduraGen PRIVATE Engine Warp Spool Treadle)
+target_compile_definitions(ProceduraGen PRIVATE LOOM_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
 add_executable(LoomRender src/loom_render.cpp)
 set_target_properties(LoomRender PROPERTIES OUTPUT_NAME loom-render)
 target_link_libraries(LoomRender PRIVATE Warp Spool Tracer TracerGpu)

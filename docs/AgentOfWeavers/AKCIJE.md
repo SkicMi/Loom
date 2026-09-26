@@ -4,7 +4,38 @@ Najnovije gore. Svaka akcija: datum, što, zašto, kako je provjereno.
 
 ## Sadašnje
 
-### STAO SAM OVDJE (2026-09-26, ~22:40) — koraci 1 i 2 gotovi, sljedeći je ProceduraGen
+### STAO SAM OVDJE (2026-09-27, ~00:30) — podaci za prvi model (zgrade, engleski) gotovi
+Korisnik: opisi i model **isključivo na engleskom**; odobreno preuzimanje encodera; prije treninga riješiti
+**UV i materijale** tako da ih model zna.
+- **1. Shema kao podatak** — `src/LoomProceduraSchema.h`: 12 tipova čvorova (footprint, floor_stack, room_split,
+  walls, slab, roof, interior, furnish, place_assets, merge, set_material, uv_project), svaki parametar s vrstom,
+  rasponom, korakom ili opcijama i tipovi portova; `schemaJson()`; `actionSchemaVersion = 1`.
+- **2. Recept ↔ akcije** — `src/LoomProceduraActions.h`: `ADD/SET/CONNECT/END`, kanonski redoslijed, sve vrijednosti
+  na mreži sheme; `actionsToDocument` javlja prvi nedozvoljeni korak (isto što dekoder maskira).
+- **3. ProceduraGen** — `src/procedura_gen.cpp` (`build/procedura-gen`), predložak i uzorkovanje u
+  `src/LoomProceduraHouses.h`: kuća + materijal po semantici (vanjski zid, krov, okviri, vrata) + UV projekcija.
+  Fail → Why → Retry: pad se zapisuje s razlogom, pravilo popravka mijenja jednu stvar, ponovni pokušaj nosi
+  `retry_of` i `repair`. 10 000 kuća (seed 1): 9992 prolazi, 478 nakon popravka, 97 akcija po kući, 28 s.
+- **4. Opisi** — tri engleska opisa po kući (kratak, srednji, detaljan), samo istinite činjenice iz izračunatog plana
+  (sobe, katovi) i parametara (krov, materijali, prozori, stil).
+- **5. Encoder** — `tools/agentofweavers/` (venv, torch 2.11 cu128, `embed.py`): zamrznuti `BAAI/bge-base-en-v1.5`,
+  768-d; 29 976 opisa → `.cache/agentofweavers/data/houses-v0.1/embeddings.f16.npy` (44 MB).
+- **6. Codex** — `docs/AgentOfWeavers/heldout/CODEX_PROMPT.md`: 200 held-out promptova s `expect` ključevima i
+  provjernom skriptom.
+- Testovi: `test_procedura_actions` 15/15 (povratni put, 9 vrsta nedozvoljenih koraka, shema, 60 kuća s opisima).
+  Gradi se u `build-aow` jer je drugi agent gradio u `build/`.
+
+**Sljedeće (redom):**
+1. **UV i materijali prije treninga** (korisnik): prave PBR teksture po materijalu (boja, hrapavost, normal) umjesto
+   same boje, UV u metrima po plohi (zid, pod, krov) i provjera u editoru/Blenderu da se teksture ne rastežu;
+   materijali poda i unutarnjih zidova (sad samo vanjski zid, krov, okviri, vrata) u predložak i shemu.
+2. Prvi model (3–5M, dekoder akcija nad ugradnjom opisa, maskiranje iz `schema.json`), pa metrike: udio valjanih
+   recepata, točnost po parametru, prolaz kroz evaluate, na val skupu i na held-out promptovima.
+3. Kad Codex napiše held-out: `embed.py --prompts` i evaluator koji uspoređuje `expect` s receptom.
+4. Parafraze opisa (sada su predlošci; "cozy", "cottage" itd. nisu u rječniku).
+5. Preostalo iz ranijeg popisa: više oblika alata/rekvizita, rekviziti u rasporedu.
+
+### 2026-09-26, ~22:40 — Export GLB i uvoz hvata (bivši "STAO SAM OVDJE")
 - **1. Export GLB** (`862f2a6`): gumb u Procedura panelu piše `Ime.glb` uz recept; ako recept završava jednim
   Asset čvorom alata/oružja, datoteka nosi `extras.loom_tool` s hvatom za te parametre. Tablica boja premještena u
   `src/LoomProceduraLook.h` (u tuđem `LoomPbr.h` samo include i brisanje funkcije). Test 26/26.
