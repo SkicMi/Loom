@@ -33,6 +33,20 @@ void ComputeMaterial::setStorageBuffer(uint32_t binding, const VulkanBuffer& buf
     ++storageBuffers;
 }
 
+void ComputeMaterial::setAccelerationStructure(uint32_t binding, vk::AccelerationStructureKHR structure){
+    vk::WriteDescriptorSetAccelerationStructureKHR info;
+    info.accelerationStructureCount = 1;
+    info.pAccelerationStructures = &structure;
+    vk::WriteDescriptorSet write;
+    write.dstSet = *descriptorSet;
+    write.dstBinding = binding;
+    write.dstArrayElement = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = vk::DescriptorType::eAccelerationStructureKHR;
+    write.pNext = &info;
+    device.getDevice().updateDescriptorSets(write, nullptr);
+}
+
 void ComputeMaterial::setStorageImage(uint32_t binding, const VulkanImage& image, vk::ImageLayout finalLayout){
 
     //the format is already guarded in VulkanImage::build, what is left to catch here is an image that was simply never created for this job

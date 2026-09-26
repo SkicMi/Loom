@@ -62,6 +62,7 @@ struct CompiledScene{
     glm::mat4 cameraInverse{1.0f};      //svijet -> kamera
     std::vector<glm::mat4> volumeInverse;   //svijet -> kutija, po Scene::volumes
     double buildSeconds = 0.0;
+    uint32_t refits = 0;                //koliko je puta ovo stablo osvjezeno od zadnje gradnje (0: gradjeno)
 
     CompiledScene() = default;
     CompiledScene(const CompiledScene&) = delete;
@@ -73,5 +74,10 @@ struct CompiledScene{
 
 //Scena se preuzima (move). Nikad ne vraca nullptr
 std::shared_ptr<const CompiledScene> compile(Scene scene);
+
+//Sekvenca: kad prosli kadar ima iste trokute (indeksi, materijali, objekti), BVH se ne gradi
+//nego osvjezi (Bvh::refit) - raspored iz proslog kadra, nove kutije. Svakih `rebuildEvery`
+//osvjezavanja se ipak gradi iznova, da se stablo ne istrosi kako se scena mice
+std::shared_ptr<const CompiledScene> compile(Scene scene, const CompiledScene* previous, uint32_t rebuildEvery = 8);
 
 }

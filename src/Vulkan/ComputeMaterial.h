@@ -35,6 +35,9 @@ class ComputeMaterial{
     //which is where a render pass or a previous dispatch leaves it
     void setSampledImage(uint32_t binding, const SampledImage& image);
 
+    //Akceleracijska struktura za ray query (VulkanDevice::hasRayQuery)
+    void setAccelerationStructure(uint32_t binding, vk::AccelerationStructureKHR structure);
+
     //getters
     const VulkanComputePipeline& getPipeline() const {return *pipeline;}
     const vk::raii::DescriptorSet& getDescriptorSet() const {return descriptorSet;}

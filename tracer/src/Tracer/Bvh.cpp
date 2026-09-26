@@ -26,10 +26,50 @@ constexpr uint32_t MaxLeaf = 8;         //list veci od ovoga samo kad se trokuti
 
 }
 
-void Bvh::build(const std::vector<glm::vec3>& positions, const std::vector<Triangle>& triangles){
+void Bvh::refit(const std::vector<glm::vec3>& positions, const std::vector<Triangle>& triangles,
+                const std::vector<std::vector<glm::vec3>>* keys){
+    if(nodes.empty() || order.size() != triangles.size()){ build(positions, triangles, keys); return; }
+    const uint32_t count = uint32_t(order.size());
+    std::vector<Box> boxes(count);
+    for(uint32_t i = 0; i < count; ++i){
+        const Triangle& t = triangles[order[i]];
+        const glm::vec3& v0 = positions[t.v[0]];
+        prepared[i] = {v0, positions[t.v[1]] - v0, positions[t.v[2]] - v0};
+        for(int k = 0; k < 3; ++k) boxes[i].grow(positions[t.v[k]]);
+        if(keys) for(const std::vector<glm::vec3>& key : *keys) for(int k = 0; k < 3; ++k) boxes[i].grow(key[t.v[k]]);
+    }
+    keyed.clear();
+    if(keys && keys->size() >= 2){
+        keyed.resize(keys->size());
+        for(size_t k = 0; k < keys->size(); ++k){
+            keyed[k].resize(count);
+            for(uint32_t i = 0; i < count; ++i){
+                const Triangle& t = triangles[order[i]];
+                const glm::vec3& v0 = (*keys)[k][t.v[0]];
+                keyed[k][i] = {v0, (*keys)[k][t.v[1]] - v0, (*keys)[k][t.v[2]] - v0};
+            }
+        }
+    }
+    //Djeca su uvijek iza roditelja u polju: obrnutim redom su vec gotova kad dodje roditelj
+    for(size_t n = nodes.size(); n-- > 0;){
+        Node& node = nodes[n];
+        Box b;
+        if(node.count > 0) for(uint32_t i = node.leftOrFirst; i < node.leftOrFirst + node.count; ++i) b.grow(boxes[i]);
+        else{
+            b.grow(Box{nodes[node.leftOrFirst].min, nodes[node.leftOrFirst].max});
+            b.grow(Box{nodes[node.leftOrFirst + 1].min, nodes[node.leftOrFirst + 1].max});
+        }
+        node.min = b.min;
+        node.max = b.max;
+    }
+}
+
+void Bvh::build(const std::vector<glm::vec3>& positions, const std::vector<Triangle>& triangles,
+                const std::vector<std::vector<glm::vec3>>* keys){
     nodes.clear();
     prepared.clear();
     order.clear();
+    keyed.clear();
     maxDepth = 0;
     const uint32_t count = uint32_t(triangles.size());
     if(count == 0) return;
@@ -38,6 +78,7 @@ void Bvh::build(const std::vector<glm::vec3>& positions, const std::vector<Trian
     std::vector<glm::vec3> centres(count);
     for(uint32_t i = 0; i < count; ++i){
         for(int k = 0; k < 3; ++k) boxes[i].grow(positions[triangles[i].v[k]]);
+        if(keys) for(const std::vector<glm::vec3>& key : *keys) for(int k = 0; k < 3; ++k) boxes[i].grow(key[triangles[i].v[k]]);
         centres[i] = (boxes[i].min + boxes[i].max) * 0.5f;
     }
     order.resize(count);
@@ -136,6 +177,18 @@ void Bvh::build(const std::vector<glm::vec3>& positions, const std::vector<Trian
         const Triangle& t = triangles[order[i]];
         const glm::vec3& v0 = positions[t.v[0]];
         prepared[i] = {v0, positions[t.v[1]] - v0, positions[t.v[2]] - v0};
+    }
+    if(keys && keys->size() >= 2){
+        keyed.resize(keys->size());
+        for(size_t k = 0; k < keys->size(); ++k){
+            const std::vector<glm::vec3>& key = (*keys)[k];
+            keyed[k].resize(count);
+            for(uint32_t i = 0; i < count; ++i){
+                const Triangle& t = triangles[order[i]];
+                const glm::vec3& v0 = key[t.v[0]];
+                keyed[k][i] = {v0, key[t.v[1]] - v0, key[t.v[2]] - v0};
+            }
+        }
     }
     nodes.shrink_to_fit();
 }

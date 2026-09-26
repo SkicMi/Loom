@@ -23,11 +23,14 @@
 #include <Tracer/Renderer.h>
 
 #include <cstdint>
+#include <cstring>
 #include <functional>
+#include <map>
 #include <memory>
 #include <vector>
 
 class LoomInitializer;
+class VulkanBuffer;
 
 namespace TracerGpu{
 
@@ -38,6 +41,34 @@ public:
     ~Pipelines();
     struct State;
     std::unique_ptr<State> state;
+};
+
+//SEKVENCA: spremnici koji se izmedju kadrova obicno ne mijenjaju (teksture s mipmapama, nebo,
+//tablice energije, geometrija mirne scene) ostaju na kartici. Po vezanju pamti hash sadrzaja;
+//isti hash, isti spremnik - bez prijenosa. Drzi ga onaj tko renderira vise kadrova (pogon)
+struct UploadCache{
+    struct Entry{
+        uint64_t hash = 0;
+        size_t bytes = 0;
+        std::shared_ptr<VulkanBuffer> buffer;
+    };
+    std::map<uint32_t, Entry> entries;
+    uint64_t uploadedBytes = 0, reusedBytes = 0;
+
+    //Brz 64-bitni hash (po 8 bajta, mnozenje i posmak) - desetine GB/s, ne usporava prijenos
+    static uint64_t hashBytes(const void* data, size_t count){
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        uint64_t h = 0x9E3779B97F4A7C15ull ^ (count * 0xC2B2AE3D27D4EB4Full);
+        size_t i = 0;
+        for(; i + 8 <= count; i += 8){
+            uint64_t w;
+            std::memcpy(&w, p + i, 8);
+            h = (h ^ (w * 0x87C37B91114253D5ull)) * 0x4CF5AD432745937Full;
+            h ^= h >> 31;
+        }
+        for(; i < count; ++i) h = (h ^ p[i]) * 0x100000001B3ull;
+        return h ^ (h >> 29);
+    }
 };
 
 struct DisplayOptions{
@@ -55,8 +86,9 @@ struct DisplayOptions{
 class GpuTracer{
 public:
     //Prepisuje scenu na karticu (sinkrono, IZVAN kadra) i nulira zbrojeve
+    //allowRayQuery: hardverske zrake kad ih kartica ima (false: uvijek vlastiti BVH, za usporedbu)
     GpuTracer(LoomInitializer& loom, Pipelines& pipelines, std::shared_ptr<const Tracer::CompiledScene> scene,
-              const Tracer::RenderSettings& settings);
+              const Tracer::RenderSettings& settings, bool allowRayQuery = true, UploadCache* cache = nullptr);
     ~GpuTracer();
     GpuTracer(const GpuTracer&) = delete;
     GpuTracer& operator=(const GpuTracer&) = delete;
@@ -69,6 +101,9 @@ public:
     void recordDisplay(const DisplayOptions& options);
     //Filtar i post (recordDisplay ga zove kad su ukljuceni)
     void recordFinish(const DisplayOptions& options);
+
+    //Racuna li hardverskim zrakama (VK_KHR_ray_query) ili vlastitim BVH-om
+    bool usesRayQuery() const {return usingRayQuery;}
     //Izvan kadra: ceka karticu i cita sliku za prikaz (RGBA8, sRGB)
     std::vector<uint8_t> readDisplay();
 
@@ -100,6 +135,9 @@ private:
     uint32_t size[2] = {0, 0};
     uint32_t sample = 0, row = 0;
     uint32_t backplateTexture = ~0u;
+    bool usingRayQuery = false;
+    void buildAccelerationStructures(const std::vector<Tracer::Bvh::Prepared>& prepared,
+                                     const std::vector<uint32_t>& geometrySlots, uint32_t opaqueCount);
     uint64_t bytes = 0;
 };
 

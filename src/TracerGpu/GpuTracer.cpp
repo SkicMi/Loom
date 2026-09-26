@@ -22,7 +22,7 @@ namespace TracerGpu{
 namespace{
 
 constexpr uint32_t None = 0xFFFFFFFFu;
-constexpr uint32_t TraceBindings = 22;
+constexpr uint32_t TraceBindings = 26;
 constexpr uint32_t ResolveBindings = 7;
 constexpr uint32_t FinishBindings = 16;
 
@@ -40,9 +40,10 @@ struct Params{
     glm::vec4 values;
     glm::uvec4 extra;
     glm::vec4 distortion;
-    glm::vec4 holdout;      //tekstura (bitovi, NONE), bias, broj kutija magle (bitovi), 0
+    glm::vec4 holdout;      //tekstura (bitovi, NONE), bias, broj kutija magle (bitovi), neprozirnih u BLAS-u
+    glm::uvec4 motion;      //kljucevi geometrije, kljucevi kamere, slotova, vrhova
 };
-static_assert(sizeof(Params) == 24 * 16, "Params mora odgovarati shaders/tracer.slang");
+static_assert(sizeof(Params) == 25 * 16, "Params mora odgovarati shaders/tracer.slang");
 
 struct GpuMaterial{
     glm::vec4 baseColor, surface, layers, emission;
@@ -90,21 +91,40 @@ ComputePipelineConfig configFor(const char* shader, uint32_t bindings, uint32_t 
 
 }
 
+//Ray query: vezanja tracera, pa akceleracijska struktura (22) i slot po primitivu (23)
+ComputePipelineConfig rayQueryConfig(){
+    ComputePipelineConfig config = configFor("tracer_rq.comp.spv", TraceBindings, sizeof(TracePush));
+    vk::DescriptorSetLayoutBinding accel;
+    accel.binding = TraceBindings;
+    accel.descriptorType = vk::DescriptorType::eAccelerationStructureKHR;
+    accel.descriptorCount = 1;
+    accel.stageFlags = vk::ShaderStageFlagBits::eCompute;
+    config.descriptorBindings.push_back(accel);
+    config.descriptorBindings.push_back(storageBinding(TraceBindings + 1));
+    return config;
+}
+
 struct Pipelines::State{
     VulkanComputePipeline trace, resolve, finish;
+    std::optional<VulkanComputePipeline> traceRayQuery;     //samo kad kartica ima hardverske zrake
     explicit State(const VulkanDevice& device)
     : trace(device, configFor("tracer.comp.spv", TraceBindings, sizeof(TracePush))),
       resolve(device, configFor("tracer_resolve.comp.spv", ResolveBindings, sizeof(ResolvePush))),
-      finish(device, configFor("tracer_finish.comp.spv", FinishBindings, sizeof(FinishPush))){}
+      finish(device, configFor("tracer_finish.comp.spv", FinishBindings, sizeof(FinishPush))){
+        if(device.hasRayQuery()) traceRayQuery.emplace(device, rayQueryConfig());
+    }
 };
 
 Pipelines::Pipelines(LoomInitializer& loom) : state(std::make_unique<State>(loom.device)){}
 Pipelines::~Pipelines() = default;
 
 struct GpuTracer::Buffers{
-    std::vector<VulkanBuffer> owned;        //sve, redom vezanja 0..19 shadera tracera
+    std::vector<std::shared_ptr<VulkanBuffer>> owned;    //sve, redom vezanja shadera tracera (neki dijeljeni kroz UploadCache)
     std::optional<VulkanBuffer> display;
     std::optional<ComputeMaterial> trace, resolve, finish;
+    //Hardverske zrake: BLAS (dvije geometrije), TLAS s jednom instancom i njihovi spremnici
+    std::vector<VulkanBuffer> rayQuery;
+    std::optional<vk::raii::AccelerationStructureKHR> bottom, top;
     //Za filtar i post na kartici, stvoreno kad prvi put zatreba: A, B, normala+dubina,
     //albedo+pokrivenost, slika, piramida bloom-a
     std::vector<VulkanBuffer> finishing;
@@ -112,7 +132,7 @@ struct GpuTracer::Buffers{
 };
 
 GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_ptr<const Tracer::CompiledScene> scene,
-                     const Tracer::RenderSettings& settings_)
+                     const Tracer::RenderSettings& settings_, bool allowRayQuery, UploadCache* cache)
 : loom(loom_), pipelines(pipelines_), compiled(std::move(scene)), settings(settings_), buffers(std::make_unique<Buffers>()){
     const Tracer::CompiledScene& c = *compiled;
     const Tracer::Scene& world = c.world;
@@ -122,13 +142,19 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
 
     //-- teksture: scena, pa nebo, pa snimka. Osam bita u jedno polje, float u drugo ----------------
     std::vector<glm::uvec4> textureInfo;
-    std::vector<uint32_t> texels;
-    std::vector<glm::vec4> texelsFloat;
-    auto addTexture = [&](const Tracer::Texture& t){
+    std::vector<uint32_t> texelsScene;
+    std::vector<glm::vec4> texelsFloatScene;
+    //frame: snimka i holdout - mijenjaju se svaki kadar, pa idu u svoje spremnike (24, 25) i ne
+    //sprijece da teksture scene ostanu na kartici izmedju kadrova (UploadCache). Zastavica 1 << 16
+    std::vector<uint32_t> frameTexels;
+    std::vector<glm::vec4> frameTexelsFloat;
+    auto addTexture = [&](const Tracer::Texture& t, bool frame = false){
+        std::vector<uint32_t>& texels = frame ? frameTexels : texelsScene;
+        std::vector<glm::vec4>& texelsFloat = frame ? frameTexelsFloat : texelsFloatScene;
         if(!t.valid()){ textureInfo.push_back(glm::uvec4(0)); return uint32_t(textureInfo.size() - 1); }
         //Mipmape iza osnovne razine, redom; broj razina u bitovima 8..15
         const uint32_t levels = uint32_t(std::min<size_t>(255, 1 + t.mips.size()));
-        uint32_t flags = (t.srgb ? 1u : 0u) | (t.repeat ? 4u : 0u) | (levels << 8);
+        uint32_t flags = (t.srgb ? 1u : 0u) | (t.repeat ? 4u : 0u) | (levels << 8) | (frame ? (1u << 16) : 0u);
         uint32_t start = 0;
         const bool floating = !t.floats.empty();
         if(floating){ flags |= 2u; start = uint32_t(texelsFloat.size()); }
@@ -150,8 +176,10 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     for(const Tracer::Texture& t : world.textures) addTexture(t);
     const bool envTextured = c.sky.isTextured();
     const uint32_t envTexture = envTextured ? addTexture(world.environment.map) : None;
-    if(world.backplate.valid()) backplateTexture = addTexture(world.backplate);
-    const uint32_t holdoutTexture = world.holdout.valid() ? addTexture(world.holdout) : None;
+    if(world.backplate.valid()) backplateTexture = addTexture(world.backplate, true);
+    const uint32_t holdoutTexture = world.holdout.valid() ? addTexture(world.holdout, true) : None;
+    if(frameTexels.empty()) frameTexels.push_back(0);
+    if(frameTexelsFloat.empty()) frameTexelsFloat.push_back(glm::vec4(0.0f));
 
     //-- trokuti redom BVH-a i ostalo po izvornom trokutu --------------------------------------------
     const std::vector<Tracer::Bvh::Node>& bvhNodes = c.tree.nodeArray();
@@ -241,7 +269,36 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     p.values = glm::vec4(settings.indirectClamp, world.camera.distorted() ? world.camera.k1 : 0.0f,
                          world.camera.distorted() ? world.camera.k2 : 0.0f, settings.adaptiveThreshold);
     p.distortion = world.camera.distorted() ? world.camera.lens : glm::vec4(0.0f);
-    p.holdout = glm::vec4(bitsToFloat(holdoutTexture), world.holdoutBias, bitsToFloat(uint32_t(world.volumes.size())), 0.0f);
+    //Hardverske zrake: slotovi bez zastavica (neprozirni) pa sa zastavicama - broj prvih u holdout.w
+    //Hardverski motion blur postoji samo kao NVIDIA ekstenzija: scena s pomakom ide kroz vlastiti BVH
+    const bool rayQuery = allowRayQuery && pipelines.state->traceRayQuery.has_value() && !prepared.empty() && !world.motion.active();
+    //-- motion blur: kamera po kljucu (4 stupca), trokuti po kljucu redom BVH-a, normale po kljucu --
+    const std::vector<std::vector<Tracer::Bvh::Prepared>>& keyed = c.tree.preparedKeys();
+    const uint32_t cameraKeys = world.motion.cameras.size() >= 2 ? uint32_t(world.motion.cameras.size()) : 0u;
+    const uint32_t geometryKeys = keyed.size() >= 2 ? uint32_t(keyed.size()) : 0u;
+    std::vector<glm::vec4> motionData;
+    for(uint32_t k = 0; k < cameraKeys; ++k) for(int column = 0; column < 4; ++column) motionData.push_back(world.motion.cameras[k][column]);
+    for(uint32_t k = 0; k < geometryKeys; ++k) for(const Tracer::Bvh::Prepared& t : keyed[k]){
+        motionData.push_back(glm::vec4(t.v0, 0.0f));
+        motionData.push_back(glm::vec4(t.e1, 0.0f));
+        motionData.push_back(glm::vec4(t.e2, 0.0f));
+    }
+    std::vector<glm::vec4> motionNormals;
+    if(geometryKeys) for(uint32_t k = 0; k < geometryKeys; ++k){
+        const std::vector<glm::vec3>& normals = world.motion.normals.size() == geometryKeys ? world.motion.normals[k] : world.normals;
+        for(const glm::vec3& n : normals) motionNormals.push_back(glm::vec4(n, 0.0f));
+    }
+    if(motionData.empty()) motionData.push_back(glm::vec4(0.0f));
+    if(motionNormals.empty()) motionNormals.push_back(glm::vec4(0.0f));
+    p.motion = glm::uvec4(geometryKeys, cameraKeys, uint32_t(prepared.size()), uint32_t(world.positions.size()));
+    std::vector<uint32_t> geometrySlots;
+    uint32_t opaqueCount = 0;
+    if(rayQuery){
+        for(uint32_t slot = 0; slot < prepared.size(); ++slot) if(c.triangleFlags[order[slot]] == 0) geometrySlots.push_back(slot);
+        opaqueCount = uint32_t(geometrySlots.size());
+        for(uint32_t slot = 0; slot < prepared.size(); ++slot) if(c.triangleFlags[order[slot]] != 0) geometrySlots.push_back(slot);
+    }
+    p.holdout = glm::vec4(bitsToFloat(holdoutTexture), world.holdoutBias, bitsToFloat(uint32_t(world.volumes.size())), bitsToFloat(opaqueCount));
     //Magla: 3 retka svijet -> kutija, (albedo, gustoca), (g)
     std::vector<glm::vec4> volumes;
     for(size_t i = 0; i < world.volumes.size(); ++i){
@@ -257,62 +314,191 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     //-- na karticu -------------------------------------------------------------------------------------
     const VulkanDevice& device = loom.device;
     const auto usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eTransferSrc;
-    auto onCard = [&](const void* data, size_t count){
+    //cacheable: sadrzaj koji se u sekvenci obicno ne mijenja (teksture, nebo, tablice energije) -
+    //isti hash, isti spremnik s kartice
+    auto onCard = [&](const void* data, size_t count, bool cacheable = false){
+        const uint32_t binding = uint32_t(buffers->owned.size());
+        uint64_t hash = 0;
+        if(cacheable && cache){
+            hash = UploadCache::hashBytes(data, count);
+            auto found = cache->entries.find(binding);
+            if(found != cache->entries.end() && found->second.hash == hash && found->second.bytes == count){
+                cache->reusedBytes += count;
+                buffers->owned.push_back(found->second.buffer);
+                return;
+            }
+        }
         const vk::DeviceSize size = std::max<vk::DeviceSize>(count, 16);
-        VulkanBuffer card(device, size, usage, MemoryUsage::GPU_ONLY);
+        auto card = std::make_shared<VulkanBuffer>(device, size, usage, MemoryUsage::GPU_ONLY);
         if(count > 0){
             VulkanBuffer staging(device, count, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CPU_TO_GPU);
             staging.upload(data, count);
-            loom.command.copyBuffer(staging.getBuffer(), card.getBuffer(), count);
+            loom.command.copyBuffer(staging.getBuffer(), card->getBuffer(), count);
         }
         bytes += size;
+        if(cacheable && cache){
+            cache->entries[binding] = UploadCache::Entry{hash, count, card};
+            cache->uploadedBytes += count;
+        }
         buffers->owned.push_back(std::move(card));
     };
     //Nule jednom kopirane u svaki zbroj (VulkanCommand ne izlaze fillBuffer izvan kadra)
     const vk::DeviceSize pixelCount = vk::DeviceSize(size[0]) * size[1];
     std::optional<VulkanBuffer> zeros;
     auto zeroed = [&](vk::DeviceSize size){
-        VulkanBuffer card(device, size, usage, MemoryUsage::GPU_ONLY);
+        auto card = std::make_shared<VulkanBuffer>(device, size, usage, MemoryUsage::GPU_ONLY);
         if(!zeros){
             zeros.emplace(device, pixelCount * 16, vk::BufferUsageFlagBits::eTransferSrc, MemoryUsage::CPU_TO_GPU);
             std::vector<uint8_t> blank(size_t(pixelCount * 16), 0);
             zeros->upload(blank.data(), blank.size());
         }
-        loom.command.copyBuffer(zeros->getBuffer(), card.getBuffer(), size);
+        loom.command.copyBuffer(zeros->getBuffer(), card->getBuffer(), size);
         bytes += size;
         buffers->owned.push_back(std::move(card));
     };
     buffers->owned.reserve(TraceBindings);
     onCard(&p, sizeof(p));                                                  //0
-    onCard(nodes.data(), nodes.size() * sizeof(glm::vec4));                 //1
-    onCard(triangles.data(), triangles.size() * sizeof(glm::vec4));         //2
-    onCard(triangleInfo.data(), triangleInfo.size() * sizeof(glm::uvec4));  //3
-    onCard(vertices.data(), vertices.size() * sizeof(glm::vec4));           //4
-    onCard(materials.data(), materials.size() * sizeof(GpuMaterial));       //5
-    onCard(textureInfo.data(), textureInfo.size() * sizeof(glm::uvec4));    //6
-    onCard(texels.data(), texels.size() * sizeof(uint32_t));                //7
-    onCard(texelsFloat.data(), texelsFloat.size() * sizeof(glm::vec4));    //8
-    onCard(lights.data(), lights.size() * sizeof(GpuLight));                //9
-    onCard(lightLists.data(), lightLists.size() * sizeof(uint32_t));        //10
-    onCard(envTables.data(), envTables.size() * sizeof(float));             //11
-    onCard(energy.data(), energy.size() * sizeof(float));                   //12
+    onCard(nodes.data(), nodes.size() * sizeof(glm::vec4), true);                 //1
+    onCard(triangles.data(), triangles.size() * sizeof(glm::vec4), true);         //2
+    onCard(triangleInfo.data(), triangleInfo.size() * sizeof(glm::uvec4), true);  //3
+    onCard(vertices.data(), vertices.size() * sizeof(glm::vec4), true);           //4
+    onCard(materials.data(), materials.size() * sizeof(GpuMaterial), true);       //5
+    onCard(textureInfo.data(), textureInfo.size() * sizeof(glm::uvec4), true);         //6
+    onCard(texelsScene.data(), texelsScene.size() * sizeof(uint32_t), true);          //7
+    onCard(texelsFloatScene.data(), texelsFloatScene.size() * sizeof(glm::vec4), true); //8
+    onCard(lights.data(), lights.size() * sizeof(GpuLight), true);                //9
+    onCard(lightLists.data(), lightLists.size() * sizeof(uint32_t), true);        //10
+    onCard(envTables.data(), envTables.size() * sizeof(float), true);       //11
+    onCard(energy.data(), energy.size() * sizeof(float), true);             //12
     const vk::DeviceSize pixels = vk::DeviceSize(size[0]) * size[1];
     for(int k = 0; k < 6; ++k) zeroed(pixels * 16);                         //13..18
     zeroed(pixels * 4);                                                     //19
     onCard(volumes.data(), volumes.size() * sizeof(glm::vec4));             //20
     zeroed(pixels * 4);                                                     //21 prilagodljivo stanje
+    onCard(motionData.data(), motionData.size() * sizeof(glm::vec4));       //22 motion blur
+    onCard(motionNormals.data(), motionNormals.size() * sizeof(glm::vec4)); //23
+    onCard(frameTexels.data(), frameTexels.size() * sizeof(uint32_t));      //24 snimka, holdout
+    onCard(frameTexelsFloat.data(), frameTexelsFloat.size() * sizeof(glm::vec4)); //25
     buffers->display.emplace(device, std::max<vk::DeviceSize>(pixels * 4, 16), usage, MemoryUsage::GPU_ONLY);
 
-    buffers->trace.emplace(device, loom.getDescriptorPool(), pipelines.state->trace);
-    for(uint32_t b = 0; b < TraceBindings; ++b) buffers->trace->setStorageBuffer(b, buffers->owned[b]);
+    if(rayQuery){
+        buildAccelerationStructures(prepared, geometrySlots, opaqueCount);
+        buffers->trace.emplace(device, loom.getDescriptorPool(), *pipelines.state->traceRayQuery);
+        buffers->trace->setAccelerationStructure(TraceBindings, **buffers->top);
+        buffers->trace->setStorageBuffer(TraceBindings + 1, buffers->rayQuery.back());
+    }else buffers->trace.emplace(device, loom.getDescriptorPool(), pipelines.state->trace);
+    for(uint32_t b = 0; b < TraceBindings; ++b) buffers->trace->setStorageBuffer(b, *buffers->owned[b]);
     buffers->resolve.emplace(device, loom.getDescriptorPool(), pipelines.state->resolve);
-    buffers->resolve->setStorageBuffer(0, buffers->owned[13]);
-    buffers->resolve->setStorageBuffer(1, buffers->owned[14]);
-    buffers->resolve->setStorageBuffer(2, buffers->owned[15]);
-    buffers->resolve->setStorageBuffer(3, buffers->owned[16]);
-    buffers->resolve->setStorageBuffer(4, buffers->owned[6]);
-    buffers->resolve->setStorageBuffer(5, buffers->owned[7]);
+    buffers->resolve->setStorageBuffer(0, *buffers->owned[13]);
+    buffers->resolve->setStorageBuffer(1, *buffers->owned[14]);
+    buffers->resolve->setStorageBuffer(2, *buffers->owned[15]);
+    buffers->resolve->setStorageBuffer(3, *buffers->owned[16]);
+    buffers->resolve->setStorageBuffer(4, *buffers->owned[6]);
+    buffers->resolve->setStorageBuffer(5, *buffers->owned[24]);         //snimka je u spremniku kadra
     buffers->resolve->setStorageBuffer(6, *buffers->display);
+}
+
+//BLAS iz istih trokuta kao BVH (v0, v0 + e1, v0 + e2, bez indeksa: isti u, v), geometrija 0
+//neprozirna, 1 prolazi kroz accept() u shaderu (svaki kandidat jednom). TLAS: jedna instanca
+void GpuTracer::buildAccelerationStructures(const std::vector<Tracer::Bvh::Prepared>& prepared,
+                                            const std::vector<uint32_t>& geometrySlots, uint32_t opaqueCount){
+    const VulkanDevice& device = loom.device;
+    const vk::raii::Device& vkDevice = device.getDevice();
+    const vk::BufferUsageFlags input = vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR |
+                                       vk::BufferUsageFlagBits::eShaderDeviceAddress;
+    auto address = [&](const VulkanBuffer& b){ return vkDevice.getBufferAddress(vk::BufferDeviceAddressInfo(*b.getBuffer())); };
+    buffers->rayQuery.reserve(8);           //reference na elemente ne smiju odlutati
+
+    std::vector<glm::vec3> positions;
+    positions.reserve(geometrySlots.size() * 3);
+    for(uint32_t slot : geometrySlots){
+        const Tracer::Bvh::Prepared& t = prepared[slot];
+        positions.push_back(t.v0);
+        positions.push_back(t.v0 + t.e1);
+        positions.push_back(t.v0 + t.e2);
+    }
+    VulkanBuffer& vertexBuffer = buffers->rayQuery.emplace_back(device, positions.size() * sizeof(glm::vec3), input, MemoryUsage::CPU_TO_GPU);
+    vertexBuffer.upload(positions.data(), positions.size() * sizeof(glm::vec3));
+    const vk::DeviceAddress vertices = address(vertexBuffer);
+    const uint32_t specialCount = uint32_t(geometrySlots.size()) - opaqueCount;
+
+    std::vector<vk::AccelerationStructureGeometryKHR> geometries;
+    std::vector<vk::AccelerationStructureBuildRangeInfoKHR> ranges;
+    std::vector<uint32_t> counts;
+    auto addGeometry = [&](uint32_t first, uint32_t count, vk::GeometryFlagsKHR flags){
+        if(count == 0) return;
+        vk::AccelerationStructureGeometryTrianglesDataKHR triangles;
+        triangles.vertexFormat = vk::Format::eR32G32B32Sfloat;
+        triangles.vertexData.deviceAddress = vertices + vk::DeviceAddress(first) * 3 * sizeof(glm::vec3);
+        triangles.vertexStride = sizeof(glm::vec3);
+        triangles.maxVertex = count * 3 - 1;
+        triangles.indexType = vk::IndexType::eNoneKHR;
+        vk::AccelerationStructureGeometryKHR geometry;
+        geometry.geometryType = vk::GeometryTypeKHR::eTriangles;
+        geometry.geometry.triangles = triangles;
+        geometry.flags = flags;
+        geometries.push_back(geometry);
+        ranges.push_back(vk::AccelerationStructureBuildRangeInfoKHR(count, 0, 0, 0));
+        counts.push_back(count);
+    };
+    //Bez neprozirnih je geometrija 0 ona sa zastavicama: shader tada ne smije oduzeti pomak
+    addGeometry(0, opaqueCount, vk::GeometryFlagBitsKHR::eOpaque);
+    addGeometry(opaqueCount, specialCount, vk::GeometryFlagBitsKHR::eNoDuplicateAnyHitInvocation);
+
+    const vk::PhysicalDeviceAccelerationStructurePropertiesKHR properties =
+        device.getPhysicalDevice().getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceAccelerationStructurePropertiesKHR>()
+            .get<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
+    const vk::DeviceSize scratchAlign = std::max<vk::DeviceSize>(1, properties.minAccelerationStructureScratchOffsetAlignment);
+
+    auto build = [&](vk::AccelerationStructureTypeKHR type, const std::vector<vk::AccelerationStructureGeometryKHR>& geoms,
+                     const std::vector<vk::AccelerationStructureBuildRangeInfoKHR>& buildRanges, const std::vector<uint32_t>& primitiveCounts,
+                     std::optional<vk::raii::AccelerationStructureKHR>& out){
+        vk::AccelerationStructureBuildGeometryInfoKHR info;
+        info.type = type;
+        info.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
+        info.mode = vk::BuildAccelerationStructureModeKHR::eBuild;
+        info.setGeometries(geoms);
+        const vk::AccelerationStructureBuildSizesInfoKHR sizes =
+            vkDevice.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice, info, primitiveCounts);
+        VulkanBuffer& storage = buffers->rayQuery.emplace_back(device, sizes.accelerationStructureSize,
+            vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress, MemoryUsage::GPU_ONLY);
+        vk::AccelerationStructureCreateInfoKHR create;
+        create.buffer = *storage.getBuffer();
+        create.size = sizes.accelerationStructureSize;
+        create.type = type;
+        out.emplace(vkDevice, create);
+        VulkanBuffer scratch(device, sizes.buildScratchSize + scratchAlign,
+                             vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress, MemoryUsage::GPU_ONLY);
+        const vk::DeviceAddress scratchAddress = (address(scratch) + scratchAlign - 1) / scratchAlign * scratchAlign;
+        info.dstAccelerationStructure = **out;
+        info.scratchData.deviceAddress = scratchAddress;
+        loom.command.submitNow([&](const vk::raii::CommandBuffer& commands){
+            commands.buildAccelerationStructuresKHR(info, buildRanges.data());
+        });
+    };
+    build(vk::AccelerationStructureTypeKHR::eBottomLevel, geometries, ranges, counts, buffers->bottom);
+
+    vk::AccelerationStructureInstanceKHR instance;
+    const std::array<std::array<float, 4>, 3> identity{{{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f}}};
+    instance.transform = vk::TransformMatrixKHR(identity);
+    instance.mask = 0xFF;
+    instance.flags = VkGeometryInstanceFlagsKHR(vk::GeometryInstanceFlagBitsKHR::eTriangleFacingCullDisable);
+    instance.accelerationStructureReference = vkDevice.getAccelerationStructureAddressKHR(vk::AccelerationStructureDeviceAddressInfoKHR(**buffers->bottom));
+    VulkanBuffer& instances = buffers->rayQuery.emplace_back(device, sizeof(instance), input, MemoryUsage::CPU_TO_GPU);
+    instances.upload(&instance, sizeof(instance));
+    vk::AccelerationStructureGeometryInstancesDataKHR instanceData;
+    instanceData.data.deviceAddress = address(instances);
+    vk::AccelerationStructureGeometryKHR topGeometry;
+    topGeometry.geometryType = vk::GeometryTypeKHR::eInstances;
+    topGeometry.geometry.instances = instanceData;
+    build(vk::AccelerationStructureTypeKHR::eTopLevel, {topGeometry}, {vk::AccelerationStructureBuildRangeInfoKHR(1, 0, 0, 0)}, {1u}, buffers->top);
+
+    //(geometrija, primitiv) -> slot; kad neprozirnih nema, shader i geometriju 0 cita s pomakom 0
+    std::vector<uint32_t> slots = geometrySlots;
+    VulkanBuffer& slotBuffer = buffers->rayQuery.emplace_back(device, std::max<size_t>(4, slots.size() * 4),
+        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::CPU_TO_GPU);
+    slotBuffer.upload(slots.data(), slots.size() * 4);
+    usingRayQuery = true;
 }
 
 GpuTracer::~GpuTracer() = default;
@@ -370,9 +556,9 @@ void GpuTracer::recordFinish(const DisplayOptions& options){
         buffers->finishing.emplace_back(device, std::max<vk::DeviceSize>(vk::DeviceSize(offset) * 16, 16), usage, MemoryUsage::GPU_ONLY);
         buffers->finish.emplace(device, loom.getDescriptorPool(), pipelines.state->finish);
         const uint32_t accumulators[7] = {13, 14, 15, 16, 17, 18, 19};
-        for(uint32_t b = 0; b < 7; ++b) buffers->finish->setStorageBuffer(b, buffers->owned[accumulators[b]]);
-        buffers->finish->setStorageBuffer(7, buffers->owned[6]);
-        buffers->finish->setStorageBuffer(8, buffers->owned[7]);
+        for(uint32_t b = 0; b < 7; ++b) buffers->finish->setStorageBuffer(b, *buffers->owned[accumulators[b]]);
+        buffers->finish->setStorageBuffer(7, *buffers->owned[6]);
+        buffers->finish->setStorageBuffer(8, *buffers->owned[24]);      //snimka je u spremniku kadra
         for(uint32_t b = 0; b < 6; ++b) buffers->finish->setStorageBuffer(9 + b, buffers->finishing[b]);
         buffers->finish->setStorageBuffer(15, *buffers->display);
     }
@@ -464,7 +650,7 @@ Tracer::Frame GpuTracer::readFrame(bool denoise){
         std::vector<float> values(n * floatsPerPixel);
         const vk::DeviceSize count = values.size() * sizeof(float);
         VulkanBuffer staging(loom.device, std::max<vk::DeviceSize>(count, 16), vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::GPU_TO_CPU);
-        loom.command.copyBuffer(buffers->owned[binding].getBuffer(), staging.getBuffer(), count);
+        loom.command.copyBuffer(buffers->owned[binding]->getBuffer(), staging.getBuffer(), count);
         staging.download(values.data(), count);
         return values;
     };

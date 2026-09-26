@@ -63,6 +63,25 @@ glm::vec4 Texture::sample(glm::vec2 uv) const{
     return glm::mix(glm::mix(a, b, tx), glm::mix(c, d, tx), ty);
 }
 
+glm::mat4 cameraAt(const std::vector<glm::mat4>& keys, float time){
+    if(keys.empty()) return glm::mat4(1.0f);
+    if(keys.size() == 1) return keys[0];
+    size_t k;
+    float f;
+    motionSegment(keys.size(), time, k, f);
+    const glm::mat4& a = keys[k];
+    const glm::mat4& b = keys[k + 1];
+    const glm::vec3 x = glm::normalize(glm::mix(glm::vec3(a[0]), glm::vec3(b[0]), f));
+    glm::vec3 y = glm::mix(glm::vec3(a[1]), glm::vec3(b[1]), f);
+    y = glm::normalize(y - x * glm::dot(x, y));
+    glm::mat4 out(1.0f);
+    out[0] = glm::vec4(x, 0.0f);
+    out[1] = glm::vec4(y, 0.0f);
+    out[2] = glm::vec4(glm::cross(x, y), 0.0f);
+    out[3] = glm::vec4(glm::mix(glm::vec3(a[3]), glm::vec3(b[3]), f), 1.0f);
+    return out;
+}
+
 void Texture::buildMips(){
     mips.clear();
     if(!valid()) return;

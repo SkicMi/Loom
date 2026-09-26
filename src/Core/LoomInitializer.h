@@ -131,7 +131,7 @@ class LoomInitializer{
     static vk::raii::DescriptorPool makeDescriptorPool(const VulkanDevice& device, const LoomConfig& config){
         const uint32_t perType = config.descriptorsPerType > 0 ? config.descriptorsPerType : config.maxDescriptorSets;
 
-        std::array<vk::DescriptorPoolSize,5> poolSizes;
+        std::vector<vk::DescriptorPoolSize> poolSizes(device.hasRayQuery() ? 6 : 5);
         poolSizes[0].type = vk::DescriptorType::eCombinedImageSampler;
         poolSizes[0].descriptorCount = perType;
         poolSizes[1].type = vk::DescriptorType::eUniformBuffer;
@@ -142,6 +142,10 @@ class LoomInitializer{
         poolSizes[3].descriptorCount = perType;
         poolSizes[4].type = vk::DescriptorType::eStorageImage;
         poolSizes[4].descriptorCount = perType;
+        if(device.hasRayQuery()){
+            poolSizes[5].type = vk::DescriptorType::eAccelerationStructureKHR;
+            poolSizes[5].descriptorCount = perType;
+        }
 
         vk::DescriptorPoolCreateInfo poolInfo;
         poolInfo.maxSets = config.maxDescriptorSets;

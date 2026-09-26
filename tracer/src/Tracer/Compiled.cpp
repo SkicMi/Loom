@@ -18,6 +18,10 @@ float oneMinusCosFromSin2(float sin2){
 }
 
 std::shared_ptr<const CompiledScene> compile(Scene scene){
+    return compile(std::move(scene), nullptr);
+}
+
+std::shared_ptr<const CompiledScene> compile(Scene scene, const CompiledScene* previous, uint32_t rebuildEvery){
     auto compiled = std::make_shared<CompiledScene>();
     CompiledScene& c = *compiled;
     c.world = std::move(scene);
@@ -39,7 +43,20 @@ std::shared_ptr<const CompiledScene> compile(Scene scene){
             if(*slot >= int(world.textures.size()) || (*slot >= 0 && !world.textures[size_t(*slot)].valid())) *slot = -1;
         }
     }
-    tree.build(world.positions, world.triangles);
+    //Pomak: kljucevi moraju imati isto vrhova kao scena, inace ih nema (i kamera ostaje)
+    for(std::vector<std::vector<glm::vec3>>* keys : {&world.motion.positions, &world.motion.normals})
+        for(const std::vector<glm::vec3>& key : *keys) if(key.size() != world.positions.size()){ keys->clear(); break; }
+    if(world.motion.normals.size() != world.motion.positions.size()) world.motion.normals.clear();
+    const std::vector<std::vector<glm::vec3>>* keys = world.motion.geometry() ? &world.motion.positions : nullptr;
+    const bool sameTopology = previous && previous->refits + 1 < rebuildEvery &&
+        previous->world.triangles.size() == world.triangles.size() && previous->world.positions.size() == world.positions.size() &&
+        std::equal(world.triangles.begin(), world.triangles.end(), previous->world.triangles.begin(), [](const Triangle& a, const Triangle& b){
+            return a.v[0] == b.v[0] && a.v[1] == b.v[1] && a.v[2] == b.v[2] && a.material == b.material && a.object == b.object; });
+    if(sameTopology){
+        tree = previous->tree;
+        tree.refit(world.positions, world.triangles, keys);
+        c.refits = previous->refits + 1;
+    }else tree.build(world.positions, world.triangles, keys);
     c.cameraInverse = glm::inverse(world.camera.cameraToWorld);
     const glm::vec3 extent = tree.boundsMax() - tree.boundsMin();
     sceneRadius = world.triangles.empty() ? 1.0f : std::max(1e-4f, 0.5f * glm::length(extent));

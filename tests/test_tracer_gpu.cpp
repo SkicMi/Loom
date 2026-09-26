@@ -50,12 +50,12 @@ glm::vec3 coveredAverage(const Tracer::Frame& f){
 }
 
 Tracer::Frame onCard(LoomInitializer& loom, TracerGpu::Pipelines& pipelines, Tracer::Scene scene, uint32_t samples, uint32_t bounces = 12,
-             float clamp = 16.0f, double* seconds = nullptr){
+             float clamp = 16.0f, double* seconds = nullptr, bool rayQuery = true){
     Tracer::RenderSettings settings;
     settings.samples = samples;
     settings.maxBounces = bounces;
     settings.indirectClamp = clamp;
-    TracerGpu::GpuTracer tracer(loom, pipelines, Tracer::compile(std::move(scene)), settings);
+    TracerGpu::GpuTracer tracer(loom, pipelines, Tracer::compile(std::move(scene)), settings, rayQuery);
     const auto start = std::chrono::steady_clock::now();
     tracer.renderAll();
     if(seconds) *seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -99,8 +99,10 @@ Tracer::Scene mixed(float ballRoughness){
     scene.addMesh(Tracer::unitPlane(), glm::scale(glm::mat4(1.0f), glm::vec3(8.0f)), scene.addMaterial(floor));
     Tracer::Material ball; ball.baseColor = glm::vec3(0.9f, 0.6f, 0.3f); ball.metallic = 1.0f; ball.roughness = ballRoughness;
     scene.addMesh(Tracer::uvSphere(0.5f, 48, 24), glm::translate(glm::mat4(1.0f), glm::vec3(-0.6f, 0.5f, 0.0f)), scene.addMaterial(ball));
+    //Staklo 0.01 iznad poda: donja ploha na y = 0 bila bi koplanarna s podom, a koji od dva
+    //trokuta na istom t pobijedi, stvar je obilaska (BVH i hardverske zrake biraju razlicito)
     Tracer::Material glass; glass.transmission = 1.0f; glass.roughness = 0.05f; glass.baseColor = glm::vec3(0.9f, 1.0f, 0.95f);
-    scene.addMesh(Tracer::unitCube(), glm::translate(glm::mat4(1.0f), glm::vec3(0.7f, 0.4f, 0.3f)) * glm::scale(glm::mat4(1.0f), glm::vec3(0.8f)),
+    scene.addMesh(Tracer::unitCube(), glm::translate(glm::mat4(1.0f), glm::vec3(0.7f, 0.41f, 0.3f)) * glm::scale(glm::mat4(1.0f), glm::vec3(0.8f)),
                   scene.addMaterial(glass));
     Tracer::Material coat; coat.baseColor = glm::vec3(0.1f, 0.2f, 0.7f); coat.clearcoat = 1.0f;
     scene.addMesh(Tracer::unitCube(), glm::translate(glm::mat4(1.0f), glm::vec3(0.2f, 0.2f, -0.9f)) * glm::scale(glm::mat4(1.0f), glm::vec3(0.4f)),
@@ -299,6 +301,23 @@ int main(){
         int worst = 0;
         for(size_t i = 0; i < shown.size(); ++i) worst = std::max(worst, std::abs(int(shown[i]) - int(expected[i])));
         report.check("prikaz = procesor", shown.size() == expected.size() && worst <= 1, fmt("najveca razlika %d", worst));
+    }
+
+    //-- 4b. hardverske zrake (ray query) = vlastiti BVH na kartici --------------------------------------
+    {
+        const bool available = loom.device.hasRayQuery();
+        Tracer::RenderSettings probe;
+        probe.samples = 1;
+        TracerGpu::GpuTracer check(loom, pipelines, Tracer::compile(mixed(0.3f)), probe);
+        double rqSeconds = 0.0, bvhSeconds = 0.0;
+        const Tracer::Frame rq = onCard(loom, pipelines, mixed(0.3f), 256, 12, 16.0f, &rqSeconds, true);
+        const Tracer::Frame bvh = onCard(loom, pipelines, mixed(0.3f), 256, 12, 16.0f, &bvhSeconds, false);
+        const Tracer::Frame cpu = onCpu(mixed(0.3f), 256);
+        const Tracer::Frame cpuOther = [&]{ Tracer::Scene s = mixed(0.3f); Tracer::Renderer r(std::move(s)); Tracer::RenderSettings st; st.samples = 256; st.seed = 7; r.render(st); return r.frame(false); }();
+        const double noise = rmse(cpuOther, cpu);
+        report.check("hardverske zrake", check.usesRayQuery() == available && rmse(rq, bvh) < noise && rmse(rq, cpu) < noise,
+                     fmt("%s; RMSE ray query - BVH %.4f, ray query - procesor %.4f, sum %.4f; 64x48x256: ray query %.2f s, BVH %.2f s (lavapipe)",
+                         available ? "kartica ih ima" : "kartica ih nema - oba puta su BVH", rmse(rq, bvh), rmse(rq, cpu), noise, rqSeconds, bvhSeconds));
     }
 
     //-- 5. filtar i post na kartici = procesorski A-trous + composite + applyPost + toDisplay -----------

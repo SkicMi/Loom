@@ -81,6 +81,7 @@ Tracer::Frame render(const Warp::Stage& stage, bool blur, const std::string& fol
     for(const std::string& line : session.snapshot().log) if(line.find("GPU render failed") != std::string::npos) status = line;
     if(status.find("GPU render failed") != std::string::npos) return session.lastFrame();
     status = session.snapshot().status;
+    for(const std::string& line : session.snapshot().log) if(line.find("one BVH") != std::string::npos) status += " [" + line + "]";
     return session.lastFrame();
 }
 
@@ -103,6 +104,7 @@ int main(){
     std::string status;
     const Tracer::Frame sharp = render(movingCube(true), false, (work / "a").string(), status);
     const Tracer::Frame blurred = render(movingCube(true), true, (work / "b").string(), status);
+    report.check("jedno stablo (kljucevi pomaka)", status.find("one BVH") != std::string::npos, status);
     const std::vector<float> a = coverage(sharp), b = coverage(blurred);
     float areaA = 0.0f, areaB = 0.0f;
     int coveredA = 0, coveredB = 0, rampB = 0;
@@ -112,10 +114,13 @@ int main(){
         rampB += b[x] > 0.1f && b[x] < 0.9f;
     }
     report.check("kocka u kadru 2 stoji u sredini", sharp.width == Width && std::abs(areaA - perUnit) < 3.0f,
-                 fmt("%s; povrsina %.1f px (ocekivano %.1f)", status.c_str(), areaA, perUnit));
+                 fmt("povrsina %.1f px (ocekivano %.1f)", areaA, perUnit));
     report.check("razmaz cuva povrsinu", std::abs(areaB - areaA) < 2.0f, fmt("%.1f px prema %.1f", areaB, areaA));
-    //16 trenutaka na sredinama odsjecaka: krajnji su 15/16 otvora razmaknuti
-    const float grow = float(coveredB - coveredA), expected = 0.5f * perUnit, span = expected * (1.0f - 1.0f / 16.0f);
+    //Jedno stablo, vrijeme po uzorku: razmaz je cijeli otvor (odsjeci su davali 15/16 njega).
+    //"Pokriveno" je > 0.02: sa svake strane linearne rampe otpadne 0.02 razmaza, a ostri rub vec
+    //ima piksel antialiasinga koji se ne broji dvaput
+    const float grow = float(coveredB - coveredA), expected = 0.5f * perUnit;
+    const float span = expected * (1.0f - 2.0f * 0.02f) - float(coveredA - int(perUnit));
     report.check("razmaz je pola jedinice", std::abs(grow - span) < 0.1f * span,
                  fmt("pokriveno %d -> %d px, naraslo %.0f (ocekivano %.0f)", coveredA, coveredB, grow, span));
     //Linearna rampa sirine 32 px na svakom rubu: 80 % izmedju 0.1 i 0.9 = 2 * 25.6 px

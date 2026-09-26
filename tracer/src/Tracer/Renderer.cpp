@@ -124,6 +124,24 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     const glm::mat4& cameraInverse = C.cameraInverse;
     PathResult result;
     Sampler sampler(pixelSeed, sampleIndex);
+    //Trenutak uzorka u otvoru zatvaraca (Scene::motion); bez pomaka sredina
+    float time = 0.5f;
+    const Motion& motion = world.motion;
+    //Vrh i normala u trenutku uzorka
+    auto vertexAt = [&](uint32_t index){
+        if(!motion.geometry()) return world.positions[index];
+        size_t k;
+        float f;
+        motionSegment(motion.positions.size(), time, k, f);
+        return glm::mix(motion.positions[k][index], motion.positions[k + 1][index], f);
+    };
+    auto normalAt = [&](uint32_t index){
+        if(motion.normals.size() < 2) return world.normals[index];
+        size_t k;
+        float f;
+        motionSegment(motion.normals.size(), time, k, f);
+        return glm::mix(motion.normals[k][index], motion.normals[k + 1][index], f);
+    };
     const Camera& camera = world.camera;
     const float epsilonScale = std::max(1e-6f * sceneRadius, 1e-7f);
 
@@ -146,7 +164,9 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     };
     //Propusnost zrake sjene: 0 kad je zaklonjena, inace umnozak propusnosti stakala na putu.
     //crossed: prosla je kroz barem jedno staklo (tada izravno svjetlo nema par u BSDF strategiji)
-    auto shadowTransmittance = [&](const Ray& shadowRay, bool ignoreCatchers, uint32_t salt, bool& crossed){
+    auto shadowTransmittance = [&](const Ray& ray, bool ignoreCatchers, uint32_t salt, bool& crossed){
+        Ray shadowRay = ray;
+        shadowRay.time = time;
         crossed = false;
         glm::vec3 through(1.0f);
         const bool blocked = tree.occluded(shadowRay, [&](uint32_t index, float u, float v){
@@ -318,7 +338,13 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         if(!(realDepth > 0.0f) || realDepth > NoDepth * 0.5f) realDepth = 0.0f;
     }
     Ray ray;
-    camera.ray(pixel + jitter, lensSample, ray.origin, ray.direction);
+    if(motion.active()) time = sampler.next2D().x;
+    ray.time = time;
+    if(motion.cameras.size() >= 2){
+        Camera moving = camera;
+        moving.cameraToWorld = cameraAt(motion.cameras, time);
+        moving.ray(pixel + jitter, lensSample, ray.origin, ray.direction);
+    }else camera.ray(pixel + jitter, lensSample, ray.origin, ray.direction);
     //STOZAC ZRAKE (ray cones, Akenine-Moller 2019) za razinu mipmape: sirina raste s udaljenoscu,
     //kut sirenja je kut piksela; hrapavo odbijanje ga jako rasiri
     float coneWidth = 0.0f, coneSpread = 1.0f / std::max(1.0f, camera.focalPixels);
@@ -440,9 +466,9 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         const Triangle& tri = world.triangles[hit.triangle];
         const Material& material = world.materials[tri.material];
         const float b0 = 1.0f - hit.u - hit.v;
-        const glm::vec3& p0 = world.positions[tri.v[0]];
-        const glm::vec3& p1 = world.positions[tri.v[1]];
-        const glm::vec3& p2 = world.positions[tri.v[2]];
+        const glm::vec3 p0 = vertexAt(tri.v[0]);
+        const glm::vec3 p1 = vertexAt(tri.v[1]);
+        const glm::vec3 p2 = vertexAt(tri.v[2]);
         const glm::vec3 p = p0 * b0 + p1 * hit.u + p2 * hit.v;
         if(depth == 0 && realDepth > 0.0f && -(cameraInverse * glm::vec4(p, 1.0f)).z > realDepth * (1.0f + world.holdoutBias)){
             result.miss = true;
@@ -450,7 +476,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             break;
         }
         glm::vec3 ng = glm::normalize(glm::cross(p1 - p0, p2 - p0));
-        glm::vec3 ns = world.normals[tri.v[0]] * b0 + world.normals[tri.v[1]] * hit.u + world.normals[tri.v[2]] * hit.v;
+        glm::vec3 ns = normalAt(tri.v[0]) * b0 + normalAt(tri.v[1]) * hit.u + normalAt(tri.v[2]) * hit.v;
         ns = glm::dot(ns, ns) > 1e-20f ? glm::normalize(ns) : ng;
         //Geometrijska normala slijedi normale vrhova: one kazu gdje je "van" (smjer namotaja
         //trokuta u modelima iz raznih alata nije pouzdan)

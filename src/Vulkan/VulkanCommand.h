@@ -51,6 +51,9 @@ class VulkanCommand{
                               const std::function<void(const vk::raii::CommandBuffer&)>& record) const;
 
 
+    //Snima i odmah posalje jednokratni command buffer, pa ceka (npr. gradnja akceleracijske strukture)
+    void submitNow(const std::function<void(const vk::raii::CommandBuffer&)>& record) const{ oneTimeSubmit(record); }
+
     private:
     const VulkanDevice& device;
     CommandConfig config;

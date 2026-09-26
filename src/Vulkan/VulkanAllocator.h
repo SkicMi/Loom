@@ -17,6 +17,7 @@ VK_DEFINE_HANDLE(VmaAllocation)
 struct AllocatorConfig{
     bool useMemoryBudget = false;   //VK_EXT_memory_budget: real usage/budget straight from the driver
     bool useMemoryPriority = false; //VK_EXT_memory_priority: attachments get evicted last under pressure
+    bool bufferDeviceAddress = false; //adrese buffera za akceleracijske strukture (hardverske zrake)
     uint32_t apiVersion = VK_API_VERSION_1_3;
 };
 

@@ -903,6 +903,40 @@ inline std::vector<uint8_t> displayImage(const Tracer::Frame& frame, const Trace
     return Tracer::toDisplay(beauty, frame.width, frame.height, options.view, options.exposure);
 }
 
+//MOTION BLUR JEDNIM STABLOM: scena kadra (snimka, svjetla, magla, holdout) plus kljucevi pomaka
+//kroz otvor - vrhovi, normale i kamera u motionSteps jednako razmaknutih trenutaka. Tracer iz
+//toga gradi JEDAN BVH, a svaki uzorak dobije svoj trenutak. false (i razlog) kad se broj vrhova
+//ili trokuta mijenja kroz otvor (objekt se pojavi ili nestane) - tada odsjeci u vremenu
+inline bool buildMotionScene(const Warp::Stage& stage, double frame, const RenderOptions& options, RenderAssets& assets,
+                             BuiltScene& out, std::string& problem){
+    std::string error;
+    if(!buildTracerScene(stage, frame, options, assets, out, error)){ problem = error; return false; }
+    //Kljucevima treba samo geometrija i kamera: bez snimke, holdouta i neba
+    RenderOptions keyOptions = options;
+    keyOptions.plate = false;
+    keyOptions.splatHoldout = false;
+    keyOptions.sky = RenderOptions::Sky::Uniform;
+    const uint32_t keys = std::clamp(options.motionSteps, 2u, 32u);
+    Tracer::Motion motion;
+    for(uint32_t k = 0; k < keys; ++k){
+        const double time = frame + double(options.shutter) * (double(k) / double(keys - 1) - 0.5);
+        BuiltScene key;
+        if(!buildTracerScene(stage, time, keyOptions, assets, key, error)){ problem = error; return false; }
+        if(key.scene.positions.size() != out.scene.positions.size() || key.scene.triangles.size() != out.scene.triangles.size()){
+            problem = "the scene changes (objects appear or disappear) inside the shutter";
+            return false;
+        }
+        motion.positions.push_back(std::move(key.scene.positions));
+        motion.normals.push_back(std::move(key.scene.normals));
+        motion.cameras.push_back(key.scene.camera.cameraToWorld);
+    }
+    //Bez stvarnog pomaka nema kljuceva - obicni render
+    bool moves = false;
+    for(size_t k = 1; k < keys && !moves; ++k) moves = motion.positions[k] != motion.positions[0] || motion.cameras[k] != motion.cameras[0];
+    if(moves) out.scene.motion = std::move(motion);
+    return true;
+}
+
 //Ime kadra u sekvenci: render_0042. Jedan kadar bez broja
 inline std::string frameStem(const RenderOptions& options, double frame){
     if(!options.sequence) return options.name;
@@ -1286,13 +1320,22 @@ private:
             state.samplesTotal = options.samples;
         }
         bool failed = false;
+        std::shared_ptr<const Tracer::CompiledScene> previousScene;     //za refit BVH-a u sekvenci
         for(size_t index = 0; index < frames.size() && !stopFlag; ++index){
             const double frame = frames[index];
             std::string error;
             //Vremenski odsjeci: jedan bez motion blura, inace motionSteps trenutaka unutar otvora
             const bool blur = options.motionBlur && options.shutter > 0.0f;
             const uint32_t samples = std::max(1u, options.samples);
-            const uint32_t slices = blur ? std::clamp(options.motionSteps, 2u, std::max(2u, samples)) : 1u;
+            //Prvo jednim stablom (kljucevi pomaka); odsjeci samo kad se topologija mijenja kroz otvor
+            std::optional<BuiltScene> motionScene;
+            if(blur){
+                BuiltScene keyed;
+                std::string problem;
+                if(buildMotionScene(stage, frame, options, assets, keyed, problem)) motionScene = std::move(keyed);
+                else if(index == 0 && !problem.empty()) say("Motion blur in time slices: " + problem);
+            }
+            const uint32_t slices = blur && !motionScene ? std::clamp(options.motionSteps, 2u, std::max(2u, samples)) : 1u;
             const uint32_t perSlice = std::max(1u, (samples + slices - 1) / slices);
             Tracer::Frame result;
             std::shared_ptr<const Tracer::CompiledScene> compiled;       //srednji odsjecak: kamera i snimka za zapis
@@ -1300,19 +1343,24 @@ private:
             for(uint32_t slice = 0; slice < slices && !stopFlag; ++slice){
                 const double time = blur ? frame + double(options.shutter) * ((double(slice) + 0.5) / double(slices) - 0.5) : frame;
                 BuiltScene built;
-                if(!buildTracerScene(stage, time, options, assets, built, error, frame)){ say("Render failed: " + error); sliceFailed = true; break; }
+                if(motionScene){ built = std::move(*motionScene); motionScene.reset(); }
+                else if(!buildTracerScene(stage, time, options, assets, built, error, frame)){ say("Render failed: " + error); sliceFailed = true; break; }
                 if(slice == 0){
                     if(index == 0) for(const std::string& w : built.warnings) say("Warning: " + w);
                     char line[256];
                     std::snprintf(line, sizeof(line), "Frame %.0f: %zu triangles, %zu objects (%zu shadow catchers), %zu fog boxes, %ux%u%s",
                                   frame, built.scene.triangles.size(), built.objects, built.catchers, built.scene.volumes.size(),
                                   built.scene.camera.width, built.scene.camera.height,
-                                  blur ? (", motion blur " + std::to_string(slices) + " steps").c_str() : "");
+                                  !blur ? "" : built.scene.motion.active()
+                                      ? (", motion blur " + std::to_string(std::max(built.scene.motion.positions.size(), built.scene.motion.cameras.size())) + " keys, one BVH").c_str()
+                                      : (", motion blur " + std::to_string(slices) + " time slices").c_str());
                     say(line);
                     plateLoaded = built.plateLoaded;
                     catchers = built.catchersUsed && built.catchers > 0;
                 }
-                const std::shared_ptr<const Tracer::CompiledScene> sliceScene = Tracer::compile(std::move(built.scene));
+                //Sekvenca: isti trokuti kao prosli kadar (ili odsjecak) - stablo se osvjezi, ne gradi
+                const std::shared_ptr<const Tracer::CompiledScene> sliceScene = Tracer::compile(std::move(built.scene), previousScene.get());
+                previousScene = sliceScene;
                 if(slice == slices / 2) compiled = sliceScene;
                 Tracer::RenderSettings settings;
                 settings.samples = perSlice;

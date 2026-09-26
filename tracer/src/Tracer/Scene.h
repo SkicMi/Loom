@@ -24,6 +24,8 @@
 //=============================================================================================
 #include <glm/glm.hpp>
 
+#include <algorithm>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -187,6 +189,27 @@ struct Camera{
     bool project(const glm::vec3& world, glm::vec2& pixel) const;
 };
 
+//MOTION BLUR JEDNIM STABLOM: kljucevi jednako razmaknuti kroz otvor zatvaraca (0 = otvaranje,
+//1 = zatvaranje). positions/normals: po kljucu isti broj vrhova kao Scene::positions (ista
+//topologija); cameras: cameraToWorld po kljucu. Svaki uzorak dobije svoje vrijeme u [0,1) i
+//izmedju kljuceva se linearno interpolira; BVH se gradi jednom nad kutijama koje obuhvate
+//trokut u svim kljucevima. Svjetla, magla i snimka su iz trenutka kadra (Scene sama)
+struct Motion{
+    std::vector<std::vector<glm::vec3>> positions, normals;
+    std::vector<glm::mat4> cameras;
+    bool geometry() const {return positions.size() >= 2;}
+    bool active() const {return positions.size() >= 2 || cameras.size() >= 2;}
+};
+
+//Kljuc i udio za vrijeme u [0,1] kroz `count` jednako razmaknutih kljuceva
+inline void motionSegment(size_t count, float time, size_t& key, float& fraction){
+    const float s = std::clamp(time, 0.0f, 1.0f) * float(count - 1);
+    key = std::min(size_t(s), count - 2);
+    fraction = s - float(key);
+}
+//Kamera u trenutku: pomak linearno, osi linearno pa Gram-Schmidt (isto u shaderu)
+glm::mat4 cameraAt(const std::vector<glm::mat4>& keys, float time);
+
 //Jednolika magla u kutiji -0.5..0.5 lokalno (Volume.h): gustoca = gubitak po jedinici scene
 //(sivo), albedo = boja rasprsenja, anisotropy = Henyey-Greenstein g
 struct Volume{
@@ -228,6 +251,8 @@ struct Scene{
     //VOLUMENI: magla u kutijama. Zraka koja kroz nju prolazi se rasprsi (vidljive zrake svjetla,
     //pruge sjena), zraka sjene oslabi za exp(-gustoca * put)
     std::vector<Volume> volumes;
+
+    Motion motion;
 
     uint32_t addTexture(Texture texture);
     uint32_t addMaterial(Material material);

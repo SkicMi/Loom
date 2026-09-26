@@ -44,7 +44,7 @@ public:
             if(!tracer){
                 if(!session.takeGpuJob(job)) return;
                 if(!pipelines) pipelines = std::make_unique<TracerGpu::Pipelines>(loom);
-                tracer = std::make_unique<TracerGpu::GpuTracer>(loom, *pipelines, job.scene, job.settings);
+                tracer = std::make_unique<TracerGpu::GpuTracer>(loom, *pipelines, job.scene, job.settings, true, &uploads);
                 rows = std::max(1u, tracer->height() / 16);
                 previewRequested = false;
                 lastPreview = now;
@@ -108,6 +108,7 @@ private:
     double idleSeconds = 0.0;
     std::unique_ptr<TracerGpu::Pipelines> pipelines;
     std::unique_ptr<TracerGpu::GpuTracer> tracer;
+    TracerGpu::UploadCache uploads;         //teksture, nebo, mirna geometrija ostaju izmedju kadrova
     RenderSession::GpuJob job;
     uint32_t rows = 1, sentLastFrame = 0;
     bool previewRequested = false;

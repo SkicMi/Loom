@@ -39,6 +39,9 @@ VulkanAllocator::VulkanAllocator(const vk::raii::Instance& instance,
     if(config.useMemoryPriority){
         createInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
     }
+    if(config.bufferDeviceAddress){
+        createInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
 
     //VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT is deliberately NOT set. It would drop
     //VMA's internal mutexes and Loom is single threaded today, so it would even be correct -

@@ -32,6 +32,7 @@ struct Ray{
     glm::vec3 direction{0.0f, 0.0f, -1.0f};
     float tMin = 0.0f;
     float tMax = std::numeric_limits<float>::infinity();
+    float time = 0.5f;                  //trenutak u otvoru zatvaraca [0,1] (Scene::motion)
 };
 
 struct Hit{
@@ -47,7 +48,16 @@ struct AcceptAll{
 
 class Bvh{
 public:
-    void build(const std::vector<glm::vec3>& positions, const std::vector<Triangle>& triangles);
+    //keys: polozaji vrhova po kljucu pomaka (>= 2) ili nullptr. Kutije obuhvate sve kljuceve, a
+    //trokut se presijeca u trenutku zrake
+    void build(const std::vector<glm::vec3>& positions, const std::vector<Triangle>& triangles,
+               const std::vector<std::vector<glm::vec3>>* keys = nullptr);
+
+    //REFIT: isti trokuti (ista topologija), novi polozaji - raspored cvorova i redoslijed ostaju,
+    //kutije se preracunaju od listova prema korijenu. Deset puta brze od gradnje; kvaliteta pada
+    //kako se geometrija udaljava od one za koju je stablo gradjeno (compile povremeno gradi iznova)
+    void refit(const std::vector<glm::vec3>& positions, const std::vector<Triangle>& triangles,
+               const std::vector<std::vector<glm::vec3>>* keys = nullptr);
 
     //Najblizi prihvaceni pogodak unutar [tMin, tMax]. Pogodak skrati ray.tMax
     template<class Filter = AcceptAll>
@@ -75,12 +85,15 @@ public:
     const std::vector<Node>& nodeArray() const {return nodes;}
     const std::vector<Prepared>& preparedArray() const {return prepared;}
     const std::vector<uint32_t>& orderArray() const {return order;}
+    //Po kljucu pomaka, redom listova (prazno bez pomaka)
+    const std::vector<std::vector<Prepared>>& preparedKeys() const {return keyed;}
 
 private:
 
     std::vector<Node> nodes;
     std::vector<Prepared> prepared;     //redom listova
     std::vector<uint32_t> order;        //redom listova -> indeks u Scene::triangles
+    std::vector<std::vector<Prepared>> keyed;   //motion blur: trokuti po kljucu
     int maxDepth = 0;
 
     //originScaled = origin * inverse: t = min * inverse - originScaled je jedno mnozenje-oduzimanje
@@ -132,7 +145,17 @@ bool Bvh::traverse(Ray& ray, Hit* hit, const Filter& accept) const{
             for(uint32_t i = 0; i < node.count; ++i){
                 const uint32_t at = node.leftOrFirst + i;
                 float t, u, v;
-                if(!triangle(prepared[at], ray, ray.tMax, t, u, v)) continue;
+                if(keyed.empty()){
+                    if(!triangle(prepared[at], ray, ray.tMax, t, u, v)) continue;
+                }else{
+                    size_t k;
+                    float f;
+                    motionSegment(keyed.size(), ray.time, k, f);
+                    const Prepared& a = keyed[k][at];
+                    const Prepared& b = keyed[k + 1][at];
+                    const Prepared moving{glm::mix(a.v0, b.v0, f), glm::mix(a.e1, b.e1, f), glm::mix(a.e2, b.e2, f)};
+                    if(!triangle(moving, ray, ray.tMax, t, u, v)) continue;
+                }
                 if(!accept(order[at], u, v)) continue;
                 if(AnyHit) return true;
                 ray.tMax = t;

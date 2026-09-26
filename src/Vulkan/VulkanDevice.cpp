@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <string>
 #include "VulkanDevice.h"
 
 VulkanDevice::VulkanDevice(const VulkanInstance& instance, const DeviceConfig& config) : instance(instance), config(config){
@@ -194,7 +196,10 @@ void VulkanDevice::createLogicalDevice(){
     features13.synchronization2 = true;
     features13.maintenance4 = true; //lets VMA call vkGetDeviceBufferMemoryRequirements, core in 1.3 but gated behind this feature
 
-    features11.pNext = &features13; //pNext is used to chain additional structures to the features struct, in this case we are chaining the features13 struct to the features struct, so that the device will be created with the features specified in the features13 struct
+    //Vulkan 1.2: samo buffer device address, i samo za hardverske zrake (dolje)
+    vk::PhysicalDeviceVulkan12Features features12;
+    features11.pNext = &features12;
+    features12.pNext = &features13; //pNext is used to chain additional structures to the features struct, in this case we are chaining the features13 struct to the features struct, so that the device will be created with the features specified in the features13 struct
 
     //The required extensions plus whichever optional ones this card offers. Asked once here
     //and remembered, because the allocator needs the same answer a moment later
@@ -270,6 +275,36 @@ void VulkanDevice::createLogicalDevice(){
         nextInChain = &shadingRateFeatures.pNext;
     }
 
+    //Hardverske zrake: tri ekstenzije i tri znacajke, sve ili nista
+    vk::PhysicalDeviceAccelerationStructureFeaturesKHR accelerationFeatures;
+    vk::PhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures;
+    {
+        const char* disabled = std::getenv("LOOM_NO_RAY_QUERY");
+        rayQuery = !(disabled && *disabled && std::string(disabled) != "0") &&
+                   supportsExtension(physicalDevice, "VK_KHR_acceleration_structure") &&
+                   supportsExtension(physicalDevice, "VK_KHR_ray_query") &&
+                   supportsExtension(physicalDevice, "VK_KHR_deferred_host_operations");
+        if(rayQuery){
+            auto supported = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
+                vk::PhysicalDeviceAccelerationStructureFeaturesKHR, vk::PhysicalDeviceRayQueryFeaturesKHR>();
+            rayQuery = supported.get<vk::PhysicalDeviceVulkan12Features>().bufferDeviceAddress &&
+                       supported.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure &&
+                       supported.get<vk::PhysicalDeviceRayQueryFeaturesKHR>().rayQuery;
+        }
+        if(rayQuery){
+            enabledExtensions.push_back("VK_KHR_acceleration_structure");
+            enabledExtensions.push_back("VK_KHR_ray_query");
+            enabledExtensions.push_back("VK_KHR_deferred_host_operations");
+            features12.bufferDeviceAddress = true;
+            accelerationFeatures.accelerationStructure = true;
+            rayQueryFeatures.rayQuery = true;
+            *nextInChain = &accelerationFeatures;
+            nextInChain = &accelerationFeatures.pNext;
+            *nextInChain = &rayQueryFeatures;
+            nextInChain = &rayQueryFeatures.pNext;
+        }
+    }
+
     //Creating device create info
     vk::DeviceCreateInfo deviceCreateInfo;
     deviceCreateInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());    
@@ -306,6 +341,7 @@ void VulkanDevice::createAllocator(){
     AllocatorConfig allocatorConfig;
     allocatorConfig.useMemoryBudget = hasMemoryBudget;
     allocatorConfig.useMemoryPriority = hasMemoryPriority;
+    allocatorConfig.bufferDeviceAddress = rayQuery;
 
     //Loom already demands Vulkan 1.3 features (dynamic rendering, synchronization2), so 1.3
     //is what VMA is told. Deliberately not more: at 1.4 VMA would reach for maintenance5
