@@ -30,6 +30,7 @@
 #include <Spool/ImageFile.h>
 #include <Spool/VideoFile.h>
 #include <Tracer/Denoise.h>
+#include <Tracer/Temporal.h>
 #include <Tracer/Post.h>
 #include <Tracer/Environment.h>
 #include <Tracer/Renderer.h>
@@ -104,6 +105,9 @@ struct RenderOptions{
     bool denoise = true;
     //Auto: Intel OIDN kad je ucitan (tools/oidn/fetch.sh), inace A-trous
     Tracer::Denoiser denoiser = Tracer::Denoiser::Auto;
+    //VREMENSKA STABILNOST sekvence poslije filtra suma (Tracer::stabilize): tezina prebacenog
+    //proslog kadra, 0 = iskljuceno. Samo kad je kadrova vise i filtar ukljucen
+    float temporal = 0.5f;
     uint32_t threads = 0;                   //0 = sve jezgre
 
     //MOTION BLUR: zatvarac otvoren `shutter` kadra (0.5 = 180 st), sredinom na kadru. Scena se
@@ -1333,6 +1337,7 @@ private:
         }
         bool failed = false;
         std::shared_ptr<const Tracer::CompiledScene> previousScene;     //za refit BVH-a u sekvenci
+        Tracer::TemporalHistory history;
         for(size_t index = 0; index < frames.size() && !stopFlag; ++index){
             const double frame = frames[index];
             std::string error;
@@ -1447,9 +1452,20 @@ private:
                 if(index == 0){
                     const bool oidn = options.denoiser != Tracer::Denoiser::ATrous && Tracer::oidnAvailable();
                     char line[128];
-                    std::snprintf(line, sizeof(line), "Denoised with %s in %.2f s", oidn ? "OIDN" : "A-trous",
+                    const std::string denoiser = oidn ? "OIDN (" + Tracer::oidnDevice() + ")" : "A-trous";
+                    std::snprintf(line, sizeof(line), "Denoised with %s in %.2f s", denoiser.c_str(),
                                   std::chrono::duration<double>(std::chrono::steady_clock::now() - denoiseStart).count());
                     say(line);
+                }
+                //Ocisceni kadrovi ne titraju: prosli kadar prebacen po dubini u ovaj
+                if(frames.size() > 1 && options.temporal > 0.0f){
+                    const Tracer::TemporalStats stats = Tracer::stabilize(result, compiled->world.camera, history, options.temporal);
+                    if(index == 1){
+                        char line[128];
+                        std::snprintf(line, sizeof(line), "Temporal stability %.2f: %.0f %% of pixels from the previous frame", options.temporal,
+                                      100.0 * double(stats.reused) / double(std::max<size_t>(1, result.pixelCount())));
+                        say(line);
+                    }
                 }
             }
             publish(result, compiled->world, options, plateLoaded, frame);

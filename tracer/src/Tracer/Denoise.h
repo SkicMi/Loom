@@ -12,8 +12,8 @@
 // A-trous je iskren, deterministican filtar bez neuronske mreze: na 64+ uzoraka cisti dobro, na
 // 4-16 ostavlja mrlje. Zato, KAD GA IMA, boju CG-a cisti Intel Open Image Denoise (OIDN 2):
 // neuronska mreza trenirana na path traceru, vodjena istim albedom i normalama - cista slika
-// s cetvrtinom do desetinom uzoraka. OIDN se ucitava tek pri pokretanju (dlopen), pa nije
-// ovisnost gradnje; trazi se u LOOM_OIDN (datoteka ili mapa), u tools/oidn/lib (fetch.sh) i u
+// s cetvrtinom do desetinom uzoraka. Radi na KARTICI (CUDA, HIP, SYCL) kad je ima, inace na
+// procesoru. OIDN se ucitava tek pri pokretanju (dlopen), pa nije ovisnost gradnje; trazi se u LOOM_OIDN (datoteka ili mapa), u tools/oidn/lib (fetch.sh) i u
 // sustavu. Sjena catchera (glatki omjer 0..1) ostaje na A-trousu. Sirovi render je u EXR-u.
 //=============================================================================================
 #include "Tracer/Film.h"
@@ -29,5 +29,8 @@ void denoiseFrame(Frame& frame, Denoiser which = Denoiser::Auto);
 
 //Je li OIDN ucitan (prvi poziv ga trazi); where: odakle, ili zasto nije
 bool oidnAvailable(std::string* where = nullptr);
+//Na cemu OIDN radi: "CPU", "CUDA", "HIP", "SYCL", "Metal" ("none" bez OIDN-a). Zadano je najbrzi
+//uredjaj koji nadje - kartica kad su njene biblioteke tu (tools/oidn/fetch.sh --gpu)
+std::string oidnDevice();
 
 }

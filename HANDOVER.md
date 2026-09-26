@@ -805,6 +805,17 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
      izmjerena i izbačena (u progresivnom zbrajanju povezuje uzorke, greška raste). Zato
      `RenderSettings::restirSamples`: most ga uključi za sve uzorke kad ih je ≤ 16 (`--bez-restir`).
      Cijena ~15 % vremena po uzorku (lavapipe).
+  4. **Filtar na kartici i vremenska stabilnost**: OIDN bira najbrži uređaj (`OIDN_DEVICE_TYPE_DEFAULT`
+     — CUDA/HIP/SYCL kad su njihove biblioteke uz OIDN, `tools/oidn/fetch.sh --gpu`, inače CPU;
+     `LOOM_OIDN_DEVICE=cpu|cuda|hip|sycl`), preko spremnika uređaja (`oidnNewBuffer`), a log kaže
+     na čemu radi ("OIDN (CUDA)"). Ovdje nema kartice — provjeren je samo put s CPU uređajem.
+     **`Tracer::stabilize`** (Temporal.h): prošli stabilizirani kadar prebačen po dubini i objema
+     kamerama (distorzija uključena), prihvaćen samo na istoj plohi (dubina 2 %, normala 0.9) i
+     unutar šuma piksela (promjena svjetla — sjena koja putuje — odbijena); miješa se osvjetljenje
+     (boja/albedo, kao SVGF) Catmull-Romom stegnutim na susjede, pa tekstura ostaje oštra.
+     `test_tracer_temporal`: mirna kamera titranje 0.00329 → 0.00184 (56 %), greška 0.00765 →
+     0.00654; kamera u pomaku greška 0.00771 → 0.00687; kutija u pokretu bez duhova (0.01277 =
+     0.01277). Sekvence: zadano 0.5, `--stabilnost X` (0 = bez). Pristrano (vremenski prosjek).
 
 **Što dalje:**
 1. **Izmjeriti pravu karticu** (`loom-render projekt.usda --profil`) — sve dosad je lavapipe, gdje su

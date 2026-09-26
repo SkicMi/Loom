@@ -24,8 +24,10 @@ const float Kernel[3] = {3.0f / 8.0f, 1.0f / 4.0f, 1.0f / 16.0f};
 
 //-- OIDN kroz dlopen: C sucelje oidn.h (2.x), samo ono sto treba -----------------------------
 using OidnHandle = void*;
+constexpr int OidnDeviceDefault = 0;        //OIDN_DEVICE_TYPE_DEFAULT: najbrzi koji postoji (kartica)
 constexpr int OidnDeviceCpu = 1;            //OIDN_DEVICE_TYPE_CPU
 constexpr int OidnFloat3 = 3;               //OIDN_FORMAT_FLOAT3
+const char* const OidnDeviceNames[] = {"default", "CPU", "SYCL", "CUDA", "HIP", "Metal"};
 
 struct Oidn{
     void* library = nullptr;
@@ -33,12 +35,20 @@ struct Oidn{
     void (*commitDevice)(OidnHandle) = nullptr;
     int (*deviceError)(OidnHandle, const char**) = nullptr;
     OidnHandle (*newFilter)(OidnHandle, const char*) = nullptr;
-    void (*sharedImage)(OidnHandle, const char*, void*, int, size_t, size_t, size_t, size_t, size_t) = nullptr;
+    int (*deviceInt)(OidnHandle, const char*) = nullptr;
+    OidnHandle (*newBuffer)(OidnHandle, size_t) = nullptr;
+    void (*releaseBuffer)(OidnHandle) = nullptr;
+    void (*writeBuffer)(OidnHandle, size_t, size_t, const void*) = nullptr;
+    void (*readBuffer)(OidnHandle, size_t, size_t, void*) = nullptr;
+    void (*setImage)(OidnHandle, const char*, OidnHandle, int, size_t, size_t, size_t, size_t, size_t) = nullptr;
     void (*setBool)(OidnHandle, const char*, bool) = nullptr;
     void (*commitFilter)(OidnHandle) = nullptr;
     void (*executeFilter)(OidnHandle) = nullptr;
     OidnHandle device = nullptr, filter = nullptr;
-    std::string where;
+    //Spremnici NA UREDJAJU (kartica ne vidi memoriju procesora): boja, albedo, normala, izlaz
+    OidnHandle buffers[4] = {nullptr, nullptr, nullptr, nullptr};
+    size_t bufferBytes = 0;
+    std::string where, deviceName = "none";
     std::mutex lock;                        //jedan uredjaj i filtar, jedan posao u isto vrijeme
     bool ready = false;
 
@@ -57,16 +67,32 @@ struct Oidn{
         if(!library){ where = "libOpenImageDenoise.so.2 not found (tools/oidn/fetch.sh or LOOM_OIDN)"; return; }
         auto get = [&](auto& fn, const char* name){ fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(dlsym(library, name)); return fn != nullptr; };
         if(!(get(newDevice, "oidnNewDevice") && get(commitDevice, "oidnCommitDevice") && get(deviceError, "oidnGetDeviceError") &&
-             get(newFilter, "oidnNewFilter") && get(sharedImage, "oidnSetSharedFilterImage") && get(setBool, "oidnSetFilterBool") &&
-             get(commitFilter, "oidnCommitFilter") && get(executeFilter, "oidnExecuteFilter"))){
+             get(newFilter, "oidnNewFilter") && get(setImage, "oidnSetFilterImage") && get(setBool, "oidnSetFilterBool") &&
+             get(commitFilter, "oidnCommitFilter") && get(executeFilter, "oidnExecuteFilter") && get(deviceInt, "oidnGetDeviceInt") &&
+             get(newBuffer, "oidnNewBuffer") && get(releaseBuffer, "oidnReleaseBuffer") && get(writeBuffer, "oidnWriteBuffer") &&
+             get(readBuffer, "oidnReadBuffer"))){
             where += ": missing functions (not OIDN 2?)";
             return;
         }
-        device = newDevice(OidnDeviceCpu);
-        if(!device){ where += ": no CPU device"; return; }
-        commitDevice(device);
+        //UREDJAJ: zadano najbrzi koji OIDN nadje (CUDA/HIP/SYCL kad su njihove biblioteke uz
+        //libOpenImageDenoise i kartica postoji - tools/oidn/fetch.sh --gpu), inace procesor.
+        //LOOM_OIDN_DEVICE=cpu|cuda|hip|sycl bira izrijekom
+        int wanted = OidnDeviceDefault;
+        if(const char* env = std::getenv("LOOM_OIDN_DEVICE")){
+            const std::string name(env);
+            wanted = name == "cpu" ? 1 : name == "sycl" ? 2 : name == "cuda" ? 3 : name == "hip" ? 4 : OidnDeviceDefault;
+        }
         const char* message = nullptr;
-        if(deviceError(device, &message) != 0){ where += std::string(": ") + (message ? message : "device error"); return; }
+        for(int attempt : {wanted, OidnDeviceCpu}){
+            device = newDevice(attempt);
+            if(!device) continue;
+            commitDevice(device);
+            if(deviceError(device, &message) == 0) break;
+            device = nullptr;
+        }
+        if(!device){ where += std::string(": ") + (message ? message : "no device"); return; }
+        const int type = deviceInt(device, "type");
+        deviceName = type >= 0 && type <= 5 ? OidnDeviceNames[type] : "unknown";
         filter = newFilter(device, "RT");
         ready = filter != nullptr;
         if(!ready) where += ": no RT filter";
@@ -77,13 +103,22 @@ struct Oidn{
              std::vector<float>& output, uint32_t w, uint32_t h){
         std::lock_guard<std::mutex> guard(lock);
         const size_t stride = 3 * sizeof(float);
-        sharedImage(filter, "color", colour.data(), OidnFloat3, w, h, 0, stride, stride * w);
-        sharedImage(filter, "albedo", albedo.data(), OidnFloat3, w, h, 0, stride, stride * w);
-        sharedImage(filter, "normal", normal.data(), OidnFloat3, w, h, 0, stride, stride * w);
-        sharedImage(filter, "output", output.data(), OidnFloat3, w, h, 0, stride, stride * w);
+        const size_t bytes = stride * size_t(w) * h;
+        if(bytes != bufferBytes){
+            for(OidnHandle& b : buffers){ if(b) releaseBuffer(b); b = newBuffer(device, bytes); }
+            bufferBytes = bytes;
+        }
+        writeBuffer(buffers[0], 0, bytes, colour.data());
+        writeBuffer(buffers[1], 0, bytes, albedo.data());
+        writeBuffer(buffers[2], 0, bytes, normal.data());
+        setImage(filter, "color", buffers[0], OidnFloat3, w, h, 0, stride, stride * w);
+        setImage(filter, "albedo", buffers[1], OidnFloat3, w, h, 0, stride, stride * w);
+        setImage(filter, "normal", buffers[2], OidnFloat3, w, h, 0, stride, stride * w);
+        setImage(filter, "output", buffers[3], OidnFloat3, w, h, 0, stride, stride * w);
         setBool(filter, "hdr", true);
         commitFilter(filter);
         executeFilter(filter);
+        readBuffer(buffers[3], 0, bytes, output.data());
         const char* message = nullptr;
         return deviceError(device, &message) == 0;
     }
@@ -118,6 +153,11 @@ bool oidnAvailable(std::string* where){
     Oidn& o = oidn();
     if(where) *where = o.where;
     return o.ready;
+}
+
+std::string oidnDevice(){
+    Oidn& o = oidn();
+    return o.ready ? o.deviceName : "none";
 }
 
 void denoiseFrame(Frame& frame, Denoiser which){
