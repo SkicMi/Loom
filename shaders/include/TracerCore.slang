@@ -669,23 +669,93 @@ float heightTau(HeightRay h, float t){
     return base * (1.0 - exp(min(80.0, -x * t))) / x;
 }
 
+// nehomogena gustoca kutije (Tracer::densityFactor): meki rub i sum, isti hash kao na procesoru
+uint latticeHash(int x, int y, int z){
+    uint h = uint(x) * 0x8da6b343u ^ uint(y) * 0xd8163841u ^ uint(z) * 0xcb1ab31fu;
+    h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+    return h;
+}
+float latticeValue(int x, int y, int z){ return float(latticeHash(x, y, z) >> 8) * (1.0 / 16777216.0); }
+float valueNoise(float3 p){
+    const float3 f = floor(p);
+    const float3 x = p - f;
+    const float3 w = x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
+    const int ix = int(f.x), iy = int(f.y), iz = int(f.z);
+    const float a000 = latticeValue(ix, iy, iz), a100 = latticeValue(ix + 1, iy, iz);
+    const float a010 = latticeValue(ix, iy + 1, iz), a110 = latticeValue(ix + 1, iy + 1, iz);
+    const float a001 = latticeValue(ix, iy, iz + 1), a101 = latticeValue(ix + 1, iy, iz + 1);
+    const float a011 = latticeValue(ix, iy + 1, iz + 1), a111 = latticeValue(ix + 1, iy + 1, iz + 1);
+    const float x00 = a000 + (a100 - a000) * w.x, x10 = a010 + (a110 - a010) * w.x;
+    const float x01 = a001 + (a101 - a001) * w.x, x11 = a011 + (a111 - a011) * w.x;
+    const float y0 = x00 + (x10 - x00) * w.y, y1 = x01 + (x11 - x01) * w.y;
+    return y0 + (y1 - y0) * w.z;
+}
+float cloudNoise(float3 p){
+    float sum = 0.0, amplitude = 1.0;
+    for(int octave = 0; octave < 4; ++octave){
+        sum += amplitude * valueNoise(p + float3(float(octave) * 17.31));
+        amplitude *= 0.5;
+        p *= 2.03;
+    }
+    const float n = clamp((sum / 1.875 - 0.25) * 2.0, 0.0, 1.0);
+    return n * n * (3.0 - 2.0 * n);
+}
+float volumeEdge(uint v){ return volumes[v * VOLUME_STRIDE + 6].w; }
+float volumeNoise(uint v){ return volumes[v * VOLUME_STRIDE + 7].x; }
+bool volumeVaries(uint v){ return !isHeightFog(v) && (volumeEdge(v) > 0.0 || volumeNoise(v) > 0.0); }
+float majorantOf(uint v){ return volumeDensity(v) * (isHeightFog(v) ? 1.0 : 1.0 + max(0.0, volumeNoise(v))); }
+float densityFactor(uint v, float3 p){
+    const float4 r0 = volumes[v * VOLUME_STRIDE], r1 = volumes[v * VOLUME_STRIDE + 1], r2 = volumes[v * VOLUME_STRIDE + 2];
+    const float3 l = float3(dot(r0.xyz, p) + r0.w, dot(r1.xyz, p) + r1.w, dot(r2.xyz, p) + r2.w);
+    float f = 1.0;
+    const float edge = volumeEdge(v);
+    if(edge > 0.0){
+        for(int k = 0; k < 3; ++k){
+            const float x = clamp((0.5 - abs(l[k])) / edge, 0.0, 1.0);
+            f *= x * x * (3.0 - 2.0 * x);
+        }
+    }
+    const float4 noise = volumes[v * VOLUME_STRIDE + 7];
+    if(noise.x > 0.0 && f > 0.0){
+        const float3 size = float3(1.0 / max(1e-20, length(r0.xyz)), 1.0 / max(1e-20, length(r1.xyz)), 1.0 / max(1e-20, length(r2.xyz)));
+        const float n = cloudNoise(l * size / max(noise.y, 1e-4));
+        f *= (1.0 - noise.x) + 2.0 * noise.x * n;
+    }
+    return f;
+}
+
+// generator za delta i ratio tracking (Tracer::VolumeRng)
+struct VolumeRng{
+    uint state;
+    [mutating] float next(){
+        state = state * 747796405u + 2891336453u;
+        uint w = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+        w = (w >> 22u) ^ w;
+        return float(w >> 8) * (1.0 / 16777216.0);
+    }
+};
+
 struct MediaOnRay{
+    float3 o;
+    float3 d;
     float s0[MAX_VOLUME_SPANS];
     float s1[MAX_VOLUME_SPANS];
+    float spanSigma[MAX_VOLUME_SPANS];      // majoranta
     uint spanIndex[MAX_VOLUME_SPANS];
     uint spanCount;
     HeightRay heights[MAX_VOLUME_SPANS];
     uint heightIndex[MAX_VOLUME_SPANS];
     uint heightCount;
+    bool varies;
     float tau(float t){
         float sum = 0.0;
-        for(uint i = 0; i < spanCount; ++i) sum += volumeDensity(spanIndex[i]) * max(0.0, min(t, s1[i]) - s0[i]);
+        for(uint i = 0; i < spanCount; ++i) sum += spanSigma[i] * max(0.0, min(t, s1[i]) - s0[i]);
         for(uint i = 0; i < heightCount; ++i) sum += heightTau(heights[i], t);
         return sum;
     }
     float sigma(float t){
         float sum = 0.0;
-        for(uint i = 0; i < spanCount; ++i) if(s0[i] <= t && t <= s1[i]) sum += volumeDensity(spanIndex[i]);
+        for(uint i = 0; i < spanCount; ++i) if(s0[i] <= t && t <= s1[i]) sum += spanSigma[i];
         for(uint i = 0; i < heightCount; ++i) sum += heightSigma(heights[i], t);
         return sum;
     }
@@ -704,7 +774,7 @@ struct MediaOnRay{
         for(uint i = 0; i < spanCount; ++i){
             if(!(s0[i] <= t && t <= s1[i])) continue;
             which = spanIndex[i];
-            left -= volumeDensity(spanIndex[i]);
+            left -= spanSigma[i];
             if(left < 0.0) return which;
         }
         for(uint i = 0; i < heightCount; ++i){
@@ -714,11 +784,69 @@ struct MediaOnRay{
         }
         return which;
     }
+    float realSigma(uint index, float t){
+        if(isHeightFog(index)){
+            for(uint i = 0; i < heightCount; ++i) if(heightIndex[i] == index) return heightSigma(heights[i], t);
+            return 0.0;
+        }
+        return volumeVaries(index) ? volumeDensity(index) * densityFactor(index, o + d * t) : volumeDensity(index);
+    }
+    // ukupna stvarna gustoca u t i medij razmjerno njoj (Tracer::MediaOnRay::realTotal)
+    float realTotal(float t, float u, out uint which){
+        float values[2 * MAX_VOLUME_SPANS];
+        uint owners[2 * MAX_VOLUME_SPANS];
+        uint n = 0;
+        float total = 0.0;
+        for(uint i = 0; i < spanCount; ++i){
+            if(!(s0[i] <= t && t <= s1[i])) continue;
+            const float s = volumeVaries(spanIndex[i]) ? realSigma(spanIndex[i], t) : spanSigma[i];
+            values[n] = s; owners[n] = spanIndex[i]; n++; total += s;
+        }
+        for(uint i = 0; i < heightCount; ++i){
+            const float s = heightSigma(heights[i], t);
+            values[n] = s; owners[n] = heightIndex[i]; n++; total += s;
+        }
+        which = n > 0 ? owners[0] : 0u;
+        float left = u * total;
+        for(uint i = 0; i < n; ++i){
+            which = owners[i];
+            left -= values[i];
+            if(left < 0.0) break;
+        }
+        return total;
+    }
+    // propusnost do t: homogeno analiticki, nehomogene kutije ratio trackingom
+    float transmittance(float t, inout VolumeRng rng){
+        float smooth = 0.0;
+        for(uint i = 0; i < spanCount; ++i)
+            if(!volumeVaries(spanIndex[i])) smooth += spanSigma[i] * max(0.0, min(t, s1[i]) - s0[i]);
+        for(uint i = 0; i < heightCount; ++i) smooth += heightTau(heights[i], t);
+        float T = exp(-smooth);
+        for(uint i = 0; i < spanCount; ++i){
+            if(!(T > 0.0)) break;
+            const uint v = spanIndex[i];
+            if(!volumeVaries(v) || !(spanSigma[i] > 0.0)) continue;
+            const float end = min(t, s1[i]);
+            const float density = volumeDensity(v);
+            float x = s0[i];
+            for(int step = 0; step < 1024; ++step){
+                x -= log(max(1e-12, 1.0 - rng.next())) / spanSigma[i];
+                if(x >= end) break;
+                T *= 1.0 - density * densityFactor(v, o + d * x) / spanSigma[i];
+                if(T < 0.05){
+                    if(rng.next() >= 0.5){ T = 0.0; break; }
+                    T *= 2.0;
+                }
+            }
+        }
+        return T;
+    }
 };
 
 MediaOnRay mediaOnRay(uint count, float3 o, float3 d, float tMax){
     MediaOnRay m;
-    m.spanCount = 0; m.heightCount = 0;
+    m.o = o; m.d = d;
+    m.spanCount = 0; m.heightCount = 0; m.varies = false;
     for(uint v = 0; v < count; ++v){
         if(!(volumeDensity(v) > 0.0)) continue;
         if(isHeightFog(v)){
@@ -727,24 +855,24 @@ MediaOnRay mediaOnRay(uint count, float3 o, float3 d, float tMax){
         }
         if(m.spanCount >= MAX_VOLUME_SPANS) continue;
         float t0, t1;
-        if(boxInterval(v, o, d, tMax, t0, t1)){ m.s0[m.spanCount] = t0; m.s1[m.spanCount] = t1; m.spanIndex[m.spanCount] = v; m.spanCount++; }
+        if(boxInterval(v, o, d, tMax, t0, t1)){
+            m.s0[m.spanCount] = t0; m.s1[m.spanCount] = t1; m.spanIndex[m.spanCount] = v;
+            m.spanSigma[m.spanCount] = majorantOf(v);
+            m.varies = m.varies || volumeVaries(v);
+            m.spanCount++;
+        }
     }
     return m;
 }
 
-bool sampleVolume(uint count, float3 o, float3 d, float tMax, float2 u, out float t, out uint which){
-    return sampleVolume(mediaOnRay(count, o, d, tMax), tMax, u, t, which);
-}
-
-float opticalDepth(uint count, float3 o, float3 d, float tMax){
+float volumeTransmittance(uint count, float3 o, float3 d, float tMax, inout VolumeRng rng){
     MediaOnRay m = mediaOnRay(count, o, d, tMax);
-    return m.tau(tMax);
+    return m.transmittance(tMax, rng);
 }
 
-bool sampleVolume(MediaOnRay m, float tMax, float2 u, out float t, out uint which){
-    t = 0.0; which = 0;
-    if(m.empty()) return false;
-    const float target = -log(max(1e-12, 1.0 - u.x));
+// t s tau(t) = target po majoranti (Tracer::solveTau)
+bool solveTau(MediaOnRay m, float tMax, float from, float target, out float t){
+    t = from;
     if(m.heightCount == 0){
         uint n = m.spanCount;
         float edges[2 * MAX_VOLUME_SPANS];
@@ -756,39 +884,56 @@ bool sampleVolume(MediaOnRay m, float tMax, float2 u, out float t, out uint whic
             edges[j + 1] = key;
         }
         float tau = target;
-        bool found = false;
         for(uint e = 0; e + 1 < 2 * n; ++e){
-            if(found) break;
             const float a = edges[e], b = edges[e + 1];
             if(!(b > a)) continue;
             const float sigma = m.sigma(0.5 * (a + b));
             if(sigma <= 0.0) continue;
-            if(tau <= sigma * (b - a)){ t = a + tau / sigma; found = true; }
-            else tau -= sigma * (b - a);
+            if(tau <= sigma * (b - a)){ t = max(from, a + tau / sigma); return true; }
+            tau -= sigma * (b - a);
         }
-        if(!found) return false;
-    }else{
-        if(m.tau(tMax) < target) return false;
-        float lo = 0.0, hi = tMax;
-        if(hi >= INF){
-            hi = 1.0;
-            for(int k = 0; k < 80 && m.tau(hi) < target; ++k) hi *= 2.0;
-        }
-        float x = 0.5 * (lo + hi);
-        for(int iteration = 0; iteration < 48; ++iteration){
-            const float f = m.tau(x) - target;
-            if(abs(f) <= 1e-6 * max(1.0, target)) break;
-            if(f > 0.0) hi = x; else lo = x;
-            const float slope = m.sigma(x);
-            float next = slope > 0.0 ? x - f / slope : 0.5 * (lo + hi);
-            if(!(next > lo && next < hi)) next = 0.5 * (lo + hi);
-            if(next == x) break;
-            x = next;
-        }
-        t = x;
+        return false;
     }
-    which = m.pick(t, u.y);
+    if(m.tau(tMax) < target) return false;
+    float lo = from, hi = tMax;
+    if(hi >= INF){
+        hi = max(1.0, 2.0 * from);
+        for(int k = 0; k < 80 && m.tau(hi) < target; ++k) hi *= 2.0;
+    }
+    float x = 0.5 * (lo + hi);
+    for(int iteration = 0; iteration < 48; ++iteration){
+        const float f = m.tau(x) - target;
+        if(abs(f) <= 1e-6 * max(1.0, target)) break;
+        if(f > 0.0) hi = x; else lo = x;
+        const float slope = m.sigma(x);
+        float next = slope > 0.0 ? x - f / slope : 0.5 * (lo + hi);
+        if(!(next > lo && next < hi)) next = 0.5 * (lo + hi);
+        if(next == x) break;
+        x = next;
+    }
+    t = x;
     return true;
+}
+
+// slobodni put s delta trackingom kroz nehomogene kutije (Tracer::sampleVolume)
+bool sampleVolume(MediaOnRay m, float tMax, float2 u, uint seed, out float t, out uint which){
+    t = 0.0; which = 0;
+    if(m.empty()) return false;
+    float target = -log(max(1e-12, 1.0 - u.x));
+    float from = 0.0;
+    VolumeRng rng;
+    rng.state = seed;
+    for(int step = 0; step < 256; ++step){
+        if(!solveTau(m, tMax, from, target, t)) return false;
+        which = m.pick(t, u.y);
+        if(!m.varies || !volumeVaries(which)) return true;
+        const float real = m.realSigma(which, t);
+        if(rng.next() * majorantOf(which) < real) return true;
+        from = t;
+        target -= log(max(1e-12, 1.0 - rng.next()));
+        u.y = rng.next();
+    }
+    return false;
 }
 
 // ekviangularno (Kulla & Fajardo 2012) - Tracer/Volume.h
@@ -850,7 +995,11 @@ float3 samplePhase(uint v, float3 d, float2 u, out float pdf){
 float3 shadowTransmittance(float3 origin, float3 direction, float tMax, uint mode, bool glass,
                            uint pixelSeed, uint sampleIndex, uint salt, uint volumeCount, out bool crossed){
     float3 through = surfaceTransmittance(origin, direction, tMax, mode, glass, pixelSeed, sampleIndex, salt, crossed);
-    if(volumeCount > 0 && luminance(through) > 0.0) through *= exp(-opticalDepth(volumeCount, origin, direction, tMax));
+    if(volumeCount > 0 && luminance(through) > 0.0){
+        VolumeRng rng;
+        rng.state = hash2(pixelSeed ^ hash2(salt, sampleIndex * 977u + 0x5bd1e995u), 0x2545f491u);
+        through *= volumeTransmittance(volumeCount, origin, direction, tMax, rng);
+    }
     return through;
 }
 
@@ -1519,9 +1668,19 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                         const float pe = equiangularPdf(e, te);
                         const float event = (te >= segment.a && te <= segment.b) ? media.eventPdf(te) : 0.0;
                         const float3 p = origin + direction * te;
+                        // stvarno sigma(t) T(t) (Renderer.cpp)
+                        float real = event;
+                        uint scatterer = 0;
+                        if(event > 0.0){
+                            if(media.varies){
+                                VolumeRng rng;
+                                rng.state = hash2(pixelSeed ^ hash2(salt + 523u, sampleIndex * 977u), 0x68e31da4u);
+                                real = media.realTotal(te, v.y, scatterer);
+                                if(real > 0.0) real *= media.transmittance(te, rng);
+                            }else scatterer = media.pick(te, v.y);
+                        }
                         LightSample ls;
-                        if(pe > 0.0 && event > 0.0 && sampleLightIndex(P, index, pick, p, u, ls)){
-                            const uint scatterer = media.pick(te, v.y);
+                        if(pe > 0.0 && real > 0.0 && sampleLightIndex(P, index, pick, p, u, ls)){
                             const float3 albedo = volumes[scatterer * VOLUME_STRIDE + 3].rgb;
                             const float phase = phaseOf(scatterer, dot(direction, ls.wi));
                             if(phase > 0.0 && luminance(albedo * ls.value) > 0.0){
@@ -1533,7 +1692,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                                     const float own = ls.pdf / pick;
                                     const float w = powerHeuristic3(pe * ls.pdf, event * choiceProbability(P, index, p, float3(0.0)) * own,
                                                                     ls.delta || crossed ? 0.0 : event * phase);
-                                    const float3 c = clampContribution(beta * albedo * ls.value * through * (phase * event * w / (pe * ls.pdf)),
+                                    const float3 c = clampContribution(beta * albedo * ls.value * through * (phase * real * w / (pe * ls.pdf)),
                                                                        depth > 0, clampValue);
                                     if(depth == 0) result.inscatter += c; else radiance += c;
                                 }
@@ -1542,7 +1701,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                     }
                 }
             }
-            if(inMedium && sampleVolume(media, end, free, t, which)){
+            if(inMedium && sampleVolume(media, end, free, hash2(pixelSeed ^ hash2(salt + 211u, sampleIndex * 977u), 0x1b873593u), t, which)){
                 const float4 medium = volumes[which * VOLUME_STRIDE + 3];
                 const float event = media.eventPdf(t);
                 const float3 p = origin + direction * t;

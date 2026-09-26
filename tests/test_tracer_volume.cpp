@@ -12,6 +12,9 @@
 //                prema numerickom integralu, i to sa i bez ekviangularnog uzorkovanja; sum po
 //                pikselu s njim nekoliko puta manji. Kugla, reflektor i trokut-svjetlo s vise
 //                odbijanja: MIS triju strategija daje isti prosjek kao sam slobodni put
+//   NEHOMOGENO   meki rub 0.3 kroz upijajucu kutiju: tau = 0.4 * 2 * 0.7 (smoothstep ima srednju
+//                0.5); sum: ratio tracking i delta tracking prema kvadraturi gustoce; bijela pec
+//                sa sumom i rubom ostaje 1; lampa u sumovitoj magli ista sa i bez ekviangularnog
 //   KARTICA      isti brojevi na Vulkanu
 //   MOST, USD    Warp::Volume -> Tracer::Volume (kutija entiteta u svijetu), kroz .usda i natrag
 #include "TestHarness.h"
@@ -21,6 +24,8 @@
 #include "Core/LoomConfig.h"
 #include "Core/LoomInitializer.h"
 
+#include <Tracer/Sampler.h>
+#include <Tracer/Volume.h>
 #include <TracerGpu/GpuTracer.h>
 #include <Warp/Project.h>
 
@@ -217,6 +222,30 @@ double meanAll(const Tracer::Frame& f){
     return sum / double(f.pixelCount());
 }
 
+Tracer::Volume cloudy(const glm::vec3& centre, const glm::vec3& size, glm::vec3 albedo, float density, float g,
+                      float edge, float noise, float noiseScale){
+    Tracer::Volume v = box(centre, size, albedo, density, g);
+    v.edge = edge; v.noise = noise; v.noiseScale = noiseScale;
+    return v;
+}
+Tracer::Scene softAbsorber(){
+    Tracer::Scene s = absorber();
+    s.volumes[0].edge = 0.3f;
+    return s;
+}
+Tracer::Scene cloudyFurnace(){
+    Tracer::Scene s;
+    s.environment.color = glm::vec3(1.0f);
+    s.volumes.push_back(cloudy({0, 0, 0}, {2, 2, 2}, glm::vec3(1.0f), 3.0f, 0.5f, 0.25f, 0.8f, 0.4f));
+    s.camera = lookAt({0, 0, 5}, {0, 0, 0}, 16, 16, 40.0f);
+    return s;
+}
+Tracer::Scene cloudyLamp(){
+    Tracer::Scene s = lampsInFog();
+    s.volumes[0].edge = 0.2f; s.volumes[0].noise = 0.8f; s.volumes[0].noiseScale = 0.5f;
+    return s;
+}
+
 double single(float g){
     const double sigma = 0.05, E = glm::pi<double>();
     const double p = (1.0 - g * g) / (4.0 * glm::pi<double>() * std::pow(1.0 + g * g, 1.5));
@@ -312,6 +341,56 @@ int main(){
                      fmt("%.5f, sam slobodni put %.5f", mixed, plain));
     }
 
+    //-- nehomogeno -----------------------------------------------------------------------------------
+    double softTruth = std::exp(-0.4 * 2.0 * 0.7), cloudyLampFree = 0.0;
+    {
+        const double soft = meanCg(onCpu(softAbsorber(), settingsFor(1024, 4)), 0, 16);
+        report.check("meki rub: propusnost", std::abs(soft / softTruth - 1.0) < 0.01, fmt("%.4f (ocekivano %.4f)", soft, softTruth));
+
+        //Sum: kvadratura gustoce duz nekoliko zraka prema ratio i delta trackingu
+        std::vector<Tracer::Volume> volumes{cloudy({0.3f, 0.1f, 0}, {2, 1.5f, 2}, glm::vec3(1.0f), 1.5f, 0.0f, 0.2f, 1.0f, 0.3f)};
+        std::vector<glm::mat4> inverses{glm::inverse(volumes[0].toWorld)};
+        double worst = 0.0;
+        std::string detail;
+        for(int ray = 0; ray < 3; ++ray){
+            const glm::vec3 o(-3.0f, -0.2f + 0.2f * ray, 0.1f * ray - 0.1f);
+            const glm::vec3 d = glm::normalize(glm::vec3(1.0f, 0.05f * ray, 0.1f - 0.07f * ray));
+            const float tMax = 6.0f;
+            double tau = 0.0;
+            const int steps = 200000;
+            for(int i = 0; i < steps; ++i){
+                const float t = (float(i) + 0.5f) * tMax / steps;
+                const glm::vec3 p = o + d * t;
+                const glm::vec3 l = glm::vec3(inverses[0] * glm::vec4(p, 1.0f));
+                if(std::abs(l.x) > 0.5f || std::abs(l.y) > 0.5f || std::abs(l.z) > 0.5f) continue;
+                tau += volumes[0].density * Tracer::densityFactor(volumes[0], inverses[0], p) * tMax / steps;
+            }
+            const double truth = std::exp(-tau);
+            double ratio = 0.0, passed = 0.0;
+            const int trials = 40000;
+            for(int k = 0; k < trials; ++k){
+                Tracer::VolumeRng rng{Tracer::sampling::hash(uint32_t(k), uint32_t(ray))};
+                ratio += Tracer::volumeTransmittance(volumes, inverses, o, d, tMax, rng);
+                float t; uint32_t which;
+                const glm::vec2 u(rng.next(), rng.next());
+                if(!Tracer::sampleVolume(volumes, inverses, o, d, tMax, u, Tracer::sampling::hash(uint32_t(k) + 77u, uint32_t(ray)), t, which)) passed += 1.0;
+            }
+            ratio /= trials; passed /= trials;
+            worst = std::max({worst, std::abs(ratio - truth), std::abs(passed - truth)});
+            detail += fmt("%.4f/%.4f/%.4f ", ratio, passed, truth);
+        }
+        report.check("sum: ratio i delta tracking", worst < 0.01, detail + "(ratio/delta/kvadratura)");
+
+        const double white = meanComposite(onCpu(cloudyFurnace(), settingsFor(512, 256)));
+        report.check("sum: bijela pec", std::abs(white - 1.0) < 0.01, fmt("%.4f (ocekivano 1)", white));
+        Tracer::RenderSettings off = settingsFor(4096, 6);
+        off.equiangular = false;
+        const double withEq = meanAll(onCpu(cloudyLamp(), settingsFor(4096, 6)));
+        cloudyLampFree = meanAll(onCpu(cloudyLamp(), off));
+        report.check("sum: lampe, ekviangularno", std::abs(withEq / cloudyLampFree - 1.0) < 0.015,
+                     fmt("%.5f, sam slobodni put %.5f", withEq, cloudyLampFree));
+    }
+
     {
         LoomConfig config;
         config.width = 64; config.height = 64; config.headless = true;
@@ -334,6 +413,12 @@ int main(){
         const double cardLamps = meanAll(card(lampsInFog(), settingsFor(4096, 6)));
         report.check("kartica: ekviangularno", std::abs(cardLamp / lampSingle(0.5f) - 1.0) < 0.02 && std::abs(cardLamps / lampsMixed - 1.0) < 0.015,
                      fmt("tockasto %.5f (%.5f), tri svjetla %.5f (procesor %.5f)", cardLamp, lampSingle(0.5f), cardLamps, lampsMixed));
+        const double cardSoft = meanCg(card(softAbsorber(), settingsFor(1024, 4)), 0, 16);
+        const double cardCloudWhite = meanComposite(card(cloudyFurnace(), settingsFor(512, 256)));
+        const double cardCloudLamp = meanAll(card(cloudyLamp(), settingsFor(4096, 6)));
+        report.check("kartica: nehomogeno", std::abs(cardSoft / softTruth - 1.0) < 0.01 && std::abs(cardCloudWhite - 1.0) < 0.01 &&
+                     std::abs(cardCloudLamp / cloudyLampFree - 1.0) < 0.015,
+                     fmt("meki rub %.4f, pec %.4f, lampe %.5f (procesor bez ekv. %.5f)", cardSoft, cardCloudWhite, cardCloudLamp, cloudyLampFree));
         report.check("kartica: magla po visini", std::abs(hAcross / acrossTruth - 1.0) < 0.01 && std::abs(hWhite - 1.0) < 0.015 &&
                      std::abs(hSingle / heightSingle(0.5f, -0.3f, 0.4f) - 1.0) < 0.02,
                      fmt("vodoravno %.4f, pec %.4f, rasprsenje %.5f", hAcross, hWhite, hSingle));

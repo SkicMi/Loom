@@ -202,8 +202,10 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             return true;
         });
         if(blocked) return glm::vec3(0.0f);
-        if(!world.volumes.empty())
-            through *= std::exp(-opticalDepth(world.volumes, C.volumeInverse, shadowRay.origin, shadowRay.direction, shadowRay.tMax));
+        if(!world.volumes.empty()){
+            VolumeRng rng{sampling::hash(pixelSeed ^ sampling::hash(salt, sampleIndex * 977u + 0x5bd1e995u))};
+            through *= volumeTransmittance(world.volumes, C.volumeInverse, shadowRay.origin, shadowRay.direction, shadowRay.tMax, rng);
+        }
         return through;
     };
 
@@ -468,9 +470,19 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                     const float pe = equiangularPdf(e, te);
                     const float event = std::isfinite(te) && te >= segment.a && te <= segment.b ? media.eventPdf(world.volumes, te) : 0.0f;
                     const glm::vec3 p = ray.origin + ray.direction * te;
+                    //Stvarno sigma(t) T(t): kod nehomogene magle gustoca u tocki i ratio tracking do nje
+                    float real = event;
+                    uint32_t scatterer = 0;
+                    if(event > 0.0f){
+                        if(media.varies){
+                            VolumeRng rng{sampling::hash(pixelSeed ^ sampling::hash(salt + 523u, sampleIndex * 977u))};
+                            real = media.realTotal(world.volumes, C.volumeInverse, te, v.y, scatterer);
+                            if(real > 0.0f) real *= media.transmittance(world.volumes, C.volumeInverse, te, rng);
+                        }else scatterer = media.pick(world.volumes, te, v.y);
+                    }
                     LightSample ls;
-                    if(pe > 0.0f && event > 0.0f && sampleLightIndex(index, pick, p, u, ls)){
-                        const Volume& medium = world.volumes[media.pick(world.volumes, te, v.y)];
+                    if(pe > 0.0f && real > 0.0f && sampleLightIndex(index, pick, p, u, ls)){
+                        const Volume& medium = world.volumes[scatterer];
                         const float phase = phaseOf(medium, glm::dot(ray.direction, ls.wi));
                         if(phase > 0.0f && luminance(medium.albedo * ls.value) > 0.0f){
                             Ray shadowRay{p, ls.wi, 0.0f, std::isinf(ls.distance) ? Infinity : ls.distance * (1.0f - 1e-4f)};
@@ -482,7 +494,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                                 const float w = powerHeuristic(pe * ls.pdf,
                                                                event * C.choiceProbability(index, p, glm::vec3(0.0f), useLightTree) * own,
                                                                ls.delta || crossed ? 0.0f : event * phase);
-                                const glm::vec3 c = clampContribution(beta * medium.albedo * ls.value * through * (phase * event * w / (pe * ls.pdf)),
+                                const glm::vec3 c = clampContribution(beta * medium.albedo * ls.value * through * (phase * real * w / (pe * ls.pdf)),
                                                                       depth > 0);
                                 //S kamerine zrake: sjaj magle i kad put ne rasprsi (ne pokriva piksel)
                                 if(depth == 0) result.inscatter += c; else radiance += c;
@@ -491,7 +503,8 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                     }
                 }
             }
-            if(inMedium && sampleVolume(world.volumes, media, end, free, t, which)){
+            if(inMedium && sampleVolume(world.volumes, C.volumeInverse, media, end, free,
+                                        sampling::hash(pixelSeed ^ sampling::hash(salt + 211u, sampleIndex * 977u)), t, which)){
                 const Volume& medium = world.volumes[which];
                 const float event = media.eventPdf(world.volumes, t);
                 const glm::vec3 p = ray.origin + ray.direction * t;
