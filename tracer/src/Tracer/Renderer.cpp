@@ -307,6 +307,9 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
     const glm::vec2 jitter(tent(filterSample.x), tent(filterSample.y));
     Ray ray;
     camera.ray(pixel + jitter, lensSample, ray.origin, ray.direction);
+    //STOZAC ZRAKE (ray cones, Akenine-Moller 2019) za razinu mipmape: sirina raste s udaljenoscu,
+    //kut sirenja je kut piksela; hrapavo odbijanje ga jako rasiri
+    float coneWidth = 0.0f, coneSpread = 1.0f / std::max(1.0f, camera.focalPixels);
     const glm::mat4& worldToCamera = cameraInverse;
 
     glm::vec3 beta(1.0f);
@@ -385,6 +388,21 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         //trokuta u modelima iz raznih alata nije pouzdan)
         if(glm::dot(ng, ns) < 0.0f) ng = -ng;
         const glm::vec2 uv = uvAt(tri, hit.u, hit.v);
+        //Razina mipmape: sirina stosca na plohi (koso = sire), puta gustoca teksela na trokutu
+        coneWidth += coneSpread * hit.t;
+        float lodBase = -Infinity;
+        {
+            const glm::vec2 du = world.uvs[tri.v[1]] - world.uvs[tri.v[0]], dv = world.uvs[tri.v[2]] - world.uvs[tri.v[0]];
+            const float uvArea = std::abs(du.x * dv.y - du.y * dv.x);
+            const float worldArea = glm::length(glm::cross(p1 - p0, p2 - p0));
+            const float cosHit = std::max(0.05f, std::abs(glm::dot(ng, ray.direction)));
+            if(mipmaps && uvArea > 0.0f && worldArea > 0.0f && coneWidth > 0.0f)
+                lodBase = std::log2(coneWidth / cosHit) + 0.5f * std::log2(uvArea / worldArea);
+        }
+        auto texture = [&](int index){
+            const Texture& t = world.textures[size_t(index)];
+            return t.sample(uv, lodBase + 0.5f * std::log2(float(t.width) * float(t.height)));
+        };
 
         SurfaceParameters surface;
         surface.baseColor = material.baseColor;
@@ -396,9 +414,9 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         surface.clearcoat = material.clearcoat;
         surface.clearcoatRoughness = material.clearcoatRoughness;
         if(material.baseColorTexture >= 0)
-            surface.baseColor *= glm::vec3(world.textures[size_t(material.baseColorTexture)].sample(uv));
+            surface.baseColor *= glm::vec3(texture(material.baseColorTexture));
         if(material.metallicRoughnessTexture >= 0){
-            const glm::vec4 mr = world.textures[size_t(material.metallicRoughnessTexture)].sample(uv);
+            const glm::vec4 mr = texture(material.metallicRoughnessTexture);
             surface.roughness *= mr.g;
             surface.metallic *= mr.b;
         }
@@ -408,7 +426,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             if(glm::dot(t, t) > 1e-20f){
                 t = glm::normalize(t);
                 const glm::vec3 b = glm::cross(ns, t) * (tangent.w < 0.0f ? -1.0f : 1.0f);
-                glm::vec3 m = glm::vec3(world.textures[size_t(material.normalTexture)].sample(uv)) * 2.0f - 1.0f;
+                glm::vec3 m = glm::vec3(texture(material.normalTexture)) * 2.0f - 1.0f;
                 m.x *= material.normalScale;
                 m.y *= material.normalScale;
                 const glm::vec3 bent = t * m.x + b * m.y + ns * m.z;
@@ -416,7 +434,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             }
         }
         glm::vec3 emitted = material.emission * material.emissionStrength;
-        if(material.emissionTexture >= 0) emitted *= glm::vec3(world.textures[size_t(material.emissionTexture)].sample(uv));
+        if(material.emissionTexture >= 0) emitted *= glm::vec3(texture(material.emissionTexture));
 
         const glm::vec3 wo = -ray.direction;
         const bool outside = glm::dot(ng, wo) > 0.0f;
@@ -539,6 +557,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         beta *= bs.weight;
         if(!(luminance(beta) > 0.0f) || !std::isfinite(luminance(beta))) break;
         mirrorChain = mirrorChain && bs.glossy;
+        if(!bs.glossy) coneSpread += 0.2f;
         if(glass){
             if(!bs.glossy){ sawRough = true; caustic = false; }
             else if(!geometricSide && sawRough && (triangleFlags[hit.triangle] & Transmissive)) caustic = true;
@@ -627,6 +646,7 @@ void Renderer::render(const RenderSettings& settings, const std::function<void(c
     const uint32_t tileCount = tilesX * tilesY;
     threadCount = std::min(threadCount, tileCount);
     glass = settings.glassShadows;
+    mipmaps = settings.mipmaps;
     adaptiveThreshold = settings.adaptiveThreshold;
     adaptiveMinSamples = settings.adaptiveMinSamples;
 

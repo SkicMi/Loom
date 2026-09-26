@@ -61,6 +61,10 @@ struct RenderSettings{
     //je vec doslo zrakom sjene; bez toga bi se brojalo dvaput. Pristrano (nema fokusiranja
     //svjetla iza lece), ali bez suma - kao "caustics off" u produkcijskim rendererima
     bool glassShadows = false;
+
+    //MIPMAPE po stoscu zrake: udaljena ili kosa tekstura se usrednji umjesto da titra (aliasing)
+    //i sumi. false: uvijek osnovna razina (za usporedbu)
+    bool mipmaps = true;
 };
 
 struct RenderProgress{
@@ -108,7 +112,7 @@ private:
     uint32_t done = 0;
     std::vector<Accumulator> pixels;
     std::atomic<uint64_t> rayCount{0};
-    bool glass = false;
+    bool glass = false, mipmaps = true;
     float adaptiveThreshold = 0.0f;
     uint32_t adaptiveMinSamples = 32;
 

@@ -48,6 +48,14 @@ struct Texture{
                                (floats.size() == size_t(width) * height * 4 || bytes.size() == size_t(width) * height * 4);}
     glm::vec4 fetch(int x, int y) const;        //jedan teksel, linearno
     glm::vec4 sample(glm::vec2 uv) const;       //bilinearno; v = 0 je PRVI redak (glTF)
+
+    //MIPMAPE: razine 1, 2, ... (pola, cetvrtina, ... do 1x1), 2x2 usrednjeno u LINEARNOM prostoru
+    //(sRGB se dekodira, usrednji i kodira - inace crno-bijeli sah postane pretaman). Prazno: samo
+    //osnovna razina. compile() ih gradi za teksture scene koje ih nemaju
+    std::vector<Texture> mips;
+    void buildMips();
+    //Trilinearno: lod 0 = osnovna razina, 1 = pola, ... (izmedju razina linearno)
+    glm::vec4 sample(glm::vec2 uv, float lod) const;
 };
 
 //---------------------------------------------------------------------------------------------

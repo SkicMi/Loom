@@ -63,6 +63,55 @@ glm::vec4 Texture::sample(glm::vec2 uv) const{
     return glm::mix(glm::mix(a, b, tx), glm::mix(c, d, tx), ty);
 }
 
+void Texture::buildMips(){
+    mips.clear();
+    if(!valid()) return;
+    const Texture* from = this;
+    while(from->width > 1 || from->height > 1){
+        Texture level;
+        level.width = std::max(1u, from->width / 2);
+        level.height = std::max(1u, from->height / 2);
+        level.srgb = srgb;
+        level.repeat = repeat;
+        const size_t count = size_t(level.width) * level.height;
+        if(!floats.empty()) level.floats.resize(count * 4);
+        else level.bytes.resize(count * 4);
+        const uint32_t sx = from->width > 1 ? 2u : 1u, sy = from->height > 1 ? 2u : 1u;
+        for(uint32_t y = 0; y < level.height; ++y){
+            for(uint32_t x = 0; x < level.width; ++x){
+                glm::vec4 sum(0.0f);
+                for(uint32_t dy = 0; dy < sy; ++dy)
+                    for(uint32_t dx = 0; dx < sx; ++dx)
+                        sum += from->fetch(int(std::min(from->width - 1, x * sx + dx)), int(std::min(from->height - 1, y * sy + dy)));
+                const glm::vec4 mean = sum / float(sx * sy);
+                const size_t at = (size_t(y) * level.width + x) * 4;
+                if(!level.floats.empty()){
+                    for(int k = 0; k < 4; ++k) level.floats[at + size_t(k)] = mean[k];
+                }else{
+                    for(int k = 0; k < 3; ++k){
+                        const float v = srgb ? linearToSrgb(mean[k]) : mean[k];
+                        level.bytes[at + size_t(k)] = uint8_t(std::clamp(std::lround(v * 255.0f), 0L, 255L));
+                    }
+                    level.bytes[at + 3] = uint8_t(std::clamp(std::lround(mean.a * 255.0f), 0L, 255L));
+                }
+            }
+        }
+        mips.push_back(std::move(level));
+        from = &mips.back();
+    }
+}
+
+glm::vec4 Texture::sample(glm::vec2 uv, float lod) const{
+    if(!(lod > 0.0f) || mips.empty()) return sample(uv);
+    const float l = std::min(lod, float(mips.size()));
+    const size_t l0 = size_t(l);
+    const float f = l - float(l0);
+    const Texture& a = l0 == 0 ? *this : mips[l0 - 1];
+    const glm::vec4 c0 = a.sample(uv);
+    if(f <= 0.0f || l0 >= mips.size()) return c0;
+    return glm::mix(c0, mips[l0].sample(uv), f);
+}
+
 glm::vec2 Camera::distortPixel(glm::vec2 p) const{
     if(!distorted()) return p;
     const glm::vec2 f(lens.x, lens.y), c(lens.z, lens.w);

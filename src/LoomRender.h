@@ -316,7 +316,12 @@ public:
         }
     }
 
+    //Tekstura za tracer s mipmapama, jednom po slici: 4K mapa s razinama je desetine milisekundi,
+    //a sekvenca i motion blur grade scenu stotine puta
+    const Tracer::Texture& mipmapped(const Warp::TextureSlot& slot, const Spool::Image& image, bool srgb);
+
 private:
+    std::map<std::string, Tracer::Texture> textures;
     std::map<std::string, std::unique_ptr<Spool::GltfScene>> scenes;
     std::map<std::string, Spool::Image> images;
     std::map<std::string, Spool::FloatImage> hdris;
@@ -331,6 +336,15 @@ inline Tracer::Texture tracerTexture(const Spool::Image& image, bool srgb){
     t.bytes = image.pixels;
     t.srgb = srgb;
     return t;
+}
+
+inline const Tracer::Texture& RenderAssets::mipmapped(const Warp::TextureSlot& slot, const Spool::Image& image, bool srgb){
+    const std::string key = slot.source + "#" + std::to_string(slot.image) + (srgb ? "#s" : "#l");
+    auto found = textures.find(key);
+    if(found != textures.end()) return found->second;
+    Tracer::Texture t = tracerTexture(image, srgb);
+    t.buildMips();
+    return textures.emplace(key, std::move(t)).first->second;
 }
 
 //Prva kamera u sceni (redom hijerarhije)
@@ -425,7 +439,7 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
         if(found != textureIndex.end()) return found->second;
         const Spool::Image* image = assets.image(slot);
         int index = -1;
-        if(image) index = int(scene.addTexture(tracerTexture(*image, srgb)));
+        if(image) index = int(scene.addTexture(assets.mipmapped(slot, *image, srgb)));
         else out.warnings.push_back("Texture not read: " + slot.source);
         textureIndex.emplace(key, index);
         return index;

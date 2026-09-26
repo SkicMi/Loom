@@ -43,7 +43,7 @@ struct Params{
     float4 fromMap0, fromMap1, fromMap2; // mapa -> svijet, stupci
     uint4 flags;            // skyActive, skyVisibleToCamera, backplateTexture (NONE), skyLightIndex (NONE)
     float4 values;          // indirectClamp, k1, k2, prag prilagodljivog uzorkovanja (0 iskljuceno)
-    uint4 extra;            // seed, conditionalOffset, staklene sjene (1), najmanje uzoraka prije zaustavljanja
+    uint4 extra;            // seed, conditionalOffset, bitovi (1 staklene sjene, 2 bez mipmapa), najmanje uzoraka prije zaustavljanja
     float4 distortion;      // fx, fy, cx, cy objektiva (fx 0: ravna leca)
 };
 
@@ -217,9 +217,7 @@ float4 fetch(uint4 info, int x, int y){
     return c;
 }
 
-float4 sampleTexture(uint index, float2 uv){
-    const uint4 info = textureInfo[index];
-    if(info.y == 0 || info.z == 0) return float4(1.0);
+float4 sampleLevel(uint4 info, float2 uv){
     const float x = uv.x * float(info.y) - 0.5;
     const float y = uv.y * float(info.z) - 0.5;
     const float fx = floor(x), fy = floor(y);
@@ -228,6 +226,36 @@ float4 sampleTexture(uint index, float2 uv){
     const float4 a = fetch(info, ix, iy), b = fetch(info, ix + 1, iy);
     const float4 c = fetch(info, ix, iy + 1), d = fetch(info, ix + 1, iy + 1);
     return lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
+}
+
+float4 sampleTexture(uint index, float2 uv){
+    const uint4 info = textureInfo[index];
+    if(info.y == 0 || info.z == 0) return float4(1.0);
+    return sampleLevel(info, uv);
+}
+
+// Mipmape (Tracer::Texture::sample(uv, lod)): razine leze jedna za drugom iza osnovne, broj
+// razina (s osnovnom) je u bitovima 8..15 zastavica
+uint4 levelInfo(uint4 info, uint level){
+    uint start = info.x, w = info.y, h = info.z;
+    for(uint i = 0; i < level; ++i){ start += w * h; w = max(1u, w / 2u); h = max(1u, h / 2u); }
+    return uint4(start, w, h, info.w);
+}
+float lodFor(uint index, float lodBase){
+    const uint4 info = textureInfo[index];
+    return lodBase + 0.5 * log2(float(info.y) * float(info.z));
+}
+float4 sampleTextureLod(uint index, float2 uv, float lod){
+    const uint4 info = textureInfo[index];
+    if(info.y == 0 || info.z == 0) return float4(1.0);
+    const uint levels = max(1u, (info.w >> 8) & 255u);
+    if(!(lod > 0.0) || levels == 1u) return sampleLevel(info, uv);
+    const float l = min(lod, float(levels - 1u));
+    const uint l0 = uint(floor(l));
+    const float f = l - float(l0);
+    const float4 c0 = sampleLevel(levelInfo(info, l0), uv);
+    if(f <= 0.0 || l0 + 1u >= levels) return c0;
+    return lerp(c0, sampleLevel(levelInfo(info, l0 + 1u), uv), f);
 }
 
 //=============================================================================================
@@ -916,13 +944,14 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
     const float2 lensSample = sampler.next2D();
     float3 origin, direction;
     cameraRay(P, pixel + float2(tent(filterSample.x), tent(filterSample.y)), lensSample, origin, direction);
+    float coneWidth = 0.0, coneSpread = 1.0 / max(1.0, P.lens.x);
 
     float3 beta = float3(1.0);
     float3 radiance = float3(0.0);
     float previousPdf = 0.0;
     bool mirrorChain = true;
     float3 previousPoint = origin;
-    const bool glass = P.extra.z != 0;
+    const bool glass = (P.extra.z & 1u) != 0;
     bool sawRough = false, caustic = false;
 
     for(uint depth = 0;; ++depth){
@@ -986,13 +1015,26 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
         const float2 uv = float2(va.w, vertices[info.x * 3 + 1].x) * b0 + float2(vb.w, vertices[info.y * 3 + 1].x) * hit.u +
                           float2(vc.w, vertices[info.z * 3 + 1].x) * hit.v;
 
+        // razina mipmape iz stosca zrake (Renderer.cpp)
+        coneWidth += coneSpread * hit.t;
+        float lodBase = -INF;
+        {
+            const float2 uv0 = float2(va.w, vertices[info.x * 3 + 1].x);
+            const float2 du = float2(vb.w, vertices[info.y * 3 + 1].x) - uv0, dv = float2(vc.w, vertices[info.z * 3 + 1].x) - uv0;
+            const float uvArea = abs(du.x * dv.y - du.y * dv.x);
+            const float worldArea = length(cross(e1, e2));
+            const float cosHit = max(0.05, abs(dot(ng, direction)));
+            if((P.extra.z & 2u) == 0 && uvArea > 0.0 && worldArea > 0.0 && coneWidth > 0.0)
+                lodBase = log2(coneWidth / cosHit) + 0.5 * log2(uvArea / worldArea);
+        }
+
         float3 baseColor = material.baseColor.rgb;
         float metallic = material.surface.x, roughness = material.surface.y;
         float transmission = material.layers.y, clearcoat = material.layers.z;
         const float ior = max(1.0001, material.surface.w);
-        if(material.textures.x >= 0) baseColor *= sampleTexture(uint(material.textures.x), uv).rgb;
+        if(material.textures.x >= 0) baseColor *= sampleTextureLod(uint(material.textures.x), uv, lodFor(uint(material.textures.x), lodBase)).rgb;
         if(material.textures.y >= 0){
-            const float4 mr = sampleTexture(uint(material.textures.y), uv);
+            const float4 mr = sampleTextureLod(uint(material.textures.y), uv, lodFor(uint(material.textures.y), lodBase));
             roughness *= mr.g;
             metallic *= mr.b;
         }
@@ -1004,7 +1046,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             if(dot(t, t) > 1e-20){
                 t = normalize(t);
                 const float3 bt = cross(ns, t) * (tangent.w < 0.0 ? -1.0 : 1.0);
-                float3 m = sampleTexture(uint(material.textures.z), uv).rgb * 2.0 - 1.0;
+                float3 m = sampleTextureLod(uint(material.textures.z), uv, lodFor(uint(material.textures.z), lodBase)).rgb * 2.0 - 1.0;
                 m.x *= material.surface.z;
                 m.y *= material.surface.z;
                 const float3 bent = t * m.x + bt * m.y + ns * m.z;
@@ -1012,7 +1054,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             }
         }
         float3 emitted = material.emission.rgb;
-        if(material.textures.w >= 0) emitted *= sampleTexture(uint(material.textures.w), uv).rgb;
+        if(material.textures.w >= 0) emitted *= sampleTextureLod(uint(material.textures.w), uv, lodFor(uint(material.textures.w), lodBase)).rgb;
 
         const float3 wo = -direction;
         const bool outside = dot(ng, wo) > 0.0;
@@ -1123,6 +1165,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
         const float betaLum = luminance(beta);
         if(!(betaLum > 0.0) || isinf(betaLum) || isnan(betaLum)) break;
         mirrorChain = mirrorChain && glossy;
+        if(!glossy) coneSpread += 0.2;
         if(glass){
             if(!glossy){ sawRough = true; caustic = false; }
             else if(!geometricSide && sawRough && (flags & TRANSMISSIVE) != 0) caustic = true;

@@ -109,17 +109,23 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     std::vector<glm::vec4> texelsFloat;
     auto addTexture = [&](const Tracer::Texture& t){
         if(!t.valid()){ textureInfo.push_back(glm::uvec4(0)); return uint32_t(textureInfo.size() - 1); }
-        uint32_t flags = (t.srgb ? 1u : 0u) | (t.repeat ? 4u : 0u);
+        //Mipmape iza osnovne razine, redom; broj razina u bitovima 8..15
+        const uint32_t levels = uint32_t(std::min<size_t>(255, 1 + t.mips.size()));
+        uint32_t flags = (t.srgb ? 1u : 0u) | (t.repeat ? 4u : 0u) | (levels << 8);
         uint32_t start = 0;
-        const size_t count = size_t(t.width) * t.height;
-        if(!t.floats.empty()){
-            flags |= 2u;
-            start = uint32_t(texelsFloat.size());
-            for(size_t i = 0; i < count; ++i) texelsFloat.push_back(glm::make_vec4(t.floats.data() + i * 4));
-        }else{
-            start = uint32_t(texels.size());
-            texels.resize(texels.size() + count);
-            std::memcpy(texels.data() + start, t.bytes.data(), count * 4);    //RGBA8 = r | g<<8 | b<<16 | a<<24
+        const bool floating = !t.floats.empty();
+        if(floating){ flags |= 2u; start = uint32_t(texelsFloat.size()); }
+        else start = uint32_t(texels.size());
+        for(uint32_t level = 0; level < levels; ++level){
+            const Tracer::Texture& l = level == 0 ? t : t.mips[level - 1];
+            const size_t count = size_t(l.width) * l.height;
+            if(floating){
+                for(size_t i = 0; i < count; ++i) texelsFloat.push_back(glm::make_vec4(l.floats.data() + i * 4));
+            }else{
+                const size_t at = texels.size();
+                texels.resize(at + count);
+                std::memcpy(texels.data() + at, l.bytes.data(), count * 4);    //RGBA8 = r | g<<8 | b<<16 | a<<24
+            }
         }
         textureInfo.push_back(glm::uvec4(start, t.width, t.height, flags));
         return uint32_t(textureInfo.size() - 1);
@@ -217,7 +223,7 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     p.values = glm::vec4(settings.indirectClamp, world.camera.distorted() ? world.camera.k1 : 0.0f,
                          world.camera.distorted() ? world.camera.k2 : 0.0f, settings.adaptiveThreshold);
     p.distortion = world.camera.distorted() ? world.camera.lens : glm::vec4(0.0f);
-    p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), settings.glassShadows ? 1u : 0u,
+    p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), (settings.glassShadows ? 1u : 0u) | (settings.mipmaps ? 0u : 2u),
                          settings.adaptiveMinSamples);
 
     //-- na karticu -------------------------------------------------------------------------------------

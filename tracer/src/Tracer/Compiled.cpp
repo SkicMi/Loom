@@ -30,6 +30,7 @@ std::shared_ptr<const CompiledScene> compile(Scene scene){
     float& sceneRadius = c.sceneRadius;
     const auto start = std::chrono::steady_clock::now();
     if(world.materials.empty()) world.materials.push_back(Material{});
+    for(Texture& t : world.textures) if(t.mips.empty()) t.buildMips();
     for(Triangle& t : world.triangles) if(t.material >= world.materials.size()) t.material = 0;
     //Teksture koje ne postoje se odspoje - materijal radi s faktorima
     for(Material& m : world.materials){
