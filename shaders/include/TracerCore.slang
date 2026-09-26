@@ -74,7 +74,7 @@ struct Push{
     uint sampleIndex;
     uint rowStart;
     uint rowCount;
-    uint padding;
+    uint flags;             // 1: brojati koherenciju (GpuTracer::setProfiling)
 };
 
 [[vk::push_constant]] ConstantBuffer<Push> push;
@@ -113,6 +113,29 @@ struct Push{
 [[vk::binding(26,0)]] StructuredBuffer<float4> lightTreeNodes;
 [[vk::binding(27,0)]] StructuredBuffer<uint> lightTreeLeaf;
 [[vk::binding(28,0)]] StructuredBuffer<float4> infiniteLights;
+// KOHERENCIJA (profiliranje): po dubini putanje 0..15 zbroj aktivnih traka vala, sirine vala,
+// razlicitih materijala u valu i broj valova. Mjeri divergenciju koju bi wavefront (razvrstavanje
+// putanja po materijalu) uklonio - na bilo kojoj kartici, bez alata proizvodjaca
+[[vk::binding(29,0)]] RWStructuredBuffer<uint> coherence;
+void countCoherence(uint depth, uint shadeId){
+    if((push.flags & 1u) == 0 || depth >= 16) return;
+    const uint active = WaveActiveCountBits(true);
+    // razliciti materijali: najmanji jos neprebrojani id (jednoliko za val), pa ponovi
+    uint distinct = 0;
+    bool counted = false;
+    for(uint guard = 0; guard < 64; ++guard){
+        const uint picked = WaveActiveMin(counted ? 0xFFFFFFFFu : shadeId);
+        if(shadeId == picked) counted = true;
+        distinct += 1;
+        if(WaveActiveAllTrue(counted)) break;
+    }
+    if(WaveIsFirstLane()){
+        InterlockedAdd(coherence[depth * 4], active);
+        InterlockedAdd(coherence[depth * 4 + 1], WaveGetLaneCount());
+        InterlockedAdd(coherence[depth * 4 + 2], distinct);
+        InterlockedAdd(coherence[depth * 4 + 3], 1u);
+    }
+}
 // trenutak zrake u otvoru zatvaraca - postavi ga trace() za cijelu putanju
 static float rayTime = 0.5;
 
@@ -146,8 +169,8 @@ float3 normalAt(uint vertex, float3 fallback){
 // Hardverske zrake: jedan BLAS s dvije geometrije - 0 obicni neprozirni trokuti, 1 trokuti sa
 // zastavicama (alfa, catcher, kamera, sjena, staklo) koje filtrira ista accept() kao BVH put.
 // slotOf: (geometrija, primitiv) -> slot BVH-a, pa se sve ostalo cita kao i prije
-[[vk::binding(29,0)]] RaytracingAccelerationStructure sceneAccel;
-[[vk::binding(30,0)]] StructuredBuffer<uint> slotOf;
+[[vk::binding(30,0)]] RaytracingAccelerationStructure sceneAccel;
+[[vk::binding(31,0)]] StructuredBuffer<uint> slotOf;
 // Hardverski test presjeka nije nas: s ishodistem tik uz plohu (pomak ~1e-6 scene) zna vratiti
 // samu plohu na t ~ 0. Najmanji t je zato malo veci od pomaka ishodista
 float rayQueryMinT(){ return 1e-5 * paramsBuffer[0].lens2.w; }
@@ -1270,6 +1293,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
         const uint salt = depth * 7919u + 13u;
         traverse(origin, direction, INF, depth == 0 ? 0u : 1u, false, pixelSeed, sampleIndex, salt, hit);
         const bool valid = hit.slot != NONE;
+        countCoherence(depth, valid ? triangleInfo[asuint(triangles[hit.slot * 3].w)].w : 0xFFFFFFFEu);
 
         // kugla svjetla ispred plohe
         float sphereT = valid ? hit.t : INF;

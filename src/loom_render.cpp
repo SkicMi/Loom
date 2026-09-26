@@ -23,6 +23,10 @@
 #include "Core/LoomInitializer.h"
 
 #include <Warp/Project.h>
+#include <TracerGpu/GpuTracer.h>
+
+#include <algorithm>
+#include <chrono>
 
 #include <cstdio>
 #include <cstdlib>
@@ -52,6 +56,8 @@ void usage(){
         "  --ostrina N D         dubinska ostrina: f-broj N, ostro na udaljenosti D (1 jedinica = 1 m)\n"
         "  --senzor MM           sirina senzora za zarisnu u mm (36)\n"
         "  --holdout             splat scene zaklanja CG iza stvarnih ploha (snimka se vidi)\n"
+        "  --profil              samo mjerenje kartice: vrijeme po uzorku (BVH i hardverske zrake)\n"
+        "                        i koherencija po dubini putanje (aktivne trake, materijala po valu)\n"
         "  --filtar oidn|atrous  filtar suma (zadano OIDN kad je ucitan, tools/oidn/fetch.sh)\n"
         "  --agx --ekspozicija EV --bez-exr --bez-png --dretve N\n"
         "  --procesor            racunaj na procesoru i kad kartica postoji\n"
@@ -70,6 +76,7 @@ int main(int argc, char** argv){
     std::string cameraPath;
     double single = -1.0;
     bool haveRange = false;
+    bool profile = false;
     auto number = [&](int& i){ if(i + 1 >= argc){ std::fprintf(stderr, "%s treba broj\n", argv[i]); std::exit(1); } return std::atof(argv[++i]); };
     for(int i = 2; i < argc; ++i){
         const std::string a = argv[i];
@@ -128,6 +135,7 @@ int main(int argc, char** argv){
         else if(a == "--ostrina"){ options.depthOfField = true; options.fStop = float(number(i)); options.focusDistance = float(number(i)); }
         else if(a == "--senzor") options.sensorWidth = float(number(i));
         else if(a == "--holdout") options.splatHoldout = true;
+        else if(a == "--profil") profile = true;
         else if(a == "--filtar" && i + 1 < argc){
             const std::string which = argv[++i];
             options.denoiser = which == "atrous" ? Tracer::Denoiser::ATrous : Tracer::Denoiser::Auto;
@@ -176,6 +184,47 @@ int main(int argc, char** argv){
             driver.reset();
             loom.reset();
         }
+    }
+
+    //PROFIL: jedan kadar izravno na karticu, bez zapisa - vrijeme po uzorku i koherencija po
+    //dubini putanje. Brojke odlucuju isplati li se wavefront (razvrstavanje putanja po materijalu)
+    if(profile){
+        if(!driver){ std::fprintf(stderr, "--profil treba karticu (Vulkan)\n"); return 1; }
+        Loom::RenderAssets assets;
+        Loom::BuiltScene built;
+        if(!Loom::buildTracerScene(stage, options.firstFrame, options, assets, built, error)){
+            std::fprintf(stderr, "Scena: %s\n", error.c_str());
+            return 1;
+        }
+        const auto compiled = Tracer::compile(std::move(built.scene));
+        TracerGpu::Pipelines pipelines(*loom);
+        Tracer::RenderSettings settings;
+        settings.samples = std::clamp(options.samples, 4u, 64u);
+        settings.maxBounces = options.maxBounces;
+        settings.indirectClamp = options.indirectClamp;
+        settings.glassShadows = !options.caustics;
+        std::printf("Kartica: %s, %ux%u, %zu trokuta, %u uzoraka\n", loom->device.hasRayQuery() ? "ima hardverske zrake" : "bez hardverskih zraka",
+                    compiled->world.camera.width, compiled->world.camera.height, compiled->world.triangles.size(), settings.samples);
+        for(int rayQuery = 0; rayQuery < 2; ++rayQuery){
+            if(rayQuery && !loom->device.hasRayQuery()) break;
+            TracerGpu::GpuTracer tracer(*loom, pipelines, compiled, settings, rayQuery == 1);
+            const auto start = std::chrono::steady_clock::now();
+            tracer.renderAll();
+            loom->waitIdle();
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            std::printf("  %-18s %8.2f ms po uzorku (%.1f Mpiksel-uzoraka/s)\n", tracer.usesRayQuery() ? "hardverske zrake" : "vlastiti BVH",
+                        1000.0 * seconds / settings.samples,
+                        double(compiled->world.camera.width) * compiled->world.camera.height * settings.samples / seconds / 1e6);
+        }
+        TracerGpu::GpuTracer counted(*loom, pipelines, compiled, settings);
+        counted.setProfiling(true);
+        counted.renderAll();
+        std::printf("  Koherencija (1 materijal po valu i 100%% traka = wavefront nema sto dobiti):\n");
+        const std::vector<TracerGpu::CoherenceLevel> levels = counted.readCoherence();
+        for(size_t d = 0; d < levels.size(); ++d)
+            std::printf("    dubina %2zu: %5.1f %% aktivnih traka, %.2f materijala po valu\n", d, 100.0 * levels[d].activeLanes, levels[d].materialsPerWave);
+        loom->waitIdle();
+        return 0;
     }
 
     Loom::RenderSession session;

@@ -22,7 +22,7 @@ namespace TracerGpu{
 namespace{
 
 constexpr uint32_t None = 0xFFFFFFFFu;
-constexpr uint32_t TraceBindings = 29;
+constexpr uint32_t TraceBindings = 30;
 constexpr uint32_t ResolveBindings = 7;
 constexpr uint32_t FinishBindings = 16;
 
@@ -58,7 +58,7 @@ struct GpuLight{
 };
 static_assert(sizeof(GpuLight) == 80, "Light mora odgovarati shaders/tracer.slang");
 
-struct TracePush{ uint32_t sampleIndex, rowStart, rowCount, padding; };
+struct TracePush{ uint32_t sampleIndex, rowStart, rowCount, flags; };
 struct ResolvePush{ uint32_t width, height, backdrop, view; float gain; uint32_t plate, checker, padding; };
 struct FinishPush{
     uint32_t mode, width, height, step;
@@ -403,6 +403,7 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     onCard(treeNodes.data(), treeNodes.size() * sizeof(glm::vec4), true);   //26 stablo svjetala
     onCard(treeLeaf.data(), treeLeaf.size() * sizeof(uint32_t), true);      //27
     onCard(infinite.data(), infinite.size() * sizeof(glm::vec4), true);     //28
+    zeroed(16 * 4 * sizeof(uint32_t));                                      //29 koherencija (profiliranje)
     buffers->display.emplace(device, std::max<vk::DeviceSize>(pixels * 4, 16), usage, MemoryUsage::GPU_ONLY);
 
     if(rayQuery){
@@ -536,7 +537,7 @@ uint32_t GpuTracer::record(uint32_t rows){
     uint32_t sent = 0;
     while(rows > 0 && !finished()){
         const uint32_t band = std::min(rows, size[1] - row);
-        TracePush push{sample, row, band, 0};
+        TracePush push{sample, row, band, profiling ? 1u : 0u};
         loom.renderer.dispatch(*buffers->trace, (size[0] + 7) / 8, (band + 7) / 8, 1, &push, sizeof(push));
         row += band;
         rows -= band;
@@ -655,6 +656,25 @@ void GpuTracer::recordFinish(const DisplayOptions& options){
         }
     }
     run(7, w, h);
+}
+
+std::vector<CoherenceLevel> GpuTracer::readCoherence(){
+    loom.waitIdle();
+    std::vector<uint32_t> raw(64, 0);
+    VulkanBuffer staging(loom.device, raw.size() * 4, vk::BufferUsageFlagBits::eTransferDst, MemoryUsage::GPU_TO_CPU);
+    loom.command.copyBuffer(buffers->owned[29]->getBuffer(), staging.getBuffer(), raw.size() * 4);
+    staging.download(raw.data(), raw.size() * 4);
+    std::vector<CoherenceLevel> out;
+    for(uint32_t d = 0; d < 16; ++d){
+        const uint32_t waves = raw[d * 4 + 3];
+        if(waves == 0) break;
+        CoherenceLevel level;
+        level.activeLanes = double(raw[d * 4]) / double(std::max(1u, raw[d * 4 + 1]));
+        level.materialsPerWave = double(raw[d * 4 + 2]) / double(waves);
+        level.waves = waves;
+        out.push_back(level);
+    }
+    return out;
 }
 
 std::vector<uint8_t> GpuTracer::readDisplay(){

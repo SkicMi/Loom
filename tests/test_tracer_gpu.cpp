@@ -320,6 +320,33 @@ int main(){
                          available ? "kartica ih ima" : "kartica ih nema - oba puta su BVH", rmse(rq, bvh), rmse(rq, cpu), noise, rqSeconds, bvhSeconds));
     }
 
+    //-- 4c. koherencija (profiliranje): koliko bi razvrstavanje po materijalu (wavefront) dobilo ------
+    {
+        Tracer::RenderSettings settings;
+        settings.samples = 16;
+        //Kamera vidi samo pod: na dubini 0 sve trake aktivne i jedan materijal po valu
+        Tracer::Scene floor;
+        Tracer::Material grey; grey.baseColor = glm::vec3(0.5f);
+        floor.addMesh(Tracer::unitPlane(), glm::scale(glm::mat4(1.0f), glm::vec3(100.0f)), floor.addMaterial(grey));
+        floor.environment.color = glm::vec3(1.0f);
+        floor.camera = lookAt({0, 3, 0}, {0, 0, 0}, 64, 48, 60.0f);
+        TracerGpu::GpuTracer plain(loom, pipelines, Tracer::compile(std::move(floor)), settings);
+        plain.setProfiling(true);
+        plain.renderAll();
+        const std::vector<TracerGpu::CoherenceLevel> flat = plain.readCoherence();
+        TracerGpu::GpuTracer busy(loom, pipelines, Tracer::compile(mixed(0.3f)), settings);
+        busy.setProfiling(true);
+        busy.renderAll();
+        const std::vector<TracerGpu::CoherenceLevel> levels = busy.readCoherence();
+        std::string table;
+        for(size_t d = 0; d < levels.size() && d < 6; ++d)
+            table += fmt(" d%zu: %.0f%% traka, %.2f mat.", d, 100.0 * levels[d].activeLanes, levels[d].materialsPerWave);
+        const bool flatOk = !flat.empty() && std::abs(flat[0].activeLanes - 1.0) < 1e-9 && std::abs(flat[0].materialsPerWave - 1.0) < 1e-9;
+        report.check("koherencija", flatOk && levels.size() >= 3 && levels[0].materialsPerWave > 1.0 && levels[2].activeLanes < levels[0].activeLanes,
+                     fmt("samo pod: %.0f%% traka, %.2f materijala po valu; miješano:%s", flat.empty() ? 0.0 : 100.0 * flat[0].activeLanes,
+                         flat.empty() ? 0.0 : flat[0].materialsPerWave, table.c_str()));
+    }
+
     //-- 5. filtar i post na kartici = procesorski A-trous + composite + applyPost + toDisplay -----------
     {
         Tracer::RenderSettings settings;

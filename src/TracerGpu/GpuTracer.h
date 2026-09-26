@@ -71,6 +71,15 @@ struct UploadCache{
     }
 };
 
+//Koherencija po dubini putanje (GpuTracer::readCoherence): koliki je udio traka vala jos
+//aktivan i koliko razlicitih materijala val sjenca odjednom (1 = savrseno, wavefront ne bi
+//imao sto dobiti; vise = divergencija)
+struct CoherenceLevel{
+    double activeLanes = 0.0;
+    double materialsPerWave = 0.0;
+    uint32_t waves = 0;
+};
+
 struct DisplayOptions{
     Tracer::Backdrop backdrop = Tracer::Backdrop::Environment;
     Tracer::ViewTransform view = Tracer::ViewTransform::Standard;
@@ -104,6 +113,10 @@ public:
 
     //Racuna li hardverskim zrakama (VK_KHR_ray_query) ili vlastitim BVH-om
     bool usesRayQuery() const {return usingRayQuery;}
+
+    //Profiliranje: uzorci poslije ovoga broje koherenciju (malo sporije); citanje ceka karticu
+    void setProfiling(bool on){ profiling = on; }
+    std::vector<CoherenceLevel> readCoherence();
     //Izvan kadra: ceka karticu i cita sliku za prikaz (RGBA8, sRGB)
     std::vector<uint8_t> readDisplay();
 
@@ -136,6 +149,7 @@ private:
     uint32_t sample = 0, row = 0;
     uint32_t backplateTexture = ~0u;
     bool usingRayQuery = false;
+    bool profiling = false;
     void buildAccelerationStructures(const std::vector<Tracer::Bvh::Prepared>& prepared,
                                      const std::vector<uint32_t>& geometrySlots, uint32_t opaqueCount);
     uint64_t bytes = 0;

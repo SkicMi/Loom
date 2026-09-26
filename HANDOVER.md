@@ -740,16 +740,38 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
   broj uzoraka uz 215/512 spp. Na lavapipeu uvjetni upis u buffer stanja ruši LLVM — upis je
   zato bezuvjetan.
 
+- **Brži renderer (28.9., prijedlozi 1–6 redom):**
+  1. **OIDN** (Intel Open Image Denoise 2.5) učitan pri pokretanju (`dlopen`, vlastito C sučelje) —
+     `tools/oidn/fetch.sh` izvadi knjižnice iz pip paketa `pyoidn` u `tools/oidn/lib`; bez njih
+     A-trous. Na 16 spp greška 0.0045 prema A-trous 0.0054 i sirovih 0.0118 (sirovo tek na 256 spp).
+     **Filtar i post na kartici** (`tracer_finish.slang`, isti kod kao procesor, razlika ≤ 1 razina)
+     za sliku koja se čisti.
+  2. **Hardverske zrake** (`VK_KHR_ray_query`, neobavezno; `LOOM_NO_RAY_QUERY=1` isključi): kod
+     shadera u `include/TracerCore.slang`, `tracer.slang` = BVH, `tracer_rq.slang` = ray query;
+     BLAS iz istih trokuta, geometrija sa zastavicama kroz istu `accept()`. = BVH (RMSE 0.0001).
+  3. **Motion blur jednim stablom** (`Scene::motion`): ključevi vrhova/normala/kamere, BVH jednom nad
+     kutijama svih ključeva, vrijeme po uzorku; 16 ključeva 0.21 s umjesto 16 gradnji 2.40 s.
+  4. **Sekvenca**: `Bvh::refit` (3.6× brže od gradnje, ista slika; svakih 8 kadrova gradi iznova) i
+     `UploadCache` (teksture, nebo, mirna geometrija ostaju na kartici; snimka u svom spremniku).
+  5. **Stablo svjetala + RIS** (Conty & Kulla; jezgra ReSTIR-a bez ponovne upotrebe): 256 svjetala,
+     16 spp — greška po snazi 2.317, stablo 0.335, stablo + RIS 0.132 (= po snazi na 1024 spp).
+  6. **Wavefront — izmjereno, nije rađeno**: `loom-render --profil` daje vrijeme po uzorku (BVH i
+     ray query) i koherenciju po dubini (aktivne trake, materijala po valu, subgroup brojači).
+     Na sceni s maglom: materijala po valu ≤ 1.43, ali od dubine 2 samo 35 % aktivnih traka, od 8
+     12.5 % (val od 8 na lavapipeu; na pravoj kartici 32/64 — gore). Dakle ne razvrstavanje po
+     materijalu nego **regeneracija/kompakcija putanja** (traka koja završi počne novi uzorak) —
+     sljedeći korak, potvrditi `--profil` brojkama na pravoj kartici.
+
 **Što dalje:**
-1. **Izmjeriti karticu** (samo lavapipe dosad) i dodati ray query (RTX) + filtar šuma na kartici;
-   OIDN kao opcija.
-2. Post na kartici (bloom piramida kao compute) da i progresivni prikaz ima isti izgled.
+1. **Izmjeriti pravu karticu** (`loom-render projekt.usda --profil`) — sve dosad je lavapipe, gdje su
+   i "hardverske" zrake softverske (ray query 11.1 ms prema BVH 9.2 ms po uzorku).
+2. **Regeneracija putanja** na kartici ako `--profil` na pravoj kartici potvrdi prazne trake.
 3. Holdout iz procijenjene dubine snimke (`tools/depth`, treba kalibraciju mjerila) i sjene CG-a
    na splat (normala iz dubine) — sada sjenu hvataju samo catcheri.
 
 **Poznata ograničenja — ne skrivati:**
-- Kartica koristi compute nad BVH2; hardverske zrake (ray query) i širi BVH su sljedeći korak za
-  RTX — mijenjaju samo obilazak. Filtar šuma je još na procesoru.
+- Hardverske zrake za scene s pomakom ne (motion blur u hardveru je samo NVIDIA ekstenzija) — tada BVH.
+- OIDN radi na procesoru (i u gotovom kadru); na kartici je A-trous (pregled).
 - Staklene sjene su pristrane (nema fokusiranja svjetla iza leće); s *Caustics* su točne, ali
   šumne — kao Cycles bez caustics trikova.
 - Prilagodljivo uzorkovanje zaustavlja po procijenjenoj varijanci (piksel i susjedi): područje u
