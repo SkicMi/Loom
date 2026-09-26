@@ -46,6 +46,7 @@
     #include "LoomMotionLive.h"
     #include "LoomAnimLayers.h"
     #include "LoomTimelineRange.h"
+    #include "LoomTimelineRows.h"
     #include "LoomMoodboard.h"
     #include "LoomAutoRig.h"
     
@@ -362,6 +363,12 @@
         bool timelineRangeOnRuler = false;      //gesta je pocela na ravnalu: cisti scrub
         bool timelineRegenOpen = false;
         std::string timelineRegenPrompt;
+        //Redovi timelinea (LoomTimelineRows.h): slicice poza, red objekta, otvoren objekt = red po kosti
+        bool timelineObjectOpen = false;
+        bool timelineTall = false;               //otvoren objekt s redovima: timeline je visi
+        float timelineRowsScroll = 0.0f;
+        bool timelineGutterHeld = false;         //pritisak je poceo u stupcu imena: ne scrubba ni ne odabire
+        Loom::TimelinePoseStrip timelinePoses;
         struct{ Warp::Id rig = Warp::None; double first = -1.0, last = -1.0; } poseRangeRequest;
         double poseRangeEnd = -1.0;             //pose blend pokrenut iz raspona: druga poza je tu
         int poseBlendStep = 0;                  //0 nista, 3 prva poza, 4 druga poza
@@ -663,7 +670,7 @@
     
             int w = 0, h = 0;
             glfwGetWindowSize(window, &w, &h);
-            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal, timelineTall).viewport, view);
             if(!usePixel) pixel = glm::vec2(camera.frame.x + camera.frame.width * 0.5f, camera.frame.y + camera.frame.height * 0.5f);
             const glm::mat4 inverse = glm::inverse(camera.view);
             const glm::vec3 eye = glm::vec3(inverse[3]);
@@ -718,7 +725,7 @@
             if(stage.size() > 0){
                 int w = 0, h = 0;
                 glfwGetWindowSize(window, &w, &h);
-                const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+                const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal, timelineTall).viewport, view);
                 const glm::vec2 centre(camera.frame.x + camera.frame.width * 0.5f, camera.frame.y + camera.frame.height * 0.5f);
                 const Loom::Ray ray = Loom::rayThrough(camera, centre);
                 glm::vec3 place;
@@ -1706,7 +1713,7 @@
         auto importAutoRigModel = [&](const fs::path& path){
             int width = 0, height = 0;
             glfwGetWindowSize(window, &width, &height);
-            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(width), float(height), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(width), float(height), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal, timelineTall).viewport, view);
             const bool wasEmpty = stage.size() == 0;
             const Loom::ModelImportReport report = Loom::importModelAtView(stage, path, frame, camera, extent);
             if(!report.problem.empty()){ message = "Auto Rig import: " + report.problem; return; }
@@ -1840,7 +1847,7 @@
         auto addCameraHere = [&](Warp::Id parent){
             int w = 0, h = 0;
             glfwGetWindowSize(window, &w, &h);
-            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal, timelineTall).viewport, view);
             const Warp::Id id = Loom::addCameraFromView(stage, glm::inverse(camera.view), camera.focal, camera.frame.height, frame, parent);
             selected = id;
             focus = Focus::Entity;
@@ -1884,7 +1891,7 @@
         if(!shotModel.empty() || shotSurfaceWanted){
             int w = 0, h = 0;
             glfwGetWindowSize(window, &w, &h);
-            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal).viewport, view);
+            const Loom::ViewCamera camera = Loom::viewCameraFor(stage, frame, Loom::layoutEditor(float(w), float(h), outlineVisible, componentsVisible, timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal, timelineTall).viewport, view);
             extent = Loom::sceneExtent(stage, frame);
             if(!shotModel.empty()){
                 const bool wasEmpty = stage.size() == 0;
@@ -2023,7 +2030,7 @@
             lastFrame = now;
 
             const float railFullWidth = std::min(56.0f, std::max(46.0f, float(windowWidth) * 0.045f));
-            const float railTimelineHeight = timelineVisible ? std::clamp(float(windowHeight) * 0.2f, 110.0f, 190.0f) : 0.0f;
+            const float railTimelineHeight = Loom::editorTimelineHeight(float(windowHeight), timelineVisible, timelineTall);
             const float railTerminalHeight = terminal.visible ? std::min(
                 std::clamp(float(windowHeight) * 0.23f, 150.0f, 250.0f),
                 std::max(0.0f, float(windowHeight) - 40.0f - railTimelineHeight - 170.0f)) : 0.0f;
@@ -2039,7 +2046,7 @@
             railReveal += (revealTarget - railReveal) * (1.0f - std::exp(-13.0f * frameSeconds));
             if(std::fabs(revealTarget - railReveal) < 0.002f) railReveal = revealTarget;
             const Loom::EditorLayout layout = Loom::layoutEditor(float(windowWidth), float(windowHeight), outlineVisible, componentsVisible,
-                                                                  timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal);
+                                                                  timelineVisible, terminal.visible, (motionPanel.open || proceduraPanel.open), railReveal, timelineTall);
     
             if(playing){
                 double playbackStart = stage.startFrame, playbackEnd = stage.endFrame;
@@ -3532,7 +3539,12 @@
                                                     availableTrackHeight - (showMotionPathTrack ? rootTrackHeight + 4.0f : 0.0f));
             const Treadle::Rect track{area.x + 16.0f, trackTop, area.width - 32.0f, stageTrackHeight};
             const Treadle::Rect rootTrack{track.x, track.y + track.height + 4.0f, track.width, rootTrackHeight};
-            const float labelGutter = motionPanel.open ? 62.0f : 0.0f;
+            //Redovi (LoomTimelineRows.h): lik s klipom, ili odabrani objekt. Imena redova idu u lijevi stupac
+            const Warp::Id rowsRig = timelineRangeRig();
+            const Warp::Id rowsId = rowsRig != Warp::None ? rowsRig : selected;
+            const bool showRows = stage.get(rowsId) != nullptr;
+            const float labelGutter = showRows ? 160.0f : (motionPanel.open ? 62.0f : 0.0f);
+            timelineTall = showRows && timelineObjectOpen;
             const Treadle::Rect contentTrack{track.x + labelGutter, track.y,
                 std::max(1.0f, track.width - labelGutter), track.height};
 
@@ -3603,12 +3615,6 @@
             };
 
             canvas.rect(track, Treadle::Color{0.105f, 0.125f, 0.095f, 1.0f});
-            if(motionPanel.open){
-                const Warp::Entity* timelineEntity = stage.get(selected);
-                const std::string keyLabel = timelineEntity ? "KEYS  /  " + timelineEntity->name : "SCENE KEYS";
-                canvas.text(track.x + 7.0f, track.y + 12.0f,
-                            Treadle::fitText(keyLabel, labelGutter - 10.0f, 1.0f), theme.dim, 1.0f);
-            }
             // Shared ruler: scene-frame units, with Kimodo's 30 Hz keys converted to scene time.
             const double pixelsPerFrame = double(contentTrack.width) / span;
             double tick = 1.0;
@@ -3619,21 +3625,124 @@
             for(double f = std::ceil(stage.startFrame / tick) * tick; f <= timelineEnd; f += tick){
                 const float x = xOf(f);
                 canvas.rect(x, track.y, 1.0f, 8.0f, theme.dim);
-                canvas.text(x + 3.0f, track.y + 3.0f, std::to_string(int(f)), theme.dim, 1.0f);
+                canvas.text(x + 3.0f, track.y + 3.0f, std::to_string(int(f)), theme.dim, 1.6f);
             }
-            if(const Warp::Entity* entity = stage.get(selected)){
-                const Warp::AnimatorTrack* activeTrack = stage.activeAnimatorTrack(selected);
-                const Warp::Track<glm::vec3>& translationTrack = activeTrack ? activeTrack->translationKeys : entity->translationKeys;
-                const Warp::Track<glm::quat>& rotationTrack = activeTrack ? activeTrack->rotationKeys : entity->rotationKeys;
-                const std::vector<double>& times = translationTrack.size() >= rotationTrack.size()
-                                                   ? translationTrack.times : rotationTrack.times;
-                float lastKey = -10.0f;
-                for(double t : times){
-                    const float x = xOf(t);
-                    if(x - lastKey < 2.0f) continue;
-                    canvas.rect(x, track.y + track.height - 12.0f, 1.5f, 10.0f, Treadle::Color{1.0f, 0.78f, 0.25f, 0.8f});
-                    lastKey = x;
+            //== REDOVI: slicice poza, red objekta, (otvoren) red po kosti =========================
+            const float rowsBottom = track.y + track.height - 2.0f;
+            const float objectRowHeight = 26.0f, boneRowHeight = 19.0f;
+            const float rowText = 2.0f;           //redak fonta 7 * 2 = 14 px
+            const Treadle::Color editColour{1.0f, 0.72f, 0.22f, 1.0f};
+            auto diamond = [&](float x, float y, float r, const Treadle::Color& colour){
+                canvas.triangle(x - r, y, x, y - r, x + r, y, colour);
+                canvas.triangle(x - r, y, x, y + r, x + r, y, colour);
+            };
+            float objectTop = -1.0f, bonesTop = -1.0f;
+            std::vector<Loom::TimelineRow> timelineRows;
+            if(showRows){
+                float rowTop = track.y + 16.0f;
+                const Warp::AnimationClip* rowsClip = Loom::activeTimelineClip(stage, rowsRig);
+                //SLICICE POZA: mini figura lika gledana s iste strane kao pogled
+                const float thumbHeight = rowsClip ? std::min(54.0f, rowsBottom - rowTop - objectRowHeight - 2.0f) : 0.0f;
+                if(thumbHeight >= 22.0f){
+                    const float cell = std::max(18.0f, thumbHeight * 0.8f);
+                    const std::vector<double> wanted = Loom::timelinePoseFrames(rowsClip->startFrame, rowsClip->endFrame,
+                        contentTrack.x, contentTrack.x + contentTrack.width, cell,
+                        [&](float x){ return stage.startFrame + double((x - contentTrack.x) / contentTrack.width) * span; });
+                    if(timelinePoses.rig != rowsRig || timelinePoses.frames != wanted ||
+                       timelinePoses.fingerprint != Loom::timelineClipFingerprint(stage, rowsRig))
+                        Loom::sampleTimelinePoses(stage, rowsRig, wanted, timelinePoses);
+                    canvas.text(track.x + 8.0f, rowTop + thumbHeight * 0.5f - 7.0f, "POSES", theme.dim, rowText);
+                    const Loom::ViewCamera viewCamera = Loom::viewCameraFor(stage, frame, layout.viewport, view);
+                    glm::vec3 right(viewCamera.view[0][0], 0.0f, viewCamera.view[2][0]);
+                    right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3(1.0f, 0.0f, 0.0f);
+                    const float scale = (thumbHeight - 6.0f) / std::max(0.5f, timelinePoses.height);
+                    size_t current = timelinePoses.frames.size();
+                    for(size_t i = 0; i < timelinePoses.frames.size(); ++i)
+                        if(current == timelinePoses.frames.size() ||
+                           std::fabs(timelinePoses.frames[i] - frame) < std::fabs(timelinePoses.frames[current] - frame)) current = i;
+                    for(size_t i = 0; i < timelinePoses.positions.size(); ++i){
+                        const std::vector<glm::vec3>& points = timelinePoses.positions[i];
+                        const float cx = xOf(timelinePoses.frames[i]);
+                        const bool now = i == current;
+                        canvas.rect(cx - cell * 0.5f + 1.0f, rowTop, cell - 2.0f, thumbHeight,
+                                    now ? Treadle::Color{0.20f, 0.26f, 0.18f, 1.0f} : Treadle::Color{0.085f, 0.102f, 0.078f, 1.0f});
+                        const glm::vec3 centre = points[size_t(timelinePoses.hips)];
+                        auto screen = [&](const glm::vec3& p){
+                            return glm::vec2(cx + glm::dot(p - centre, right) * scale,
+                                             rowTop + thumbHeight - 3.0f - (p.y - timelinePoses.floor) * scale);
+                        };
+                        const Treadle::Color bone = now ? theme.accent : Treadle::Color{0.70f, 0.80f, 0.64f, 0.85f};
+                        for(size_t j = 0; j < points.size(); ++j){
+                            if(timelinePoses.parents[j] < 0) continue;
+                            const glm::vec2 a = screen(points[size_t(timelinePoses.parents[j])]), b = screen(points[j]);
+                            canvas.line(a.x, a.y, b.x, b.y, 1.2f, bone);
+                        }
+                    }
+                    rowTop += thumbHeight + 2.0f;
                 }
+                //RED OBJEKTA: traka klipa, rombovi ispravaka i kljuceva; strelica otvara redove
+                if(rowTop + objectRowHeight <= rowsBottom + 0.5f){
+                    objectTop = rowTop;
+                    const Loom::TimelineObjectRow object = Loom::timelineObjectRow(stage, selected, rowsRig);
+                    canvas.rect(track.x, rowTop, track.width, objectRowHeight, Treadle::Color{0.13f, 0.155f, 0.12f, 1.0f});
+                    canvas.text(track.x + 8.0f, rowTop + 6.0f, timelineObjectOpen ? "v" : ">", theme.accent, rowText);
+                    canvas.text(track.x + 24.0f, rowTop + 6.0f, Treadle::fitText(object.label, labelGutter - 30.0f, rowText), theme.text, rowText);
+                    const float mid = rowTop + objectRowHeight * 0.5f;
+                    if(object.hasClip){
+                        const float left = std::max(contentTrack.x, xOf(object.clipStart));
+                        const float right = std::min(contentTrack.x + contentTrack.width, xOf(object.clipEnd));
+                        if(right > left){
+                            canvas.rect(left, mid - 8.0f, right - left, 16.0f,
+                                        Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.30f});
+                            std::string clipText = object.clipName;
+                            if(object.layers > 0) clipText += "  +" + std::to_string(object.layers) + (object.layers == 1 ? " fix" : " fixes");
+                            canvas.text(left + 6.0f, mid - 7.0f, Treadle::fitText(clipText, right - left - 12.0f, rowText), theme.text, rowText);
+                        }
+                    }
+                    for(double t : object.edits){
+                        const float x = xOf(t);
+                        if(x >= contentTrack.x && x <= contentTrack.x + contentTrack.width) diamond(x, mid, 7.0f, editColour);
+                    }
+                    rowTop += objectRowHeight + 2.0f;
+                }
+                //RED PO KOSTI (ili P/R/S): samo kad je objekt otvoren. Gusti kljucevi su traka
+                if(timelineObjectOpen && objectTop >= 0.0f && rowTop + boneRowHeight <= rowsBottom + 0.5f){
+                    bonesTop = rowTop;
+                    timelineRows = rowsRig != Warp::None ? Loom::timelineBoneRows(stage, rowsRig) : Loom::timelineChannelRows(stage, selected);
+                    const float visible = rowsBottom - bonesTop;
+                    timelineRowsScroll = std::clamp(timelineRowsScroll, 0.0f,
+                                                    std::max(0.0f, float(timelineRows.size()) * boneRowHeight - visible));
+                    for(size_t i = 0; i < timelineRows.size(); ++i){
+                        const Loom::TimelineRow& row = timelineRows[i];
+                        const float y = bonesTop + float(i) * boneRowHeight - timelineRowsScroll;
+                        if(y < bonesTop - 0.5f || y + boneRowHeight > rowsBottom + 0.5f) continue;
+                        const bool picked = row.target != Warp::None && row.target == selected;
+                        canvas.rect(track.x, y, track.width, boneRowHeight - 1.0f,
+                                    picked ? Treadle::Color{theme.accent.r, theme.accent.g, theme.accent.b, 0.16f}
+                                           : (i % 2 ? Treadle::Color{0.095f, 0.113f, 0.086f, 1.0f} : Treadle::Color{0.108f, 0.128f, 0.098f, 1.0f}));
+                        const float indent = 8.0f + float(std::min(row.depth, 10)) * 6.0f;
+                        canvas.text(track.x + indent, y + 2.0f, Treadle::fitText(row.label, labelGutter - indent - 4.0f, rowText),
+                                    picked ? theme.text : theme.dim, rowText);
+                        const float rowMid = y + (boneRowHeight - 1.0f) * 0.5f;
+                        std::vector<float> xs;
+                        for(double t : row.keys){
+                            const float x = xOf(t);
+                            if(x >= contentTrack.x && x <= contentTrack.x + contentTrack.width) xs.push_back(x);
+                        }
+                        for(const Loom::TimelineKeySpan& keySpan : Loom::mergeTimelineKeys(xs, 3.0f)){
+                            if(keySpan.bar()) canvas.rect(keySpan.x0, rowMid - 2.0f, keySpan.x1 - keySpan.x0 + 1.0f, 4.0f,
+                                                          Treadle::Color{0.52f, 0.66f, 0.50f, 0.55f});
+                            else canvas.rect(keySpan.x0 - 1.0f, rowMid - 4.0f, 2.0f, 8.0f, Treadle::Color{0.70f, 0.82f, 0.66f, 0.9f});
+                        }
+                        for(double t : row.edits){
+                            const float x = xOf(t);
+                            if(x >= contentTrack.x && x <= contentTrack.x + contentTrack.width) diamond(x, rowMid, 5.5f, editColour);
+                        }
+                    }
+                    if(timelineRows.empty())
+                        canvas.text(track.x + 8.0f, bonesTop + 2.0f, "No animated bones or channels.", theme.dim, rowText);
+                }
+                canvas.rect(contentTrack.x - 1.0f, track.y + 14.0f, 1.0f, track.height - 14.0f, theme.panelEdge);
             }
             const float head = xOf(frame);
             canvas.rect(head - 1.0f, track.y - 4.0f, 2.0f, track.height + 8.0f, Treadle::Color{0.95f, 0.35f, 0.30f, 1.0f});
@@ -3897,11 +4006,28 @@
             const Warp::Id rangeRig = timelineRangeRig();
             if(rangeRig == Warp::None) timelineRange.clear();
             if(scrub.pressed) timelineRangeOnRuler = scrub.mouseY < track.y + 14.0f || rangeRig == Warp::None;
+            //Stupac imena: strelica/ime objekta otvara redove, red kosti odabere kost (za Fix pose)
+            if(scrub.pressed && showRows && scrub.mouseX < contentTrack.x && scrub.mouseY >= track.y + 14.0f){
+                timelineGutterHeld = true;
+                if(objectTop >= 0.0f && scrub.mouseY >= objectTop && scrub.mouseY < objectTop + objectRowHeight){
+                    timelineObjectOpen = !timelineObjectOpen;
+                }else if(bonesTop >= 0.0f && scrub.mouseY >= bonesTop){
+                    const int index = int((scrub.mouseY - bonesTop + timelineRowsScroll) / boneRowHeight);
+                    if(index >= 0 && size_t(index) < timelineRows.size() && timelineRows[size_t(index)].target != Warp::None){
+                        selected = timelineRows[size_t(index)].target;
+                        focus = Focus::Entity;
+                    }
+                }
+            }
+            if(scrub.wheel != 0.0f && bonesTop >= 0.0f && scrub.mouseY >= bonesTop)
+                timelineRowsScroll -= scrub.wheel * boneRowHeight * 3.0f;
             auto frameAtX = [&](float x){
                 const double f = stage.startFrame + double((std::max(x, contentTrack.x) - contentTrack.x) / contentTrack.width) * span;
                 return std::clamp(std::round(f), stage.startFrame, stage.endFrame);
             };
-            if(timelineRangeOnRuler){
+            if(timelineGutterHeld){
+                if(!scrub.held) timelineGutterHeld = false;
+            }else if(timelineRangeOnRuler){
                 if(scrub.held && scrub.mouseX >= contentTrack.x){
                     frame = frameAtX(scrub.mouseX);
                     playing = false;

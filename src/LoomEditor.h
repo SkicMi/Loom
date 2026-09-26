@@ -36,12 +36,19 @@ struct EditorLayout{
     Treadle::Rect terminal;
 };
 
+//Visina timelinea. Visok je kad je objekt na timelineu otvoren (red za svaku kost): tada treba
+//mjesta za redove, a pogled se smanji dok se ne zatvori
+inline float editorTimelineHeight(float height, bool timelineVisible, bool timelineTall = false){
+    if(!timelineVisible) return 0.0f;
+    return timelineTall ? std::clamp(height * 0.4f, 190.0f, 440.0f) : std::clamp(height * 0.2f, 110.0f, 190.0f);
+}
+
 inline EditorLayout layoutEditor(float width, float height, bool outlineVisible = true, bool componentsVisible = true,
                                  bool timelineVisible = true, bool terminalVisible = false, bool animatorWorkspace = false,
-                                 float railReveal = 1.0f){
+                                 float railReveal = 1.0f, bool timelineTall = false){
     EditorLayout layout;
     const float toolbarHeight = 40.0f;
-    const float timelineHeight = timelineVisible ? std::clamp(height * 0.2f, 110.0f, 190.0f) : 0.0f;
+    const float timelineHeight = editorTimelineHeight(height, timelineVisible, timelineTall);
     const float terminalHeight = terminalVisible ? std::min(std::clamp(height * 0.23f, 150.0f, 250.0f),
                                                         std::max(0.0f, height - toolbarHeight - timelineHeight - 170.0f)) : 0.0f;
     const float fullRailWidth = std::min(56.0f, std::max(46.0f, width * 0.045f));
