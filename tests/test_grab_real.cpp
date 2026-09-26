@@ -11,6 +11,8 @@
 //             prodor clanaka (kapsula 4 mm). Vrh = zadnji clanak nosen rotacijom zadnjeg zgloba
 //   omatanje  kut oko osi drske od zgloba prsta do vrha (srednji prst), u presjeku drske
 //   palac     vrh palca od povrsine drske
+//   ostrica   kut izmedju sirine predmeta (stitnik, ostrica) i normale dlana: plosnati dio lezi u dlanu,
+//             ostrica gleda naprijed kao zglobovi (90 st); 0 st = dlan na ostrici
 #include "TestHarness.h"
 
 #include "../src/LoomModel.h"
@@ -32,7 +34,7 @@ Warp::Id named(const Warp::Stage& stage, const std::string& name){
 
 glm::vec3 at(const Warp::Stage& stage, Warp::Id id, double frame){ return glm::vec3(stage.worldMatrix(id, frame)[3]); }
 
-struct Result{ float palm = 0, palmExpected = 0, angle = 0, farthest = 0, wrap = 0, thumb = 0; float tips[5]{}; bool penetrates = false; };
+struct Result{ float palm = 0, palmExpected = 0, angle = 0, edge = 90, farthest = 0, wrap = 0, thumb = 0; float tips[5]{}; bool penetrates = false; };
 
 }
 
@@ -98,6 +100,11 @@ int main(){
         glm::vec3 across = at(stage, bases.fingers[1].front(), sample) - at(stage, bases.fingers[4].front(), sample);
         across = glm::normalize(across - now.normal * glm::dot(across, now.normal));
         r.angle = glm::degrees(std::acos(std::min(1.0f, std::fabs(glm::dot(axis, across)))));
+        //Sirina predmeta (druga glavna os) okomito na drsku, prema normali dlana
+        glm::vec3 width = glm::vec3(toolWorld * glm::vec4(Loom::toolAxes(Loom::toolGeometry(stage, item, sample)).axes[1], 0.0f));
+        width -= axis * glm::dot(width, axis);
+        if(glm::length(width) > 1e-6f)
+            r.edge = glm::degrees(std::acos(std::min(1.0f, std::fabs(glm::dot(glm::normalize(width), now.normal)))));
         const Loom::HandFingers fingers = Loom::handFingersOf(stage, hand.hand, sample);
         //Vrh: produzetak srednjeg clanka u mirnoj pozi, nosen rotacijom zadnjeg zgloba (kao u omatanju)
         auto tipOf = [&](const std::vector<Warp::Id>& finger){
@@ -123,8 +130,8 @@ int main(){
             }
         }
         std::printf("   vrhovi %s: palac %.1f kaziprst %.1f srednji %.1f prstenjak %.1f mali %.1f cm\n", label.c_str(), r.tips[0], r.tips[1], r.tips[2], r.tips[3], r.tips[4]);
-        std::printf("   MJERA %s: dlan %.1f cm (ocekivano %.1f), kut %.0f st, vrhovi do %.1f cm, omatanje %.0f st, palac %.1f cm, prodor %d\n",
-                    label.c_str(), r.palm, r.palmExpected, r.angle, r.farthest, r.wrap, r.thumb, int(r.penetrates));
+        std::printf("   MJERA %s: dlan %.1f cm (ocekivano %.1f), kut %.0f st, vrhovi do %.1f cm, omatanje %.0f st, palac %.1f cm, prodor %d, ostrica %.0f st\n",
+                    label.c_str(), r.palm, r.palmExpected, r.angle, r.farthest, r.wrap, r.thumb, int(r.penetrates), r.edge);
         return r;
     };
     auto checkGrab = [&](const Result& r, const std::string& label){
@@ -135,6 +142,8 @@ int main(){
                      r.farthest < 1.2f && r.wrap > 130.0f && !r.penetrates,
                      fmt("vrhovi %.1f cm, omatanje %.0f st, prodor %d", r.farthest, r.wrap, int(r.penetrates)));
         report.check((label + ": palac uz drsku (do 1.5 cm)").c_str(), r.thumb < 1.5f, fmt("%.1f cm", r.thumb));
+        report.check((label + ": plosnati dio u dlanu, ostrica naprijed (sirina 70-90 st od normale dlana)").c_str(),
+                     r.edge > 70.0f, fmt("%.0f st", r.edge));
     };
 
     const std::filesystem::path swordPath = std::filesystem::path(std::getenv("HOME") ? std::getenv("HOME") : "") / "Downloads/bastard_sword__lowpoly.glb";

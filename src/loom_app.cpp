@@ -307,6 +307,7 @@
         std::string shotGrab;                 //--uhvati desna|lijeva: zadnji tool u tu saku (kao pusten uz saku)
         bool shotHandView = false;            //--pogled-saka yaw pitch: kamera izbliza na saku s hvatom
         float shotHandYaw = 0.6f, shotHandPitch = 0.35f;
+        bool shotHandAuto = false;            //--pogled-saka auto: kao gumb Look at the hand
         std::vector<std::string> shotTools;   //--tool: model uvezen kao tool/weapon (velicina iz imena)
         std::vector<std::string> shotMotionText;  //--tekst: panel pokreta otvoren, jedna radnja po zastavici
         float shotSurface[4] = {0, 0, 0, 0};  //--ploha x y sirina visina: pravokutnik u pogledu, pa kocka na plohu
@@ -335,6 +336,11 @@
             else if(argument == "--mascott") shotMascott = true;
             else if(argument == "--uhvati" && i + 1 < argc) shotGrab = argv[++i];
             else if(argument == "--lik" && i + 1 < argc) shotCharacter = argv[++i];
+            else if(argument == "--pogled-saka" && i + 1 < argc && std::string(argv[i + 1]) == "auto"){
+                shotHandView = true;
+                shotHandAuto = true;
+                ++i;
+            }
             else if(argument == "--pogled-saka" && i + 2 < argc){
                 shotHandView = true;
                 shotHandYaw = float(std::atof(argv[++i]));
@@ -1222,6 +1228,22 @@
             selected = item;
             focus = Focus::Entity;
             return true;
+        };
+        //POGLED NA SAKU (Look at the hand, --pogled-saka auto): sa strane palca, malo odozgo, pa se
+        //vide prsti oko drske. Odmak iz velicine sake, ne stalan (lik moze biti i 30 cm i 3 m)
+        auto lookAtHand = [&](const Loom::HoldHand& hand){
+            const glm::vec3 palm = Loom::holdPalmPoint(stage, hand, frame);
+            const float handSize = glm::length(palm - glm::vec3(stage.worldMatrix(hand.hand, frame)[3]));
+            glm::vec3 from(0.0f, 0.3f, 1.0f);
+            //Iz normale dlana se gledalo odozdo (dlan u T-pozi gleda u pod); sa strane palca vide se drska i jabuka
+            if(Loom::HandFrame handFrame; Loom::handFrameAt(stage, hand, frame, handFrame))
+                from = handFrame.across - handFrame.normal * 0.1f + glm::vec3(0.0f, 0.35f, 0.0f);
+            from = glm::normalize(from);
+            view.lookThrough = Warp::None;
+            view.orbit.target = palm;
+            view.orbit.distance = std::max(0.3f, handSize * 6.0f);
+            view.orbit.yaw = std::atan2(from.x, from.z);
+            view.orbit.pitch = std::asin(std::clamp(from.y, -1.0f, 1.0f));
         };
         auto holdHandName = [&](Warp::Id hand){
             for(const Loom::HoldHand& candidate : holdHands) if(candidate.hand == hand) return Loom::holdHandLabel(candidate);
@@ -2435,7 +2457,8 @@
             for(const Loom::HoldHand& candidate : holdHands) if(candidate.right == right) hand = &candidate;
             if(hand && !shotGrab.empty() && item != Warp::None) grabWithHand(item, *hand, std::round(frame));
             else if(!shotGrab.empty()) message = "--uhvati: no tool or no " + shotGrab + " hand in the scene.";
-            if(hand && shotHandView){
+            if(hand && shotHandAuto) lookAtHand(*hand);     //odabir ostaje: snimka je ono sto korisnik vidi
+            else if(hand && shotHandView){
                 view.lookThrough = Warp::None;
                 view.orbit.target = Loom::holdPalmPoint(stage, *hand, frame);
                 view.orbit.distance = 0.45f;
@@ -3719,7 +3742,9 @@
                     ui.value("Motion", Engine::WeaverMotion::poweredBy);
                 }
                 ui.checkbox("Visible", &entity->visible);
-                const Warp::Id animatorRig = Loom::motionCharacterForEntity(stage, entity->id);
+                //Predmet za drzanje nije dio lika: bez ovoga se uspne do Scene_Root i pokaze Animator lika iznad HOLD
+                const Warp::Id animatorRig = Loom::toolRootOf(stage, entity->id) != Warp::None ? Warp::None
+                                           : Loom::motionCharacterForEntity(stage, entity->id);
                 Warp::Entity* rigEntity = stage.get(animatorRig);
                 if(rigEntity && ui.componentHeader("ANIMATOR", {0.26f, 0.94f, 0.58f, 1.0f}, &animatorExpanded,
                                                rigEntity->animator.has_value())){
@@ -4239,23 +4264,24 @@
                     float alongLow = 0.0f, alongHigh = 0.0f;
                     Loom::toolExtentAlong(geometry, grip.point, axis, alongLow, alongHigh);
                     const float alongLength = std::max(alongHigh - alongLow, 1e-9f);
+                    //Postotak uvijek od istog kraja predmeta (najveca komponenta osi pozitivna), inace Flip
+                    //skoci klizac s 12 na 88 % iako saka stoji na istom mjestu
+                    const int major = std::fabs(axis.x) >= std::max(std::fabs(axis.y), std::fabs(axis.z)) ? 0 : std::fabs(axis.y) >= std::fabs(axis.z) ? 1 : 2;
+                    const bool reversed = axis[major] < 0.0f;
                     float percent = -alongLow / alongLength * 100.0f;
+                    if(reversed) percent = 100.0f - percent;
                     if(ui.slider("Hand on the tool", &percent, 0.0f, 100.0f, " %")){
-                        grip.point += axis * (alongLow + std::clamp(percent, 0.0f, 100.0f) / 100.0f * alongLength);
+                        percent = std::clamp(percent, 0.0f, 100.0f);
+                        if(reversed) percent = 100.0f - percent;
+                        grip.point += axis * (alongLow + percent / 100.0f * alongLength);
                         changed = true;
                     }
                     const int turn = ui.buttonRow({"Flip", "Turn palm"});
                     if(turn == 0){ grip.axis = -grip.axis; changed = true; }
                     if(turn == 1){ grip.palm = glm::angleAxis(glm::radians(90.0f), axis) * grip.palm; changed = true; }
                     ui.hint("Flip: blade or barrel points the other way. Turn palm: which side of the handle the palm touches. The fingers close around it again after every change.");
-                    if(current >= 0 && ui.button("Look at the hand")){
-                        for(const Loom::HoldHand& hand : holdHands) if(hand.hand == toolEntity->holds[size_t(current)].hand){
-                            view.lookThrough = Warp::None;
-                            view.orbit.target = Loom::holdPalmPoint(stage, hand, frame);
-                            view.orbit.distance = std::max(0.35f, 2.5f * glm::length(Loom::holdPalmPoint(stage, hand, frame) -
-                                                                                     glm::vec3(stage.worldMatrix(hand.hand, frame)[3])) * 4.0f);
-                        }
-                    }
+                    if(current >= 0 && ui.button("Look at the hand"))
+                        for(const Loom::HoldHand& hand : holdHands) if(hand.hand == toolEntity->holds[size_t(current)].hand) lookAtHand(hand);
                     //POSTAVKE TOOLA: rijetko se diraju, pa su zatvorene
                     char setupSummary[96];
                     std::snprintf(setupSummary, sizeof(setupSummary), "%s, %.0f cm", tool.kind == "weapon" ? "weapon" : "tool",
@@ -5668,6 +5694,15 @@
                     const float hudWidth = std::min(320.0f, layout.viewport.width - 16.0f);
                     constexpr float hudHeight = 214.0f;
                     float hudX = hudPixel.x + 22.0f;
+                    //Predmet u saci: ishodiste mu je u dlanu, pa bi HUD pokrio bas saku - ide u gornji desni kut
+                    bool heldHere = false;
+                    if(const Warp::Entity* held = stage.get(Loom::toolRootOf(stage, selected)))
+                        for(const Warp::Hold& hold : held->holds)
+                            heldHere = heldHere || (std::round(frame) >= hold.onFrame && std::round(frame) < hold.offFrame);
+                    if(heldHere){
+                        hudPixel = glm::vec2(layout.viewport.x + layout.viewport.width, layout.viewport.y + hudHeight + 40.0f);
+                        hudX = hudPixel.x + 22.0f;
+                    }
                     if(hudX + hudWidth > layout.viewport.x + layout.viewport.width - 8.0f)
                         hudX = hudPixel.x - hudWidth - 22.0f;
                     hudX = std::clamp(hudX, layout.viewport.x + 8.0f,

@@ -1,6 +1,6 @@
 # Loom — predaja projekta
 
-Zadnje osvjezeno: 26. rujna 2026. (odjeljak 7.9: sake, prsti i hvat predmeta)
+Zadnje osvjezeno: 26. rujna 2026. (odjeljak 7.9: HOLD u Inspectoru provjeren, dlan na plosnatom dijelu)
 Repo: `https://github.com/SkicMi/Loom.git`, grana **`main`** (radi se isključivo na njoj).
 
 Ovo je **radni brief**, ne pregled. Piše što projekt jest, gdje stoji **s brojkama**, u što se smije
@@ -884,13 +884,20 @@ HumanoidMascott** = `tools/autorig/outputs/mascot-manny/rigged.glb` (lokalno, ni
 - CLI za snimke hvata: `--lik <glb>`, `--tool <glb>`, `--uhvati desna|lijeva`, `--pogled-saka <yaw> <pitch>`
   (npr. `./build/loom --mascott --tool ~/Downloads/bastard_sword__lowpoly.glb --uhvati desna --pogled-saka -1.2 -0.4 --snimi x.png`).
 
-**U radu, NIJE provjereno (UX korak 1):** sekcija **HOLD** u Inspectoru umjesto plutajućeg TOOL EDITOR
-panela (koji je prekrivao baš šaku; preseti su bili skraćeni u "G.. P.. C.."). Sadrži: status
-("In the right hand, frames 1 - 100"), gumbe Right hand / Left hand (hvat jednim klikom, šaka lika
-najbližeg predmetu), Other hand / Let go here / Remove, preset poze u dva reda pilula s punim imenima,
-"Hand on the tool" %, Flip / Turn palm, "Look at the hand", i zatvoreni "Tool setup" (vrsta, stvarna
-veličina, grip za ruku, debljina, "Find the handle again"). Kod je u `loom_app.cpp` (traži
-`//HOLD: sve o drzanju predmeta`), gradi se, **ali nije ni jednom kliknut na Xvfb-u**.
+**HOLD u Inspectoru — provjereno na Xvfb-u (26.9. kasno):** sekcija **HOLD** umjesto plutajućeg TOOL EDITOR
+panela. Kliknuto i radi: Right hand / Left hand (hvat od ovog kadra), Other hand, Let go here (traka na
+timelineu staje, predmet ostaje gdje ga je šaka pustila), Remove, preseti (Open otvori prste), Hand on the
+tool (šaka klizi po predmetu), Flip, Turn palm, Look at the hand. Kod: `loom_app.cpp`, traži
+`//HOLD: sve o drzanju predmeta`. Popravljeno usput:
+- mač je u Inspectoru pokazivao **ANIMATOR lika** (`motionCharacterForEntity` se od toola popne do
+  `Scene_Root`); nakon hvata se raširio i gurnuo HOLD izvan pogleda → za tool nema Animatora;
+- **dlan je ležao na oštrici**: `defaultGrip` je stavljao `palm = axes[1]` (širina). Sad `axes[2]`
+  (plosnati dio u dlanu, oštrica/štitnik naprijed kao zglobovi). `test_grab_real` ima mjeru "oštrica":
+  0° → 90°, omatanje 150 → 162°, dlan 4.3 cm (očekivano 4.3);
+- OBJECT HUD je pokrivao šaku (ishodište toola je u dlanu) → za predmet u šaci ide u gornji desni kut;
+- Look at the hand je gledao kroz podlakticu → `lookAtHand`: sa strane palca, malo odozgo, odmak 6× veličina
+  šake. Isto iz CLI: `--pogled-saka auto` (odabir ostaje, snimka je ono što korisnik vidi);
+- klizač Hand on the tool je kod Flip skakao 12 → 88 % → postotak uvijek od istog kraja predmeta.
 
 **Zamke:**
 - **Mesh šake mascota je loš za prste**, ne algoritam: cijela desna šaka ~430 vrhova; 6 kostiju prstiju
@@ -908,8 +915,8 @@ veličina, grip za ruku, debljina, "Find the handle again"). Kod je u `loom_app.
 - Xvfb `:78` je dvaput ugašen izvana; koristi vlastiti (npr. `:79`).
 
 **Sljedeći koraci, redom:**
-1. Provjeriti HOLD sekciju na Xvfb-u (klik Right hand → hvat; Other hand; Let go here; preseti;
-   Hand on the tool; Look at the hand) i popraviti što ne radi; zatim commit.
+1. ~~HOLD na Xvfb-u~~ gotovo. Sitnica: nakon klika Right hand na istom mjestu je Other hand (dvoklik
+   prebaci u drugu šaku); nakon Other hand kamera ostaje na staroj šaci.
 2. Veličina toola bez prepoznatljivog imena: procjena iz oblika (pištolj/mač/šalica) ili pitanje pri uvozu
    ("Koliko je dugačak?") umjesto 514 m.
 3. Novi čišći model lika (korisnik ga može dati) kroz auto-rig + hand rig; ponoviti `test_grab_real`

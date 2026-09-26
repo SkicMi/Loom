@@ -249,7 +249,9 @@ inline Warp::Grip defaultGrip(const ToolGeometry& geometry, const std::string& p
     const glm::vec3 offset = count[size_t(bin)] > 0 ? sum[size_t(bin)] / float(count[size_t(bin)]) : glm::vec3(0.0f);
     grip.point = frame.centre + axis * (low + at * length) + offset;
     grip.axis = axis * float(toward);
-    grip.palm = frame.axes[1];
+    //Dlan na plosnatu stranu (najtanja os): ostrica, stitnik, glava sjekire ili cekica gledaju naprijed
+    //kao zglobovi. Sa sirinom (axes[1]) je dlan lezao na ostrici (test_grab_real: 0 st umjesto 90)
+    grip.palm = frame.axes[2];
     return grip;
 }
 
