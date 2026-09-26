@@ -4,14 +4,30 @@ Najnovije gore. Svaka akcija: datum, što, zašto, kako je provjereno.
 
 ## Sadašnje
 
-- **Faza 1: infrastruktura** — prvi dio gotov (vidi Prošle, 2026-09-26). Ostaje dio koji nije u prvom krugu:
-  prikaz materijala po trokutu u viewportu, pravo platno čvorova za spajanje više ulaza, selekcija za Extrude po filteru.
+### STAO SAM OVDJE (2026-09-26, ~19:00) — faza 1, drugi krug
+Gotovo i testirano (test_weaverprocedura 51/51, agent 29/29, PBR 8/8), commitano u ovom commitu:
+- `PrimitiveType::Cylinder`, `Torus` (+ `tubeRatio`); `ExtrudeNode.useFilter` + `filter` (sve plohe koje odgovaraju);
+  `CurveSmoothNode` (Catmull-Rom), `CatenaryCurveNode` (uže/lanac), `CopyAlongCurveNode` (lanac: alternateRoll 90°).
+- Recipe shema 6 (učitava 3–6). `inputPortCount()` u engineu.
+- Viewport: preview se crta po materijalu, svaki svojom bojom (`proceduralMaterialColour` u `src/LoomPbr.h`).
+- Panel: ručno spajanje (CONNECT: From / To / Input, Remove link), gumbi "Create rope" / "Create chain",
+  Torus/Cylinder u izboru primitiva, Extrude filter.
+- Editor zastavica `--recept <datoteka>`: učita recept u Procedura panel i uokviri preview (za snimke: `--snimi out.png`).
+- Vizualno provjereno na Xvfb :78: lanac + uže + stupovi i kućica s krovom izgledaju ispravno.
+
+**Sljedeći korak koji NIJE napravljen:** boje materijala u viewportu su isprane (cigla i crijep gotovo iste, trava blijeda).
+Plan: u `proceduralMaterialColour` vratiti `glm::pow(boja, vec3(2.2))` (tablica je sRGB, faktor je linearan) i
+crijep potamniti na (0.48, 0.20, 0.14); zatim ponovno snimiti:
+`DISPLAY=:78 ./build/loom --recept <house.loomrecipe.json> --snimi house.png`.
+Testni recepti (lanac, kuća) su bili u scratchpadu — kod nastavka ih treba ponovno napisati ili spremiti u `docs/AgentOfWeavers/recepti/`.
+
+Nakon toga faza 1 je gotova → ažurirati CVOROVI.md (torus, valjak, krivulje, Extrude filter = radi) i krenuti na fazu 2.
 
 ## Buduće
 
 Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
 
-1. **Faza 1, ostatak**
+1. **Faza 1, ostatak** (većina gotova — vidi "STAO SAM OVDJE"; ostaju samo boje materijala)
    - Viewport: preview crta svaki `material` iz `materialLibrary()` svojim PBR materijalom (sad je jedan materijal za sve).
    - Procedura panel: spajanje linkova rukom (Merge i Copy to Points sad se mogu učitati iz JSON-a i podešavati, ali ne spojiti klikom).
    - `ExtrudeNode` i `BevelNode` s `TriangleFilter` umjesto indeksa trokuta (AI ne smije ovisiti o indeksima).

@@ -559,7 +559,111 @@ int main(){
             std::abs(std::get<Proc::UVProjectNode>(back.nodes[5].payload).tileSize - 2.0f) < 1e-6f &&
             copyBack.alignToNormal && std::abs(copyBack.randomYawDegrees - 90.0f) < 1e-6f;
     }catch(const std::exception& failure){ infrastructureJson = failure.what(); }
-    report.check("schema 5 Recipe round-trips every infrastructure payload", infrastructureRoundTrip, infrastructureJson);
+    report.check("current schema Recipe round-trips every infrastructure payload", infrastructureRoundTrip, infrastructureJson);
+
+    //== Faza 1, drugi krug: valjak, torus, filtrirani Extrude, krivulje, Copy along Curve ==
+    auto boundsOf = [](const Proc::MeshData& mesh){
+        glm::vec3 low(1e9f), high(-1e9f);
+        for(const Proc::MeshVertex& vertex : mesh.vertices){ low = glm::min(low, vertex.position); high = glm::max(high, vertex.position); }
+        return std::make_pair(low, high);
+    };
+    Proc::MeshData cylinder, torus;
+    Proc::AddPrimitiveNode cylinderSettings; cylinderSettings.primitive = Proc::PrimitiveType::Cylinder;
+    Proc::AddPrimitiveNode torusSettings; torusSettings.primitive = Proc::PrimitiveType::Torus; torusSettings.tubeRatio = 0.2f;
+    const bool cylinderMade = Proc::makePrimitive(cylinderSettings, cylinder, error);
+    const bool torusMade = Proc::makePrimitive(torusSettings, torus, error);
+    const auto [cylinderLow, cylinderHigh] = boundsOf(cylinder);
+    const auto [torusLow, torusHigh] = boundsOf(torus);
+    report.check("Cylinder and Torus primitives fit the unit box (torus height = tube diameter)",
+                 cylinderMade && torusMade && std::abs(cylinderHigh.y - 0.5f) < 1e-5f && std::abs(cylinderHigh.x - 0.5f) < 1e-5f &&
+                 std::abs(torusHigh.x - 0.5f) < 1e-3f && std::abs(torusHigh.y - 0.1f) < 1e-4f && std::abs(torusLow.y + 0.1f) < 1e-4f,
+                 "torus height " + std::to_string(torusHigh.y - torusLow.y));
+
+    Proc::Graph filteredExtrude;
+    const auto slab = Proc::addNode(filteredExtrude, Proc::AddPrimitiveNode{});
+    Proc::ExtrudeNode upward; upward.useFilter = true; upward.distance = 0.5f;
+    upward.filter.useDirection = true; upward.filter.direction = {0,1,0}; upward.filter.maxAngleDegrees = 5.0f;
+    const auto raised = Proc::addNode(filteredExtrude, upward);
+    filteredExtrude.links = {{slab,0,raised,0}};
+    const Proc::EvaluationResult raisedResult = Proc::evaluate(filteredExtrude);
+    report.check("Extrude by filter lifts the upward face without a triangle index",
+                 raisedResult.succeeded && std::abs(boundsOf(raisedResult.mesh).second.y - 1.0f) < 1e-5f &&
+                 raisedResult.mesh.triangles.size() == 20, raisedResult.error);
+    Proc::Graph sidesExtrude = filteredExtrude;
+    auto& sideSettings = std::get<Proc::ExtrudeNode>(sidesExtrude.nodes[1].payload);
+    sideSettings.filter.direction = {1,0,0}; sideSettings.filter.maxAngleDegrees = 95.0f;
+    const Proc::EvaluationResult sidesResult = Proc::evaluate(sidesExtrude);
+    report.check("Extrude by filter moves every matching face along its own normal",
+                 sidesResult.succeeded && sidesResult.mesh.triangles.size() == 12 - 10 + 10 + 5 * 8, sidesResult.error);
+    Proc::Graph missingFace = filteredExtrude;
+    std::get<Proc::ExtrudeNode>(missingFace.nodes[1].payload).filter.semantic = "roof";
+    report.check("Extrude by filter reports when nothing matches", !Proc::evaluate(missingFace).succeeded,
+                 "empty selection is an error");
+
+    Proc::Curve corner; corner.points = {{0,0,0},{2,0,0},{2,0,2}};
+    Proc::Curve rounded;
+    const bool smoothedCurve = Proc::smoothCurve(corner, 8, rounded, error);
+    bool keepsControlPoints = smoothedCurve && rounded.points.size() == 17 && rounded.points[8] == corner.points[1] &&
+                              rounded.points.back() == corner.points.back();
+    report.check("Curve Smooth passes through every control point", keepsControlPoints, error);
+
+    Proc::Curve hanging;
+    Proc::CatenaryCurveNode level{{0,5,0},{10,5,0},2.0f,33};
+    const bool hangingMade = Proc::makeCatenary(level, hanging, error);
+    const float midDrop = hangingMade ? 5.0f - hanging.points[16].y : 0.0f;
+    const double catenaryA = [&]{
+        double low = 0.1, high = 1000.0;
+        for(int i = 0; i < 200; ++i){ const double a = std::sqrt(low*high); if(a*(std::cosh(5.0/a)-1.0) > 2.0) low = a; else high = a; }
+        return std::sqrt(low*high);
+    }();
+    const double quarterExpected = 5.0 - (2.0 - catenaryA*(std::cosh(2.5/catenaryA)-1.0));
+    report.check("Catenary drops by sag at mid-span and follows a cosh shape",
+                 hangingMade && std::abs(midDrop - 2.0f) < 1e-4f && std::abs(hanging.points.front().y - 5.0f) < 1e-5f &&
+                 std::abs(double(hanging.points[8].y) - quarterExpected) < 1e-3,
+                 "mid drop " + std::to_string(midDrop));
+
+    Proc::Graph chainRecipe;
+    const auto chainPath = Proc::addNode(chainRecipe, Proc::CatenaryCurveNode{{0,2,0},{2,2,0},0.0f,2});
+    Proc::AddPrimitiveNode linkShape; linkShape.primitive = Proc::PrimitiveType::Torus; linkShape.size = {0.2f,0.2f,0.1f};
+    const auto chainLink = Proc::addNode(chainRecipe, linkShape);
+    Proc::CopyAlongCurveNode chainCopies; chainCopies.spacing = 0.5f; chainCopies.alternateRollDegrees = 90.0f;
+    const auto chainNode = Proc::addNode(chainRecipe, chainCopies);
+    chainRecipe.links = {{chainLink,0,chainNode,0},{chainPath,0,chainNode,1}};
+    const Proc::EvaluationResult chainResult = Proc::evaluate(chainRecipe);
+    bool secondLinkRolled = false;
+    if(chainResult.succeeded && !torus.vertices.empty()){
+        Proc::MeshData one;
+        Proc::makePrimitive(linkShape, one, error);
+        const std::size_t perLink = one.vertices.size();
+        glm::vec3 low(1e9f), high(-1e9f);
+        for(std::size_t i = perLink; i < 2 * perLink; ++i){
+            low = glm::min(low, chainResult.mesh.vertices[i].position);
+            high = glm::max(high, chainResult.mesh.vertices[i].position);
+        }
+        // Rolled 90 degrees about X: the link's thin Z depth now spans Y.
+        secondLinkRolled = std::abs((high.z - low.z) - 0.2f * 0.25f) < 2e-3f && std::abs((high.y - low.y) - 0.1f) < 2e-3f &&
+                           std::abs((low.x + high.x) * 0.5f - 0.5f) < 1e-4f;
+    }
+    report.check("Copy along Curve spaces copies by arc length and alternates the roll",
+                 chainResult.succeeded && chainResult.mesh.triangles.size() % 5 == 0 && secondLinkRolled, chainResult.error);
+
+    Proc::Graph curveRecipe;
+    Proc::addNode(curveRecipe, Proc::CurveSmoothNode{4});
+    Proc::addNode(curveRecipe, Proc::CatenaryCurveNode{});
+    Proc::addNode(curveRecipe, chainCopies);
+    Proc::addNode(curveRecipe, linkShape);
+    Proc::addNode(curveRecipe, upward);
+    bool curveRoundTrip = false;
+    std::string curveJson;
+    try{
+        curveJson = Loom::WeaverProceduraRecipe::serialize({"Curves", curveRecipe});
+        const auto back = Loom::WeaverProceduraRecipe::parse(curveJson).graph;
+        curveRoundTrip = std::get<Proc::CurveSmoothNode>(back.nodes[0].payload).subdivisions == 4 &&
+            std::abs(std::get<Proc::CopyAlongCurveNode>(back.nodes[2].payload).alternateRollDegrees - 90.0f) < 1e-6f &&
+            std::get<Proc::AddPrimitiveNode>(back.nodes[3].payload).primitive == Proc::PrimitiveType::Torus &&
+            std::get<Proc::ExtrudeNode>(back.nodes[4].payload).useFilter;
+    }catch(const std::exception& failure){ curveJson = failure.what(); }
+    report.check("schema 6 Recipe round-trips curve nodes, torus, and filtered Extrude", curveRoundTrip, curveJson);
 
     return report.result();
 }

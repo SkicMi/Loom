@@ -81,6 +81,8 @@ inline const char* primitiveName(Proc::PrimitiveType primitive){
         case Proc::PrimitiveType::Sphere: return "sphere";
         case Proc::PrimitiveType::Pyramid: return "pyramid";
         case Proc::PrimitiveType::Capsule: return "capsule";
+        case Proc::PrimitiveType::Cylinder: return "cylinder";
+        case Proc::PrimitiveType::Torus: return "torus";
     }
     throw std::runtime_error("unknown primitive type");
 }
@@ -92,6 +94,8 @@ inline Proc::PrimitiveType readPrimitive(const AgentJsonValue& value){
     if(name == "sphere") return Proc::PrimitiveType::Sphere;
     if(name == "pyramid") return Proc::PrimitiveType::Pyramid;
     if(name == "capsule") return Proc::PrimitiveType::Capsule;
+    if(name == "cylinder") return Proc::PrimitiveType::Cylinder;
+    if(name == "torus") return Proc::PrimitiveType::Torus;
     throw std::runtime_error("unknown primitive type: " + name);
 }
 
@@ -164,7 +168,8 @@ inline std::string serialize(const Document& document){
                 << interior->floorThickness << ",\"door_width\":" << interior->doorWidth << '}';
         }else if(const auto* primitive = std::get_if<Proc::AddPrimitiveNode>(&node.payload)){
             out << "{\"type\":\"add_primitive\",\"primitive\":" << agentJsonEscape(primitiveName(primitive->primitive))
-                << ",\"size\":[" << primitive->size.x << ',' << primitive->size.y << ',' << primitive->size.z << "]}";
+                << ",\"size\":[" << primitive->size.x << ',' << primitive->size.y << ',' << primitive->size.z
+                << "],\"tube_ratio\":" << primitive->tubeRatio << '}';
         }else if(const auto* move = std::get_if<Proc::MoveNode>(&node.payload)){
             out << "{\"type\":\"move\",\"offset\":[" << move->offset.x << ',' << move->offset.y << ',' << move->offset.z << "]}";
         }else if(const auto* rotate = std::get_if<Proc::RotateNode>(&node.payload)){
@@ -174,7 +179,10 @@ inline std::string serialize(const Document& document){
             out << "{\"type\":\"scale\",\"factor\":[" << scale->factor.x << ',' << scale->factor.y << ',' << scale->factor.z
                 << "],\"pivot\":[" << scale->pivot.x << ',' << scale->pivot.y << ',' << scale->pivot.z << "]}";
         }else if(const auto* extrude = std::get_if<Proc::ExtrudeNode>(&node.payload)){
-            out << "{\"type\":\"extrude\",\"face_index\":" << extrude->faceIndex << ",\"distance\":" << extrude->distance << '}';
+            out << "{\"type\":\"extrude\",\"face_index\":" << extrude->faceIndex << ",\"distance\":" << extrude->distance
+                << ",\"use_filter\":" << (extrude->useFilter ? "true" : "false") << ',';
+            writeFilter(out, extrude->filter);
+            out << '}';
         }else if(const auto* bevel = std::get_if<Proc::BevelNode>(&node.payload)){
             out << "{\"type\":\"bevel\",\"amount\":" << bevel->amount << ",\"segments\":" << bevel->segments << '}';
         }else if(std::holds_alternative<Proc::MeshToPointNode>(node.payload)){
@@ -202,6 +210,17 @@ inline std::string serialize(const Document& document){
                 << ",\"scale\":" << copy->scale << ",\"random_yaw_degrees\":" << copy->randomYawDegrees
                 << ",\"random_scale\":" << copy->randomScale << ",\"seed\":" << copy->seed
                 << ",\"max_copies\":" << copy->maxCopies << '}';
+        }else if(const auto* smooth = std::get_if<Proc::CurveSmoothNode>(&node.payload)){
+            out << "{\"type\":\"curve_smooth\",\"subdivisions\":" << smooth->subdivisions << '}';
+        }else if(const auto* catenary = std::get_if<Proc::CatenaryCurveNode>(&node.payload)){
+            out << "{\"type\":\"catenary_curve\",\"start\":[" << catenary->start.x << ',' << catenary->start.y << ','
+                << catenary->start.z << "],\"end\":[" << catenary->end.x << ',' << catenary->end.y << ',' << catenary->end.z
+                << "],\"sag\":" << catenary->sag << ",\"samples\":" << catenary->samples << '}';
+        }else if(const auto* along = std::get_if<Proc::CopyAlongCurveNode>(&node.payload)){
+            out << "{\"type\":\"copy_along_curve\",\"spacing\":" << along->spacing << ",\"start_offset\":" << along->startOffset
+                << ",\"roll_degrees\":" << along->rollDegrees << ",\"alternate_roll_degrees\":" << along->alternateRollDegrees
+                << ",\"reference_up\":[" << along->referenceUp.x << ',' << along->referenceUp.y << ',' << along->referenceUp.z
+                << "],\"max_copies\":" << along->maxCopies << '}';
         }else{
             throw std::runtime_error("recipe contains an unsupported node payload");
         }
@@ -234,7 +253,8 @@ inline Document parse(const std::string& source){
         throw std::runtime_error("recipe name must contain 1 to 120 characters");
     const uint64_t schema = readUnsigned(required(root, "schema_version"), "schema_version");
     if(schema < 3 || schema > Proc::graphSchemaVersion) throw std::runtime_error("unsupported recipe schema version");
-    // Versions 4 and 5 only add node types and per-triangle attributes; older payloads keep their meaning.
+    // Versions 4-6 add node types, per-triangle attributes, and optional fields with
+    // defaults (tube_ratio, extrude use_filter/filter); older payloads keep their meaning.
     document.graph.schemaVersion = Proc::graphSchemaVersion;
     document.graph.seed = readUnsigned(required(root, "seed"), "seed");
 
@@ -302,6 +322,7 @@ inline Document parse(const std::string& source){
             Proc::AddPrimitiveNode primitive;
             primitive.primitive = readPrimitive(required(parameters,"primitive"));
             primitive.size = readVec3(required(parameters,"size"),"primitive.size");
+            if(const AgentJsonValue* tube = parameters.get("tube_ratio")) primitive.tubeRatio = readFloat(*tube,"primitive.tube_ratio");
             node.payload = primitive;
         }else if(type == "move"){
             node.payload = Proc::MoveNode{readVec3(required(parameters,"offset"),"move.offset")};
@@ -319,6 +340,8 @@ inline Document parse(const std::string& source){
             Proc::ExtrudeNode extrude;
             extrude.faceIndex = readU32(required(parameters,"face_index"),"extrude.face_index");
             extrude.distance = readFloat(required(parameters,"distance"),"extrude.distance");
+            if(const AgentJsonValue* useFilter = parameters.get("use_filter")) extrude.useFilter = readBool(*useFilter,"extrude.use_filter");
+            extrude.filter = readFilter(parameters);
             node.payload = extrude;
         }else if(type == "bevel"){
             Proc::BevelNode bevel;
@@ -362,6 +385,24 @@ inline Document parse(const std::string& source){
             copy.seed = readUnsigned(required(parameters,"seed"),"copy_to_points.seed");
             copy.maxCopies = readU32(required(parameters,"max_copies"),"copy_to_points.max_copies");
             node.payload = copy;
+        }else if(type == "curve_smooth"){
+            node.payload = Proc::CurveSmoothNode{readU32(required(parameters,"subdivisions"),"curve_smooth.subdivisions")};
+        }else if(type == "catenary_curve"){
+            Proc::CatenaryCurveNode catenary;
+            catenary.start = readVec3(required(parameters,"start"),"catenary_curve.start");
+            catenary.end = readVec3(required(parameters,"end"),"catenary_curve.end");
+            catenary.sag = readFloat(required(parameters,"sag"),"catenary_curve.sag");
+            catenary.samples = readU32(required(parameters,"samples"),"catenary_curve.samples");
+            node.payload = catenary;
+        }else if(type == "copy_along_curve"){
+            Proc::CopyAlongCurveNode along;
+            along.spacing = readFloat(required(parameters,"spacing"),"copy_along_curve.spacing");
+            along.startOffset = readFloat(required(parameters,"start_offset"),"copy_along_curve.start_offset");
+            along.rollDegrees = readFloat(required(parameters,"roll_degrees"),"copy_along_curve.roll_degrees");
+            along.alternateRollDegrees = readFloat(required(parameters,"alternate_roll_degrees"),"copy_along_curve.alternate_roll_degrees");
+            along.referenceUp = readVec3(required(parameters,"reference_up"),"copy_along_curve.reference_up");
+            along.maxCopies = readU32(required(parameters,"max_copies"),"copy_along_curve.max_copies");
+            node.payload = along;
         }else{
             throw std::runtime_error("unknown recipe node type: " + type);
         }

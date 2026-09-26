@@ -120,7 +120,9 @@ inline std::vector<MeshChunkData> meshChunks(const Spool::GltfPrimitive& p){
 }
 
 //Engine-generated geometry enters Loom as transient GPU chunks; it never enters Warp or project serialization.
-inline std::vector<MeshChunkData> meshChunks(const Engine::WeaverProcedura::MeshData& data){
+//triangles, when given, limits the chunks to those triangle numbers (one material's share of the mesh).
+inline std::vector<MeshChunkData> meshChunks(const Engine::WeaverProcedura::MeshData& data,
+                                             const std::vector<uint32_t>* triangles = nullptr){
     if(data.indices.empty() || data.indices.size() % 3 != 0) return {};
 
     std::vector<MeshChunkData> chunks;
@@ -137,7 +139,10 @@ inline std::vector<MeshChunkData> meshChunks(const Engine::WeaverProcedura::Mesh
         local.clear();
     };
 
-    for(size_t triangle = 0; triangle < data.indices.size(); triangle += 3){
+    const size_t triangleCount = triangles ? triangles->size() : data.indices.size() / 3;
+    for(size_t pick = 0; pick < triangleCount; ++pick){
+        const size_t triangle = size_t(triangles ? (*triangles)[pick] : pick) * 3;
+        if(triangle + 2 >= data.indices.size()) return {};
         const uint32_t source[3] = {data.indices[triangle], data.indices[triangle + 1], data.indices[triangle + 2]};
         if(source[0] >= data.vertices.size() || source[1] >= data.vertices.size() || source[2] >= data.vertices.size()) return {};
         if(vertices.size() + 3 > 65535) flush();
@@ -161,6 +166,22 @@ inline std::vector<MeshChunkData> meshChunks(const Engine::WeaverProcedura::Mesh
     }
     flush();
     return chunks;
+}
+
+//Boja preview-a (sRGB) za materijal iz Procedura knjiznice (materialLibrary). Dok knjiznica nema
+//teksture, materijal se u pogledu razlikuje samo bojom; 0 (bez materijala) ostaje plava preview boja
+inline glm::vec3 proceduralMaterialColour(uint16_t material){
+    static const std::map<std::string, glm::vec3> looks = {
+        {"plaster", {0.82f, 0.79f, 0.72f}}, {"brick", {0.55f, 0.24f, 0.17f}}, {"stone", {0.52f, 0.50f, 0.46f}},
+        {"concrete", {0.60f, 0.60f, 0.58f}}, {"wood_planks", {0.55f, 0.38f, 0.22f}}, {"wood_beam", {0.40f, 0.26f, 0.14f}},
+        {"roof_tiles", {0.48f, 0.20f, 0.14f}}, {"roof_metal", {0.36f, 0.40f, 0.43f}}, {"glass", {0.55f, 0.72f, 0.80f}},
+        {"metal", {0.62f, 0.63f, 0.65f}}, {"steel_chain", {0.48f, 0.49f, 0.51f}}, {"asphalt", {0.16f, 0.16f, 0.17f}},
+        {"paving", {0.66f, 0.63f, 0.57f}}, {"rope_fiber", {0.66f, 0.55f, 0.36f}}, {"ground_dirt", {0.38f, 0.29f, 0.20f}},
+        {"grass", {0.27f, 0.45f, 0.20f}},
+    };
+    const auto found = looks.find(Engine::WeaverProcedura::materialName(material));
+    if(found == looks.end()) return glm::vec3(0.18f, 0.58f, 0.82f);
+    return glm::pow(found->second, glm::vec3(2.2f));   //tablica je u sRGB-u, faktor boje materijala je linearan
 }
 
 //Loomova Camera iz kamere pogleda: isti polozaj, isti smjer, vidno polje i glavna tocka iz
@@ -259,15 +280,24 @@ public:
         }
         if(proceduralPreviewGpu && proceduralPreviewRevision == revision) return;
 
-        std::vector<MeshChunkData> chunks = meshChunks(*data);
+        //Jedan komad po materijalu trokuta, svaki sa svojom bojom
+        std::map<uint16_t, std::vector<uint32_t>> byMaterial;
+        const size_t triangleCount = data->indices.size() / 3;
+        for(size_t t = 0; t < triangleCount; ++t)
+            byMaterial[t < data->triangles.size() ? data->triangles[t].material : uint16_t(0)].push_back(uint32_t(t));
         if(proceduralPreviewGpu){
             loom.waitIdle();
             proceduralPreviewGpu.reset();
         }
         proceduralPreviewGpu.emplace();
+        proceduralPreviewColours.clear();
         proceduralPreviewRevision = revision;
-        for(const MeshChunkData& chunk : chunks)
-            proceduralPreviewGpu->chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices);
+        for(const auto& [material, triangles] : byMaterial){
+            for(const MeshChunkData& chunk : meshChunks(*data, &triangles)){
+                proceduralPreviewGpu->chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices);
+                proceduralPreviewColours.push_back(proceduralMaterialColour(material));
+            }
+        }
     }
 
     //PRIJE beginFrame: modeli na karticu, meta velicine pogleda, kamera. false: nema sto crtati
@@ -369,8 +399,9 @@ public:
             }
         });
         if(proceduralPreview && proceduralPreviewGpu){
-            for(Mesh& mesh : proceduralPreviewGpu->chunks)
-                items.push_back({&mesh, glm::mat4(1.0f), -1, glm::vec3(0.18f, 0.58f, 0.82f), false});
+            for(size_t c = 0; c < proceduralPreviewGpu->chunks.size(); ++c)
+                items.push_back({&proceduralPreviewGpu->chunks[c], glm::mat4(1.0f), -1,
+                                 c < proceduralPreviewColours.size() ? proceduralPreviewColours[c] : glm::vec3(0.18f, 0.58f, 0.82f), false});
         }
         if(items.empty()) return false;
 
@@ -745,6 +776,7 @@ private:
     std::map<Warp::Shape, GpuPrimitive> primitives;
     std::optional<GpuPrimitive> proceduralPreviewGpu;
     uint64_t proceduralPreviewRevision = 0;
+    std::vector<glm::vec3> proceduralPreviewColours;   //jedna po komadu u proceduralPreviewGpu
     std::vector<std::unique_ptr<VulkanGraphicsPipeline>> pipelines;
     std::unique_ptr<VulkanGraphicsPipeline> presentPipeline;
     std::optional<RenderTarget> target;

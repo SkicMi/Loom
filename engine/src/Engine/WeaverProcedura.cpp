@@ -456,7 +456,8 @@ enum class PortType{ Invalid, Curve, Profile, PointGrid, Mesh, Points };
 
 PortType outputType(const Node& node, uint32_t port){
     if(port != 0) return PortType::Invalid;
-    if(std::holds_alternative<CurveNode>(node.payload)) return PortType::Curve;
+    if(std::holds_alternative<CurveNode>(node.payload) || std::holds_alternative<CurveSmoothNode>(node.payload) ||
+       std::holds_alternative<CatenaryCurveNode>(node.payload)) return PortType::Curve;
     if(std::holds_alternative<RectangleProfileNode>(node.payload) ||
        std::holds_alternative<CircleProfileNode>(node.payload)) return PortType::Profile;
     if(std::holds_alternative<GridNode>(node.payload) ||
@@ -472,7 +473,8 @@ PortType outputType(const Node& node, uint32_t port){
        std::holds_alternative<BevelNode>(node.payload)) return PortType::Mesh;
     if(std::holds_alternative<MergeNode>(node.payload) || std::holds_alternative<SetSemanticNode>(node.payload) ||
        std::holds_alternative<SetMaterialNode>(node.payload) || std::holds_alternative<SmoothNormalsNode>(node.payload) ||
-       std::holds_alternative<UVProjectNode>(node.payload) || std::holds_alternative<CopyToPointsNode>(node.payload))
+       std::holds_alternative<UVProjectNode>(node.payload) || std::holds_alternative<CopyToPointsNode>(node.payload) ||
+       std::holds_alternative<CopyAlongCurveNode>(node.payload))
         return PortType::Mesh;
     return PortType::Invalid;
 }
@@ -496,6 +498,11 @@ PortType inputType(const Node& node, uint32_t port){
         if(port == 0) return PortType::Mesh;
         if(port == 1) return PortType::Points;
     }
+    if(std::holds_alternative<CopyAlongCurveNode>(node.payload)){
+        if(port == 0) return PortType::Mesh;
+        if(port == 1) return PortType::Curve;
+    }
+    if(std::holds_alternative<CurveSmoothNode>(node.payload) && port == 0) return PortType::Curve;
     return PortType::Invalid;
 }
 
@@ -550,7 +557,8 @@ void appendOrientedTriangle(MeshData& mesh, uint32_t a, uint32_t b, uint32_t c,
 bool validPrimitiveType(PrimitiveType primitive){
     switch(primitive){
         case PrimitiveType::Cube: case PrimitiveType::Plane: case PrimitiveType::Sphere:
-        case PrimitiveType::Pyramid: case PrimitiveType::Capsule: return true;
+        case PrimitiveType::Pyramid: case PrimitiveType::Capsule:
+        case PrimitiveType::Cylinder: case PrimitiveType::Torus: return true;
     }
     return false;
 }
@@ -724,7 +732,8 @@ bool makePrimitive(const AddPrimitiveNode& settings, MeshData& output, std::stri
                    std::size_t maxVertices){
     if(!validPrimitiveType(settings.primitive) || !finite(settings.size) ||
        settings.size.x <= 0.0f || settings.size.y <= 0.0f || settings.size.z <= 0.0f ||
-       settings.size.x > 10000.0f || settings.size.y > 10000.0f || settings.size.z > 10000.0f){
+       settings.size.x > 10000.0f || settings.size.y > 10000.0f || settings.size.z > 10000.0f ||
+       !finite(settings.tubeRatio) || settings.tubeRatio < 0.02f || settings.tubeRatio > 0.49f){
         error = "primitive type and dimensions must be valid and positive";
         return false;
     }
@@ -773,6 +782,56 @@ bool makePrimitive(const AddPrimitiveNode& settings, MeshData& output, std::stri
             if(!triangle(a,b,tip,(a+b+tip)/3.0f)){
                 error = "pyramid primitive exceeds the configured vertex limit";
                 return false;
+            }
+        }
+    }else if(settings.primitive == PrimitiveType::Cylinder){
+        constexpr uint32_t segments = 32;
+        for(uint32_t segment = 0; segment < segments; ++segment){
+            const float a0 = float(2.0 * pi) * float(segment) / float(segments);
+            const float a1 = float(2.0 * pi) * float(segment + 1) / float(segments);
+            const glm::vec3 r0{std::cos(a0), 0.0f, std::sin(a0)}, r1{std::cos(a1), 0.0f, std::sin(a1)};
+            const uint32_t base = uint32_t(generated.vertices.size());
+            const float u0 = float(segment) / float(segments), u1 = float(segment + 1) / float(segments);
+            generated.vertices.push_back({r0 * 0.5f + glm::vec3(0,-0.5f,0), r0, {u0,0}});
+            generated.vertices.push_back({r1 * 0.5f + glm::vec3(0,-0.5f,0), r1, {u1,0}});
+            generated.vertices.push_back({r1 * 0.5f + glm::vec3(0, 0.5f,0), r1, {u1,1}});
+            generated.vertices.push_back({r0 * 0.5f + glm::vec3(0, 0.5f,0), r0, {u0,1}});
+            appendOrientedTriangle(generated, base, base+1, base+2, r0 + r1);
+            appendOrientedTriangle(generated, base, base+2, base+3, r0 + r1);
+        }
+        for(float y : {-0.5f, 0.5f}){
+            const glm::vec3 normal{0.0f, y > 0.0f ? 1.0f : -1.0f, 0.0f};
+            const uint32_t center = uint32_t(generated.vertices.size());
+            generated.vertices.push_back({{0,y,0}, normal, {0.5f,0.5f}});
+            for(uint32_t segment = 0; segment < segments; ++segment){
+                const float angle = float(2.0 * pi) * float(segment) / float(segments);
+                generated.vertices.push_back({{0.5f*std::cos(angle), y, 0.5f*std::sin(angle)}, normal,
+                                              {0.5f + 0.5f*std::cos(angle), 0.5f + 0.5f*std::sin(angle)}});
+            }
+            for(uint32_t segment = 0; segment < segments; ++segment)
+                appendOrientedTriangle(generated, center, center + 1 + segment, center + 1 + (segment + 1) % segments, normal);
+        }
+    }else if(settings.primitive == PrimitiveType::Torus){
+        constexpr uint32_t ringSegments = 32, tubeSegments = 16;
+        const float tube = 0.5f * settings.tubeRatio;
+        const float ring = 0.5f - tube;
+        for(uint32_t i = 0; i <= ringSegments; ++i){
+            const float a = float(2.0 * pi) * float(i) / float(ringSegments);
+            const glm::vec3 radial{std::cos(a), 0.0f, std::sin(a)};
+            for(uint32_t j = 0; j <= tubeSegments; ++j){
+                const float b = float(2.0 * pi) * float(j) / float(tubeSegments);
+                const glm::vec3 normal = radial * std::cos(b) + glm::vec3(0.0f, std::sin(b), 0.0f);
+                generated.vertices.push_back({radial * ring + normal * tube, normal,
+                                              {float(i) / float(ringSegments), float(j) / float(tubeSegments)}});
+            }
+        }
+        const uint32_t stride = tubeSegments + 1;
+        for(uint32_t i = 0; i < ringSegments; ++i){
+            for(uint32_t j = 0; j < tubeSegments; ++j){
+                const uint32_t a = i * stride + j, b = (i + 1) * stride + j, c = b + 1, d = a + 1;
+                const glm::vec3 outward = generated.vertices[a].normal + generated.vertices[c].normal;
+                appendOrientedTriangle(generated, a, b, c, outward);
+                appendOrientedTriangle(generated, a, c, d, outward);
             }
         }
     }else{
@@ -872,63 +931,82 @@ bool extrudeFace(const MeshData& input, const ExtrudeNode& settings, MeshData& o
     std::vector<FacePatch> patches;
     if(!collectFacePatches(input,patches,error)) return false;
     const std::size_t triangleCount = input.indices.size()/3;
-    if(settings.faceIndex >= triangleCount){ error = "extrusion face index is outside the mesh"; return false; }
-    const auto selected = std::find_if(patches.begin(),patches.end(),[&](const FacePatch& patch){
-        return std::find(patch.triangles.begin(),patch.triangles.end(),settings.faceIndex) != patch.triangles.end();
-    });
-    if(selected == patches.end()){ error = "extrusion face could not be selected"; return false; }
-    std::unordered_set<std::size_t> selectedTriangles(selected->triangles.begin(),selected->triangles.end());
+    std::vector<const FacePatch*> chosen;
+    if(settings.useFilter){
+        if(!validTriangleFilter(settings.filter)){ error = "extrusion filter is invalid"; return false; }
+        for(const FacePatch& patch : patches){
+            const bool matches = std::all_of(patch.triangles.begin(),patch.triangles.end(),
+                [&](std::size_t triangle){ return triangleMatches(input,triangle,settings.filter); });
+            if(matches) chosen.push_back(&patch);
+        }
+        if(chosen.empty()){ error = "extrusion filter matched no face"; return false; }
+    }else{
+        if(settings.faceIndex >= triangleCount){ error = "extrusion face index is outside the mesh"; return false; }
+        const auto selected = std::find_if(patches.begin(),patches.end(),[&](const FacePatch& patch){
+            return std::find(patch.triangles.begin(),patch.triangles.end(),settings.faceIndex) != patch.triangles.end();
+        });
+        if(selected == patches.end()){ error = "extrusion face could not be selected"; return false; }
+        chosen.push_back(&*selected);
+    }
+    std::unordered_set<std::size_t> selectedTriangles;
+    std::size_t boundaryTotal = 0;
+    for(const FacePatch* patch : chosen){
+        selectedTriangles.insert(patch->triangles.begin(),patch->triangles.end());
+        boundaryTotal += patch->boundary.size();
+    }
     MeshData generated = input;
     generated.indices.clear();
     generated.triangles.clear();
-    generated.indices.reserve(input.indices.size() + selected->boundary.size()*6);
+    generated.indices.reserve(input.indices.size() + boundaryTotal*6);
     for(std::size_t triangle = 0; triangle < triangleCount; ++triangle){
         if(selectedTriangles.count(triangle)) continue;
         generated.indices.insert(generated.indices.end(),input.indices.begin()+std::ptrdiff_t(triangle*3),
                                  input.indices.begin()+std::ptrdiff_t(triangle*3+3));
         generated.triangles.push_back(attributesOf(input,triangle));
     }
-    TriangleAttributes sideAttributes = attributesOf(input,selected->triangles.front());
-    sideAttributes.createdBy = 0;
-    std::unordered_map<uint32_t,uint32_t> top;
-    for(std::size_t triangle : selected->triangles){
-        for(int corner = 0; corner < 3; ++corner){
-            const uint32_t original = input.indices[triangle*3+std::size_t(corner)];
-            if(top.find(original) != top.end()) continue;
-            if(generated.vertices.size() >= maxVertices || generated.vertices.size() >= std::size_t(std::numeric_limits<uint32_t>::max())){
+    for(const FacePatch* selected : chosen){
+        TriangleAttributes sideAttributes = attributesOf(input,selected->triangles.front());
+        sideAttributes.createdBy = 0;
+        std::unordered_map<uint32_t,uint32_t> top;
+        for(std::size_t triangle : selected->triangles){
+            for(int corner = 0; corner < 3; ++corner){
+                const uint32_t original = input.indices[triangle*3+std::size_t(corner)];
+                if(top.find(original) != top.end()) continue;
+                if(generated.vertices.size() >= maxVertices || generated.vertices.size() >= std::size_t(std::numeric_limits<uint32_t>::max())){
+                    error = "extruded mesh exceeds the configured vertex limit"; return false;
+                }
+                MeshVertex vertex = input.vertices[original];
+                vertex.position += selected->normal * settings.distance;
+                if(!finite(vertex.position)){ error = "extrusion produced a non-finite vertex"; return false; }
+                top.emplace(original,uint32_t(generated.vertices.size()));
+                generated.vertices.push_back(vertex);
+            }
+        }
+        for(std::size_t triangle : selected->triangles){
+            const uint32_t a = top.at(input.indices[triangle*3]);
+            const uint32_t b = top.at(input.indices[triangle*3+1]);
+            const uint32_t c = top.at(input.indices[triangle*3+2]);
+            generated.indices.insert(generated.indices.end(),{a,b,c});
+            generated.triangles.push_back(attributesOf(input,triangle));
+        }
+        for(std::size_t edge = 0; edge < selected->boundary.size(); ++edge){
+            const uint32_t a = selected->boundary[edge];
+            const uint32_t b = selected->boundary[(edge+1)%selected->boundary.size()];
+            const glm::vec3 edgeDirection = input.vertices[b].position - input.vertices[a].position;
+            glm::vec3 sideNormal;
+            if(!normalized(glm::cross(edgeDirection,selected->normal),sideNormal)){ error = "extrusion has a degenerate boundary edge"; return false; }
+            if(generated.vertices.size() > maxVertices || maxVertices-generated.vertices.size() < 4){
                 error = "extruded mesh exceeds the configured vertex limit"; return false;
             }
-            MeshVertex vertex = input.vertices[original];
-            vertex.position += selected->normal * settings.distance;
-            if(!finite(vertex.position)){ error = "extrusion produced a non-finite vertex"; return false; }
-            top.emplace(original,uint32_t(generated.vertices.size()));
-            generated.vertices.push_back(vertex);
+            const uint32_t base = uint32_t(generated.vertices.size());
+            const float length = float(distance(input.vertices[a].position,input.vertices[b].position));
+            generated.vertices.push_back({input.vertices[a].position,sideNormal,{0,0}});
+            generated.vertices.push_back({input.vertices[b].position,sideNormal,{length,0}});
+            generated.vertices.push_back({generated.vertices[top.at(b)].position,sideNormal,{length,std::abs(settings.distance)}});
+            generated.vertices.push_back({generated.vertices[top.at(a)].position,sideNormal,{0,std::abs(settings.distance)}});
+            generated.indices.insert(generated.indices.end(),{base,base+1,base+2,base,base+2,base+3});
+            generated.triangles.insert(generated.triangles.end(),{sideAttributes,sideAttributes});
         }
-    }
-    for(std::size_t triangle : selected->triangles){
-        const uint32_t a = top.at(input.indices[triangle*3]);
-        const uint32_t b = top.at(input.indices[triangle*3+1]);
-        const uint32_t c = top.at(input.indices[triangle*3+2]);
-        generated.indices.insert(generated.indices.end(),{a,b,c});
-        generated.triangles.push_back(attributesOf(input,triangle));
-    }
-    for(std::size_t edge = 0; edge < selected->boundary.size(); ++edge){
-        const uint32_t a = selected->boundary[edge];
-        const uint32_t b = selected->boundary[(edge+1)%selected->boundary.size()];
-        const glm::vec3 edgeDirection = input.vertices[b].position - input.vertices[a].position;
-        glm::vec3 sideNormal;
-        if(!normalized(glm::cross(edgeDirection,selected->normal),sideNormal)){ error = "extrusion has a degenerate boundary edge"; return false; }
-        if(generated.vertices.size() > maxVertices || maxVertices-generated.vertices.size() < 4){
-            error = "extruded mesh exceeds the configured vertex limit"; return false;
-        }
-        const uint32_t base = uint32_t(generated.vertices.size());
-        const float length = float(distance(input.vertices[a].position,input.vertices[b].position));
-        generated.vertices.push_back({input.vertices[a].position,sideNormal,{0,0}});
-        generated.vertices.push_back({input.vertices[b].position,sideNormal,{length,0}});
-        generated.vertices.push_back({generated.vertices[top.at(b)].position,sideNormal,{length,std::abs(settings.distance)}});
-        generated.vertices.push_back({generated.vertices[top.at(a)].position,sideNormal,{0,std::abs(settings.distance)}});
-        generated.indices.insert(generated.indices.end(),{base,base+1,base+2,base,base+2,base+3});
-        generated.triangles.insert(generated.triangles.end(),{sideAttributes,sideAttributes});
     }
     if(generated.empty()){ error = "extrusion produced no geometry"; return false; }
     output = std::move(generated);
@@ -1511,6 +1589,128 @@ bool copyToPoints(const MeshData& instance, const std::vector<glm::vec3>& points
     return true;
 }
 
+bool smoothCurve(const Curve& input, uint32_t subdivisions, Curve& output, std::string& error){
+    const std::size_t count = input.points.size();
+    if(count < (input.closed ? 3u : 2u)){ error = "curve smoothing needs at least two points (three when closed)"; return false; }
+    if(subdivisions < 1 || subdivisions > 32){ error = "curve smoothing subdivisions must be between 1 and 32"; return false; }
+    const std::size_t segments = input.closed ? count : count - 1;
+    if(segments * subdivisions + 1 > 65536){ error = "smoothed curve exceeds the point limit"; return false; }
+    for(const glm::vec3& point : input.points) if(!finite(point)){ error = "curve control points must be finite"; return false; }
+    auto at = [&](std::ptrdiff_t index){
+        if(input.closed) return input.points[std::size_t((index % std::ptrdiff_t(count) + std::ptrdiff_t(count)) % std::ptrdiff_t(count))];
+        return input.points[std::size_t(std::clamp<std::ptrdiff_t>(index, 0, std::ptrdiff_t(count) - 1))];
+    };
+    Curve generated;
+    generated.closed = input.closed;
+    generated.points.reserve(segments * subdivisions + 1);
+    for(std::size_t segment = 0; segment < segments; ++segment){
+        const glm::vec3 p0 = at(std::ptrdiff_t(segment) - 1), p1 = at(std::ptrdiff_t(segment));
+        const glm::vec3 p2 = at(std::ptrdiff_t(segment) + 1), p3 = at(std::ptrdiff_t(segment) + 2);
+        for(uint32_t step = 0; step < subdivisions; ++step){
+            const float t = float(step) / float(subdivisions), t2 = t * t, t3 = t2 * t;
+            generated.points.push_back(0.5f * (2.0f * p1 + (p2 - p0) * t + (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2 +
+                                               (3.0f * p1 - p0 - 3.0f * p2 + p3) * t3));
+        }
+    }
+    if(!input.closed) generated.points.push_back(input.points.back());
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool makeCatenary(const CatenaryCurveNode& settings, Curve& output, std::string& error){
+    if(!finite(settings.start) || !finite(settings.end) || !finite(settings.sag) || settings.sag < 0.0f ||
+       settings.sag > 10000.0f || settings.samples < 2 || settings.samples > 1024){
+        error = "catenary needs finite end points, a sag of 0 to 10000 m, and 2 to 1024 samples"; return false;
+    }
+    const glm::vec3 chord = settings.end - settings.start;
+    if(glm::dot(chord, chord) <= 1e-8f){ error = "catenary end points must differ"; return false; }
+    const double span = std::sqrt(double(chord.x) * chord.x + double(chord.z) * chord.z);
+    // Normalized drop s(t): 0 at both ends, 1 at mid-span. For a level catenary
+    // y = a cosh(x/a), sag = a (cosh(span / 2a) - 1) fixes a; k = span / a.
+    double k = 0.0;
+    if(span > 1e-6 && settings.sag > 0.0f){
+        double low = span * 1e-4, high = 1e12;
+        for(int i = 0; i < 200; ++i){
+            const double a = std::sqrt(low * high);
+            const double drop = a * (std::cosh(std::min(span / (2.0 * a), 700.0)) - 1.0);
+            if(drop > double(settings.sag)) low = a; else high = a;
+        }
+        k = std::min(span / std::sqrt(low * high), 1400.0);
+    }
+    Curve generated;
+    for(uint32_t i = 0; i < settings.samples; ++i){
+        const double t = double(i) / double(settings.samples - 1);
+        double shape = 4.0 * t * (1.0 - t);
+        if(k > 1e-4) shape = (std::cosh(k * 0.5) - std::cosh(k * (t - 0.5))) / (std::cosh(k * 0.5) - 1.0);
+        glm::vec3 point = settings.start + chord * float(t);
+        if(span > 1e-6) point.y -= settings.sag * float(shape);
+        generated.points.push_back(point);
+    }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
+bool copyAlongCurve(const MeshData& instance, const Curve& curve, const CopyAlongCurveNode& settings,
+                    MeshData& output, std::string& error, std::size_t maxVertices){
+    if(!validMesh(instance)){ error = "copy instance mesh is invalid"; return false; }
+    const std::size_t count = curve.points.size();
+    if(count < 2){ error = "copy along curve needs a curve with at least two points"; return false; }
+    if(!finite(settings.spacing) || settings.spacing < 0.001f || !finite(settings.startOffset) || settings.startOffset < 0.0f ||
+       !finite(settings.rollDegrees) || !finite(settings.alternateRollDegrees) || !finite(settings.referenceUp)){
+        error = "copy along curve settings are invalid"; return false;
+    }
+    glm::vec3 referenceUp;
+    if(!normalized(settings.referenceUp, referenceUp)){ error = "copy along curve reference up is zero"; return false; }
+    struct Segment{ glm::vec3 from, direction; double start, length; };
+    std::vector<Segment> segments;
+    double total = 0.0;
+    const std::size_t segmentCount = curve.closed ? count : count - 1;
+    for(std::size_t i = 0; i < segmentCount; ++i){
+        const glm::vec3 a = curve.points[i], b = curve.points[(i + 1) % count];
+        const double length = distance(a, b);
+        if(length <= pointEpsilon) continue;
+        segments.push_back({a, (b - a) / float(length), total, length});
+        total += length;
+    }
+    if(segments.empty()){ error = "copy along curve needs a curve with length"; return false; }
+    MeshData generated;
+    std::size_t segment = 0;
+    uint32_t copyIndex = 0;
+    for(double position = settings.startOffset; curve.closed ? position < total - 1e-9 : position <= total + 1e-9;
+        position += double(settings.spacing), ++copyIndex){
+        if(copyIndex >= settings.maxCopies){ error = "copy along curve exceeds its copy limit"; return false; }
+        if(generated.vertices.size() + instance.vertices.size() > maxVertices){
+            error = "copied mesh exceeds the configured vertex limit"; return false;
+        }
+        while(segment + 1 < segments.size() && position > segments[segment].start + segments[segment].length) ++segment;
+        const Segment& along = segments[segment];
+        const glm::vec3 origin = along.from + along.direction * float(std::min(position - along.start, along.length));
+        const glm::vec3 x = along.direction;
+        glm::vec3 y;
+        if(!normalized(referenceUp - x * glm::dot(referenceUp, x), y) &&
+           !normalized(glm::vec3(1,0,0) - x * x.x, y)) y = {0.0f, 0.0f, 1.0f};
+        const float roll = float(double(settings.rollDegrees + (copyIndex % 2u ? settings.alternateRollDegrees : 0.0f)) * pi / 180.0);
+        y = rotateAround(y, x, roll);
+        const glm::vec3 z = glm::cross(x, y);
+        const uint32_t base = uint32_t(generated.vertices.size());
+        for(const MeshVertex& vertex : instance.vertices){
+            MeshVertex copy = vertex;
+            copy.position = origin + x * vertex.position.x + y * vertex.position.y + z * vertex.position.z;
+            copy.normal = x * vertex.normal.x + y * vertex.normal.y + z * vertex.normal.z;
+            generated.vertices.push_back(copy);
+        }
+        for(uint32_t index : instance.indices) generated.indices.push_back(base + index);
+        for(std::size_t triangle = 0; triangle < instance.indices.size() / 3; ++triangle)
+            generated.triangles.push_back(attributesOf(instance, triangle));
+    }
+    if(generated.empty()){ error = "copy along curve placed no copies"; return false; }
+    output = std::move(generated);
+    error.clear();
+    return true;
+}
+
 bool makePointPreview(const std::vector<glm::vec3>& points, MeshData& output, std::string& error,
                       std::size_t maxDisplayedPoints, float markerSize, std::size_t maxVertices){
     if(points.empty() || maxDisplayedPoints == 0 || !finite(markerSize) || markerSize <= 0.0f){
@@ -1524,6 +1724,12 @@ bool makePointPreview(const std::vector<glm::vec3>& points, MeshData& output, st
     output = std::move(generated);
     error.clear();
     return true;
+}
+
+uint32_t inputPortCount(const Node& node){
+    uint32_t count = 0;
+    while(count < mergeInputCount && inputType(node, count) != PortType::Invalid) ++count;
+    return count;
 }
 
 ValidationResult validate(const Graph& graph){
@@ -1562,7 +1768,8 @@ ValidationResult validate(const Graph& graph){
         }else if(const auto* primitive = std::get_if<AddPrimitiveNode>(&node.payload)){
             if(!validPrimitiveType(primitive->primitive) || !finite(primitive->size) ||
                primitive->size.x <= 0.0f || primitive->size.y <= 0.0f || primitive->size.z <= 0.0f ||
-               primitive->size.x > 10000.0f || primitive->size.y > 10000.0f || primitive->size.z > 10000.0f)
+               primitive->size.x > 10000.0f || primitive->size.y > 10000.0f || primitive->size.z > 10000.0f ||
+               !finite(primitive->tubeRatio) || primitive->tubeRatio < 0.02f || primitive->tubeRatio > 0.49f)
                 return {false, "primitive settings are invalid"};
         }else if(const auto* move = std::get_if<MoveNode>(&node.payload)){
             if(!finite(move->offset) || std::max({std::abs(move->offset.x),std::abs(move->offset.y),std::abs(move->offset.z)}) > 1000000.0f)
@@ -1581,6 +1788,7 @@ ValidationResult validate(const Graph& graph){
         }else if(const auto* extrude = std::get_if<ExtrudeNode>(&node.payload)){
             if(!finite(extrude->distance) || std::abs(extrude->distance) <= 1e-6f || std::abs(extrude->distance) > 10000.0f)
                 return {false, "extrusion distance must be finite, non-zero, and within range"};
+            if(extrude->useFilter && !validTriangleFilter(extrude->filter)) return {false, "extrusion filter is invalid"};
         }else if(const auto* bevel = std::get_if<BevelNode>(&node.payload)){
             if(!finite(bevel->amount) || bevel->amount <= 0.0f || bevel->amount > 1000.0f ||
                bevel->segments < 1 || bevel->segments > 8)
@@ -1610,6 +1818,22 @@ ValidationResult validate(const Graph& graph){
                !finite(copy->randomScale) || copy->randomScale < 0.0f || copy->randomScale > 0.9f ||
                copy->maxCopies == 0 || copy->maxCopies > 100000)
                 return {false, "copy-to-points settings are invalid"};
+        }else if(const auto* smooth = std::get_if<CurveSmoothNode>(&node.payload)){
+            if(smooth->subdivisions < 1 || smooth->subdivisions > 32)
+                return {false, "curve smoothing subdivisions must be between 1 and 32"};
+        }else if(const auto* catenary = std::get_if<CatenaryCurveNode>(&node.payload)){
+            if(!finite(catenary->start) || !finite(catenary->end) || !finite(catenary->sag) || catenary->sag < 0.0f ||
+               catenary->sag > 10000.0f || catenary->samples < 2 || catenary->samples > 1024 ||
+               glm::dot(catenary->end - catenary->start, catenary->end - catenary->start) <= 1e-8f)
+                return {false, "catenary settings are invalid"};
+        }else if(const auto* along = std::get_if<CopyAlongCurveNode>(&node.payload)){
+            glm::vec3 up;
+            if(!finite(along->spacing) || along->spacing < 0.001f || along->spacing > 10000.0f ||
+               !finite(along->startOffset) || along->startOffset < 0.0f || along->startOffset > 10000.0f ||
+               !finite(along->rollDegrees) || std::abs(along->rollDegrees) > 360.0f ||
+               !finite(along->alternateRollDegrees) || std::abs(along->alternateRollDegrees) > 360.0f ||
+               !normalized(along->referenceUp, up) || along->maxCopies == 0 || along->maxCopies > 100000)
+                return {false, "copy-along-curve settings are invalid"};
         }
         if(!nodeIndex.emplace(node.id, i).second) return {false, "node IDs must be unique"};
         highestNodeId = std::max(highestNodeId, node.id);
@@ -1737,6 +1961,7 @@ EvaluationResult evaluate(const Graph& graph){
             if(std::holds_alternative<SmoothNormalsNode>(node.payload)) return std::string("Smooth Normals");
             if(std::holds_alternative<UVProjectNode>(node.payload)) return std::string("UV Project");
             if(std::holds_alternative<CopyToPointsNode>(node.payload)) return std::string("Copy to Points");
+            if(std::holds_alternative<CopyAlongCurveNode>(node.payload)) return std::string("Copy along Curve");
             return std::string("Node");
         }();
         // Resolves input 0 as a mesh for the single-input mesh operations.
@@ -1757,6 +1982,27 @@ EvaluationResult evaluate(const Graph& graph){
         if(const auto* curve = std::get_if<CurveNode>(&node.payload)){
             curves.emplace(node.id, curve->curve);
             producesMesh = false;
+        }else if(const auto* smoothing = std::get_if<CurveSmoothNode>(&node.payload)){
+            const Link* input = linkInto(node.id, 0);
+            if(!input) return fail("Curve Smooth needs a Curve input");
+            const auto source = curves.find(input->from);
+            if(source == curves.end()) return fail("Curve Smooth input did not produce a curve");
+            Curve smoothed;
+            if(!smoothCurve(source->second, smoothing->subdivisions, smoothed, error)) return fail(error);
+            curves.emplace(node.id, std::move(smoothed));
+            producesMesh = false;
+        }else if(const auto* catenary = std::get_if<CatenaryCurveNode>(&node.payload)){
+            Curve hanging;
+            if(!makeCatenary(*catenary, hanging, error)) return fail(error);
+            curves.emplace(node.id, std::move(hanging));
+            producesMesh = false;
+        }else if(const auto* along = std::get_if<CopyAlongCurveNode>(&node.payload)){
+            if(!meshInput) return fail(meshInputError);
+            const Link* curveLink = linkInto(node.id, 1);
+            if(!curveLink) return fail("Copy along Curve needs a Curve input");
+            const auto curve = curves.find(curveLink->from);
+            if(curve == curves.end()) return fail("Copy along Curve input did not produce a curve");
+            if(!copyAlongCurve(*meshInput, curve->second, *along, produced, error)) return fail(error);
         }else if(const auto* rectangle = std::get_if<RectangleProfileNode>(&node.payload)){
             profiles.emplace(node.id, makeRectangleProfile(rectangle->width, rectangle->height));
             producesMesh = false;

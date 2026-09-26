@@ -13,7 +13,7 @@ namespace Engine::WeaverProcedura{
 
 // Recipe files carry this schema version. Increment it when serialized node
 // payloads or port meanings change.
-constexpr uint32_t graphSchemaVersion = 5;
+constexpr uint32_t graphSchemaVersion = 6;
 using NodeId = uint64_t;
 
 struct Link{
@@ -94,6 +94,33 @@ struct SweepNode{
     SweepSettings settings;
 };
 
+// Curve -> Curve: uniform Catmull-Rom through every control point, so corners
+// round off while the path still passes through the points the user placed.
+struct CurveSmoothNode{
+    uint32_t subdivisions = 8;   // samples per control segment, 1..32
+};
+
+// A hanging rope or chain between two points. sag is the drop below the straight
+// chord at mid-span in meters; the shape is an exact catenary for level ends.
+struct CatenaryCurveNode{
+    glm::vec3 start{0.0f, 2.0f, 0.0f};
+    glm::vec3 end{4.0f, 2.0f, 0.0f};
+    float sag = 0.5f;
+    uint32_t samples = 32;
+};
+
+// Mesh + Curve -> Mesh: copies spaced along the curve by arc length. The instance's
+// +X follows the tangent and +Y stays toward referenceUp. Odd copies add
+// alternateRollDegrees around the tangent (90 makes a chain).
+struct CopyAlongCurveNode{
+    float spacing = 0.5f;
+    float startOffset = 0.0f;
+    float rollDegrees = 0.0f;
+    float alternateRollDegrees = 0.0f;
+    glm::vec3 referenceUp{0.0f, 1.0f, 0.0f};
+    uint32_t maxCopies = 10000;
+};
+
 // A regular XZ lattice. rows/columns describe cells, so it contains
 // (cellsZ + 1) * (cellsX + 1) editable points.
 struct GridNode{
@@ -126,11 +153,14 @@ struct InteriorBlockoutNode{
     float doorWidth = 0.9f;
 };
 
-enum class PrimitiveType : uint8_t{ Cube, Plane, Sphere, Pyramid, Capsule };
+enum class PrimitiveType : uint8_t{ Cube, Plane, Sphere, Pyramid, Capsule, Cylinder, Torus };
 
+// Every primitive fits a unit box before size scales it. Cylinder: axis Y, radius 0.5.
+// Torus: ring in XZ with outer radius 0.5; tubeRatio is the tube radius as a fraction of it.
 struct AddPrimitiveNode{
     PrimitiveType primitive = PrimitiveType::Cube;
     glm::vec3 size{1.0f};
+    float tubeRatio = 0.25f;
 };
 
 struct MoveNode{
@@ -147,10 +177,22 @@ struct ScaleNode{
     glm::vec3 pivot{0.0f};
 };
 
-// faceIndex selects a triangle as the seed for its connected coplanar face.
+// Chooses triangles by semantic name and/or facing direction. An empty semantic
+// and useDirection == false select every triangle.
+struct TriangleFilter{
+    std::string semantic;
+    bool useDirection = false;
+    glm::vec3 direction{0.0f, 1.0f, 0.0f};
+    float maxAngleDegrees = 30.0f;
+};
+
+// faceIndex selects a triangle as the seed for its connected coplanar face. With
+// useFilter, every flat face whose triangles match the filter moves along its own normal.
 struct ExtrudeNode{
     uint32_t faceIndex = 0;
     float distance = 1.0f;
+    bool useFilter = false;
+    TriangleFilter filter;
 };
 
 // Inset each planar face and create a segmented chamfer around its boundary.
@@ -162,15 +204,6 @@ struct BevelNode{
 // Joins up to mergeInputCount meshes; any subset of the inputs may be connected.
 constexpr uint32_t mergeInputCount = 8;
 struct MergeNode{};
-
-// Chooses triangles by semantic name and/or facing direction. An empty semantic
-// and useDirection == false select every triangle.
-struct TriangleFilter{
-    std::string semantic;
-    bool useDirection = false;
-    glm::vec3 direction{0.0f, 1.0f, 0.0f};
-    float maxAngleDegrees = 30.0f;
-};
 
 struct SetSemanticNode{
     std::string semantic = "wall_exterior";
@@ -215,7 +248,8 @@ using NodePayload = std::variant<std::monostate, CurveNode, RectangleProfileNode
                                  InteriorBlockoutNode, AddPrimitiveNode, MoveNode, RotateNode,
                                  ScaleNode, ExtrudeNode, BevelNode, MeshToPointNode,
                                  PointFromMeshNode, CircleProfileNode, MergeNode, SetSemanticNode,
-                                 SetMaterialNode, SmoothNormalsNode, UVProjectNode, CopyToPointsNode>;
+                                 SetMaterialNode, SmoothNormalsNode, UVProjectNode, CopyToPointsNode,
+                                 CurveSmoothNode, CatenaryCurveNode, CopyAlongCurveNode>;
 
 struct Node{
     NodeId id = 0;
@@ -261,6 +295,8 @@ struct PointGrid{
 
 NodeId addNode(Graph& graph, NodePayload payload, float editorX = 0.0f, float editorY = 0.0f);
 ValidationResult validate(const Graph& graph);
+// Number of input ports a node has (Merge 8, Sweep and the Copy nodes 2, sources 0).
+uint32_t inputPortCount(const Node& node);
 EvaluationResult evaluate(const Graph& graph);
 
 bool makeGrid(const GridNode& settings, PointGrid& output, std::string& error);
@@ -293,6 +329,10 @@ bool projectUVs(const MeshData& input, float tileSize, MeshData& output, std::st
 bool copyToPoints(const MeshData& instance, const std::vector<glm::vec3>& points,
                   const std::vector<glm::vec3>& normals, const CopyToPointsNode& settings,
                   MeshData& output, std::string& error, std::size_t maxVertices = 2'000'000);
+bool smoothCurve(const Curve& input, uint32_t subdivisions, Curve& output, std::string& error);
+bool makeCatenary(const CatenaryCurveNode& settings, Curve& output, std::string& error);
+bool copyAlongCurve(const MeshData& instance, const Curve& curve, const CopyAlongCurveNode& settings,
+                    MeshData& output, std::string& error, std::size_t maxVertices = 2'000'000);
 bool makePointPreview(const std::vector<glm::vec3>& points, MeshData& output, std::string& error,
                       std::size_t maxDisplayedPoints = 20'000, float markerSize = 0.06f,
                       std::size_t maxVertices = 1'000'000);

@@ -300,6 +300,7 @@
         std::string startProject;             //loom projekt.usda otvara projekt
         std::string shotPath, shotResult, shotSave, shotMotion;
         std::string shotModel;                //--model: glTF na mjestu pogleda
+        std::string shotRecipe;               //--recept: .loomrecipe.json u Procedura panel, preview uokviren
         bool shotMascott = false;             //--mascott: lik iz desnog klika (HumanoidMascott)
         std::vector<std::string> shotTools;   //--tool: model uvezen kao tool/weapon (velicina iz imena)
         std::vector<std::string> shotMotionText;  //--tekst: panel pokreta otvoren, jedna radnja po zastavici
@@ -327,6 +328,7 @@
             //--mascott: isti lik kao desni klik > HumanoidMascott (addHumanoidMascott), s istim uvozom -
             //izvor istine za testove, a ne rucno odabrani .glb
             else if(argument == "--mascott") shotMascott = true;
+            else if(argument == "--recept" && i + 1 < argc) shotRecipe = argv[++i];
             else if(argument == "--tool" && i + 1 < argc) shotTools.push_back(argv[++i]);   //kao Import as Tool / Weapon
             else if(argument == "--tekst" && i + 1 < argc) shotMotionText.push_back(argv[++i]);
             else if(argument == "--ploha" && i + 4 < argc){
@@ -2142,7 +2144,10 @@
         };
         auto addHumanoidMascott = [&](){
             const fs::path root(LOOM_ROOT_DIR);
-            fs::path mascot = root / "tools/autorig/outputs/mascot-03/rigged.glb";
+            //Manny profil s hand rigom (tools/autorig/hand_rig.py) ima prednost: UE5 imena i hijerarhija
+            //(retarget na Manny), prsti se savijaju cisto prema dlanu. Stari UniRig-52 mascot je rezerva
+            fs::path mascot = root / "tools/autorig/outputs/mascot-manny/rigged.glb";
+            if(std::error_code probe; !fs::is_regular_file(mascot, probe)) mascot = root / "tools/autorig/outputs/mascot-03/rigged.glb";
             std::error_code error;
             if(!fs::is_regular_file(mascot, error)){
                 mascot.clear();
@@ -2354,6 +2359,22 @@
         if(shotMascott){
             addHumanoidMascott();
             std::printf("%s\n", message.c_str());
+        }
+        if(!shotRecipe.empty()){
+            proceduraPanel.recipeFilePath = shotRecipe;
+            Loom::WeaverProceduraUi::loadRecipeFile(proceduraPanel);
+            proceduraPanel.open = true;
+            if(proceduraPanel.previewReady && !proceduraPanel.previewMesh.vertices.empty()){
+                glm::vec3 low(std::numeric_limits<float>::max()), high(std::numeric_limits<float>::lowest());
+                for(const Engine::WeaverProcedura::MeshVertex& vertex : proceduraPanel.previewMesh.vertices){
+                    low = glm::min(low, vertex.position);
+                    high = glm::max(high, vertex.position);
+                }
+                view.orbit.target = (low + high) * 0.5f;
+                view.orbit.distance = std::clamp(glm::length(high - low) * 1.6f, 1.0f, 100000.0f);
+                view.lookThrough = Warp::None;
+            }
+            std::printf("recipe: %s\n", proceduraPanel.recipeStatus.c_str());
         }
         for(const std::string& toolPath : shotTools){
             int w = 0, h = 0;

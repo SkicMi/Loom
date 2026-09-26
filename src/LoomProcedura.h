@@ -39,6 +39,7 @@ struct WeaverProceduraPanelState{
     int selectedControlPoint = -1;
     Engine::WeaverProcedura::NodeId contextCurveNodeId = 0;
     int contextControlPoint = -1;
+    int connectFrom = 0, connectTo = 0, connectPort = 0, removeLink = 0;   //odabir u FLOW i CONNECT
 };
 
 namespace WeaverProceduraUi{
@@ -73,6 +74,9 @@ inline std::string nodeType(const Engine::WeaverProcedura::Node& node){
     if(std::holds_alternative<Proc::SmoothNormalsNode>(node.payload)) return "Smooth Normals";
     if(std::holds_alternative<Proc::UVProjectNode>(node.payload)) return "UV Project";
     if(std::holds_alternative<Proc::CopyToPointsNode>(node.payload)) return "Copy to Points";
+    if(std::holds_alternative<Proc::CurveSmoothNode>(node.payload)) return "Curve Smooth";
+    if(std::holds_alternative<Proc::CatenaryCurveNode>(node.payload)) return "Catenary curve";
+    if(std::holds_alternative<Proc::CopyAlongCurveNode>(node.payload)) return "Copy along Curve";
     return "Unknown node";
 }
 
@@ -107,7 +111,8 @@ inline std::string nodeSummary(const Engine::WeaverProcedura::Node& node){
     if(const auto* scale = std::get_if<Proc::ScaleNode>(&node.payload))
         return "factor " + formatSize(scale->factor.x) + ", " + formatSize(scale->factor.y) + ", " + formatSize(scale->factor.z);
     if(const auto* extrude = std::get_if<Proc::ExtrudeNode>(&node.payload))
-        return "seed triangle " + std::to_string(extrude->faceIndex) + " / " + formatSize(extrude->distance) + " m";
+        return (extrude->useFilter ? std::string("filtered faces") : "seed triangle " + std::to_string(extrude->faceIndex)) +
+               " / " + formatSize(extrude->distance) + " m";
     if(const auto* bevel = std::get_if<Proc::BevelNode>(&node.payload))
         return formatSize(bevel->amount) + " m / " + std::to_string(bevel->segments) + " segments";
     if(std::holds_alternative<Proc::MeshToPointNode>(node.payload)) return "unique mesh vertex positions";
@@ -131,6 +136,13 @@ inline std::string nodeSummary(const Engine::WeaverProcedura::Node& node){
         return "box / " + formatSize(uv->tileSize) + " m tiles";
     if(const auto* copy = std::get_if<Proc::CopyToPointsNode>(&node.payload))
         return std::string(copy->alignToNormal ? "aligned" : "upright") + " / scale " + formatSize(copy->scale);
+    if(const auto* smooth = std::get_if<Proc::CurveSmoothNode>(&node.payload))
+        return std::to_string(smooth->subdivisions) + " samples per segment";
+    if(const auto* catenary = std::get_if<Proc::CatenaryCurveNode>(&node.payload))
+        return "sag " + formatSize(catenary->sag) + " m / " + std::to_string(catenary->samples) + " samples";
+    if(const auto* along = std::get_if<Proc::CopyAlongCurveNode>(&node.payload))
+        return "every " + formatSize(along->spacing) + " m" +
+               (along->alternateRollDegrees != 0.0f ? " / alternate " + formatSize(along->alternateRollDegrees) + "°" : "");
     return {};
 }
 
@@ -150,6 +162,9 @@ inline std::string inputName(const Engine::WeaverProcedura::Node& node, uint32_t
         return "Mesh input " + std::to_string(port + 1);
     if(std::holds_alternative<Engine::WeaverProcedura::CopyToPointsNode>(node.payload))
         return port == 0 ? "Instance mesh" : "Points input";
+    if(std::holds_alternative<Engine::WeaverProcedura::CopyAlongCurveNode>(node.payload))
+        return port == 0 ? "Instance mesh" : "Curve input";
+    if(std::holds_alternative<Engine::WeaverProcedura::CurveSmoothNode>(node.payload)) return "Curve input";
     if(std::holds_alternative<Engine::WeaverProcedura::SetGridPointHeightNode>(node.payload) ||
        std::holds_alternative<Engine::WeaverProcedura::GridToMeshNode>(node.payload))
         return "Point Grid input";
@@ -216,7 +231,8 @@ inline bool isGeometryOutputNode(const Engine::WeaverProcedura::Node& node){
            std::holds_alternative<Proc::SetMaterialNode>(node.payload) ||
            std::holds_alternative<Proc::SmoothNormalsNode>(node.payload) ||
            std::holds_alternative<Proc::UVProjectNode>(node.payload) ||
-           std::holds_alternative<Proc::CopyToPointsNode>(node.payload);
+           std::holds_alternative<Proc::CopyToPointsNode>(node.payload) ||
+           std::holds_alternative<Proc::CopyAlongCurveNode>(node.payload);
 }
 
 inline Engine::WeaverProcedura::Node* terminalGeometryNode(WeaverProceduraPanelState& state){
@@ -260,6 +276,23 @@ inline bool filterControls(Treadle::Ui& ui, Engine::WeaverProcedura::TriangleFil
         changed |= ui.slider("Max angle", &filter.maxAngleDegrees, 0.0f, 90.0f, "°");
     }
     return changed;
+}
+
+// Adds (or replaces the link on) one input port; validate() decides whether the types
+// match, the port exists, and the graph stays acyclic.
+inline bool connectNodes(WeaverProceduraPanelState& state, Engine::WeaverProcedura::NodeId from,
+                         Engine::WeaverProcedura::NodeId to, uint32_t port){
+    namespace Proc = Engine::WeaverProcedura;
+    Proc::Graph candidate = state.graph;
+    candidate.links.erase(std::remove_if(candidate.links.begin(), candidate.links.end(),
+        [&](const Proc::Link& link){ return link.to == to && link.toPort == port; }), candidate.links.end());
+    candidate.links.push_back({from, 0, to, port});
+    const Proc::ValidationResult valid = Proc::validate(candidate);
+    if(!valid){ state.recipeStatus = "Cannot connect: " + valid.error; return false; }
+    state.graph = std::move(candidate);
+    markGraphChanged(state);
+    state.recipeStatus.clear();
+    return true;
 }
 
 inline bool appendPrimitiveNode(WeaverProceduraPanelState& state){
@@ -446,6 +479,60 @@ inline bool createRoadExample(WeaverProceduraPanelState& state){
     state.graphDirty = true;
     state.previewError.clear();
     return evaluateGraph(state);
+}
+
+// Replaces the panel graph with a finished starter recipe and previews it.
+inline bool installExample(WeaverProceduraPanelState& state, Engine::WeaverProcedura::Graph graph, const std::string& name){
+    state.graph = std::move(graph);
+    state.recipeName = name;
+    state.expandedNodes.clear();
+    for(const Engine::WeaverProcedura::Node& node : state.graph.nodes) state.expandedNodes[node.id] = true;
+    state.selectedCurveNodeId = 0;
+    state.selectedControlPoint = -1;
+    state.contextCurveNodeId = 0;
+    state.contextControlPoint = -1;
+    state.graphDirty = true;
+    state.previewError.clear();
+    return evaluateGraph(state);
+}
+
+// Catenary -> Circle Profile -> Sweep, tagged as rope fiber.
+inline bool createRopeExample(WeaverProceduraPanelState& state){
+    namespace Proc = Engine::WeaverProcedura;
+    Proc::Graph graph;
+    const Proc::NodeId path = Proc::addNode(graph, Proc::CatenaryCurveNode{{-3,3,0},{3,2.5f,0},0.8f,48}, 24.0f, 88.0f);
+    const Proc::NodeId profile = Proc::addNode(graph, Proc::CircleProfileNode{0.03f,10}, 24.0f, 250.0f);
+    Proc::SweepNode sweep;
+    sweep.settings.sampleSpacing = 0.1f;
+    const Proc::NodeId mesh = Proc::addNode(graph, sweep, 280.0f, 170.0f);
+    Proc::SetSemanticNode tag; tag.semantic = "rope";
+    const Proc::NodeId tagged = Proc::addNode(graph, tag, 520.0f, 170.0f);
+    Proc::SetMaterialNode paint; paint.material = "rope_fiber";
+    const Proc::NodeId painted = Proc::addNode(graph, paint, 760.0f, 170.0f);
+    graph.links = {{path,0,mesh,0},{profile,0,mesh,1},{mesh,0,tagged,0},{tagged,0,painted,0}};
+    return installExample(state, std::move(graph), "Hanging Rope");
+}
+
+// Torus link copied along a catenary, every other link rolled 90 degrees.
+inline bool createChainExample(WeaverProceduraPanelState& state){
+    namespace Proc = Engine::WeaverProcedura;
+    Proc::Graph graph;
+    const Proc::NodeId path = Proc::addNode(graph, Proc::CatenaryCurveNode{{-3,3,0},{3,3,0},1.0f,96}, 24.0f, 88.0f);
+    Proc::AddPrimitiveNode link;
+    link.primitive = Proc::PrimitiveType::Torus;
+    link.size = {0.16f, 0.16f, 0.10f};
+    link.tubeRatio = 0.22f;
+    const Proc::NodeId linkMesh = Proc::addNode(graph, link, 24.0f, 250.0f);
+    Proc::CopyAlongCurveNode along;
+    along.spacing = 0.085f;   // just under the link's inner length, so neighbours interlock
+    along.alternateRollDegrees = 90.0f;
+    const Proc::NodeId chain = Proc::addNode(graph, along, 280.0f, 170.0f);
+    Proc::SetSemanticNode tag; tag.semantic = "chain_link";
+    const Proc::NodeId tagged = Proc::addNode(graph, tag, 520.0f, 170.0f);
+    Proc::SetMaterialNode paint; paint.material = "steel_chain";
+    const Proc::NodeId painted = Proc::addNode(graph, paint, 760.0f, 170.0f);
+    graph.links = {{linkMesh,0,chain,0},{path,0,chain,1},{chain,0,tagged,0},{tagged,0,painted,0}};
+    return installExample(state, std::move(graph), "Hanging Chain");
 }
 
 inline bool createGridExample(WeaverProceduraPanelState& state){
@@ -667,6 +754,9 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
         if(ui.primaryButton("Create hallway + rooms")) Panel::createInteriorExample(state);
         if(ui.button("Create raised grid surface")) Panel::createGridExample(state);
         if(ui.button("Create road sweep")) Panel::createRoadExample(state);
+        const int hanging = ui.buttonRow({"Create rope","Create chain"});
+        if(hanging == 0) Panel::createRopeExample(state);
+        else if(hanging == 1) Panel::createChainExample(state);
         ui.separator();
         ui.caption("START A MESH RECIPE");
         ui.hint("Build one primitive, then chain mesh operations onto it.");
@@ -710,6 +800,37 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
             const std::string targetPort = target ? Panel::inputName(*target, link.toPort) : "Input";
             ui.value(Panel::nodeLabel(state.graph, link.from),
                      Panel::nodeLabel(state.graph, link.to) + " / " + targetPort);
+        }
+        if(!state.graph.links.empty()){
+            std::vector<std::string> linkNames;
+            for(const Proc::Link& link : state.graph.links)
+                linkNames.push_back(Panel::nodeLabel(state.graph, link.from) + " -> " + Panel::nodeLabel(state.graph, link.to));
+            state.removeLink = std::clamp(state.removeLink, 0, int(linkNames.size()) - 1);
+            ui.choice("Link", linkNames, &state.removeLink);
+            if(ui.button("Remove link")){
+                state.graph.links.erase(state.graph.links.begin() + state.removeLink);
+                Panel::markGraphChanged(state);
+            }
+        }
+        if(state.graph.nodes.size() >= 2){
+            ui.caption("CONNECT");
+            std::vector<std::string> nodeNames;
+            for(const Proc::Node& node : state.graph.nodes) nodeNames.push_back(Panel::nodeLabel(state.graph, node.id));
+            state.connectFrom = std::clamp(state.connectFrom, 0, int(nodeNames.size()) - 1);
+            state.connectTo = std::clamp(state.connectTo, 0, int(nodeNames.size()) - 1);
+            ui.choice("From", nodeNames, &state.connectFrom);
+            ui.choice("To", nodeNames, &state.connectTo);
+            const Proc::Node& target = state.graph.nodes[std::size_t(state.connectTo)];
+            const uint32_t ports = Proc::inputPortCount(target);
+            if(ports == 0) ui.hint("This node has no inputs.");
+            else{
+                std::vector<std::string> portNames;
+                for(uint32_t port = 0; port < ports; ++port) portNames.push_back(Panel::inputName(target, port));
+                state.connectPort = std::clamp(state.connectPort, 0, int(ports) - 1);
+                ui.choice("Input", portNames, &state.connectPort);
+                if(ui.button("Connect"))
+                    Panel::connectNodes(state, state.graph.nodes[std::size_t(state.connectFrom)].id, target.id, uint32_t(state.connectPort));
+            }
         }
 
         ui.separator();
@@ -800,7 +921,7 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                 changed |= ui.slider("Door width", &interior->doorWidth, 0.2f, maxDoorWidth, "m");
                 changed |= ui.slider("Floor thickness", &interior->floorThickness, 0.05f, 0.5f, "m");
             }else if(auto* primitive = std::get_if<Proc::AddPrimitiveNode>(&node.payload)){
-                const std::vector<std::string> primitiveOptions = {"Cube","Plane","Sphere","Pyramid","Capsule"};
+                const std::vector<std::string> primitiveOptions = {"Cube","Plane","Sphere","Pyramid","Capsule","Cylinder","Torus"};
                 int selected = int(primitive->primitive);
                 if(ui.choice("Primitive",primitiveOptions,&selected) && selected >= 0 && selected < int(primitiveOptions.size())){
                     primitive->primitive = Proc::PrimitiveType(selected);
@@ -810,6 +931,8 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                 if(primitive->primitive != Proc::PrimitiveType::Plane)
                     changed |= ui.slider("Size Y",&primitive->size.y,0.1f,20.0f,"m");
                 else ui.hint("Plane lies flat on XZ and has no Y thickness.");
+                if(primitive->primitive == Proc::PrimitiveType::Torus)
+                    changed |= ui.slider("Tube ratio",&primitive->tubeRatio,0.02f,0.49f);
                 changed |= ui.slider("Size Z",&primitive->size.z,0.1f,20.0f,"m");
             }else if(auto* move = std::get_if<Proc::MoveNode>(&node.payload)){
                 changed |= ui.slider("Move X",&move->offset.x,-20.0f,20.0f,"m");
@@ -837,7 +960,10 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                     changed = true;
                 }
                 changed |= ui.slider("Extrude distance",&extrude->distance,-10.0f,10.0f,"m");
-                ui.hint("The seed triangle selects its connected coplanar face.");
+                changed |= ui.checkbox("Select faces by filter",&extrude->useFilter);
+                if(extrude->useFilter) changed |= Panel::filterControls(ui,extrude->filter);
+                ui.hint(extrude->useFilter ? "Every flat face matching the filter moves along its own normal."
+                                           : "The seed triangle selects its connected coplanar face.");
             }else if(auto* bevel = std::get_if<Proc::BevelNode>(&node.payload)){
                 changed |= ui.slider("Bevel amount",&bevel->amount,0.01f,0.5f,"m");
                 const std::vector<std::string> segmentOptions = {"1","2","3","4","6","8"};
@@ -885,6 +1011,21 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                 changed |= ui.slider("Scale",&copy->scale,0.01f,10.0f);
                 changed |= ui.slider("Random yaw",&copy->randomYawDegrees,0.0f,180.0f,"°");
                 changed |= ui.slider("Random scale",&copy->randomScale,0.0f,0.9f);
+            }else if(auto* smooth = std::get_if<Proc::CurveSmoothNode>(&node.payload)){
+                float samples = float(smooth->subdivisions);
+                if(ui.slider("Samples per segment",&samples,1.0f,32.0f)){ smooth->subdivisions = uint32_t(std::lround(samples)); changed = true; }
+            }else if(auto* catenary = std::get_if<Proc::CatenaryCurveNode>(&node.payload)){
+                changed |= ui.slider("Start X",&catenary->start.x,-20.0f,20.0f,"m");
+                changed |= ui.slider("Start Y",&catenary->start.y,-10.0f,20.0f,"m");
+                changed |= ui.slider("End X",&catenary->end.x,-20.0f,20.0f,"m");
+                changed |= ui.slider("End Y",&catenary->end.y,-10.0f,20.0f,"m");
+                changed |= ui.slider("End Z",&catenary->end.z,-20.0f,20.0f,"m");
+                changed |= ui.slider("Sag",&catenary->sag,0.0f,10.0f,"m");
+            }else if(auto* along = std::get_if<Proc::CopyAlongCurveNode>(&node.payload)){
+                changed |= ui.slider("Spacing",&along->spacing,0.01f,10.0f,"m");
+                changed |= ui.slider("Start offset",&along->startOffset,0.0f,10.0f,"m");
+                changed |= ui.slider("Roll",&along->rollDegrees,-180.0f,180.0f,"°");
+                changed |= ui.slider("Alternate roll",&along->alternateRollDegrees,-180.0f,180.0f,"°");
             }
         }
         if(changed){
