@@ -275,6 +275,7 @@
         std::string startProject;             //loom projekt.usda otvara projekt
         std::string shotPath, shotResult, shotSave, shotMotion;
         std::string shotModel;                //--model: glTF na mjestu pogleda
+        bool shotMascott = false;             //--mascott: lik iz desnog klika (HumanoidMascott)
         std::vector<std::string> shotMotionText;  //--tekst: panel pokreta otvoren, jedna radnja po zastavici
         float shotSurface[4] = {0, 0, 0, 0};  //--ploha x y sirina visina: pravokutnik u pogledu, pa kocka na plohu
         bool shotSurfaceWanted = false;
@@ -291,6 +292,9 @@
             else if(argument == "--rotacija") shotRotate = true;
             else if(argument == "--pokret" && i + 1 < argc) shotMotion = argv[++i];
             else if(argument == "--model" && i + 1 < argc) shotModel = argv[++i];
+            //--mascott: isti lik kao desni klik > HumanoidMascott (addHumanoidMascott), s istim uvozom -
+            //izvor istine za testove, a ne rucno odabrani .glb
+            else if(argument == "--mascott") shotMascott = true;
             else if(argument == "--tekst" && i + 1 < argc) shotMotionText.push_back(argv[++i]);
             else if(argument == "--ploha" && i + 4 < argc){
                 for(int k = 0; k < 4; ++k) shotSurface[k] = float(std::atof(argv[++i]));
@@ -1953,6 +1957,10 @@
                             surfaceTool.fit.normal.x, surfaceTool.fit.normal.y, surfaceTool.fit.normal.z);
             }
             focus = Focus::Entity;
+        }
+        if(shotMascott){
+            addHumanoidMascott();
+            std::printf("%s\n", message.c_str());
         }
         if(!shotMotion.empty()){
             // For command-line previews, --kadar selects the displayed frame. Place the clip at
