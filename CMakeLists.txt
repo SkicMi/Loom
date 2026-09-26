@@ -88,6 +88,27 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(VulkanHeaders glfw glm VulkanMemoryAllocator)
 
+# Jolt Physics - collideri (predmeti u ruci, prsti oko drske). Samo biblioteka: bez primjera,
+#   testova i vlastitih zastavica prevoditelja (OVERRIDE_CXX_FLAGS OFF), da ne dira nase postavke.
+set(TARGET_UNIT_TESTS          OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD         OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST    OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES             OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER              OFF CACHE BOOL "" FORCE)
+set(ENABLE_ALL_WARNINGS        OFF CACHE BOOL "" FORCE)
+set(OVERRIDE_CXX_FLAGS         OFF CACHE BOOL "" FORCE)
+set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    JoltPhysics
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG        v5.2.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  Build
+)
+FetchContent_MakeAvailable(JoltPhysics)
+
 # ----------------------------------------------------------------------------
 # Slang shader compiler
 #   Ako "slangc" postoji na sustavu, koristi se on. Inace se skida sluzbeni

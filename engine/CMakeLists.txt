@@ -61,6 +61,17 @@ target_include_directories(Engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 find_package(Threads REQUIRED)
 target_link_libraries(Engine PRIVATE Threads::Threads)
 
+# Jolt Physics (korijenski CMakeLists ga dovlaci) u ZASEBNOJ biblioteci. Jolt nosi javne zastavice
+# (-mavx2 -mfma -mfpmath=sse); da ih Engine vidi, FMA bi promijenio zadnji bit solvea i zlatni
+# testovi (test_bundle, test_match_graph) bi pali. EnginePhysics ga linka PRIVATE, pa do Enginea
+# dolazi samo kao biblioteka za linker, bez ijedne zastavice prevoditelja
+if(TARGET Jolt)
+    add_library(EnginePhysics STATIC src/Engine/Physics.cpp)
+    target_include_directories(EnginePhysics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(EnginePhysics PUBLIC glm::glm PRIVATE Jolt)
+    target_link_libraries(Engine PUBLIC EnginePhysics)
+endif()
+
 # glm je PUBLIC jer ga Engineovi headeri koriste u potpisima (vec3, quat)
 target_link_libraries(Engine PUBLIC glm::glm)
 
