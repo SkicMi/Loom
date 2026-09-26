@@ -22,3 +22,6 @@ build-*/
 unsloth_compiled_cache/
 # OIDN biblioteke (tools/oidn/fetch.sh)
 tools/oidn/lib/
+
+# Izlaz rendera iz editora (Render F12, zadana mapa uz projekt)
+render/
