@@ -194,6 +194,12 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
         nodes.push_back(glm::vec4(n.min, bitsToFloat(n.leftOrFirst)));
         nodes.push_back(glm::vec4(n.max, bitsToFloat(n.count)));
     }
+    //Scena bez trokuta (samo magla, nebo): oznaka prazne scene za shader (TracerCore emptyScene) -
+    //inace obilazak cita korijen iz praznog spremnika i ide izvan njega (DeviceLost na NVIDIA-i)
+    if(nodes.empty()){
+        nodes.push_back(glm::vec4(0.0f, 0.0f, 0.0f, bitsToFloat(0xFFFFFFFFu)));
+        nodes.push_back(glm::vec4(0.0f, 0.0f, 0.0f, bitsToFloat(0u)));
+    }
     std::vector<uint32_t> slotOf(world.triangles.size(), None);
     std::vector<glm::vec4> triangles;
     triangles.reserve(prepared.size() * 3);
@@ -561,7 +567,8 @@ uint32_t GpuTracer::record(uint32_t rows){
     while(rows > 0 && !finished()){
         const uint32_t count = chunk();
         const bool restir = sample < settings.restirSamples;
-        const uint32_t band = std::min(std::max(1u, rows / count), size[1] - row);
+        //Pojas je cijeli broj grupa (8 redaka) osim na dnu slike - inace zadnje grupe imaju prazne trake
+        const uint32_t band = std::min((std::max(1u, rows / count) + 7u) / 8u * 8u, size[1] - row);
         TracePush push{sample, row, band, (profiling ? 1u : 0u) | (restir ? 4u : 0u), count};
         loom.renderer.dispatch(*buffers->trace, (size[0] + 7) / 8, (band + 7) / 8, 1, &push, sizeof(push));
         row += band;
@@ -777,7 +784,11 @@ Tracer::Frame GpuTracer::readFrame(bool denoise){
 void GpuTracer::renderAll(uint32_t rowsPerFrame, const std::function<bool(uint32_t)>& onSample){
     //Bez zadane velicine: pola sekunde posla po predaji, izmjereno na prvim kadrovima. Dispatch
     //dulji od ~2 s Windows proglasi zaglavljenim (TDR), a kraci od par ms trosi vrijeme na predaju
-    uint32_t rows = rowsPerFrame ? rowsPerFrame : std::max(1u, size[1] / 4);
+    //Prilagodljivi broj redaka je VISEKRATNIK VISINE GRUPE (8): inace zadnji red grupa u predaji ima
+    //trake bez piksela, koje u valu stoje prazne (na RTX 5070 je vrijeme dalo npr. 37 redaka - 99 %
+    //aktivnih traka na potpuno ravnoj sceni, i to je stvarno izgubljen rad kartice)
+    auto wholeGroups = [](double value){ return std::max(8u, uint32_t(std::llround(value / 8.0)) * 8u); };
+    uint32_t rows = rowsPerFrame ? rowsPerFrame : wholeGroups(double(size[1]) / 4.0);
     const bool adaptive = rowsPerFrame == 0;
     while(!finished()){
         const auto start = std::chrono::steady_clock::now();
@@ -789,7 +800,7 @@ void GpuTracer::renderAll(uint32_t rowsPerFrame, const std::function<bool(uint32
             loom.waitIdle();
             const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
             const double scale = std::clamp(0.4 / std::max(seconds, 1e-4), 0.25, 4.0);
-            rows = uint32_t(std::clamp(double(rows) * scale, 1.0, double(size[1]) * 64.0));
+            rows = wholeGroups(std::clamp(double(rows) * scale, 1.0, double(size[1]) * 64.0));
         }
         if(onSample && sample != before && !onSample(sample)) break;
     }

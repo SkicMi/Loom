@@ -473,6 +473,11 @@ bool triangleTest(uint slot, float3 origin, float3 direction, float tMax, out fl
 }
 
 // originScaled = origin * inverse: po osi jedno mnozenje-oduzimanje (FMA)
+// PRAZNA SCENA (samo magla, nebo): nema trokuta ni BVH-a. Procesor tada zapise korijen s
+// leftOrFirst = 0xFFFFFFFF i count = 0 (pravi BVH to nikad nema) - bez ove oznake obilazak cita
+// cvorove iz praznog spremnika i ide izvan njega (NVIDIA: DeviceLost, llvmpipe to prezivi)
+bool emptyScene(){ return asuint(nodes[0].w) == 0xFFFFFFFFu && asuint(nodes[1].w) == 0u; }
+
 bool slab(uint node, float3 originScaled, float3 inverse, float tMax, out float entry){
     const float3 lo = nodes[node * 2].xyz, hi = nodes[node * 2 + 1].xyz;
     const float3 t0 = lo * inverse - originScaled, t1 = hi * inverse - originScaled;
@@ -538,7 +543,7 @@ bool traverse(float3 origin, float3 direction, float tMax, uint mode, bool anyHi
     uint stack[64];
     int top = 0;
     float entry;
-    if(!slab(0, originScaled, inverse, tMax, entry)) return false;
+    if(emptyScene() || !slab(0, originScaled, inverse, tMax, entry)) return false;
     stack[top++] = 0;
     bool found = false;
     while(top > 0){
@@ -608,7 +613,7 @@ float3 surfaceTransmittance(float3 origin, float3 direction, float tMax, uint mo
     uint stack[64];
     int top = 0;
     float entry;
-    if(!slab(0, originScaled, inverse, tMax, entry)) return through;
+    if(emptyScene() || !slab(0, originScaled, inverse, tMax, entry)) return through;
     stack[top++] = 0;
     while(top > 0){
         const uint node = stack[--top];
@@ -2428,7 +2433,7 @@ bool traverseDepth(float3 origin, float3 direction, inout Hit hit){
     int top = 0;
     float entry;
     float tMax = INF;
-    if(!slab(0, originScaled, inverse, tMax, entry)) return false;
+    if(emptyScene() || !slab(0, originScaled, inverse, tMax, entry)) return false;
     stack[top++] = 0;
     bool found = false;
     while(top > 0){
