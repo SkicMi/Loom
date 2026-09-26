@@ -875,7 +875,7 @@ editoru `./build/loom --mascott`. Stari lik (Clockwork Sentinel, `mascot-*`, `ri
 | `4bdbfdb` | novi mascot, izravni Manny rig bez UniRiga (`tools/autorig/direct_rig.py`) | 49 s umjesto ~4 min, validacija prolazi |
 | `e9010ab` | hvat uz štitnik (`defaultGrip` s mjerilom: dlan 7 cm ispod ruba štitnika, bez klizanja na štitnik); Look at the hand bira smjer koji tijelo ne zaklanja (`holdViewDirection`) | dlan 4.9/3.9 cm, vrhovi ≤ 0.8 cm, omatanje 104° (deblja kožna drška) |
 | `dfa3976` | Auto Rig: `run.py --backend auto` zadano — direct, a UniRig samo ako direct padne (direct izlaz ostaje u `<izlaz>-direct-failed`); gumb treba samo `.venv` + `direct_rig.py` (`Loom::autoRigBackendReady`) | mascot kroz `auto` prolazi direct putem |
-| (ovaj) | **ruke u pokretu na A-poziranom liku**: `motionLimbRestAlignment` u `LoomMotionRetarget.h` | vidi dolje |
+| `604f853` | **ruke u pokretu na A-poziranom liku**: `motionLimbRestAlignment` u `LoomMotionRetarget.h` | vidi dolje |
 
 **Ruke na A-poziranom liku (27.9.)** — korisnik je vidio ruke odmaknute/iskrivljene u svakom Kimodo
 pokretu. Uzrok: `retargetMotionToRig` radi `sourceWorld * targetRestWorld`, tj. pretpostavlja da je
