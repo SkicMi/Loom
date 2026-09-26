@@ -211,6 +211,7 @@ public:
             indent(in + 1); out << "custom string loom:handPath = "; string(stage.contains(hold.hand) ? stage.path(hold.hand) : hold.handPath); out << '\n';
             indent(in + 1); out << "custom double loom:onFrame = "; number(hold.onFrame); out << '\n';
             indent(in + 1); out << "custom double loom:offFrame = "; number(hold.offFrame); out << '\n';
+            indent(in + 1); out << "custom string loom:grip = "; string(hold.grip); out << '\n';
             indent(in + 1); out << "custom double[] loom:offset = [";
             for(int c = 0; c < 4; ++c) for(int r = 0; r < 4; ++r){ if(c || r) out << ", "; number(hold.offset[c][r]); }
             out << "]\n";
@@ -475,6 +476,7 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
             hold.handPath = textOf(child, "loom:handPath");
             hold.onFrame = numberOf(child, "loom:onFrame", 0.0);
             hold.offFrame = numberOf(child, "loom:offFrame", hold.onFrame);
+            if(const std::string grip = textOf(child, "loom:grip"); !grip.empty()) hold.grip = grip;
             if(const usda::Attribute* a = child.find("loom:offset"); a && a->value.items.size() == 16)
                 for(int c = 0; c < 4; ++c) for(int r = 0; r < 4; ++r) hold.offset[c][r] = float(a->value.at(size_t(c * 4 + r)));
             stage.get(id)->holds.push_back(hold);

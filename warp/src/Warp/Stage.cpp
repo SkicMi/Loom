@@ -437,7 +437,7 @@ uint64_t Stage::fingerprint() const{
         h.add(e.holds.size());
         for(const Hold& hold : e.holds){
             h.text(contains(hold.hand) ? path(hold.hand) : hold.handPath);
-            h.add(hold.onFrame); h.add(hold.offFrame); h.add(hold.offset);
+            h.add(hold.onFrame); h.add(hold.offFrame); h.add(hold.offset); h.text(hold.grip);
         }
         h.add(e.animator.has_value());
         if(e.animator){

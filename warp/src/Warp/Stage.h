@@ -208,6 +208,7 @@ struct Hold{
     std::string handPath;               //za spremanje: id se nakon otvaranja projekta nadje po putu
     double onFrame = 0.0, offFrame = 0.0;
     glm::mat4 offset{1.0f};
+    std::string grip = "grip";          //preset poze prstiju (LoomHandPose.h): grip, pistol, cup...
 };
 
 //Istrenirani gaussian splat, kao put do .ply
