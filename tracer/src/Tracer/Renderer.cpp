@@ -305,6 +305,14 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         return u < 0.5f ? -r + r * std::sqrt(2.0f * u) : r - r * std::sqrt(2.0f - 2.0f * u);
     };
     const glm::vec2 jitter(tent(filterSample.x), tent(filterSample.y));
+    //Stvarna ploha ispred ovog uzorka (holdout), duz -Z; 0 = nema je
+    float realDepth = 0.0f;
+    if(world.holdout.valid()){
+        const glm::vec2 at = (pixel + jitter) * glm::vec2(float(world.holdout.width) / float(camera.width),
+                                                           float(world.holdout.height) / float(camera.height));
+        realDepth = world.holdout.fetch(int(std::floor(at.x)), int(std::floor(at.y))).r;
+        if(!(realDepth > 0.0f) || realDepth > NoDepth * 0.5f) realDepth = 0.0f;
+    }
     Ray ray;
     camera.ray(pixel + jitter, lensSample, ray.origin, ray.direction);
     //STOZAC ZRAKE (ray cones, Akenine-Moller 2019) za razinu mipmape: sirina raste s udaljenoscu,
@@ -381,6 +389,11 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
         const glm::vec3& p1 = world.positions[tri.v[1]];
         const glm::vec3& p2 = world.positions[tri.v[2]];
         const glm::vec3 p = p0 * b0 + p1 * hit.u + p2 * hit.v;
+        if(depth == 0 && realDepth > 0.0f && -(cameraInverse * glm::vec4(p, 1.0f)).z > realDepth * (1.0f + world.holdoutBias)){
+            result.miss = true;
+            result.background = escaped(ray.origin, ray.direction, 0.0f, true, false, false);
+            break;
+        }
         glm::vec3 ng = glm::normalize(glm::cross(p1 - p0, p2 - p0));
         glm::vec3 ns = world.normals[tri.v[0]] * b0 + world.normals[tri.v[1]] * hit.u + world.normals[tri.v[2]] * hit.v;
         ns = glm::dot(ns, ns) > 1e-20f ? glm::normalize(ns) : ng;

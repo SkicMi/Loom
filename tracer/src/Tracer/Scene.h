@@ -209,6 +209,13 @@ struct Scene{
     //Prazno: nema snimke, bjezi u okolinu
     Texture backplate;
 
+    //HOLDOUT IZ DUBINE STVARNE SCENE (npr. splat projiciran kroz kameru): po pikselu kadra
+    //udaljenost duz -Z do stvarne plohe (floats, R; 0 ili vise od NoDepth/2 = nista). Uzorak iz
+    //kamere koji pogodi nesto IZA te plohe (vise od holdoutBias relativno) je pozadina: snimka
+    //se vidi, CG iza stvarnog zida se ne crta. Rub je po uzorku, pa je antialiasiran
+    Texture holdout;
+    float holdoutBias = 0.02f;
+
     uint32_t addTexture(Texture texture);
     uint32_t addMaterial(Material material);
     //Mreza u svijet. Vraca indeks objekta. Neispravni indeksi i degenerirani trokuti se preskoce

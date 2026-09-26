@@ -45,6 +45,7 @@ struct Params{
     float4 values;          // indirectClamp, k1, k2, prag prilagodljivog uzorkovanja (0 iskljuceno)
     uint4 extra;            // seed, conditionalOffset, bitovi (1 staklene sjene, 2 bez mipmapa), najmanje uzoraka prije zaustavljanja
     float4 distortion;      // fx, fy, cx, cy objektiva (fx 0: ravna leca)
+    float4 holdout;         // tekstura dubine stvarne scene (bitovi, NONE), bias, 0, 0
 };
 
 struct Material{
@@ -943,7 +944,17 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
     const float2 filterSample = sampler.next2D();
     const float2 lensSample = sampler.next2D();
     float3 origin, direction;
-    cameraRay(P, pixel + float2(tent(filterSample.x), tent(filterSample.y)), lensSample, origin, direction);
+    const float2 samplePixel = pixel + float2(tent(filterSample.x), tent(filterSample.y));
+    cameraRay(P, samplePixel, lensSample, origin, direction);
+    // stvarna ploha ispred uzorka (Scene::holdout), 0 = nema je
+    float realDepth = 0.0;
+    const uint holdoutTexture = asuint(P.holdout.x);
+    if(holdoutTexture != NONE){
+        const uint4 info = textureInfo[holdoutTexture];
+        const float2 at = samplePixel * float2(float(info.y) / P.lens2.y, float(info.z) / P.lens2.z);
+        realDepth = fetch(info, int(floor(at.x)), int(floor(at.y))).r;
+        if(!(realDepth > 0.0) || realDepth > 5e9) realDepth = 0.0;
+    }
     float coneWidth = 0.0, coneSpread = 1.0 / max(1.0, P.lens.x);
 
     float3 beta = float3(1.0);
@@ -1007,6 +1018,11 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
         const float b0 = 1.0 - hit.u - hit.v;
         const float3 e1 = triangles[hit.slot * 3 + 1].xyz, e2 = triangles[hit.slot * 3 + 2].xyz;
         const float3 p = triangles[hit.slot * 3].xyz + e1 * hit.u + e2 * hit.v;
+        if(depth == 0 && realDepth > 0.0 && -toCamera(P, p).z > realDepth * (1.0 + P.holdout.y)){
+            result.miss = true;
+            result.background = escaped(P, direction, 0.0, true, false, false);
+            break;
+        }
         float3 ng = normalize(cross(e1, e2));
         const float4 va = vertices[info.x * 3], vb = vertices[info.y * 3], vc = vertices[info.z * 3];
         float3 ns = va.xyz * b0 + vb.xyz * hit.u + vc.xyz * hit.v;

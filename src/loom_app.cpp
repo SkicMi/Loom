@@ -2839,6 +2839,8 @@ int main(int argc, char** argv){
             if(renderOptions.pathTraced){
                 ui.checkbox("Transparent background", &renderOptions.transparent);
                 ui.checkbox("Shadow catcher (planes, proxy)", &renderOptions.shadowCatcher);
+                //Splat projiciran kroz kameru zaklanja CG iza stvarnih stvari (bez blockera)
+                ui.checkbox("Holdout from splat", &renderOptions.splatHoldout);
                 ui.checkbox("Sky visible to camera", &renderOptions.skyVisible);
                 ui.checkbox("Depth map (Z)", &renderOptions.depth);
                 ui.checkbox("Normals", &renderOptions.normal);

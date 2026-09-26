@@ -39,8 +39,9 @@ struct Params{
     glm::vec4 values;
     glm::uvec4 extra;
     glm::vec4 distortion;
+    glm::vec4 holdout;      //tekstura (bitovi, NONE), bias, 0, 0
 };
-static_assert(sizeof(Params) == 23 * 16, "Params mora odgovarati shaders/tracer.slang");
+static_assert(sizeof(Params) == 24 * 16, "Params mora odgovarati shaders/tracer.slang");
 
 struct GpuMaterial{
     glm::vec4 baseColor, surface, layers, emission;
@@ -134,6 +135,7 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     const bool envTextured = c.sky.isTextured();
     const uint32_t envTexture = envTextured ? addTexture(world.environment.map) : None;
     if(world.backplate.valid()) backplateTexture = addTexture(world.backplate);
+    const uint32_t holdoutTexture = world.holdout.valid() ? addTexture(world.holdout) : None;
 
     //-- trokuti redom BVH-a i ostalo po izvornom trokutu --------------------------------------------
     const std::vector<Tracer::Bvh::Node>& bvhNodes = c.tree.nodeArray();
@@ -223,6 +225,7 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     p.values = glm::vec4(settings.indirectClamp, world.camera.distorted() ? world.camera.k1 : 0.0f,
                          world.camera.distorted() ? world.camera.k2 : 0.0f, settings.adaptiveThreshold);
     p.distortion = world.camera.distorted() ? world.camera.lens : glm::vec4(0.0f);
+    p.holdout = glm::vec4(bitsToFloat(holdoutTexture), world.holdoutBias, 0.0f, 0.0f);
     p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), (settings.glassShadows ? 1u : 0u) | (settings.mipmaps ? 0u : 2u),
                          settings.adaptiveMinSamples);
 

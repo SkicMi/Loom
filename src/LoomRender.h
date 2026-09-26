@@ -25,6 +25,7 @@
 // pred ocima) i `loom-render` iz terminala (render bez prozora, na stroju bez kartice).
 //=============================================================================================
 #include <Spool/ExrFile.h>
+#include <Spool/GaussianPly.h>
 #include <Spool/Gltf.h>
 #include <Spool/ImageFile.h>
 #include <Spool/VideoFile.h>
@@ -76,6 +77,9 @@ struct RenderOptions{
     bool transparent = false;               //pozadina prozirna (alfa) umjesto neba
     bool shadowCatcher = true;              //ravnine i proxy hvataju sjenu (uz snimku ili alfu)
     bool skyVisible = true;                 //kamera vidi nebo (bez snimke i alfe)
+    //HOLDOUT IZ SPLATA: splat scene se projicira kroz kameru u dubinu stvarne scene, pa CG iza
+    //stvarnog zida, auta ili stupa nestane i vidi se snimka - bez modeliranja blockera
+    bool splatHoldout = false;
 
     //Dodatni slojevi
     bool depth = true;
@@ -324,11 +328,38 @@ public:
         }
     }
 
+    //Splat za holdout: samo sredista, neprozirnost i velicina (ne boje ni harmonici) - 20 bajta po
+    //gaussianu umjesto 250. nullptr kad se datoteka ne da procitati (razlog u error)
+    struct SplatPoints{
+        std::vector<glm::vec3> position;
+        std::vector<float> alpha;           //sigmoid(opacity)
+        std::vector<float> sigma;           //najveca os, exp(scale), u koordinatama splata
+    };
+    const SplatPoints* splat(const std::string& path, std::string& error){
+        auto found = splats.find(path);
+        if(found != splats.end()) return found->second.get();
+        std::unique_ptr<SplatPoints> points;
+        try{
+            const Spool::GaussianCloud cloud = Spool::loadGaussianPly(path);
+            points = std::make_unique<SplatPoints>();
+            points->position.reserve(cloud.count());
+            points->alpha.reserve(cloud.count());
+            points->sigma.reserve(cloud.count());
+            for(const Spool::Gaussian& g : cloud.gaussians){
+                points->position.emplace_back(g.position[0], g.position[1], g.position[2]);
+                points->alpha.push_back(1.0f / (1.0f + std::exp(-g.opacity)));
+                points->sigma.push_back(std::exp(std::max({g.scale[0], g.scale[1], g.scale[2]})));
+            }
+        }catch(const std::exception& e){ error = e.what(); points.reset(); }
+        return splats.emplace(path, std::move(points)).first->second.get();
+    }
+
     //Tekstura za tracer s mipmapama, jednom po slici: 4K mapa s razinama je desetine milisekundi,
     //a sekvenca i motion blur grade scenu stotine puta
     const Tracer::Texture& mipmapped(const Warp::TextureSlot& slot, const Spool::Image& image, bool srgb);
 
 private:
+    std::map<std::string, std::unique_ptr<SplatPoints>> splats;
     std::map<std::string, Tracer::Texture> textures;
     std::map<std::string, std::unique_ptr<Spool::GltfScene>> scenes;
     std::map<std::string, Spool::Image> images;
@@ -376,8 +407,66 @@ struct BuiltScene{
     bool plateLoaded = false;
     bool catchersUsed = false;
     size_t objects = 0, catchers = 0;
+    size_t holdoutSplats = 0;               //splatova u holdoutu (RenderOptions::splatHoldout)
     std::vector<std::string> warnings;
 };
+
+//DUBINA SPLATA KROZ KAMERU (za holdout). Svaki dovoljno neproziran gaussian (alfa >= 0.4) je
+//krug polumjera jedne sigme oko svoje projekcije, z-buffer uzme najblizi. Rupe (piksel koji
+//nijedan ne pokrije, a vecina susjeda je pokrivena) se popune medijanom susjeda - inace bi
+//CG procurio kroz rijedak zid. Dretve pisu svaka u svoj buffer, spoje se minimumom
+inline void splatDepth(const RenderAssets::SplatPoints& points, const glm::mat4& splatWorld, const Tracer::Camera& camera,
+                       const glm::mat4& worldToCamera, std::vector<float>& depth){
+    const uint32_t width = camera.width, height = camera.height;
+    const glm::mat4 toCamera = worldToCamera * splatWorld;
+    const float scale = std::cbrt(std::abs(glm::determinant(glm::mat3(splatWorld))));
+    const size_t count = points.position.size();
+    const uint32_t threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+    std::vector<std::vector<float>> buffers(threads, std::vector<float>(size_t(width) * height, Tracer::NoDepth));
+    std::vector<std::thread> workers;
+    for(uint32_t t = 0; t < threads; ++t){
+        workers.emplace_back([&, t]{
+            std::vector<float>& own = buffers[t];
+            for(size_t i = count * t / threads; i < count * (t + 1) / threads; ++i){
+                if(points.alpha[i] < 0.4f) continue;
+                const glm::vec3 local = glm::vec3(toCamera * glm::vec4(points.position[i], 1.0f));
+                const float z = -local.z;
+                if(z <= 1e-4f) continue;
+                const glm::vec2 centre = camera.pixelOf(local);
+                const float r = std::clamp(camera.focalPixels * points.sigma[i] * scale / z, 0.5f, 64.0f);
+                const int x0 = std::max(0, int(std::floor(centre.x - r))), x1 = std::min(int(width) - 1, int(std::floor(centre.x + r)));
+                const int y0 = std::max(0, int(std::floor(centre.y - r))), y1 = std::min(int(height) - 1, int(std::floor(centre.y + r)));
+                for(int y = y0; y <= y1; ++y) for(int x = x0; x <= x1; ++x){
+                    const float dx = float(x) + 0.5f - centre.x, dy = float(y) + 0.5f - centre.y;
+                    if(dx * dx + dy * dy > r * r) continue;
+                    float& d = own[size_t(y) * width + size_t(x)];
+                    d = std::min(d, z);
+                }
+            }
+        });
+    }
+    for(std::thread& w : workers) w.join();
+    depth = std::move(buffers[0]);
+    for(uint32_t t = 1; t < threads; ++t) for(size_t i = 0; i < depth.size(); ++i) depth[i] = std::min(depth[i], buffers[t][i]);
+    //Rupe: dva prolaza, piksel bez dubine s barem 5 od 8 pokrivenih susjeda dobije njihov medijan
+    for(int pass = 0; pass < 2; ++pass){
+        std::vector<float> filled = depth;
+        for(uint32_t y = 1; y + 1 < height; ++y) for(uint32_t x = 1; x + 1 < width; ++x){
+            if(depth[size_t(y) * width + x] < Tracer::NoDepth * 0.5f) continue;
+            float around[8];
+            int n = 0;
+            for(int dy = -1; dy <= 1; ++dy) for(int dx = -1; dx <= 1; ++dx){
+                if(!dx && !dy) continue;
+                const float v = depth[size_t(int(y) + dy) * width + size_t(int(x) + dx)];
+                if(v < Tracer::NoDepth * 0.5f) around[n++] = v;
+            }
+            if(n < 5) continue;
+            std::nth_element(around, around + n / 2, around + n);
+            filled[size_t(y) * width + x] = around[n / 2];
+        }
+        depth.swap(filled);
+    }
+}
 
 //Polumjer otvora u jedinicama scene (1 = metar): zarisna f = focalPixels / sirina * senzor (mm),
 //promjer otvora f / N
@@ -746,6 +835,34 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
         }
         break;
     }
+    }
+    //-- holdout iz splata ------------------------------------------------------------------------------
+    if(options.splatHoldout){
+        std::vector<float> depth;
+        const glm::mat4 worldToCamera = glm::inverse(scene.camera.cameraToWorld);
+        size_t used = 0;
+        stage.walk([&](const Warp::Entity& e, int){
+            if(!e.splat || !visible(e)) return;
+            std::string problem;
+            const RenderAssets::SplatPoints* points = assets.splat(e.splat->path, problem);
+            if(!points){ out.warnings.push_back("Splat holdout: could not read " + e.splat->path + " (" + problem + ")"); return; }
+            std::vector<float> one;
+            splatDepth(*points, stage.worldMatrix(e.id, frame), scene.camera, worldToCamera, one);
+            if(depth.empty()) depth.swap(one);
+            else for(size_t i = 0; i < depth.size(); ++i) depth[i] = std::min(depth[i], one[i]);
+            ++used;
+        });
+        if(used == 0) out.warnings.push_back("Splat holdout is on, but the scene has no visible splat.");
+        else{
+            Tracer::Texture& h = scene.holdout;
+            h.width = scene.camera.width;
+            h.height = scene.camera.height;
+            h.srgb = false;
+            h.repeat = false;
+            h.floats.assign(depth.size() * 4, 0.0f);
+            for(size_t i = 0; i < depth.size(); ++i) h.floats[i * 4] = depth[i];
+            out.holdoutSplats = used;
+        }
     }
     if(scene.triangles.empty()) out.warnings.push_back("Nothing to render in front of the camera: the scene has no meshes or models.");
     return true;
