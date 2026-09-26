@@ -109,6 +109,13 @@ bool freeFloor(const Space& space, const LocalRect& floor){
     return true;
 }
 
+// A rug: inside the room and out of every door swing; furniture may stand on it.
+bool floorLayerFits(const Space& space, const LocalRect& rug){
+    if(!contains(space.inner, rug)) return false;
+    for(const LocalRect& k : space.keepClear) if(overlaps(rug, k)) return false;
+    return true;
+}
+
 float distanceToDoor(const Space& space, const glm::vec2& p){
     float best = 100.0f;
     for(const glm::vec2& d : space.doors) best = std::min(best, glm::length(d - p));
@@ -163,9 +170,10 @@ std::vector<float> offsetsAlong(const Space& space, int s, float width){
     return valid;
 }
 
+// Every free spot for the request, best first.
 template<class Score>
-Spot bestWallSpot(const Space& space, const WallRequest& request, Score score){
-    Spot best;
+std::vector<Spot> wallSpots(const Space& space, const WallRequest& request, Score score){
+    std::vector<Spot> spots;
     for(int s = 0; s < 4; ++s){
         if(space.open[s] || (request.tall && space.window[s])) continue;
         if(request.width > sideLength(space.inner, s) + eps) continue;
@@ -188,11 +196,17 @@ Spot bestWallSpot(const Space& space, const WallRequest& request, Score score){
                !fits(space, wallRect(space, s, t, request.width, request.depth, request.depth + request.frontBody), {})) continue;
             if(request.tall && std::any_of(space.windowZones.begin(), space.windowZones.end(),
                                            [&](const LocalRect& zone){ return overlaps(body, zone); })) continue;
-            const float value = score(s, t, body);
-            if(value > best.score){ best.side = s; best.t = t; best.body = body; best.clear = clear; best.score = value; }
+            spots.push_back({s, t, body, clear, score(s, t, body)});
         }
     }
-    return best;
+    std::stable_sort(spots.begin(), spots.end(), [](const Spot& a, const Spot& b){ return a.score > b.score; });
+    return spots;
+}
+
+template<class Score>
+Spot bestWallSpot(const Space& space, const WallRequest& request, Score score){
+    std::vector<Spot> spots = wallSpots(space, request, score);
+    return spots.empty() ? Spot{} : spots.front();
 }
 
 struct Context{
@@ -225,22 +239,35 @@ struct Context{
     }
     bool optional(float share){ return settings.fill >= 1.0f || random.uniform(0.0f, 1.0f) < share * settings.fill; }
 
-    void put(Space& space, const Item& piece, const LocalRect& body, const glm::vec2& facing){
+    // Adds a placement and returns its index. base lifts it off the floor (a lamp on a stand);
+    // a piece that is not solid (rug, lamp on top, wall cabinet) leaves the floor free for others.
+    // turn twists it a few degrees from facing; its area is then the box round the turned piece.
+    std::size_t put(Space& space, const Item& piece, const LocalRect& body, const glm::vec2& facing, float base = 0.0f,
+                    bool solid = true, float turn = 0.0f, int32_t under = -1){
         Placement p;
         p.asset = piece.asset;
         p.parameters = piece.parameters;
         const float floorY = footprint.elevation + float(space.floor) * footprint.floorHeight + 0.02f;
         const glm::vec2 c = footprint.toWorld(centre(body));
-        p.position = {c.x, floorY, c.y};
+        p.position = {c.x, floorY + base, c.y};
         const glm::vec2 across{-footprint.frameAxis.y, footprint.frameAxis.x};
         const glm::vec2 world = footprint.frameAxis * facing.x + across * facing.y;
-        p.yawDegrees = std::atan2(world.x, world.y) * 180.0f / pi;
+        p.yawDegrees = std::atan2(world.x, world.y) * 180.0f / pi + turn;
         p.floor = space.floor;
         p.room = uint32_t(space.index);
-        p.area = body;
+        LocalRect area = body;
+        if(turn != 0.0f){
+            const float cs = std::abs(std::cos(turn * pi / 180.0f)), sn = std::abs(std::sin(turn * pi / 180.0f));
+            const glm::vec2 size = body.max - body.min, half = glm::vec2(size.x * cs + size.y * sn, size.x * sn + size.y * cs) * 0.5f;
+            area = {centre(body) - half, centre(body) + half};
+        }
+        p.area = area;
+        p.base = base;
         p.height = piece.size.y;
+        p.under = under;
         output.push_back(std::move(p));
-        space.bodies.push_back(body);
+        if(solid) space.bodies.push_back(area);
+        return output.size() - 1;
     }
     void putAt(Space& space, const Item& piece, const Spot& spot){
         put(space, piece, spot.body, inward[spot.side]);
@@ -312,23 +339,25 @@ bool tableGroup(Context& ctx, Space& space, const std::vector<glm::vec2>& sizes,
                 bool walkway = true;
                 for(const LocalRect& b : space.bodies) walkway &= !overlaps(grown(group, walk), b);
                 if(!walkway) continue;
-                ctx.put(space, table, {c - half, c + half}, alongX ? glm::vec2(0.0f, 1.0f) : glm::vec2(-1.0f, 0.0f));
-                space.bodies.pop_back();
+                const int32_t tableIndex = int32_t(ctx.put(space, table, {c - half, c + half},
+                                                           alongX ? glm::vec2(0.0f, 1.0f) : glm::vec2(-1.0f, 0.0f), 0.0f, false));
                 space.bodies.push_back(group);          // the chairs' floor is taken too
                 const glm::vec2 u = alongX ? glm::vec2(1.0f, 0.0f) : glm::vec2(0.0f, 1.0f), v{-u.y, u.x};
                 const float hl = length * 0.5f, hd = depth * 0.5f, hc = cw * 0.5f;
+                // Chairs pushed 12 cm under the table and turned a little, as people leave them.
                 auto seat = [&](const glm::vec2& at, const glm::vec2& facing){
-                    ctx.put(space, chair, {at - glm::vec2(hc), at + glm::vec2(hc)}, facing);
-                    space.bodies.pop_back();
+                    ctx.put(space, chair, {at - glm::vec2(hc), at + glm::vec2(hc)}, facing, 0.0f, false,
+                            ctx.random.uniform(-8.0f, 8.0f), tableIndex);
                 };
+                const float tuck = 0.12f;
                 for(int k = 0; k < perSide; ++k){
                     const float along = -hl + length * (float(k) + 0.5f) / float(perSide);
-                    seat(c + u * along - v * (hd + 0.02f + hc), v);
-                    seat(c + u * along + v * (hd + 0.02f + hc), -v);
+                    seat(c + u * along - v * (hd - tuck + hc), v);
+                    seat(c + u * along + v * (hd - tuck + hc), -v);
                 }
                 if(ends){
-                    seat(c - u * (hl + 0.02f + hc), u);
-                    seat(c + u * (hl + 0.02f + hc), -u);
+                    seat(c - u * (hl - tuck + hc), u);
+                    seat(c + u * (hl - tuck + hc), -u);
                 }
                 space.clearances.push_back(grown(group, walk));
                 placed = true;
@@ -354,10 +383,12 @@ bool deskWithChair(Context& ctx, Space& space, float width, bool preferWindow, b
         return score + (atCorner(space, s, t, desk.size.x) ? 0.3f : 0.0f) + jitter(ctx);
     });
     if(!spot.found()) return true;
+    const int32_t deskIndex = int32_t(ctx.output.size());
     ctx.putAt(space, desk, spot);
     const glm::vec2 seat = sideStart(space.inner, spot.side) + alongDir[spot.side] * (spot.t + desk.size.x * 0.5f) +
-                           inward[spot.side] * (desk.size.z + 0.02f + cw * 0.5f);
-    ctx.put(space, chair, {seat - glm::vec2(cw * 0.5f), seat + glm::vec2(cw * 0.5f)}, -inward[spot.side]);
+                           inward[spot.side] * (desk.size.z - 0.12f + cw * 0.5f);
+    ctx.put(space, chair, {seat - glm::vec2(cw * 0.5f), seat + glm::vec2(cw * 0.5f)}, -inward[spot.side], 0.0f, true,
+            ctx.random.uniform(-10.0f, 10.0f), deskIndex);
     placed = true;
     return true;
 }
@@ -381,10 +412,28 @@ bool furnishBedroom(Context& ctx, Space& space){
     }
     if(!bed.found()){ ctx.error = ctx.where(space) + " has no wall for a bed clear of its door"; return false; }
     ctx.putAt(space, bedItem, bed);
+    Item lamp;
+    if(!ctx.item("table_lamp", {}, lamp)) return false;
     for(const float t : {bed.t - stand.size.x - 0.03f, bed.t + bedItem.size.x + 0.03f}){
         const LocalRect body = wallRect(space, bed.side, t, stand.size.x, 0.0f, stand.size.z);
-        if(fits(space, body, {})) ctx.put(space, stand, body, inward[bed.side]);
+        if(!fits(space, body, {})) continue;
+        ctx.put(space, stand, body, inward[bed.side]);
+        if(ctx.optional(0.8f)){
+            const glm::vec2 c = centre(body), half = glm::vec2(std::max(lamp.size.x, lamp.size.z)) * 0.5f;
+            ctx.put(space, lamp, {c - half, c + half}, inward[bed.side], stand.size.y, false);
+        }
     }
+    // A rug under the lower part of the bed, reaching out at the sides.
+    if(ctx.optional(0.7f))
+        for(const float side : {0.5f, 0.3f, 0.0f}){
+            const float from = bedItem.size.z * 0.45f, to = bedItem.size.z + 0.4f;
+            const LocalRect rug = wallRect(space, bed.side, bed.t - side, bedItem.size.x + 2.0f * side, from, to);
+            if(!floorLayerFits(space, rug)) continue;
+            Item piece;
+            if(!ctx.item("rug", {{"width", bedItem.size.x + 2.0f * side}, {"depth", to - from}}, piece)) return false;
+            ctx.put(space, piece, rug, inward[bed.side], 0.0f, false);
+            break;
+        }
     bool placed = false;
     if(!wallPiece(ctx, space, "wardrobe", {2.0f, 1.6f, 1.2f, 1.0f, 0.8f}, {}, 0.7f, [&](int s, float t, const LocalRect&){
         return (atCorner(space, s, t, 1.0f) ? 1.0f : 0.0f) + (s != bed.side ? 0.5f : 0.0f) + jitter(ctx);
@@ -417,6 +466,17 @@ bool furnishLiving(Context& ctx, Space& space){
     const LocalRect coffee = wallRect(space, s, seat.t + (sofa.size.x - table.size.x) * 0.5f, table.size.x,
                                       sofa.size.z + 0.45f, sofa.size.z + 0.45f + table.size.z);
     ctx.put(space, table, coffee, inward[s]);
+    // A rug under the coffee table, reaching under the front of the sofa.
+    if(ctx.optional(0.8f))
+        for(const glm::vec2 size : {glm::vec2(2.0f, 1.4f), glm::vec2(1.6f, 1.1f), glm::vec2(1.2f, 0.8f)}){
+            const glm::vec2 c = centre(coffee), half = (s % 2 == 0 ? size : glm::vec2(size.y, size.x)) * 0.5f;
+            const LocalRect rug{c - half, c + half};
+            if(!floorLayerFits(space, rug)) continue;
+            Item piece;
+            if(!ctx.item("rug", {{"width", size.x}, {"depth", size.y}}, piece)) return false;
+            ctx.put(space, piece, rug, inward[s], 0.0f, false);
+            break;
+        }
     // TV opposite the sofa, lined up with it when the doors allow.
     const int opposite = (s + 2) % 4;
     const glm::vec2 sofaCentre = centre(seat.body);
@@ -445,6 +505,10 @@ bool furnishLiving(Context& ctx, Space& space){
     if(ctx.optional(0.6f) && !wallPiece(ctx, space, "shelf", {1.2f, 0.9f}, {}, 0.6f, [&](int s2, float t, const LocalRect&){
         return (atCorner(space, s2, t, 1.0f) ? 1.0f : 0.0f) + jitter(ctx);
     }, placed)) return false;
+    // A floor lamp beside the sofa (a tall piece, so never at a window).
+    if(ctx.optional(0.6f) && !wallPiece(ctx, space, "floor_lamp", {0.35f}, {}, 0.0f, [&](int, float, const LocalRect& body){
+        return -glm::length(centre(body) - sofaCentre) + jitter(ctx);
+    }, placed)) return false;
     const float area = (space.inner.max.x - space.inner.min.x) * (space.inner.max.y - space.inner.min.y);
     if(area >= 24.0f && !tableGroup(ctx, space, {{1.6f, 0.9f}, {1.2f, 0.8f}}, placed)) return false;
     return true;
@@ -456,8 +520,10 @@ bool furnishKitchen(Context& ctx, Space& space){
     for(float w = std::min(longest, 4.2f); w >= 1.2f - eps; w -= 0.2f) widths.push_back(w);
     bool counter = false, fridge = false;
     Spot run;
+    // Longest run first (widths go down); among runs of one width a corner, and a wall without a
+    // window, so wall cabinets can hang over it.
     auto counterScore = [&](int s, float t, const LocalRect&){
-        return (atCorner(space, s, t, 1.2f) ? 1.0f : 0.0f) + jitter(ctx);
+        return (atCorner(space, s, t, 1.2f) ? 1.0f : 0.0f) + (space.window[s] ? 0.0f : 0.6f) + jitter(ctx);
     };
     auto fridgeScore = [&](int, float, const LocalRect& body){
         return -glm::length(centre(body) - centre(run.body)) + jitter(ctx);
@@ -490,6 +556,49 @@ bool furnishKitchen(Context& ctx, Space& space){
         }
     }
     if(!counter){ ctx.error = ctx.where(space) + " has no wall for a 1.2 m counter clear of its doors"; return false; }
+    std::vector<std::pair<Spot, float>> runs = {{run, std::max(run.body.max.x - run.body.min.x, run.body.max.y - run.body.min.y)}};
+    // Corner run: a run that ends in a corner turns onto the next wall (an L kitchen), without a
+    // second sink and cooktop. Its own free floor may overlap the first run's.
+    const float area = (space.inner.max.x - space.inner.min.x) * (space.inner.max.y - space.inner.min.y);
+    if(area >= 6.0f && atCorner(space, run.side, run.t, runs[0].second) && ctx.optional(0.7f)){
+        Space probe = space;
+        probe.clearances.erase(std::remove_if(probe.clearances.begin(), probe.clearances.end(), [&](const LocalRect& c){
+            return std::any_of(run.clear.begin(), run.clear.end(), [&](const LocalRect& r){ return glm::all(glm::equal(r.min, c.min)) && glm::all(glm::equal(r.max, c.max)); });
+        }), probe.clearances.end());
+        for(const float width : {2.4f, 2.0f, 1.6f, 1.2f}){
+            Item leg;
+            if(!ctx.item("kitchen_counter", {{"width", width}, {"fixtures", 0.0f}}, leg)) return false;
+            WallRequest request{leg.size.x, leg.size.z, 1.0f};
+            const Spot spot = bestWallSpot(probe, request, [&](int s, float, const LocalRect& body){
+                if(s == run.side || s == (run.side + 2) % 4) return -1000.0f;
+                const glm::vec2 gap = glm::max(glm::max(run.body.min - body.max, body.min - run.body.max), glm::vec2(0.0f));
+                return glm::length(gap) < 0.05f ? jitter(ctx) : -1000.0f;
+            });
+            if(!spot.found() || spot.score < -100.0f) continue;
+            ctx.putAt(space, leg, spot);
+            runs.push_back({spot, leg.size.x});
+            break;
+        }
+    }
+    // Wall cabinets over every run that is not under a window, cut short where the run reaches
+    // the window stretch of the next wall.
+    for(const auto& [spot, width] : runs){
+        if(space.window[spot.side]) continue;
+        float t0 = spot.t, t1 = spot.t + width;
+        const glm::vec2 o = sideStart(space.inner, spot.side);
+        for(const LocalRect& zone : space.windowZones){
+            if(!overlaps(wallRect(space, spot.side, t0, t1 - t0, 0.0f, 0.35f), zone)) continue;
+            float a = glm::dot(zone.min - o, alongDir[spot.side]), b = glm::dot(zone.max - o, alongDir[spot.side]);
+            if(a > b) std::swap(a, b);
+            if(a <= t0 + eps) t0 = b + 0.02f; else t1 = a - 0.02f;
+        }
+        if(t1 - t0 < 0.4f) continue;
+        Item cabinet;
+        if(!ctx.item("wall_cabinet", {{"width", t1 - t0}}, cabinet)) return false;
+        const LocalRect body = wallRect(space, spot.side, t0, cabinet.size.x, 0.0f, cabinet.size.z);
+        if(std::any_of(space.windowZones.begin(), space.windowZones.end(), [&](const LocalRect& z){ return overlaps(body, z); })) continue;
+        ctx.put(space, cabinet, body, inward[spot.side], 1.45f, false);
+    }
     bool placed = false;
     if(!tableGroup(ctx, space, {{1.2f, 0.8f}, {0.8f, 0.8f}}, placed)) return false;
     return true;
@@ -500,11 +609,10 @@ bool furnishBathroom(Context& ctx, Space& space){
     const Space empty = space;
     Item toilet;
     if(!ctx.item("toilet", {}, toilet)) return false;
+    const WallRequest toiletRequest{toilet.size.x, toilet.size.z, std::max(0.5f, toilet.clearance), 0.2f, 0.0f, 2};
+    auto toiletScore = [&](int, float, const LocalRect& body){ return std::min(distanceToDoor(space, centre(body)), 3.0f) + jitter(ctx); };
     auto placeToilet = [&](bool& placed){
-        WallRequest request{toilet.size.x, toilet.size.z, std::max(0.5f, toilet.clearance), 0.2f, 0.0f, 2};
-        const Spot seat = bestWallSpot(space, request, [&](int, float, const LocalRect& body){
-            return std::min(distanceToDoor(space, centre(body)), 3.0f) + jitter(ctx);
-        });
+        const Spot seat = bestWallSpot(space, toiletRequest, toiletScore);
         placed = seat.found();
         if(placed) ctx.putAt(space, toilet, seat);
     };
@@ -527,8 +635,17 @@ bool furnishBathroom(Context& ctx, Space& space){
         if(!placed) continue;
         bool first = false, second = false;
         if(plan % 2 == 0){
-            placeToilet(first);
-            if(first && !placeSink(second)) return false;
+            // Every free spot for the toilet in turn, until the basin fits beside it.
+            const Space withoutToilet = space;
+            const std::size_t count = ctx.output.size();
+            for(const Spot& seat : wallSpots(space, toiletRequest, toiletScore)){
+                space = withoutToilet;
+                ctx.output.resize(count);
+                ctx.putAt(space, toilet, seat);
+                first = true;
+                if(!placeSink(second)) return false;
+                if(second) break;
+            }
         }else{
             if(!placeSink(first)) return false;
             if(first) placeToilet(second);
@@ -591,6 +708,7 @@ const std::vector<std::string>& furnitureCategories(){
     static const std::vector<std::string> names = {
         "bed", "nightstand", "wardrobe", "desk", "chair", "sofa", "armchair", "coffee_table", "tv_stand", "shelf",
         "table", "kitchen_counter", "fridge", "toilet", "sink", "bathtub", "shower", "shoe_cabinet",
+        "rug", "floor_lamp", "table_lamp", "wall_cabinet",
     };
     return names;
 }

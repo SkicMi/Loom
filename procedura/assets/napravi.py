@@ -43,6 +43,16 @@ class Asset:
             n = self.node(params); self.link(cur, n); cur = n
         self.parts.append(cur)
 
+    def cylinder(self, size, at, material, semantic="furniture"):
+        """Valjak (os Y) velicine size sa sredistem u at."""
+        cur = self.node({"type": "add_primitive", "primitive": "cylinder", "size": size, "tube_ratio": 0.25})
+        for params in ({"type": "move", "offset": at},
+                       {"type": "set_semantic", "semantic": semantic, "filter": ALL},
+                       {"type": "set_material", "material": material, "filter": ALL},
+                       {"type": "uv_project", "tile_size": 0.5}):
+            n = self.node(params); self.link(cur, n); cur = n
+        self.parts.append(cur)
+
     def save(self, bounds):
         parts = self.parts
         while len(parts) > 1:   # Merge prima najvise 8 ulaza
@@ -173,11 +183,12 @@ def table():
 def kitchen_counter():
     a = Asset("kitchen_counter_basic", "kitchen_counter", clearance=1.0)
     a.param("width", 2.4, 1.2, 4.5)
+    a.param("fixtures", 1.0, 0.0, 1.0)   # 0: sudoper i ploca spusteni u korpus (krak kutnog niza)
     a.box([P("width"), 0.1, 0.5], [0, 0.05, -0.05], DARK)
     a.box([P("width"), 0.76, 0.56], [0, 0.48, -0.02], WOOD)
     a.box([P("width"), 0.04, 0.6], [0, 0.88, 0], "stone")
-    a.box([0.5, 0.004, 0.4], [P("width", -0.25), 0.902, 0], METAL)
-    a.box([0.6, 0.004, 0.5], [P("width", 0.25), 0.902, 0], METAL)
+    a.box([0.5, 0.004, 0.4], [P("width", -0.25), P("fixtures", 0.1, 0.802), 0], METAL)
+    a.box([0.6, 0.004, 0.5], [P("width", 0.25), P("fixtures", 0.1, 0.802), 0], METAL)
     a.save([P("width"), 0.904, 0.6])
 
 
@@ -234,9 +245,42 @@ def shoe_cabinet():
     a.save([P("width"), 0.9, 0.35])
 
 
+def rug():
+    a = Asset("rug_basic", "rug", placement="center", clearance=0.0)
+    a.param("width", 2.0, 0.8, 3.0); a.param("depth", 1.4, 0.6, 2.5)
+    a.box([P("width"), 0.012, P("depth")], [0, 0.006, 0], FABRIC)
+    a.box([P("width", 1, -0.16), 0.002, P("depth", 1, -0.16)], [0, 0.013, 0], "plaster")
+    a.save([P("width"), 0.014, P("depth")])
+
+
+def floor_lamp():
+    a = Asset("floor_lamp_basic", "floor_lamp", clearance=0.0)
+    a.box([0.3, 0.03, 0.3], [0, 0.015, 0], METAL)
+    a.box([0.03, 1.3, 0.03], [0, 0.68, 0], METAL)
+    a.cylinder([0.35, 0.3, 0.35], [0, 1.45, 0], FABRIC)
+    a.save([0.35, 1.6, 0.35])
+
+
+def table_lamp():
+    a = Asset("table_lamp_basic", "table_lamp", placement="center", clearance=0.0)
+    a.box([0.12, 0.03, 0.12], [0, 0.015, 0], METAL)
+    a.box([0.02, 0.22, 0.02], [0, 0.14, 0], METAL)
+    a.cylinder([0.25, 0.2, 0.25], [0, 0.35, 0], FABRIC)
+    a.save([0.25, 0.45, 0.25])
+
+
+def wall_cabinet():
+    a = Asset("wall_cabinet_basic", "wall_cabinet", clearance=0.0)
+    a.param("width", 1.2, 0.4, 4.5)
+    a.box([P("width"), 0.7, 0.33], [0, 0.35, -0.01], WOOD)
+    a.box([P("width", 1, -0.02), 0.66, 0.02], [0, 0.35, 0.165], DARK)
+    a.save([P("width"), 0.7, 0.35])
+
+
 if __name__ == "__main__":
     for make in (bed, nightstand, wardrobe, desk, chair, sofa, coffee_table, tv_stand, shelf, table,
-                 kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet):
+                 kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet, rug, floor_lamp,
+                 table_lamp, wall_cabinet):
         make()
     sofa("armchair_basic", "armchair", (0.85, 0.7, 1.0))
     print("gotovo:", len(os.listdir(os.path.join(HERE, "furniture"))), "asseta")

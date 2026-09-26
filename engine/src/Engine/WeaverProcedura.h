@@ -470,7 +470,9 @@ struct Placement{
     uint32_t floor = 0;
     uint32_t room = 0;                 // index into the plan's rooms
     LocalRect area;                    // floor the asset covers, in the footprint's local frame
+    float base = 0.0f;                 // bottom above the floor: a lamp on a night stand, a wall cabinet
     float height = 0.0f;
+    int32_t under = -1;                // a chair pushed under this placement (index), else -1
 };
 
 // Footprint with a plan -> Placements: furniture for every room by its type (bedroom: bed

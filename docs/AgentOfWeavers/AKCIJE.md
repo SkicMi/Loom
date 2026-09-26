@@ -11,8 +11,7 @@ Gotovo: asseti kao zasebni recepti, `AssetLibrary`, `Furnish` → Placements (po
 
 **Sljedeće (redom):**
 1. ~~Klik-test na Xvfb~~ — gotovo, vidi Prošle.
-2. Namještaj: kutni kuhinjski niz (L), gornji kuhinjski elementi iznad niza (ne na prozorskom zidu), tepih, lampe;
-   stolice oko stola zakrenute i djelomično ispod stola (sada 2 cm odmaknute).
+2. ~~Namještaj: kutni niz, gornji elementi, tepisi, lampe, stolice pod stolom~~ — gotovo, vidi Prošle.
 3. Više stilova po kategoriji (2–3 asseta: moderan, rustikalni) → Furnish ih bira po seedu jednom po kući (već radi).
 4. Asseti za alate/rekvizite (isti format) — kategorije izvan namještaja; AI ih uči zasebno od kuća.
 5. Faza 3 (`ProceduraGen`) može sad bilježiti i Placements u JSONL.
@@ -47,6 +46,21 @@ Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
 6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
 
 ## Prošle
+
+### 2026-09-26 — Namještaj, drugi krug: kutna kuhinja, gornji elementi, tepisi, lampe, stolice pod stolom
+- Novi asseti (22): rug, floor_lamp, table_lamp, wall_cabinet; kitchen_counter dobio `fixtures` (0 = sudoper i ploča
+  spušteni u korpus, za krak kutnog niza — predložak ne može brisati geometriju, pa je spušta).
+- `Placement.base` i `Placement.under`; `put` zna podignuti komad, ostaviti pod slobodnim (tepih, lampa na ormariću,
+  gornji element) i zakrenuti ga (površina je tada kutija oko zakrenutog komada).
+- Pravila: vidi CVOROVI.md → "Pravila namještaja", Dodaci. Test od 300 dobio provjeru: sudar se ne broji kad su komadi
+  razdvojeni po visini, stolica je pod svojim stolom ili je jedan tepih; nova provjera da se dodaci pojavljuju.
+- Iteracije: 283/300 (tri kupaonice ~2 m² ovisile su o slučajnom redoslijedu) → WC isprobava sva slobodna mjesta dok
+  ne stane umivaonik → **286/300 = isto kao bez namještaja**; gornjih elemenata 54 → niz uz zid bez prozora kao blaga
+  prednost (bez učinka) → element skraćen do prozorskog pojasa susjednog zida → 139.
+- Rezultat: `test_procedura_300` 15/15 (24 928 komada, 0.68 s; 215/228 kuhinja kutne, 2113 tepiha, 3421 lampa na
+  ormariću, 218 podnih lampi, 3746 stolica pod stolom, 139 gornjih elemenata; 0 sudara, 0 u vratima, 0 uz prozor),
+  `test_procedura_assets` 15/15, `test_weaverprocedura` 75/75, agent 29/29, PBR 8/8. Vizualno: tlocrti 8 kata i
+  Blender perspektiva dviju kuća.
 
 ### 2026-09-26 — Klik-test namještaja u editoru (Xvfb :93)
 - Editor pokrenut s `HOME` u scratchpadu: autosave nespremljene scene ide u `$HOME/.local/share/loom`, pa se korisnikov

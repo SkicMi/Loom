@@ -77,6 +77,7 @@ int main(){
     report.check("asset library loads", library.loadError.empty() && !library.ids().empty(), library.loadError);
     int collisions = 0, outside = 0, blockedDoors = 0, coveredWindows = 0, missingPieces = 0;
     std::size_t pieces = 0;
+    std::map<std::string, int> extras;   // kitchens with a corner run, rugs, lamps, wall cabinets, tucked chairs
     std::map<std::string, std::string> firstOf;   // first example of each furniture problem
     auto note = [&](const char* kind, const std::string& what){ firstOf.emplace(kind, what); };
     const auto started = std::chrono::steady_clock::now();
@@ -203,10 +204,18 @@ int main(){
             byRoom[piece.room][library.info(piece.asset)->category]++;
             if(piece.area.min.x < room.rect.min.x - 0.001f || piece.area.max.x > room.rect.max.x + 0.001f ||
                piece.area.min.y < room.rect.min.y - 0.001f || piece.area.max.y > room.rect.max.y + 0.001f){ ++outside; note("outside", piece.asset + " leaves its room" + house); }
-            for(std::size_t q = p + 1; q < layout.size(); ++q)
-                if(layout[q].floor == piece.floor && hit(piece.area, layout[q].area, 0.005f)){
+            // Pieces may share floor when one stands above the other (a lamp on a night stand, a wall
+            // cabinet over the counter), a chair is pushed under its own table, or one is a rug.
+            for(std::size_t q = p + 1; q < layout.size(); ++q){
+                const Proc::Placement& other = layout[q];
+                const bool apart = piece.base >= other.base + other.height - 0.001f || other.base >= piece.base + piece.height - 0.001f;
+                const bool tucked = piece.under == int32_t(q) || other.under == int32_t(p);
+                const bool rug = library.info(piece.asset)->category == "rug" || library.info(other.asset)->category == "rug";
+                if(apart || tucked || rug) continue;
+                if(other.floor == piece.floor && hit(piece.area, other.area, 0.005f)){
                     ++collisions; note("overlap", piece.asset + " overlaps " + layout[q].asset + house);
                 }
+            }
             // Door openings: the span, 0.6 m to both sides of the wall line.
             for(const Proc::InteriorDoor& door : plan.doors){
                 if(door.floor != piece.floor) continue;
@@ -217,7 +226,7 @@ int main(){
                 if(hit(piece.area, span, 0.005f)){ ++blockedDoors; note("door", piece.asset + " stands in a door" + house); }
             }
             // A tall piece near a window pane of its floor.
-            if(piece.height > 1.2f)
+            if(piece.base + piece.height > 1.2f)
                 for(std::size_t t = 0; t < wallMesh.triangles.size(); ++t){
                     if(Proc::semanticName(wallMesh.triangles[t].semantic) != "window") continue;
                     glm::vec3 centre(0.0f);
@@ -230,9 +239,16 @@ int main(){
                     if(glm::length(nearest - local) < 0.45f){ ++coveredWindows; note("window", piece.asset + " covers a window" + house); break; }
                 }
         }
+        for(const Proc::Placement& piece : layout){
+            const std::string category = library.info(piece.asset)->category;
+            if(category == "rug" || category == "floor_lamp" || category == "wall_cabinet") ++extras[category];
+            if(category == "table_lamp" && piece.base > 0.3f) ++extras["lamp on a night stand"];
+            if(category == "chair" && piece.under >= 0 && hit(piece.area, layout[std::size_t(piece.under)].area, 0.05f)) ++extras["chair under its table"];
+        }
         for(std::size_t k = 0; k < plan.rooms.size(); ++k){
             const Proc::RoomType type = plan.rooms[k].type;
             auto& has = byRoom[k];
+            if(type == Proc::RoomType::Kitchen){ ++extras["kitchens"]; if(has["kitchen_counter"] >= 2) ++extras["corner kitchen"]; }
             const bool ok = type == Proc::RoomType::Bedroom ? has["bed"] > 0
                           : type == Proc::RoomType::Kitchen ? has["kitchen_counter"] > 0
                           : type == Proc::RoomType::Bathroom ? has["toilet"] > 0 && has["sink"] > 0
@@ -259,6 +275,11 @@ int main(){
     report.check("furniture: no piece taller than 1.2 m stands at a window", coveredWindows == 0, fmt("%d at windows ", coveredWindows) + firstOf["window"]);
     report.check("furniture: bedroom bed, kitchen counter, bathroom toilet and basin, living room sofa, office desk", missingPieces == 0,
                  fmt("%d rooms without ", missingPieces) + firstOf["missing"]);
+    std::string extraText;
+    for(const auto& [name, count] : extras) extraText += fmt(" %s %d,", name.c_str(), count);
+    const bool allExtras = extras["rug"] > 0 && extras["floor_lamp"] > 0 && extras["wall_cabinet"] > 0 && extras["lamp on a night stand"] > 0 &&
+                           extras["chair under its table"] > 0 && extras["corner kitchen"] * 5 >= extras["kitchens"];
+    report.check("furniture: rugs, lamps, wall cabinets, chairs under tables, a corner run in 1 of 5 kitchens", allExtras, extraText);
     report.check("300 furnished houses in under 5 s", seconds < 5.0, fmt("%.2f s, %zu pieces", seconds, pieces));
     report.check("at least 85% of the hand-drawn outlines become a planned house", sketchPassed >= sketched * 85 / 100,
                  fmt("%d/%d sketches passed", sketchPassed, sketched));

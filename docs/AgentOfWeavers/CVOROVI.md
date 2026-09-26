@@ -45,7 +45,9 @@ Asseti su zasebni recepti (`procedura/assets/**/*.loomasset.json`, pišu ih `pro
 sredina u ishodištu, širina po X, prednja strana prema +Z. `evaluate(graph, &library)`; bez knjižnice Furnish/Place
 Assets/Asset padaju s razlogom. Editor koristi `defaultAssetLibrary()` (LOOM_ROOT_DIR/procedura/assets).
 Kategorije: bed, nightstand, wardrobe, desk, chair, sofa, armchair, coffee_table, tv_stand, shelf, table,
-kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet.
+kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet, rug, floor_lamp, table_lamp, wall_cabinet.
+Placement ima i `base` (visina dna iznad poda: lampa na ormariću, gornji element) i `under` (indeks stola pod koji je
+stolica uvučena); komadi koji se ne preklapaju po visini, stolica pod svojim stolom i tepih nisu sudar.
 
 Zadane oznake novih čvorova (mijenjaju se sa `SetMaterial` + filter po semantici):
 zid vani `wall_exterior`/plaster, zid unutra `wall_interior`/plaster, špalete `frame`/plaster, staklo `window`/glass,
@@ -58,7 +60,6 @@ stepenice `stairs`/concrete, ograda `railing`/metal, cesta `road`/asphalt, `curb
 | Čvor | Razina | Za što |
 |---|---|---|
 | Asseti za alate i rekvizite | S | isti format kao namještaj, druge kategorije |
-| Namještaj: kutni kuhinjski niz, gornji elementi | S | sada ravan niz uz jedan zid |
 | Kosi obris (ne pravokutni) za RoomSplit | S | sada treba `rectify` |
 | Stubište po dubini | S | sada krakovi uvijek idu uzduž reda; plitki redovi (< 2.6 m) nemaju mjesta |
 | `FloorStack` s uvlačenjem | S | različit tlocrt po katu (terase, neboderi) |
@@ -96,6 +97,11 @@ stepenice `stairs`/concrete, ograda `railing`/metal, cesta `road`/asphalt, `curb
    uz njega, stol sa stolicama ako stane. Kupaonica: kada, inače tuš, inače ništa — WC i umivaonik moraju stati.
    Ured: stolovi sa stolicom (prednost prozoru) dok stanu. Sastanci: stol sa stolicama. Predsoblje: ormarić za cipele.
    Ostava: police.
+   Dodaci: kuhinjski niz u kutu dobiva krak na susjednom zidu (bez sudopera i ploče, `fixtures` 0); gornji elementi
+   (dno 1.45 m) nad svakim krakom koji nije pod prozorom, skraćeni do prozorskog pojasa susjednog zida; tepih pod
+   stolićem i pod donjim dijelom kreveta (ne u zamahu vrata); stolne lampe na noćnim ormarićima, podna lampa uz sofu;
+   stolice 12 cm pod stolom i zakrenute do ±8° (za radnim stolom ±10°). WC isprobava sva slobodna mjesta dok ne stane
+   i umivaonik.
 6. Obavezni komadi (krevet, sofa, kuhinjski niz, WC + umivaonik, stol u uredu i sastancima) — ako ne stanu, greška s
    razlogom i mjerama sobe. Ostali komadi ovise o `fill` (1 = svi koji stanu).
 
