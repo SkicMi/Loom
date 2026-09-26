@@ -302,6 +302,7 @@
         std::string shotPath, shotResult, shotSave, shotMotion;
         std::string shotModel;                //--model: glTF na mjestu pogleda
         std::string shotRecipe;               //--recept: .loomrecipe.json u Procedura panel, preview uokviren
+        std::string shotRecipeExport;         //--izvezi: uz --recept, preview u .glb (s hvatom za alat/oruzje)
         bool shotMascott = false;             //--mascott: lik iz desnog klika (HumanoidMascott)
         std::string shotCharacter;            //--lik <glb>: lik s rigom kao iz Auto Riga (1.80 m, Animator, mirne sake)
         std::string shotGrab;                 //--uhvati desna|lijeva: zadnji tool u tu saku (kao pusten uz saku)
@@ -347,6 +348,7 @@
                 shotHandPitch = float(std::atof(argv[++i]));
             }
             else if(argument == "--recept" && i + 1 < argc) shotRecipe = argv[++i];
+            else if(argument == "--izvezi" && i + 1 < argc) shotRecipeExport = argv[++i];
             else if(argument == "--tool" && i + 1 < argc) shotTools.push_back(argv[++i]);   //kao Import as Tool / Weapon
             else if(argument == "--tekst" && i + 1 < argc) shotMotionText.push_back(argv[++i]);
             else if(argument == "--ploha" && i + 4 < argc){
@@ -2118,6 +2120,17 @@
             const Loom::ToolGeometry geometry = Loom::toolGeometry(stage, report.group, frame);
             const glm::vec3 size = geometry.high - geometry.low;
             const float longest = std::max({size.x, size.y, size.z}) * group->local.scale.x;
+            //Procedura .glb (Export GLB) nosi hvat iz recepta i pravu velicinu u metrima: bez procjene i skaliranja
+            std::string recipeKind;
+            std::vector<Engine::WeaverProcedura::AssetGrip> recipeGrips;
+            const bool fromRecipe = Loom::WeaverProceduraRecipe::readGlbTool(path.string(), recipeKind, recipeGrips) && !recipeGrips.empty();
+            if(fromRecipe){
+                //uvoz pogadja metar iz visine kamere; recept je vec u metrima, pa svjetsko mjerilo 1
+                const glm::mat4 parentWorld = group->parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(group->parent, frame);
+                const float parentScale = glm::length(glm::vec3(parentWorld[0]));
+                group->local.scale = glm::vec3(parentScale > 1e-9f ? 1.0f / parentScale : 1.0f);
+                lengthMetres = 0.0f;
+            }
             if(lengthMetres > 0.0f && longest > 1e-6f) group->local.scale *= lengthMetres / longest;
             //Modeli s interneta cesto nisu oko svog ishodista (Sketchfab cvorovi s velikim pomacima), a mjesto
             //iz importModelAtView pogadja "metar" po kameri. Tool stoji na podu, 40 cm pokraj tocke u koju
@@ -2126,8 +2139,19 @@
             const glm::vec3 place(view.orbit.target.x + 0.4f, 0.0f, view.orbit.target.z);
             group->local.translation = place - group->local.scale * glm::vec3(centre.x, geometry.low.y, centre.z);
             Warp::Tool tool;
-            tool.kind = kind;
-            tool.grips.push_back(Loom::defaultGrip(geometry, Loom::gripForItemName(path.stem().string())));
+            tool.kind = fromRecipe && !recipeKind.empty() ? recipeKind : kind;
+            for(const Engine::WeaverProcedura::AssetGrip& held : recipeGrips){
+                Warp::Grip grip;
+                grip.name = held.name.empty() ? grip.name : held.name;
+                grip.point = held.point;
+                grip.axis = held.axis;
+                grip.palm = held.palm;
+                grip.thickness = held.thickness;
+                grip.preset = held.preset.empty() ? grip.preset : held.preset;
+                grip.hand = held.hand;
+                tool.grips.push_back(grip);
+            }
+            if(tool.grips.empty()) tool.grips.push_back(Loom::defaultGrip(geometry, Loom::gripForItemName(path.stem().string())));
             group->tool = tool;
             afterModelImport(report, wasEmpty);
             selected = report.group;
@@ -2425,6 +2449,12 @@
                 view.lookThrough = Warp::None;
             }
             std::printf("recipe: %s\n", proceduraPanel.recipeStatus.c_str());
+            if(!shotRecipeExport.empty()){
+                proceduraPanel.recipeFilePath = shotRecipeExport;   //glbPathFor zadrzi ime, samo .glb
+                Loom::WeaverProceduraUi::exportGlbFile(proceduraPanel);
+                proceduraPanel.recipeFilePath = shotRecipe;
+                std::printf("export: %s\n", proceduraPanel.recipeStatus.c_str());
+            }
         }
         for(const std::string& toolPath : shotTools){
             int w = 0, h = 0;

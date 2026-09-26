@@ -5,6 +5,7 @@
 // generated sword or hammer can be imported as a Tool and held where its recipe says.
 
 #include "LoomAgentJson.h"
+#include "LoomProceduraRecipe.h"
 #include <Engine/WeaverProcedura.h>
 
 #include <cstring>
@@ -120,9 +121,52 @@ inline bool writeGlb(const Engine::WeaverProcedura::MeshData& mesh, const std::s
     return true;
 }
 
+// Reads extras.loom_tool from a .glb written by writeGlb: false when the file has none (any other
+// model), so the caller falls back to estimating the grip from the shape.
+inline bool readGlbTool(const std::string& path, std::string& kind, std::vector<Engine::WeaverProcedura::AssetGrip>& grips){
+    kind.clear();
+    grips.clear();
+    std::ifstream in(path, std::ios::binary);
+    uint32_t header[5] = {};
+    if(!in.read(reinterpret_cast<char*>(header), sizeof(header))) return false;
+    if(header[0] != 0x46546C67u || header[4] != 0x4E4F534Au || header[3] == 0 || header[3] > 64u * 1024u * 1024u) return false;
+    std::string text(header[3], '\0');
+    if(!in.read(text.data(), std::streamsize(text.size()))) return false;
+    try{
+        const AgentJsonValue root = AgentJsonParser(text).parse();
+        const AgentJsonValue* nodes = root.get("nodes");
+        if(!nodes || nodes->kind != AgentJsonValue::Kind::Array) return false;
+        for(const AgentJsonValue& node : nodes->array){
+            const AgentJsonValue* extras = node.get("extras");
+            const AgentJsonValue* tool = extras ? extras->get("loom_tool") : nullptr;
+            if(!tool) continue;
+            if(const AgentJsonValue* k = tool->get("kind")) kind = readString(*k, "loom_tool.kind");
+            if(const AgentJsonValue* list = tool->get("grips")){
+                for(const AgentJsonValue& g : list->array){
+                    Engine::WeaverProcedura::AssetGrip grip;
+                    if(const AgentJsonValue* name = g.get("name")) grip.name = readString(*name, "grip.name");
+                    grip.point = readVec3(required(g, "point"), "grip.point");
+                    grip.axis = readVec3(required(g, "axis"), "grip.axis");
+                    grip.palm = readVec3(required(g, "palm"), "grip.palm");
+                    if(const AgentJsonValue* thick = g.get("thickness")) grip.thickness = readFloat(*thick, "grip.thickness");
+                    if(const AgentJsonValue* preset = g.get("preset")) grip.preset = readString(*preset, "grip.preset");
+                    if(const AgentJsonValue* hand = g.get("hand")) grip.hand = int(readU32(*hand, "grip.hand"));
+                    grips.push_back(grip);
+                }
+            }
+            return true;
+        }
+    }catch(const std::exception&){
+        kind.clear();
+        grips.clear();
+    }
+    return false;
+}
+
 // Name.loomrecipe.json -> Name.glb in the same folder.
 inline std::string glbPathFor(const std::string& recipePath){
     std::string path = recipePath.empty() ? std::string("WeaverProcedura/Untitled.loomrecipe.json") : recipePath;
+    if(path.size() > 4 && path.compare(path.size() - 4, 4, ".glb") == 0) return path;
     for(const char* suffix : {".loomrecipe.json", ".json"}){
         const std::size_t length = std::strlen(suffix);
         if(path.size() > length && path.compare(path.size() - length, length, suffix) == 0){

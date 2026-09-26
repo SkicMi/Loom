@@ -283,6 +283,19 @@ int main(){
             Recipe::exportRecipeGlb(chair, chairBuilt.mesh, &library, chairPath, [](uint16_t){ return glm::vec3(0.5f); }, exportError);
         std::ifstream chairIn(chairPath, std::ios::binary);
         const std::string chairBytes{std::istreambuf_iterator<char>(chairIn), std::istreambuf_iterator<char>()};
+        std::vector<Proc::AssetGrip> expected, readBack, none;
+        library.grips("sword_basic", {}, expected, exportError);
+        std::string readKind, chairKind;
+        const bool swordRead = Recipe::readGlbTool(path, readKind, readBack);
+        const bool chairRead = Recipe::readGlbTool(chairPath, chairKind, none);
+        bool sameGrips = swordRead && readBack.size() == expected.size() && !expected.empty();
+        for(std::size_t g = 0; sameGrips && g < expected.size(); ++g)
+            sameGrips = glm::length(readBack[g].point - expected[g].point) < 1e-5f &&
+                        glm::length(readBack[g].axis - expected[g].axis) < 1e-5f &&
+                        glm::length(readBack[g].palm - expected[g].palm) < 1e-5f &&
+                        readBack[g].preset == expected[g].preset && std::abs(readBack[g].thickness - expected[g].thickness) < 1e-6f;
+        report.check("import reads the recipe's grips back from the .glb; other models have none",
+                     sameGrips && readKind == "weapon" && !chairRead && none.empty(), readKind);
         report.check("Export GLB names the file after the recipe and adds grips only for a held asset",
                      exported && chairExported && path.size() > 9 && path.compare(path.size() - 9, 9, "Sword.glb") == 0 &&
                      bytes.find("\"loom_tool\"") != std::string::npos && chairBytes.find("\"loom_tool\"") == std::string::npos,
