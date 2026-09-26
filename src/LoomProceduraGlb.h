@@ -8,6 +8,7 @@
 #include <Engine/WeaverProcedura.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -117,6 +118,50 @@ inline bool writeGlb(const Engine::WeaverProcedura::MeshData& mesh, const std::s
     word(uint32_t(binary.size())); word(0x004E4942u); out.write(binary.data(), std::streamsize(binary.size()));
     if(!out){ error = "writing " + path + " failed"; return false; }
     return true;
+}
+
+// Name.loomrecipe.json -> Name.glb in the same folder.
+inline std::string glbPathFor(const std::string& recipePath){
+    std::string path = recipePath.empty() ? std::string("WeaverProcedura/Untitled.loomrecipe.json") : recipePath;
+    for(const char* suffix : {".loomrecipe.json", ".json"}){
+        const std::size_t length = std::strlen(suffix);
+        if(path.size() > length && path.compare(path.size() - length, length, suffix) == 0){
+            path.erase(path.size() - length);
+            break;
+        }
+    }
+    return path + ".glb";
+}
+
+// Writes an evaluated recipe. When the recipe ends in a single Asset node for a tool or weapon,
+// the file also carries that asset's kind and grips for these parameters.
+inline bool exportRecipeGlb(const Engine::WeaverProcedura::Graph& graph, const Engine::WeaverProcedura::MeshData& mesh,
+                            const Engine::WeaverProcedura::AssetLibrary* library, const std::string& path,
+                            const std::function<glm::vec3(uint16_t material)>& colour, std::string& error){
+    namespace Proc = Engine::WeaverProcedura;
+    std::string kind;
+    std::vector<Proc::AssetGrip> grips;
+    const Proc::Node* terminal = nullptr;
+    int terminals = 0;
+    for(const Proc::Node& node : graph.nodes){
+        bool feeds = false;
+        for(const Proc::Link& link : graph.links) feeds = feeds || link.from == node.id;
+        if(!feeds){ terminal = &node; ++terminals; }
+    }
+    if(terminals == 1 && library){
+        if(const auto* asset = std::get_if<Proc::AssetNode>(&terminal->payload)){
+            if(const Proc::AssetInfo* info = library->info(asset->asset)){
+                const std::string assetKind = Proc::assetKind(info->category);
+                if(assetKind == "tool" || assetKind == "weapon"){
+                    kind = assetKind;
+                    if(!library->grips(asset->asset, asset->parameters, grips, error)) return false;
+                }
+            }
+        }
+    }
+    const std::filesystem::path target(path);
+    if(target.has_parent_path()) std::filesystem::create_directories(target.parent_path());
+    return writeGlb(mesh, path, colour, kind, grips, error);
 }
 
 }  // namespace Loom::WeaverProceduraRecipe

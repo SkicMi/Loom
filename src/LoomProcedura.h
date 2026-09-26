@@ -2,6 +2,8 @@
 
 #include <Engine/WeaverProcedura.h>
 #include "LoomProceduraAssets.h"
+#include "LoomProceduraGlb.h"
+#include "LoomProceduraLook.h"
 #include <Treadle/Ui.h>
 
 #include <algorithm>
@@ -792,6 +794,24 @@ inline bool saveRecipeFile(WeaverProceduraPanelState& state){
     }
 }
 
+// Writes the current preview next to the recipe file as .glb (a held tool also gets its grips).
+inline bool exportGlbFile(WeaverProceduraPanelState& state){
+    if(state.graphDirty) evaluateGraph(state);
+    if(!state.previewReady || state.previewIsPointCloud || state.previewMesh.empty()){
+        state.recipeStatus = "Export failed: the recipe needs a valid mesh preview first.";
+        return false;
+    }
+    const std::string path = WeaverProceduraRecipe::glbPathFor(state.recipeFilePath);
+    std::string error;
+    if(!WeaverProceduraRecipe::exportRecipeGlb(state.graph, state.previewMesh, &WeaverProceduraRecipe::defaultAssetLibrary(),
+                                               path, proceduralMaterialColour, error)){
+        state.recipeStatus = "Export failed: " + error;
+        return false;
+    }
+    state.recipeStatus = "Exported " + path;
+    return true;
+}
+
 inline bool loadRecipeFile(WeaverProceduraPanelState& state){
     namespace Proc = Engine::WeaverProcedura;
     namespace fs = std::filesystem;
@@ -860,6 +880,7 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                                             state.newRecipeArmed ? "Confirm New" : "New Recipe"});
     if(recipeButton == 0) WeaverProceduraUi::saveRecipeFile(state);
     else if(recipeButton == 1) WeaverProceduraUi::loadRecipeFile(state);
+    if(ui.button("Export GLB")) WeaverProceduraUi::exportGlbFile(state);
     else if(recipeButton == 2 && (!state.graph.nodes.empty() && !state.newRecipeArmed)){
         state.newRecipeArmed = true;
         state.recipeStatus = "Click Confirm New again to discard the current Recipe graph.";

@@ -259,6 +259,36 @@ int main(){
                      error + loadError + fmt(" %zu/%zu triangles", triangles, sword.indices.size() / 3));
         std::filesystem::remove(path);
     }
+
+    // Panel export: a recipe ending in one weapon Asset carries that weapon's grips; furniture carries none.
+    {
+        Proc::Graph weapon;
+        Proc::AssetNode swordNode; swordNode.asset = "sword_basic";
+        Proc::addNode(weapon, swordNode);
+        const Proc::EvaluationResult built = Proc::evaluate(weapon, &library);
+        const std::string recipePath = (std::filesystem::temp_directory_path() / "loom_export" / "Sword.loomrecipe.json").string();
+        const std::string path = Recipe::glbPathFor(recipePath);
+        std::string exportError;
+        const bool exported = built.succeeded &&
+            Recipe::exportRecipeGlb(weapon, built.mesh, &library, path, [](uint16_t){ return glm::vec3(0.5f); }, exportError);
+        std::ifstream in(path, std::ios::binary);
+        const std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        const std::string chairId = Proc::assetsInCategory(library, "chair").front();
+        Proc::Graph chair;
+        Proc::AssetNode chairNode; chairNode.asset = chairId;
+        Proc::addNode(chair, chairNode);
+        const Proc::EvaluationResult chairBuilt = Proc::evaluate(chair, &library);
+        const std::string chairPath = Recipe::glbPathFor(recipePath + ".chair.json");
+        const bool chairExported = chairBuilt.succeeded &&
+            Recipe::exportRecipeGlb(chair, chairBuilt.mesh, &library, chairPath, [](uint16_t){ return glm::vec3(0.5f); }, exportError);
+        std::ifstream chairIn(chairPath, std::ios::binary);
+        const std::string chairBytes{std::istreambuf_iterator<char>(chairIn), std::istreambuf_iterator<char>()};
+        report.check("Export GLB names the file after the recipe and adds grips only for a held asset",
+                     exported && chairExported && path.size() > 9 && path.compare(path.size() - 9, 9, "Sword.glb") == 0 &&
+                     bytes.find("\"loom_tool\"") != std::string::npos && chairBytes.find("\"loom_tool\"") == std::string::npos,
+                     exportError + " " + path);
+        std::filesystem::remove_all(std::filesystem::temp_directory_path() / "loom_export");
+    }
     report.check("furnish without a room plan says so", !noPlan.succeeded && noPlan.error.find("RoomSplit") != std::string::npos, noPlan.error);
     return report.result();
 }
