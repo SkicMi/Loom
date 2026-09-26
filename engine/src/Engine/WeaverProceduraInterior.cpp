@@ -793,6 +793,20 @@ bool makeInterior(const Footprint& footprint, const InteriorNode& settings, Mesh
     };
     const float strip = 0.9f, landing = 1.1f;
 
+    // A local point on the outline lies on the outer face of an exterior wall; whatever ends
+    // there (a partition, a floor edge) stops wallThickness inside instead of showing through.
+    const float wall = std::max(0.0f, settings.wallThickness);
+    auto onOutline = [&](const glm::vec2& local){
+        const glm::vec2 p = footprint.toWorld(local);
+        for(std::size_t k = 0; k < footprint.outline.size(); ++k){
+            const glm::vec2 a = footprint.outline[k], b = footprint.outline[(k + 1) % footprint.outline.size()];
+            const glm::vec2 ab = b - a;
+            const float along = std::clamp(glm::dot(p - a, ab) / std::max(glm::dot(ab, ab), 1e-12f), 0.0f, 1.0f);
+            if(glm::length(a + ab * along - p) < 1e-3f) return true;
+        }
+        return false;
+    };
+
     for(uint32_t floor = 0; floor < footprint.floors; ++floor){
         const float low = footprint.elevation + float(floor) * h, high = footprint.elevation + float(floor + 1) * h;
         // Partitions between rooms that are not both open space, split around their doors,
@@ -809,8 +823,12 @@ bool makeInterior(const Footprint& footprint, const InteriorNode& settings, Mesh
                 const float line = alongX ? from.y : from.x;
                 float s0 = alongX ? std::min(from.x, to.x) : std::min(from.y, to.y);
                 float s1 = alongX ? std::max(from.x, to.x) : std::max(from.y, to.y);
-                posts.push_back(alongX ? glm::vec2(s0, line) : glm::vec2(line, s0));
-                posts.push_back(alongX ? glm::vec2(s1, line) : glm::vec2(line, s1));
+                auto point = [&](float s){ return alongX ? glm::vec2(s, line) : glm::vec2(line, s); };
+                // An end on the outline meets the exterior wall: stop at its inner face, no post.
+                const bool outer0 = onOutline(point(s0)), outer1 = onOutline(point(s1));
+                if(outer0) s0 += wall; else posts.push_back(point(s0));
+                if(outer1) s1 -= wall; else posts.push_back(point(s1));
+                if(s1 - s0 <= eps) continue;
                 std::vector<std::pair<float, float>> gaps;
                 for(const InteriorDoor& d : plan.doors){
                     if(d.floor != floor || !((d.roomA == a && d.roomB == b) || (d.roomA == b && d.roomB == a))) continue;
@@ -822,13 +840,13 @@ bool makeInterior(const Footprint& footprint, const InteriorNode& settings, Mesh
                     if(alongX) localBox(mesh, footprint, p0, p1, line - t * 0.5f, line + t * 0.5f, y0, y1, wallTag, plaster, overflow, maxVertices);
                     else localBox(mesh, footprint, line - t * 0.5f, line + t * 0.5f, p0, p1, y0, y1, wallTag, plaster, overflow, maxVertices);
                 };
-                float cursor = s0 + t * 0.5f;   // posts fill the first and last half thickness
+                float cursor = outer0 ? s0 : s0 + t * 0.5f;   // posts fill the first and last half thickness
                 for(const auto& [g0, g1] : gaps){
                     piece(cursor, g0, low, high);
                     piece(g0, g1, low + doorHeight, high);
                     cursor = g1;
                 }
-                piece(cursor, s1 - t * 0.5f, low, high);
+                piece(cursor, outer1 ? s1 : s1 - t * 0.5f, low, high);
             }
         }
         std::sort(posts.begin(), posts.end(), [](const glm::vec2& x, const glm::vec2& y){ return x.x < y.x || (x.x == y.x && x.y < y.y); });
@@ -864,6 +882,12 @@ bool makeInterior(const Footprint& footprint, const InteriorNode& settings, Mesh
                 const uint16_t material = type == RoomType::Bathroom || type == RoomType::Kitchen ? tiles
                                         : type == RoomType::Stairs || type == RoomType::Storage ? concrete : wood;
                 LocalRect r = room.rect;
+                // Sides on the outline end at the exterior wall's inner face.
+                if(onOutline({r.min.x, (r.min.y + r.max.y) * 0.5f})) r.min.x += wall;
+                if(onOutline({r.max.x, (r.min.y + r.max.y) * 0.5f})) r.max.x -= wall;
+                if(onOutline({(r.min.x + r.max.x) * 0.5f, r.min.y})) r.min.y += wall;
+                if(onOutline({(r.min.x + r.max.x) * 0.5f, r.max.y})) r.max.y -= wall;
+                if(r.max.x - r.min.x <= eps || r.max.y - r.min.y <= eps) continue;
                 if(type == RoomType::Stairs && floor > 0){
                     if(plan.stairsAlongX) r.max.x = r.min.x + strip; else r.max.y = r.min.y + strip;
                 }

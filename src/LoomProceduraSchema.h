@@ -20,7 +20,7 @@
 
 namespace Loom::WeaverProceduraRecipe{
 
-constexpr uint32_t actionSchemaVersion = 1;
+constexpr uint32_t actionSchemaVersion = 3;
 
 struct ParamSpec{
     enum class Kind{ Float, Int, Bool, Enum, Vec2, Vec3 };
@@ -66,7 +66,7 @@ inline const std::vector<NodeSpec>& nodeSchemas(){
                  {"Footprint"}, "Mesh"},
         {"roof", {choice("roof_type", roofTypeNames()), real("pitch_degrees", 5, 60, 1), real("overhang", 0, 1.2, 0.05),
                   real("thickness", 0.1, 0.5, 0.01), real("parapet_height", 0, 1.2, 0.05)}, {"Footprint"}, "Mesh"},
-        {"interior", {real("partition_thickness", 0.08, 0.2, 0.01), flag("door_leaves"), flag("floor_finish"), flag("stairs")},
+        {"interior", {real("partition_thickness", 0.08, 0.2, 0.01), real("wall_thickness", 0.15, 0.5, 0.01), flag("door_leaves"), flag("floor_finish"), flag("stairs")},
                      {"Footprint"}, "Mesh"},
         {"furnish", {integer("seed", 1, 999999), real("wall_thickness", 0.15, 0.5, 0.01), real("partition_thickness", 0.08, 0.2, 0.01),
                      real("fill", 0, 1, 0.05), choice("style", withEmpty(Proc::styleNames()))}, {"Footprint"}, "Placements"},
@@ -75,7 +75,8 @@ inline const std::vector<NodeSpec>& nodeSchemas(){
         {"set_material", {choice("material", Proc::materialLibrary()), choice("filter.semantic", withEmpty(Proc::semanticVocabulary())),
                           flag("filter.use_direction"), ParamSpec{"filter.direction", K::Vec3, -1, 1, 1, {}},
                           real("filter.max_angle_degrees", 0, 90, 5)}, {"Mesh"}, "Mesh"},
-        {"uv_project", {real("tile_size", 0.1, 5.0, 0.05)}, {"Mesh"}, "Mesh"},
+        {"uv_project", {choice("mode", uvModeNames()), real("tile_size", 0.1, 5.0, 0.05), real("rotation_degrees", 0, 165, 15),
+                        choice("filter.semantic", withEmpty(Proc::semanticVocabulary()))}, {"Mesh"}, "Mesh"},
     };
     return schemas;
 }

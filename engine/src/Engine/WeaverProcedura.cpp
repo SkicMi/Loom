@@ -1523,32 +1523,64 @@ bool smoothNormals(const MeshData& input, float angleDegrees, MeshData& output, 
 }
 
 bool projectUVs(const MeshData& input, float tileSize, MeshData& output, std::string& error){
+    UVProjectNode settings;
+    settings.tileSize = tileSize;
+    return projectUVs(input, settings, output, error);
+}
+
+bool projectUVs(const MeshData& input, const UVProjectNode& settings, MeshData& output, std::string& error){
     if(!validMesh(input)){ error = "mesh topology or vertex data is invalid"; return false; }
-    if(!finite(tileSize) || tileSize < 0.01f || tileSize > 1000.0f){
+    if(!finite(settings.tileSize) || settings.tileSize < 0.01f || settings.tileSize > 1000.0f){
         error = "UV tile size must be between 0.01 and 1000 meters"; return false;
     }
+    if(!finite(settings.rotationDegrees) || std::abs(settings.rotationDegrees) > 360.0f){ error = "UV rotation must be within 360 degrees"; return false; }
+    if(settings.mode != UVMode::Box && settings.mode != UVMode::Surface){ error = "unknown UV mode"; return false; }
+    if(!validTriangleFilter(settings.filter)){ error = "UV filter is invalid"; return false; }
+    const float angle = float(double(settings.rotationDegrees) * pi / 180.0);
+    const float cosine = std::cos(angle), sine = std::sin(angle);
+    constexpr uint64_t keepKey = (1ull << 30u) - 1u;   // corner of a triangle the filter skips
     CornerRemap remap;
     remap.mesh.triangles = input.triangles;
     remap.mesh.indices.reserve(input.indices.size());
     for(std::size_t triangle = 0; triangle < input.indices.size() / 3; ++triangle){
+        if(!triangleMatches(input, triangle, settings.filter)){
+            for(int corner = 0; corner < 3; ++corner){
+                const uint32_t source = input.indices[triangle*3+std::size_t(corner)];
+                remap.mesh.indices.push_back(remap.vertex(input.vertices[source], (uint64_t(source) << 30u) | keepKey));
+            }
+            continue;
+        }
         const glm::vec3& a = input.vertices[input.indices[triangle*3]].position;
         const glm::vec3& b = input.vertices[input.indices[triangle*3+1]].position;
         const glm::vec3& c = input.vertices[input.indices[triangle*3+2]].position;
         glm::vec3 normal{0.0f, 1.0f, 0.0f};
         normalized(glm::cross(b-a, c-a), normal);
-        const glm::vec3 magnitude = glm::abs(normal);
-        const int axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
-        const int facing = (axis == 0 ? normal.x : axis == 1 ? normal.y : normal.z) >= 0.0f ? 0 : 1;
+        // Two axes in the plane the texture is laid on, and the key that separates corners
+        // whose UVs differ from their neighbours'.
+        glm::vec3 uAxis, vAxis;
+        uint64_t code;
+        if(settings.mode == UVMode::Surface){
+            if(!normalized(glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), normal), uAxis)){
+                uAxis = {1.0f, 0.0f, 0.0f};
+                vAxis = {0.0f, 0.0f, 1.0f};
+            }else vAxis = -glm::cross(normal, uAxis);     // down the face
+            code = quantizedNormalKey(normal);
+        }else{
+            const glm::vec3 magnitude = glm::abs(normal);
+            const int axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
+            const float facing = (axis == 0 ? normal.x : axis == 1 ? normal.y : normal.z) >= 0.0f ? 1.0f : -1.0f;
+            // U runs along the face as seen from outside, V runs down it (along +Z on floors).
+            if(axis == 0){ uAxis = {0.0f, 0.0f, -facing}; vAxis = {0.0f, -1.0f, 0.0f}; }
+            else if(axis == 1){ uAxis = {1.0f, 0.0f, 0.0f}; vAxis = {0.0f, 0.0f, facing}; }
+            else{ uAxis = {facing, 0.0f, 0.0f}; vAxis = {0.0f, -1.0f, 0.0f}; }
+            code = uint64_t(axis * 2 + (facing > 0.0f ? 0 : 1));
+        }
         for(int corner = 0; corner < 3; ++corner){
             const uint32_t source = input.indices[triangle*3+std::size_t(corner)];
             MeshVertex vertex = input.vertices[source];
-            const glm::vec3& p = vertex.position;
-            // U runs along the face as seen from outside, V points up (or along -Z on floors).
-            if(axis == 0) vertex.uv = {facing == 0 ? -p.z : p.z, p.y};
-            else if(axis == 1) vertex.uv = {p.x, facing == 0 ? -p.z : p.z};
-            else vertex.uv = {facing == 0 ? p.x : -p.x, p.y};
-            vertex.uv /= tileSize;
-            remap.mesh.indices.push_back(remap.vertex(vertex, uint64_t(source) * 6u + uint64_t(axis * 2 + facing)));
+            const glm::vec2 planar{glm::dot(vertex.position, uAxis), glm::dot(vertex.position, vAxis)};
+            vertex.uv = glm::vec2(cosine * planar.x - sine * planar.y, sine * planar.x + cosine * planar.y) / settings.tileSize;
+            remap.mesh.indices.push_back(remap.vertex(vertex, (uint64_t(source) << 30u) | code));
         }
     }
     output = std::move(remap.mesh);
@@ -1830,6 +1862,9 @@ ValidationResult validate(const Graph& graph){
         }else if(const auto* uv = std::get_if<UVProjectNode>(&node.payload)){
             if(!finite(uv->tileSize) || uv->tileSize < 0.01f || uv->tileSize > 1000.0f)
                 return {false, "UV tile size must be between 0.01 and 1000 meters"};
+            if(uv->mode != UVMode::Box && uv->mode != UVMode::Surface) return {false, "unknown UV mode"};
+            if(!finite(uv->rotationDegrees) || std::abs(uv->rotationDegrees) > 360.0f) return {false, "UV rotation must be within 360 degrees"};
+            if(!validTriangleFilter(uv->filter)) return {false, "UV filter is invalid"};
         }else if(const auto* copy = std::get_if<CopyToPointsNode>(&node.payload)){
             if(!finite(copy->scale) || copy->scale <= 0.0f || copy->scale > 1000.0f ||
                !finite(copy->randomYawDegrees) || copy->randomYawDegrees < 0.0f || copy->randomYawDegrees > 180.0f ||
@@ -2267,7 +2302,7 @@ EvaluationResult evaluate(const Graph& graph, const AssetLibrary* assets){
             else if(const auto* tag = std::get_if<SetSemanticNode>(&node.payload)) made = setSemantic(*meshInput, *tag, produced, error);
             else if(const auto* paint = std::get_if<SetMaterialNode>(&node.payload)) made = setMaterial(*meshInput, *paint, produced, error);
             else if(const auto* smooth = std::get_if<SmoothNormalsNode>(&node.payload)) made = smoothNormals(*meshInput, smooth->angleDegrees, produced, error);
-            else if(const auto* uv = std::get_if<UVProjectNode>(&node.payload)) made = projectUVs(*meshInput, uv->tileSize, produced, error);
+            else if(const auto* uv = std::get_if<UVProjectNode>(&node.payload)) made = projectUVs(*meshInput, *uv, produced, error);
             else return fail("unsupported node type");
             if(!made) return fail(error);
         }

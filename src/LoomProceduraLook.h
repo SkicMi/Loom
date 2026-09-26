@@ -1,13 +1,19 @@
 #pragma once
 
-// Colour of each Procedura library material, shared by the viewport preview (LoomPbr.h) and
-// .glb export (LoomProceduraGlb.h), so what is exported looks like what the viewport showed.
+// Look of each Procedura library material: a flat colour (.glb export, LoomProceduraGlb.h) and
+// the procedural PBR textures (WeaverProceduraTextures.h) the viewport draws, written once as PNG
+// files into a cache folder keyed by the texture generator version.
 
 #include <Engine/WeaverProcedura.h>
+#include <Engine/WeaverProceduraTextures.h>
+#include <Spool/ImageFile.h>
+#include <Warp/Stage.h>
 
 #include <glm/glm.hpp>
 
+#include <filesystem>
 #include <map>
+#include <mutex>
 #include <string>
 
 namespace Loom{
@@ -27,6 +33,80 @@ inline glm::vec3 proceduralMaterialColour(uint16_t material){
     const auto found = looks.find(Engine::WeaverProcedura::materialName(material));
     if(found == looks.end()) return glm::vec3(0.18f, 0.58f, 0.82f);
     return glm::pow(found->second, glm::vec3(2.2f));   //tablica je u sRGB-u, faktor boje materijala je linearan
+}
+
+inline std::filesystem::path proceduralTextureDirectory(){
+#ifdef LOOM_ROOT_DIR
+    const std::filesystem::path root = std::filesystem::path(LOOM_ROOT_DIR) / ".cache" / "procedura" / "textures";
+#else
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "loom-procedura-textures";
+#endif
+    return root / ("v" + std::to_string(Engine::WeaverProcedura::textureGeneratorVersion));
+}
+
+struct ProceduralTextureFiles{ std::string color, metallicRoughness, normal; };
+
+// The material's three maps as PNG files, made the first time they are asked for (512 x 512, one
+// meter per repeat). Empty paths when the material has no texture or the files cannot be written.
+inline ProceduralTextureFiles proceduralTextureFiles(uint16_t material, uint32_t size = 512){
+    static std::mutex lock;
+    static std::map<uint16_t, ProceduralTextureFiles> made;
+    const std::lock_guard<std::mutex> guard(lock);
+    const auto found = made.find(material);
+    if(found != made.end()) return found->second;
+    ProceduralTextureFiles files;
+    const std::string name = Engine::WeaverProcedura::materialName(material);
+    if(!name.empty()){
+        const std::filesystem::path folder = proceduralTextureDirectory();
+        const std::string stem = (folder / (name + "_" + std::to_string(size))).string();
+        ProceduralTextureFiles candidate{stem + "_color.png", stem + "_mr.png", stem + "_normal.png"};
+        std::error_code missing;
+        const bool cached = std::filesystem::exists(candidate.color, missing) && std::filesystem::exists(candidate.metallicRoughness, missing) &&
+                            std::filesystem::exists(candidate.normal, missing);
+        if(cached) files = candidate;
+        else{
+            Engine::WeaverProcedura::MaterialTextures maps;
+            std::string error;
+            if(Engine::WeaverProcedura::makeMaterialTextures(name, size, maps, error)){
+                try{
+                    auto save = [&](const std::string& path, const std::vector<uint8_t>& pixels){
+                        Spool::Image image;
+                        image.pixels = pixels;
+                        image.width = image.height = maps.size;
+                        image.sourceChannels = 4;
+                        Spool::savePng(path + ".tmp.png", image);
+                        std::filesystem::rename(path + ".tmp.png", path);
+                    };
+                    save(candidate.color, maps.color);
+                    save(candidate.metallicRoughness, maps.metallicRoughness);
+                    save(candidate.normal, maps.normal);
+                    files = candidate;
+                }catch(const std::exception&){}
+            }
+        }
+    }
+    made[material] = files;
+    return files;
+}
+
+// A viewport material with the procedural maps; the flat colour when there are none.
+inline Warp::Material proceduralWarpMaterial(uint16_t material){
+    Warp::Material look;
+    look.name = "procedura:" + Engine::WeaverProcedura::materialName(material);
+    const ProceduralTextureFiles files = proceduralTextureFiles(material);
+    if(files.color.empty()){
+        look.baseColor = glm::vec4(proceduralMaterialColour(material), 1.0f);
+        look.roughness = 0.6f;
+        return look;
+    }
+    look.baseColor = glm::vec4(1.0f);
+    look.baseColorMap.source = files.color;
+    look.metallic = 1.0f;          // the map holds the values; glTF multiplies map by factor
+    look.roughness = 1.0f;
+    look.metallicRoughnessMap.source = files.metallicRoughness;
+    look.normalMap.source = files.normal;
+    look.normalMap.amount = 1.0f;
+    return look;
 }
 
 } // namespace Loom

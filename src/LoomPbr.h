@@ -276,11 +276,13 @@ public:
         }
         proceduralPreviewGpu.emplace();
         proceduralPreviewColours.clear();
+        proceduralPreviewMaterials.clear();
         proceduralPreviewRevision = revision;
         for(const auto& [material, triangles] : byMaterial){
             for(const MeshChunkData& chunk : meshChunks(*data, &triangles)){
                 proceduralPreviewGpu->chunks.emplace_back(loom.device, loom.command, chunk.vertices, chunk.indices);
                 proceduralPreviewColours.push_back(proceduralMaterialColour(material));
+                proceduralPreviewMaterials.push_back(material);
             }
         }
     }
@@ -385,7 +387,9 @@ public:
         });
         if(proceduralPreview && proceduralPreviewGpu){
             for(size_t c = 0; c < proceduralPreviewGpu->chunks.size(); ++c)
-                items.push_back({&proceduralPreviewGpu->chunks[c], glm::mat4(1.0f), -1,
+                //Materijal iz Procedura knjiznice: indeks -2 - id (materialFor gradi teksturirani materijal)
+                items.push_back({&proceduralPreviewGpu->chunks[c], glm::mat4(1.0f),
+                                 c < proceduralPreviewMaterials.size() && proceduralPreviewMaterials[c] ? -2 - int(proceduralPreviewMaterials[c]) : -1,
                                  c < proceduralPreviewColours.size() ? proceduralPreviewColours[c] : glm::vec3(0.18f, 0.58f, 0.82f), false});
         }
         if(items.empty()) return false;
@@ -712,6 +716,7 @@ private:
         Warp::Material m;
         const bool known = index >= 0 && size_t(index) < stage.materials.size();
         if(known) m = stage.materials[size_t(index)];
+        else if(index <= -2) m = proceduralWarpMaterial(uint16_t(-2 - index));   //Procedura: proceduralne PBR mape
         else{ m.baseColor = glm::vec4(colour, 1.0f); m.roughness = 0.6f; }
         if(forceDoubleSided) m.doubleSided = true;
 
@@ -725,7 +730,7 @@ private:
             textureFor(m.emissiveMap, true, *whiteSrgb, signature)};
 
         char fallbackKey[96];
-        std::snprintf(fallbackKey, sizeof(fallbackKey), "%.4f %.4f %.4f %d", colour.r, colour.g, colour.b, kind);
+        std::snprintf(fallbackKey, sizeof(fallbackKey), "%.4f %.4f %.4f %d %d", colour.r, colour.g, colour.b, kind, index);
         GpuMaterial& gpu = known ? stageMaterials[index] : fallbacks[fallbackKey];
         if(!gpu.material || gpu.signature != signature){
             loom.waitIdle();
@@ -762,6 +767,7 @@ private:
     std::optional<GpuPrimitive> proceduralPreviewGpu;
     uint64_t proceduralPreviewRevision = 0;
     std::vector<glm::vec3> proceduralPreviewColours;   //jedna po komadu u proceduralPreviewGpu
+    std::vector<uint16_t> proceduralPreviewMaterials;  //materialLibrary id po komadu, 0 = bez materijala
     std::vector<std::unique_ptr<VulkanGraphicsPipeline>> pipelines;
     std::unique_ptr<VulkanGraphicsPipeline> presentPipeline;
     std::optional<RenderTarget> target;

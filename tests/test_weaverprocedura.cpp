@@ -3,6 +3,7 @@
 #include "../src/LoomProceduraRecipe.h"
 
 #include <Engine/WeaverProcedura.h>
+#include <Engine/WeaverProceduraTextures.h>
 
 #include <cmath>
 #include <algorithm>
@@ -964,6 +965,77 @@ int main(){
                             !inside.doorLeaves && std::abs(inside.partitionThickness - 0.1f) < 1e-6f;
     }catch(const std::exception& failure){ interiorText = failure.what(); }
     report.check("Recipe round-trips room_split and interior", interiorRoundTrip, interiorText);
+
+    //== UV surface: na kosini nema rastezanja, U je vodoravan, filter ostavlja ostale plohe ==
+    {
+        Proc::MeshData roofShape, surfaced, onlyTop;
+        Proc::AddPrimitiveNode pyramid; pyramid.primitive = Proc::PrimitiveType::Pyramid; pyramid.size = {6.0f, 2.5f, 4.0f};
+        Proc::makePrimitive(pyramid, roofShape, error);
+        Proc::UVProjectNode surface; surface.mode = Proc::UVMode::Surface; surface.tileSize = 0.5f;
+        const bool projected = Proc::projectUVs(roofShape, surface, surfaced, error);
+        float worstStretch = 0.0f, worstLevel = 0.0f;
+        for(std::size_t t = 0; projected && t < surfaced.indices.size() / 3; ++t){
+            const glm::vec3 p0 = surfaced.vertices[surfaced.indices[t * 3]].position, p1 = surfaced.vertices[surfaced.indices[t * 3 + 1]].position,
+                            p2 = surfaced.vertices[surfaced.indices[t * 3 + 2]].position;
+            const bool level = std::abs(glm::normalize(glm::cross(p1 - p0, p2 - p0)).y) > 0.99f;   // floors use X and Z instead
+            for(int e = 0; e < 3; ++e){
+                const Proc::MeshVertex& a = surfaced.vertices[surfaced.indices[t * 3 + std::size_t(e)]];
+                const Proc::MeshVertex& b = surfaced.vertices[surfaced.indices[t * 3 + std::size_t((e + 1) % 3)]];
+                worstStretch = std::max(worstStretch, std::abs(glm::length(b.uv - a.uv) * surface.tileSize - glm::length(b.position - a.position)));
+                // Two corners at the same height differ only in U: rows of tiles stay level.
+                if(!level && std::abs(a.position.y - b.position.y) < 1e-5f) worstLevel = std::max(worstLevel, std::abs(a.uv.y - b.uv.y));
+            }
+        }
+        report.check("surface UVs keep true lengths on slopes and keep U level", projected && worstStretch < 1e-3f && worstLevel < 1e-4f,
+                     fmt("stretch %.5f m, level %.5f", worstStretch, worstLevel));
+        Proc::UVProjectNode top; top.mode = Proc::UVMode::Surface; top.filter.useDirection = true; top.filter.direction = {0, 1, 0};
+        top.filter.maxAngleDegrees = 60.0f;
+        Proc::MeshData cubeShape;
+        Proc::makePrimitive(Proc::AddPrimitiveNode{}, cubeShape, error);
+        const bool filtered = Proc::projectUVs(cubeShape, top, onlyTop, error);
+        std::size_t unchanged = 0;
+        for(std::size_t t = 0; filtered && t < cubeShape.indices.size() / 3; ++t){
+            if(Proc::triangleMatches(cubeShape, t, top.filter)) continue;
+            bool same = true;
+            for(int k = 0; k < 3; ++k)
+                same = same && onlyTop.vertices[onlyTop.indices[t * 3 + std::size_t(k)]].uv == cubeShape.vertices[cubeShape.indices[t * 3 + std::size_t(k)]].uv;
+            unchanged += same ? 1 : 0;
+        }
+        report.check("a UV filter leaves the other triangles' UVs as they were", filtered && unchanged == 10, fmt("%zu of 10", unchanged));
+    }
+
+    //== Proceduralne PBR teksture: svaki materijal, bez sava, uvijek iste ==
+    {
+        int seams = 0, missing = 0;
+        std::string worst;
+        for(const std::string& name : Proc::materialLibrary()){
+            Proc::MaterialTextures maps, again;
+            std::string textureError;
+            if(!Proc::makeMaterialTextures(name, 128, maps, textureError) || !Proc::makeMaterialTextures(name, 128, again, textureError) ||
+               maps.color != again.color || maps.normal != again.normal){ ++missing; worst += " " + name; continue; }
+            // Across the wrap the step between neighbours must look like any other step inside.
+            auto step = [&](const std::vector<uint8_t>& image, uint32_t ax, uint32_t ay, uint32_t bx, uint32_t by){
+                int sum = 0;
+                for(int c = 0; c < 3; ++c) sum += std::abs(int(image[(ay * 128 + ax) * 4 + c]) - int(image[(by * 128 + bx) * 4 + c]));
+                return sum;
+            };
+            // Summed step between column c and c+1 (and row r, r+1); the wrap step (127 -> 0) must
+            // not be larger than the largest step inside the image.
+            long long largestInside = 0, across = 0;
+            for(uint32_t c = 0; c < 128; ++c){
+                long long columns = 0, rows = 0;
+                for(uint32_t k = 0; k < 128; ++k){
+                    columns += step(maps.color, c, k, (c + 1) % 128, k);
+                    rows += step(maps.color, k, c, k, (c + 1) % 128);
+                }
+                if(c == 127) across = std::max(columns, rows);
+                else largestInside = std::max({largestInside, columns, rows});
+            }
+            if(across > largestInside){ ++seams; worst += " " + name + fmt(" %lld>%lld", across, largestInside); }
+        }
+        report.check("every library material has deterministic procedural PBR maps", missing == 0, worst);
+        report.check("procedural textures tile without a visible seam", seams == 0, worst);
+    }
 
     return report.result();
 }

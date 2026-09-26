@@ -971,6 +971,45 @@ tool (šaka klizi po predmetu), Flip, Turn palm, Look at the hand. Kod: `loom_ap
 7. Stare stavke: veličina toola bez imena (514 m), pištolj (okidač, high grip, dvoručni), hvat kroz
    Kimodo klip, Right hand → Other hand na istom mjestu (dvoklik), Animator stavke (`animator-plan-2026-09`).
 
+### 10. AgentOfWeavers i WeaverProcedura — STANJE 27.9. (Claude, Procedura sekcija)
+
+Cilj: mali model (3–5M, iz nule, **samo engleski**) koji iz teksta piše Procedura recept (graf čvorova),
+ne mesh. Plan, dnevnik i stanje čvorova: `docs/AgentOfWeavers/` (README, AKCIJE.md, CVOROVI.md). Stari
+Qwen/LoRA agent i F8 AI Chat su obrisani (26.9.).
+
+**Gotovo i commitano** (zadnji commit 9a98402):
+- Procedura čvorovi: zgrade (Footprint, FloorStack, Walls, Slab, Roof, Stairs, RoadFromCurve, RoomSplit,
+  Interior), namještaj po pravilima (71 asset u `procedura/assets`, Furnish → Placements, stilovi), alati i
+  oružje s hvatom, Export GLB u panelu (`extras.loom_tool`), uvoz alata čita hvat iz .glb.
+- Jezik akcija za model: `src/LoomProceduraSchema.h` (shema, `schemaJson()`), `src/LoomProceduraActions.h`
+  (ADD/SET/CONNECT/END ↔ recept, provjera legalnosti po koraku).
+- Generator podataka: `build/procedura-gen` (`src/procedura_gen.cpp`, predložak u `src/LoomProceduraHouses.h`):
+  kuće + materijali + UV, Fail → Why → Retry, 3 engleska opisa po kući. 10k kuća u ~30 s.
+- Encoder: `tools/agentofweavers/` (venv gitignored, torch cu128), `embed.py`, zamrznuti `BAAI/bge-base-en-v1.5`.
+  Podaci: `.cache/agentofweavers/data/houses-v0.1` (stari, prije UV/materijala — treba regenerirati).
+- Codex prompt za 200 held-out promptova: `docs/AgentOfWeavers/heldout/CODEX_PROMPT.md`.
+
+**NECOMMITANO — u radnom stablu, testovi prolaze** (Procedura 79/79, akcije 15/15, asseti 27/27,
+300 kuća 16/16, PBR 8/8):
+- Proceduralne PBR teksture: `engine/src/Engine/WeaverProceduraTextures.{h,cpp}` (21 materijal, boja +
+  hrapavost/metalnost + normal, bešavno, 1 m po ponavljanju); PNG cache u `.cache/procedura/textures/v1`
+  (`src/LoomProceduraLook.h`: `proceduralTextureFiles`, `proceduralWarpMaterial`). `procedura-gen --textures DIR`.
+- Viewport crta Procedura preview s teksturama: u `src/LoomPbr.h` 6 malih izmjena (indeks materijala
+  `-2 - id`, `proceduralPreviewMaterials`, ključ fallbacka s indeksom) — datoteka ima i tuđi HDRI rad.
+- UV: `UVProjectNode` ima `mode` (box/surface), `rotation_degrees`, `filter`; surface = U vodoravno, V niz
+  plohu u pravoj duljini (krov bez rastezanja). Recept shema 9, shema akcija 3.
+- Predložak kuće v0.3: materijal poda i unutarnjih zidova, UV po dijelu (vanjski/unutarnji zid, pod s 45°,
+  krov), opisi to spominju ("walls of large bricks", "diagonal floorboards").
+- Popravak geometrije: pregrade i pod stanu na unutarnjem licu vanjskog zida (`InteriorNode.wall_thickness`),
+  prije su krajevi pregrada virili kroz vanjski zid (vidljivo tek s materijalima).
+- `ProceduraGen --save-recipes K` (recepti za pregled), editor `--recept X [--izvezi Y.glb]`.
+
+**Sljedeće:** commitati gornje (LoomPbr.h i CMakeLists.txt samo svoje komade — drugi agent ima necommitan i
+staged rad: commit preko privremenog indeksa); vizualno provjeriti unutrašnjost nakon popravka pregrada
+(Xvfb :78, `--recept` na kući bez krova); regenerirati podatke (`procedura-gen --houses 10000 --seed 1 --out
+.cache/agentofweavers/data/houses-v0.3`, pa `embed.py`); zatim prvi model. Kasnije: training engine s
+povremenim prompt + render (izvana, iznutra, prolaz) na Telegram, korisnik ocjenjuje dobro/loše.
+
 ## 8. Testni materijal — koje snimke i kako ih snimiti
 
 Cilj nije "četiri snimke" nego **četiri različita kvara**. Drona nema i neće ga biti neko vrijeme;

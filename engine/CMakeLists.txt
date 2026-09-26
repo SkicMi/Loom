@@ -55,6 +55,7 @@ add_library(Engine STATIC
     src/Engine/WeaverProceduraBuilding.cpp
     src/Engine/WeaverProceduraInterior.cpp
     src/Engine/WeaverProceduraFurnish.cpp
+    src/Engine/WeaverProceduraTextures.cpp
 )
 
 target_include_directories(Engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

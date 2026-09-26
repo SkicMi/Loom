@@ -111,6 +111,10 @@ inline const std::vector<std::string>& footprintShapeNames(){
     static const std::vector<std::string> names = {"rectangle", "l_shape", "u_shape"};
     return names;
 }
+inline const std::vector<std::string>& uvModeNames(){
+    static const std::vector<std::string> names = {"box", "surface"};
+    return names;
+}
 inline const std::vector<std::string>& roofTypeNames(){
     static const std::vector<std::string> names = {"flat", "gable", "hip", "shed"};
     return names;
@@ -142,10 +146,11 @@ inline Proc::TriangleFilter readFilter(const AgentJsonValue& parameters){
     const AgentJsonValue* encoded = parameters.get("filter");
     if(!encoded) return filter;
     if(encoded->kind != AgentJsonValue::Kind::Object) throw std::runtime_error("filter must be an object");
-    filter.semantic = readString(required(*encoded, "semantic"), "filter.semantic");
-    filter.useDirection = readBool(required(*encoded, "use_direction"), "filter.use_direction");
-    filter.direction = readVec3(required(*encoded, "direction"), "filter.direction");
-    filter.maxAngleDegrees = readFloat(required(*encoded, "max_angle_degrees"), "filter.max_angle_degrees");
+    // Every field is optional (an action sequence writes only the fields its schema lists).
+    if(const AgentJsonValue* v = encoded->get("semantic")) filter.semantic = readString(*v, "filter.semantic");
+    if(const AgentJsonValue* v = encoded->get("use_direction")) filter.useDirection = readBool(*v, "filter.use_direction");
+    if(const AgentJsonValue* v = encoded->get("direction")) filter.direction = readVec3(*v, "filter.direction");
+    if(const AgentJsonValue* v = encoded->get("max_angle_degrees")) filter.maxAngleDegrees = readFloat(*v, "filter.max_angle_degrees");
     return filter;
 }
 
@@ -235,7 +240,10 @@ inline std::string serialize(const Document& document){
         }else if(const auto* smooth = std::get_if<Proc::SmoothNormalsNode>(&node.payload)){
             out << "{\"type\":\"smooth_normals\",\"angle_degrees\":" << smooth->angleDegrees << '}';
         }else if(const auto* uv = std::get_if<Proc::UVProjectNode>(&node.payload)){
-            out << "{\"type\":\"uv_project\",\"tile_size\":" << uv->tileSize << '}';
+            out << "{\"type\":\"uv_project\",\"mode\":" << agentJsonEscape(nameOf(uvModeNames(), std::size_t(uv->mode)))
+                << ",\"tile_size\":" << uv->tileSize << ",\"rotation_degrees\":" << uv->rotationDegrees << ',';
+            writeFilter(out, uv->filter);
+            out << '}';
         }else if(const auto* copy = std::get_if<Proc::CopyToPointsNode>(&node.payload)){
             out << "{\"type\":\"copy_to_points\",\"align_to_normal\":" << (copy->alignToNormal ? "true" : "false")
                 << ",\"scale\":" << copy->scale << ",\"random_yaw_degrees\":" << copy->randomYawDegrees
@@ -290,6 +298,7 @@ inline std::string serialize(const Document& document){
                 << ",\"door_width\":" << split->doorWidth << ",\"entrance_edge\":" << split->entranceEdge << '}';
         }else if(const auto* interior = std::get_if<Proc::InteriorNode>(&node.payload)){
             out << "{\"type\":\"interior\",\"partition_thickness\":" << interior->partitionThickness
+                << ",\"wall_thickness\":" << interior->wallThickness
                 << ",\"door_leaves\":" << (interior->doorLeaves ? "true" : "false")
                 << ",\"floor_finish\":" << (interior->floorFinish ? "true" : "false")
                 << ",\"stairs\":" << (interior->stairs ? "true" : "false") << '}';
@@ -457,7 +466,13 @@ inline Document parse(const AgentJsonValue& root){
         }else if(type == "smooth_normals"){
             node.payload = Proc::SmoothNormalsNode{readFloat(required(parameters,"angle_degrees"),"smooth_normals.angle_degrees")};
         }else if(type == "uv_project"){
-            node.payload = Proc::UVProjectNode{readFloat(required(parameters,"tile_size"),"uv_project.tile_size")};
+            Proc::UVProjectNode uv;
+            uv.tileSize = readFloat(required(parameters,"tile_size"),"uv_project.tile_size");
+            if(const AgentJsonValue* mode = parameters.get("mode"))
+                uv.mode = Proc::UVMode(readName(*mode, uvModeNames(), "uv_project.mode"));
+            if(const AgentJsonValue* turn = parameters.get("rotation_degrees")) uv.rotationDegrees = readFloat(*turn, "uv_project.rotation_degrees");
+            uv.filter = readFilter(parameters);
+            node.payload = uv;
         }else if(type == "copy_to_points"){
             Proc::CopyToPointsNode copy;
             copy.alignToNormal = readBool(required(parameters,"align_to_normal"),"copy_to_points.align_to_normal");
@@ -559,6 +574,7 @@ inline Document parse(const AgentJsonValue& root){
         }else if(type == "interior"){
             Proc::InteriorNode interior;
             interior.partitionThickness = readFloat(required(parameters,"partition_thickness"),"interior.partition_thickness");
+            if(const AgentJsonValue* wall = parameters.get("wall_thickness")) interior.wallThickness = readFloat(*wall, "interior.wall_thickness");
             interior.doorLeaves = readBool(required(parameters,"door_leaves"),"interior.door_leaves");
             interior.floorFinish = readBool(required(parameters,"floor_finish"),"interior.floor_finish");
             interior.stairs = readBool(required(parameters,"stairs"),"interior.stairs");

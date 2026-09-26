@@ -6,8 +6,9 @@
 //
 // Template (node order = action order):
 //   0 footprint  1 floor_stack  2 room_split  3 walls  4 slab  5 roof  6 interior  7 furnish
-//   8 place_assets  9 merge(3,4,5,6,8)  10-13 set_material (exterior walls, roof, frames, doors)
-//   14 uv_project
+//   8 place_assets  9 merge(3,4,5,6,8)  10-15 set_material (exterior walls, roof, frames, doors,
+//   floors, interior walls)  16 uv_project box (everything)  17-20 uv_project surface (exterior
+//   walls, interior walls, floors, roof), each with its own tile size; floors may be laid at 45°
 // The model therefore learns parameters, materials and UV scale over a fixed structure first;
 // choosing the structure itself is a later data set.
 
@@ -24,7 +25,7 @@
 
 namespace Loom::WeaverProceduraRecipe{
 
-constexpr const char* houseGeneratorVersion = "houses-v0.1";
+constexpr const char* houseGeneratorVersion = "houses-v0.3";
 
 struct HouseSample{
     Engine::WeaverProcedura::FootprintNode footprint;
@@ -36,7 +37,8 @@ struct HouseSample{
     Engine::WeaverProcedura::InteriorNode interior;
     Engine::WeaverProcedura::FurnishNode furnish;
     std::string wallMaterial = "plaster", roofMaterial = "roof_tiles", frameMaterial = "plaster", doorMaterial = "wood_planks";
-    float tileSize = 1.0f;
+    std::string floorMaterial = "wood_planks", innerWallMaterial = "plaster";
+    float wallTile = 1.0f, innerWallTile = 1.0f, floorTile = 1.0f, roofTile = 1.0f, floorRotation = 0.0f;
 };
 
 // Value snapped to the schema grid of type.param (clamped into its range).
@@ -70,6 +72,7 @@ inline HouseSample sampleHouse(std::mt19937_64& rng){
     h.stack.floorHeight = snap("floor_stack", "floor_height", uniform(2.7f, 3.5f));
     h.stack.elevation = snap("floor_stack", "elevation", pick(0, 3) == 0 ? uniform(0.5f, 1.0f) : uniform(0.0f, 0.3f));
     h.split.program = pick(0, 5) == 0 ? Proc::InteriorProgram::Office : Proc::InteriorProgram::Residential;
+    const bool office = h.split.program == Proc::InteriorProgram::Office;
     h.split.seed = uint64_t(pick(1, 999999));
     h.walls.thickness = snap("walls", "thickness", uniform(0.2f, 0.35f));
     h.walls.windowWidth = snap("walls", "window_width", pick(0, 4) == 0 ? uniform(1.8f, 2.4f) : uniform(0.8f, 1.5f));
@@ -88,6 +91,7 @@ inline HouseSample sampleHouse(std::mt19937_64& rng){
     h.roof.parapetHeight = h.roof.type == Proc::RoofType::Flat && pick(0, 1) ? snap("roof", "parapet_height", uniform(0.4f, 1.0f)) : 0.0f;
     h.furnish.seed = uint64_t(pick(1, 999999));
     h.furnish.wallThickness = h.walls.thickness;
+    h.interior.wallThickness = h.walls.thickness;
     h.furnish.fill = snap("furnish", "fill", uniform(0.3f, 1.0f));
     h.furnish.style = Proc::styleNames()[std::size_t(pick(0, int(Proc::styleNames().size()) - 1))];
     const bool rustic = h.furnish.style == "rustic", modern = h.furnish.style == "modern";
@@ -97,7 +101,17 @@ inline HouseSample sampleHouse(std::mt19937_64& rng){
                    : modern ? oneOf({"roof_metal", "roof_tiles"}) : oneOf({"roof_tiles", "roof_tiles", "roof_metal"});
     h.frameMaterial = rustic ? oneOf({"wood_beam", "stone"}) : modern ? oneOf({"metal", "plaster"}) : oneOf({"plaster", "wood_beam", "metal"});
     h.doorMaterial = modern ? oneOf({"lacquer", "metal", "wood_planks"}) : oneOf({"wood_planks", "wood_planks", "lacquer"});
-    h.tileSize = snap("uv_project", "tile_size", uniform(0.5f, 2.0f));
+    h.floorMaterial = office ? oneOf({"ceramic", "concrete", "wood_planks"}) : rustic ? oneOf({"wood_planks", "stone", "ceramic"})
+                    : modern ? oneOf({"concrete", "ceramic", "wood_planks"}) : oneOf({"wood_planks", "ceramic", "stone", "concrete"});
+    h.innerWallMaterial = rustic ? oneOf({"plaster", "brick", "wood_planks", "stone"}) : modern ? oneOf({"plaster", "plaster", "concrete", "brick"})
+                        : oneOf({"plaster", "plaster", "brick", "wood_planks"});
+    // Pattern scale: 1 is the material's natural size (bricks 25 cm, boards 14 cm, ...).
+    auto scale = [&](){ const int kind = pick(0, 5); return kind == 0 ? uniform(0.6f, 0.8f) : kind == 1 ? uniform(1.35f, 1.8f) : uniform(0.9f, 1.15f); };
+    h.wallTile = snap("uv_project", "tile_size", scale());
+    h.innerWallTile = snap("uv_project", "tile_size", scale());
+    h.floorTile = snap("uv_project", "tile_size", scale());
+    h.roofTile = snap("uv_project", "tile_size", scale());
+    h.floorRotation = pick(0, 3) == 0 ? 45.0f : 0.0f;
     return h;
 }
 
@@ -116,9 +130,24 @@ inline Document houseDocument(const HouseSample& h, const std::string& name){
     };
     const auto mw = paint(h.wallMaterial, "wall_exterior"), mr = paint(h.roofMaterial, "roof");
     const auto mf = paint(h.frameMaterial, "frame"), md = paint(h.doorMaterial, "door");
-    const auto uv = Proc::addNode(graph, Proc::UVProjectNode{h.tileSize});
+    const auto mfl = paint(h.floorMaterial, "floor"), miw = paint(h.innerWallMaterial, "wall_interior");
+    auto project = [&](Proc::UVMode mode, float tile, float rotation, const char* semantic){
+        Proc::UVProjectNode node;
+        node.mode = mode;
+        node.tileSize = tile;
+        node.rotationDegrees = rotation;
+        node.filter.semantic = semantic;
+        return Proc::addNode(graph, node);
+    };
+    const auto uvAll = project(Proc::UVMode::Box, 1.0f, 0.0f, "");
+    const auto uvWall = project(Proc::UVMode::Surface, h.wallTile, 0.0f, "wall_exterior");
+    const auto uvInner = project(Proc::UVMode::Surface, h.innerWallTile, 0.0f, "wall_interior");
+    const auto uvFloor = project(Proc::UVMode::Surface, h.floorTile, h.floorRotation, "floor");
+    const auto uvRoof = project(Proc::UVMode::Surface, h.roofTile, 0.0f, "roof");
     graph.links = {{a,0,b,0},{b,0,c,0},{c,0,w,0},{c,0,s,0},{c,0,r,0},{c,0,i,0},{c,0,f,0},{f,0,pa,0},
-                   {w,0,m,0},{s,0,m,1},{r,0,m,2},{i,0,m,3},{pa,0,m,4},{m,0,mw,0},{mw,0,mr,0},{mr,0,mf,0},{mf,0,md,0},{md,0,uv,0}};
+                   {w,0,m,0},{s,0,m,1},{r,0,m,2},{i,0,m,3},{pa,0,m,4},{m,0,mw,0},{mw,0,mr,0},{mr,0,mf,0},{mf,0,md,0},
+                   {md,0,mfl,0},{mfl,0,miw,0},{miw,0,uvAll,0},{uvAll,0,uvWall,0},{uvWall,0,uvInner,0},{uvInner,0,uvFloor,0},
+                   {uvFloor,0,uvRoof,0}};
     return {name, graph};
 }
 
@@ -223,13 +252,37 @@ inline std::vector<std::string> describeHouse(const HouseSample& h, const HouseF
     std::string roof = "a";
     if(h.roof.type != Proc::RoofType::Flat && h.roof.pitchDegrees >= 42.0f) roof += " steep";
     else if(h.roof.type != Proc::RoofType::Flat && h.roof.pitchDegrees <= 25.0f) roof += " low-pitched";
-    if(pick(0, 1)) roof += " " + roofMaterial.at(h.roofMaterial);
+    if(pick(0, 1) || h.roofTile >= 1.35f) roof += " " + std::string(h.roofTile >= 1.35f && h.roofMaterial == "roof_tiles" ? "large-tiled"
+                                                                : roofMaterial.at(h.roofMaterial));
     roof += " " + roofTypes[int(h.roof.type)] + " roof";
     if(h.roof.type == Proc::RoofType::Flat && h.roof.parapetHeight > 0.0f) roof += " with a parapet";
     features.push_back(roof);
     const std::map<std::string, std::string> walls = {{"plaster", "plastered walls"}, {"brick", "brick walls"}, {"stone", "stone walls"},
                                                        {"wood_planks", "timber cladding"}, {"concrete", "concrete walls"}};
-    features.push_back(walls.at(h.wallMaterial));
+    std::string wallPhrase = walls.at(h.wallMaterial);
+    if(h.wallTile >= 1.35f && h.wallMaterial != "plaster" && h.wallMaterial != "concrete"){
+        const std::map<std::string, std::string> large = {{"brick", "walls of large bricks"}, {"stone", "walls of large stone blocks"},
+                                                          {"wood_planks", "wide timber boards"}};
+        wallPhrase = large.at(h.wallMaterial);
+    }else if(h.wallTile <= 0.8f && h.wallMaterial != "plaster" && h.wallMaterial != "concrete"){
+        const std::map<std::string, std::string> small = {{"brick", "walls of small bricks"}, {"stone", "walls of small stones"},
+                                                          {"wood_planks", "narrow timber boards"}};
+        wallPhrase = small.at(h.wallMaterial);
+    }
+    features.push_back(wallPhrase);
+    const std::map<std::string, std::string> floors = {{"wood_planks", "wooden floors"}, {"ceramic", "tiled floors"},
+                                                        {"stone", "stone floors"}, {"concrete", "polished concrete floors"}};
+    std::string floorPhrase = floors.at(h.floorMaterial);
+    const std::map<std::string, std::string> diagonal = {{"wood_planks", "diagonal floorboards"}, {"ceramic", "diagonally laid floor tiles"},
+                                                          {"stone", "stone floors laid on the diagonal"}};
+    if(h.floorRotation == 45.0f && diagonal.count(h.floorMaterial)) floorPhrase = diagonal.at(h.floorMaterial);
+    if(h.floorTile >= 1.35f && h.floorRotation != 45.0f)
+        floorPhrase = h.floorMaterial == "wood_planks" ? "wide floorboards" : h.floorMaterial == "ceramic" ? "large floor tiles" : floorPhrase;
+    features.push_back(floorPhrase);
+    const std::map<std::string, std::string> inner = {{"plaster", "plastered interior walls"}, {"brick", "exposed brick inside"},
+                                                       {"wood_planks", "wood-panelled rooms"}, {"stone", "stone interior walls"},
+                                                       {"concrete", "bare concrete interior walls"}};
+    features.push_back(inner.at(h.innerWallMaterial));
     const int bedrooms = facts.rooms.count("bedroom") ? facts.rooms.at("bedroom") : 0;
     const int bathrooms = facts.rooms.count("bathroom") ? facts.rooms.at("bathroom") : 0;
     if(!office && bedrooms > 0) features.push_back(bedrooms == 1 ? "one bedroom" : std::to_string(bedrooms) + " bedrooms");

@@ -1,7 +1,8 @@
 // ProceduraGen: AgentOfWeavers training data from the Procedura rules, without a window.
 //
 //   procedura-gen --schema schema.json
-//   procedura-gen --houses 10000 --seed 1 --out DIR [--retries 2] [--val 0.02]
+//   procedura-gen --textures DIR [--size 512]      every library material's PBR maps as PNG
+//   procedura-gen --houses 10000 --seed 1 --out DIR [--retries 2] [--val 0.02] [--save-recipes K]
 //
 // For every house: sample the template on the schema grid, turn the recipe into actions and back
 // (a sequence that does not survive the round trip is a generator bug and stops the run),
@@ -12,8 +13,11 @@
 // DIR/houses.jsonl   one sample per line
 // DIR/schema.json    the action schema the samples use
 // DIR/summary.json   counts, failure reasons, timing
+// DIR/recipes/       with --save-recipes K: the first K passing houses as .loomrecipe.json (to look at)
 
 #include "LoomProceduraHouses.h"
+#include <Engine/WeaverProceduraTextures.h>
+#include <Spool/ImageFile.h>
 
 #include <chrono>
 #include <cstdio>
@@ -58,6 +62,9 @@ int main(int argc, char** argv){
     uint64_t seed = 1;
     int retries = 2;
     double validationShare = 0.02;
+    long long saveRecipes = 0;
+    std::string texturesDir;
+    uint32_t textureSize = 512;
     for(int i = 1; i < argc; ++i){
         const std::string argument = argv[i];
         if(argument == "--schema" && i + 1 < argc) schemaPath = argv[++i];
@@ -66,10 +73,32 @@ int main(int argc, char** argv){
         else if(argument == "--out" && i + 1 < argc) outDir = argv[++i];
         else if(argument == "--retries" && i + 1 < argc) retries = std::max(0, std::atoi(argv[++i]));
         else if(argument == "--val" && i + 1 < argc) validationShare = std::atof(argv[++i]);
+        else if(argument == "--save-recipes" && i + 1 < argc) saveRecipes = std::atoll(argv[++i]);
+        else if(argument == "--textures" && i + 1 < argc) texturesDir = argv[++i];
+        else if(argument == "--size" && i + 1 < argc) textureSize = uint32_t(std::atoi(argv[++i]));
         else{
             std::fprintf(stderr, "usage: procedura-gen --schema FILE | --houses N --seed S --out DIR [--retries R] [--val SHARE]\n");
             return 2;
         }
+    }
+    if(!texturesDir.empty()){
+        for(const std::string& name : Proc::materialLibrary()){
+            Proc::MaterialTextures maps;
+            std::string error;
+            if(!Proc::makeMaterialTextures(name, textureSize, maps, error)){ std::fprintf(stderr, "%s: %s\n", name.c_str(), error.c_str()); return 1; }
+            auto save = [&](const char* suffix, const std::vector<uint8_t>& pixels){
+                Spool::Image image;
+                image.pixels = pixels;
+                image.width = image.height = maps.size;
+                image.sourceChannels = 4;
+                Spool::savePng((std::filesystem::path(texturesDir) / (name + suffix)).string(), image);
+            };
+            save("_color.png", maps.color);
+            save("_mr.png", maps.metallicRoughness);
+            save("_normal.png", maps.normal);
+        }
+        std::printf("textures: %zu materials in %s\n", Proc::materialLibrary().size(), texturesDir.c_str());
+        if(houses == 0 && schemaPath.empty()) return 0;
     }
     if(!schemaPath.empty()){
         if(!writeText(schemaPath, Recipe::schemaJson())){ std::fprintf(stderr, "cannot write %s\n", schemaPath.c_str()); return 1; }
@@ -136,6 +165,11 @@ int main(int argc, char** argv){
             actionCount += actions.size();
             if(val) ++validation;
             if(reason.empty()){
+                if(passed < saveRecipes){
+                    std::filesystem::create_directories(std::filesystem::path(outDir) / "recipes");
+                    writeText(std::filesystem::path(outDir) / "recipes" / ("house_" + std::to_string(id) + ".loomrecipe.json"),
+                              Recipe::serialize(back));
+                }
                 ++passed;
                 if(retryOf >= 0) ++repaired;
                 break;

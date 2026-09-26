@@ -13,7 +13,7 @@ namespace Engine::WeaverProcedura{
 
 // Recipe files carry this schema version. Increment it when serialized node
 // payloads or port meanings change.
-constexpr uint32_t graphSchemaVersion = 8;
+constexpr uint32_t graphSchemaVersion = 9;
 using NodeId = uint64_t;
 
 struct Link{
@@ -220,10 +220,20 @@ struct SmoothNormalsNode{
     float angleDegrees = 30.0f;
 };
 
-// Box projection in world meters: each triangle uses the plane of its dominant
-// normal axis, so textures tile at tileSize meters on every wall and floor.
+// UVs in world meters / tileSize, so a texture made for one meter (WeaverProceduraTextures.h)
+// shows at its real size when tileSize is 1.
+//   Box:     each triangle uses the plane of its dominant normal axis.
+//   Surface: U runs level along the face (to the right seen from outside), V runs down the face
+//            in true length; walls, pitched roofs and ramps show no stretch, and roof tile rows
+//            stay level. Level faces (floors, ceilings) use world X and Z.
+// rotationDegrees turns the pattern in UV (plank direction on a floor). Only triangles matching
+// filter are projected; the others keep their UVs.
+enum class UVMode : uint8_t{ Box, Surface };
 struct UVProjectNode{
     float tileSize = 1.0f;
+    UVMode mode = UVMode::Box;
+    float rotationDegrees = 0.0f;
+    TriangleFilter filter;
 };
 
 // Places a copy of the mesh on input 0 at every point from input 1.
@@ -397,6 +407,7 @@ struct RoomSplitNode{
 // finish per room and the staircase with its railing.
 struct InteriorNode{
     float partitionThickness = 0.12f;
+    float wallThickness = 0.25f;       // exterior walls (Walls.thickness): partitions and floors stop at their inner face
     bool doorLeaves = true;
     bool floorFinish = true;
     bool stairs = true;
@@ -614,6 +625,7 @@ bool setSemantic(const MeshData& input, const SetSemanticNode& settings, MeshDat
 bool setMaterial(const MeshData& input, const SetMaterialNode& settings, MeshData& output, std::string& error);
 bool smoothNormals(const MeshData& input, float angleDegrees, MeshData& output, std::string& error);
 bool projectUVs(const MeshData& input, float tileSize, MeshData& output, std::string& error);
+bool projectUVs(const MeshData& input, const UVProjectNode& settings, MeshData& output, std::string& error);
 bool copyToPoints(const MeshData& instance, const std::vector<glm::vec3>& points,
                   const std::vector<glm::vec3>& normals, const CopyToPointsNode& settings,
                   MeshData& output, std::string& error, std::size_t maxVertices = 2'000'000);
