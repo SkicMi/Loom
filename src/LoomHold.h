@@ -99,11 +99,21 @@ inline int holdAt(const Warp::Entity& item, double frame){
 //je. Hvat koji je u ovom kadru vec trajao zavrsi kadar prije (prebacivanje iz ruke u ruku)
 //palm: kad je zadan, predmet sjedne ishodistem u tu tocku (u dlan) i zadrzi okret - predmet dovucen
 //"uz saku na ekranu" moze biti metar ispred nje po dubini
+//itemWorld: gdje predmet mora biti u kadru hvata (npr. drska poravnata u dlan, LoomTool.h)
+inline bool grabItemAt(Warp::Stage& stage, Warp::Id item, Warp::Id hand, double frame, double endFrame,
+                       const glm::mat4& itemWorld);
+
 inline bool grabItem(Warp::Stage& stage, Warp::Id item, Warp::Id hand, double frame, double endFrame,
                      const glm::vec3* palm = nullptr){
     if(!stage.canHold(item, hand)) return false;
     glm::mat4 itemWorld = stage.worldMatrix(item, frame);
     if(palm) itemWorld[3] = glm::vec4(*palm, 1.0f);
+    return grabItemAt(stage, item, hand, frame, endFrame, itemWorld);
+}
+
+inline bool grabItemAt(Warp::Stage& stage, Warp::Id item, Warp::Id hand, double frame, double endFrame,
+                       const glm::mat4& itemWorld){
+    if(!stage.canHold(item, hand)) return false;
     const glm::mat4 handWorld = stage.worldMatrix(hand, frame);
     Warp::Entity* entity = stage.get(item);
     std::vector<Warp::Hold>& holds = entity->holds;

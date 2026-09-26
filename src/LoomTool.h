@@ -22,6 +22,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -97,28 +98,106 @@ inline int toolLongAxis(const ToolGeometry& geometry){
     return size.x >= size.y && size.x >= size.z ? 0 : (size.y >= size.z ? 1 : 2);
 }
 
-//Prvi grip: na najduzoj osi, 15 % od donjeg kraja (drska je obicno na kraju), dlan prema drugoj
-//najduzoj osi. Tool editor ga pomakne, okrene ili prebaci na drugi kraj
+//Glavne osi oblika (PCA vrhova): modeli s interneta cesto leze dijagonalno u svom sustavu (rotacija
+//unutar cvorova), pa najduza os kutije nije os maca. axes[0] je najdulja
+struct ToolAxes{ glm::vec3 centre{0.0f}; glm::vec3 axes[3]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}; };
+inline ToolAxes toolAxes(const ToolGeometry& geometry){
+    ToolAxes result;
+    const auto& vertices = geometry.mesh.vertices;
+    if(vertices.size() < 3) return result;
+    glm::dvec3 mean(0.0);
+    for(const glm::vec3& v : vertices) mean += glm::dvec3(v);
+    mean /= double(vertices.size());
+    glm::dmat3 covariance(0.0);
+    for(const glm::vec3& v : vertices){
+        const glm::dvec3 d = glm::dvec3(v) - mean;
+        covariance += glm::outerProduct(d, d);
+    }
+    result.centre = glm::vec3(mean);
+    //Potencijska iteracija: najveca os, pa druga okomita na nju
+    auto dominant = [&](const glm::dmat3& m, glm::dvec3 start){
+        glm::dvec3 x = glm::normalize(start);
+        for(int i = 0; i < 64; ++i){
+            const glm::dvec3 next = m * x;
+            if(glm::length(next) < 1e-30) break;
+            x = glm::normalize(next);
+        }
+        return x;
+    };
+    const glm::dvec3 first = dominant(covariance, glm::dvec3(0.31, 0.83, 0.47));
+    const double firstValue = glm::dot(first, covariance * first);
+    const glm::dmat3 deflated = covariance - firstValue * glm::outerProduct(first, first);
+    glm::dvec3 second = dominant(deflated, glm::cross(first, glm::dvec3(0.57, 0.21, 0.79)));
+    second = glm::normalize(second - first * glm::dot(second, first));
+    result.axes[0] = glm::vec3(first);
+    result.axes[1] = glm::vec3(second);
+    result.axes[2] = glm::normalize(glm::cross(result.axes[0], result.axes[1]));
+    return result;
+}
+
+//Raspon projekcija vrhova na os (za "Along the tool" u tool editoru)
+inline void toolExtentAlong(const ToolGeometry& geometry, const glm::vec3& origin, const glm::vec3& axis, float& low, float& high){
+    low = 0.0f; high = 0.0f;
+    bool first = true;
+    for(const glm::vec3& v : geometry.mesh.vertices){
+        const float t = glm::dot(v - origin, axis);
+        low = first ? t : std::min(low, t);
+        high = first ? t : std::max(high, t);
+        first = false;
+    }
+}
+
+//PRVI GRIP iz oblika: profil sirine duz glavne osi (24 odsjecka). Najsiri odsjecak je stitnik maca
+//ili glava sjekire/cekica:
+//  - glava na samom kraju (sjekira, cekic, bat): drska je suprotni kraj, grip 15 % od njega
+//  - stitnik unutar predmeta (mac, noz): drska je KRACA strana od stitnika, grip na njenoj sredini
+//Os gripa gleda prema stitniku/glavi (od malog prsta prema palcu); tocka je na sredini presjeka
+//drske. Pistolj i cudni oblici se namjeste u tool editoru (Along the tool, Flip, Turn palm)
 inline Warp::Grip defaultGrip(const ToolGeometry& geometry, const std::string& preset){
     Warp::Grip grip;
     grip.preset = preset;
     if(geometry.empty()) return grip;
-    const int along = toolLongAxis(geometry);
-    const glm::vec3 size = geometry.high - geometry.low;
-    const int side = along == 0 ? (size.y >= size.z ? 1 : 2) : along == 1 ? (size.x >= size.z ? 0 : 2) : (size.x >= size.y ? 0 : 1);
-    grip.axis = glm::vec3(0.0f);
-    grip.axis[along] = 1.0f;
-    grip.palm = glm::vec3(0.0f);
-    grip.palm[side] = 1.0f;
-    grip.point = 0.5f * (geometry.low + geometry.high);
-    grip.point[along] = geometry.low[along] + 0.15f * size[along];
+    const ToolAxes frame = toolAxes(geometry);
+    const glm::vec3 axis = frame.axes[0];
+    float low = 0.0f, high = 0.0f;
+    toolExtentAlong(geometry, frame.centre, axis, low, high);
+    const float length = std::max(high - low, 1e-9f);
+    constexpr int bins = 24;
+    std::array<float, bins> width{};
+    std::array<glm::vec3, bins> sum{};
+    std::array<int, bins> count{};
+    for(const glm::vec3& v : geometry.mesh.vertices){
+        const float t = glm::dot(v - frame.centre, axis);
+        const int bin = std::clamp(int((t - low) / length * float(bins)), 0, bins - 1);
+        const glm::vec3 across = (v - frame.centre) - axis * t;
+        width[size_t(bin)] = std::max(width[size_t(bin)], glm::length(across));
+        sum[size_t(bin)] += across;
+        ++count[size_t(bin)];
+    }
+    const int widest = int(std::max_element(width.begin(), width.end()) - width.begin());
+    float at = 0.15f;
+    int toward = +1;
+    if(widest <= 1){ at = 0.85f; toward = -1; }                 //glava na donjem kraju: drska na gornjem
+    else if(widest >= bins - 2){ at = 0.15f; toward = +1; }     //glava na gornjem kraju: drska na donjem
+    else{
+        const float guard = (float(widest) + 0.5f) / float(bins);
+        if(guard <= 0.5f){ at = 0.5f * (guard - 0.5f / float(bins)); toward = +1; }
+        else{ at = 0.5f * (guard + 0.5f / float(bins) + 1.0f); toward = -1; }
+    }
+    const int bin = std::clamp(int(at * float(bins)), 0, bins - 1);
+    const glm::vec3 offset = count[size_t(bin)] > 0 ? sum[size_t(bin)] / float(count[size_t(bin)]) : glm::vec3(0.0f);
+    grip.point = frame.centre + axis * (low + at * length) + offset;
+    grip.axis = axis * float(toward);
+    grip.palm = frame.axes[1];
     return grip;
 }
 
-//Polumjer drske oko gripa: vrhovi u pojasu +-band uz os, udaljenost od osi prema dlanu (80. centil,
-//da stitnik ili okidac ne napuhnu drsku)
-inline float handleRadius(const ToolGeometry& geometry, const Warp::Grip& grip, float band = 0.02f){
+//Polumjer drske oko gripa: vrhovi u pojasu +-2 cm uz os, udaljenost od osi (80. centil, da stitnik ili
+//okidac ne napuhnu drsku). U jedinicama modela; unitsPerMetre = 1 / mjerilo toola (model s interneta
+//je cesto u centimetrima ili "koliko god" velik, a pojas i granice su u metrima scene)
+inline float handleRadius(const ToolGeometry& geometry, const Warp::Grip& grip, float unitsPerMetre = 1.0f){
     if(grip.thickness > 0.0f) return grip.thickness;
+    const float band = 0.02f * unitsPerMetre;
     const glm::vec3 axis = glm::normalize(grip.axis);
     std::vector<float> distances;
     for(const glm::vec3& v : geometry.mesh.vertices){
@@ -127,9 +206,9 @@ inline float handleRadius(const ToolGeometry& geometry, const Warp::Grip& grip, 
         if(std::fabs(along) > band) continue;
         distances.push_back(glm::length(d - axis * along));
     }
-    if(distances.empty()) return 0.015f;
+    if(distances.empty()) return 0.015f * unitsPerMetre;
     std::sort(distances.begin(), distances.end());
-    return std::max(0.004f, distances[size_t(0.8f * float(distances.size() - 1))]);
+    return std::max(0.004f * unitsPerMetre, distances[size_t(0.8f * float(distances.size() - 1))]);
 }
 
 //Okvir sake: dlan, normala dlana, os od malog prsta prema kaziprstu. false kad sake nema

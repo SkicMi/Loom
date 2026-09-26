@@ -102,10 +102,34 @@ int main(){
     handle.low = {-0.015f, -0.1f, -0.015f};
     handle.high = {0.015f, 0.1f, 0.015f};
     const Warp::Grip first = Loom::defaultGrip(handle, "grip");
-    report.check("prvi grip na najduzoj osi (y), blizu donjeg kraja", first.axis == glm::vec3(0, 1, 0) &&
-                 std::fabs(first.point.y - (-0.1f + 0.03f)) < 1e-5f, fmt("y %.3f", first.point.y));
+    report.check("valjak (bez stitnika): grip na najduzoj osi (y)", std::fabs(std::fabs(first.axis.y) - 1.0f) < 1e-6f,
+                 fmt("y %.3f", first.point.y));
+    //Mac: drska y 0-0.2 (polumjer 1.5 cm), stitnik y 0.2-0.23 (sirok 10 cm), ostrica do 1.0 m. Drska je
+    //kraca strana od stitnika: grip na y 0.1, os prema ostrici
+    {
+        Loom::ToolGeometry sword;
+        auto addBox = [&](glm::vec3 low, glm::vec3 high){
+            Engine::Physics::TriangleMesh box = cylinder(1.0f, 1.0f, 2, 4);
+            const uint32_t base = uint32_t(sword.mesh.vertices.size());
+            for(glm::vec3 v : box.vertices){
+                const glm::vec3 t((v.x + 1.0f) * 0.5f, v.y + 0.5f, (v.z + 1.0f) * 0.5f);
+                sword.mesh.vertices.push_back(low + (high - low) * t);
+            }
+            for(uint32_t i : box.indices) sword.mesh.indices.push_back(base + i);
+        };
+        addBox({-0.015f, 0.0f, -0.015f}, {0.015f, 0.2f, 0.015f});
+        addBox({-0.05f, 0.2f, -0.012f}, {0.05f, 0.23f, 0.012f});
+        addBox({-0.025f, 0.23f, -0.003f}, {0.025f, 1.0f, 0.003f});
+        sword.low = {-0.05f, 0.0f, -0.015f};
+        sword.high = {0.05f, 1.0f, 0.015f};
+        const Warp::Grip swordGrip = Loom::defaultGrip(sword, "grip");
+        report.check("mac: grip na sredini drske (ispod stitnika), os prema ostrici",
+                     std::fabs(swordGrip.point.y - 0.1f) < 0.03f && glm::dot(swordGrip.axis, glm::vec3(0, 1, 0)) > 0.999f,
+                     fmt("y %.3f, os %.0f", swordGrip.point.y, swordGrip.axis.y));
+    }
     Warp::Grip middle = first;
     middle.point = glm::vec3(0.0f);
+    middle.axis = glm::vec3(0.0f, 1.0f, 0.0f);
     const float radius = Loom::handleRadius(handle, middle);
     report.check("debljina drske iz vrhova ~1.5 cm", std::fabs(radius - 0.015f) < 1e-4f, fmt("%.4f m", radius));
 
