@@ -3,11 +3,18 @@
 // footprint rules the way a data generator will. Every house either passes or fails with a
 // rule's reason; a passing house must have closed walls, a window in every living room,
 // bedroom, kitchen and office, rooms of sensible size, and a kitchen and a bathroom in every home.
+// Furniture: no two pieces overlap, none leaves its room or stands in a door, no tall piece covers
+// a window, and every bedroom has a bed, kitchen a counter, bathroom a toilet and basin, living
+// room a sofa.
 #include "TestHarness.h"
+
+#include "../src/LoomProceduraAssets.h"
 
 #include <Engine/WeaverProcedura.h>
 
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <map>
 #include <random>
 #include <string>
@@ -65,6 +72,14 @@ std::vector<glm::vec3> sketch(std::mt19937& rng){
 
 int main(){
     TestReport report("Procedura: 300 houses from rules");
+    Loom::WeaverProceduraRecipe::RecipeAssetLibrary library;
+    library.load(std::filesystem::path(__FILE__).parent_path().parent_path() / "procedura" / "assets");
+    report.check("asset library loads", library.loadError.empty() && !library.ids().empty(), library.loadError);
+    int collisions = 0, outside = 0, blockedDoors = 0, coveredWindows = 0, missingPieces = 0;
+    std::size_t pieces = 0;
+    std::map<std::string, std::string> firstOf;   // first example of each furniture problem
+    auto note = [&](const char* kind, const std::string& what){ firstOf.emplace(kind, what); };
+    const auto started = std::chrono::steady_clock::now();
     std::mt19937 rng(11);
     auto uniform = [&](float a, float b){ return std::uniform_real_distribution<float>(a, b)(rng); };
     auto pick = [&](int a, int b){ return std::uniform_int_distribution<int>(a, b)(rng); };
@@ -113,8 +128,13 @@ int main(){
         const auto b = Proc::addNode(graph, stack), c = Proc::addNode(graph, split);
         const auto w = Proc::addNode(graph, walls), s = Proc::addNode(graph, slab), r = Proc::addNode(graph, roof);
         const auto i = Proc::addNode(graph, Proc::InteriorNode{}), m = Proc::addNode(graph, Proc::MergeNode{});
-        graph.links.insert(graph.links.end(), {{a,0,b,0},{b,0,c,0},{c,0,w,0},{c,0,s,0},{c,0,r,0},{c,0,i,0},{w,0,m,0},{s,0,m,1},{r,0,m,2},{i,0,m,3}});
-        const Proc::EvaluationResult result = Proc::evaluate(graph);
+        Proc::FurnishNode furnishing;
+        furnishing.seed = uint64_t(n + 1);
+        furnishing.wallThickness = walls.thickness;
+        const auto f = Proc::addNode(graph, furnishing), pa = Proc::addNode(graph, Proc::PlaceAssetsNode{});
+        graph.links.insert(graph.links.end(), {{a,0,b,0},{b,0,c,0},{c,0,w,0},{c,0,s,0},{c,0,r,0},{c,0,i,0},{w,0,m,0},{s,0,m,1},{r,0,m,2},{i,0,m,3},
+                                               {c,0,f,0},{f,0,pa,0},{pa,0,m,4}});
+        const Proc::EvaluationResult result = Proc::evaluate(graph, &library);
         if(!result.succeeded){
             ++reasons[(fromSketch ? "sketch: " : "") + result.error];
             if(result.error.empty()) ++unexplained;
@@ -168,7 +188,60 @@ int main(){
             bathroom |= room.type == Proc::RoomType::Bathroom;
         }
         if(!bathroom || (split.program == Proc::InteriorProgram::Residential && !kitchen)) ++incomplete;
+
+        // Furniture.
+        const std::vector<Proc::Placement>& layout = result.placements;
+        pieces += layout.size();
+        const std::string house = " in house " + std::to_string(n);
+        auto hit = [](const Proc::LocalRect& x, const Proc::LocalRect& y, float by){
+            return x.min.x < y.max.x - by && x.max.x > y.min.x + by && x.min.y < y.max.y - by && x.max.y > y.min.y + by;
+        };
+        std::map<std::size_t, std::map<std::string, int>> byRoom;
+        for(std::size_t p = 0; p < layout.size(); ++p){
+            const Proc::Placement& piece = layout[p];
+            const Proc::Room& room = plan.rooms.at(piece.room);
+            byRoom[piece.room][library.info(piece.asset)->category]++;
+            if(piece.area.min.x < room.rect.min.x - 0.001f || piece.area.max.x > room.rect.max.x + 0.001f ||
+               piece.area.min.y < room.rect.min.y - 0.001f || piece.area.max.y > room.rect.max.y + 0.001f){ ++outside; note("outside", piece.asset + " leaves its room" + house); }
+            for(std::size_t q = p + 1; q < layout.size(); ++q)
+                if(layout[q].floor == piece.floor && hit(piece.area, layout[q].area, 0.005f)){
+                    ++collisions; note("overlap", piece.asset + " overlaps " + layout[q].asset + house);
+                }
+            // Door openings: the span, 0.6 m to both sides of the wall line.
+            for(const Proc::InteriorDoor& door : plan.doors){
+                if(door.floor != piece.floor) continue;
+                const Proc::LocalRect zone{glm::min(door.from, door.to) - glm::vec2(0.6f), glm::max(door.from, door.to) + glm::vec2(0.6f)};
+                const bool alongX = std::abs(door.from.y - door.to.y) < 1e-3f;
+                Proc::LocalRect span = zone;
+                if(alongX){ span.min.x += 0.55f; span.max.x -= 0.55f; } else { span.min.y += 0.55f; span.max.y -= 0.55f; }
+                if(hit(piece.area, span, 0.005f)){ ++blockedDoors; note("door", piece.asset + " stands in a door" + house); }
+            }
+            // A tall piece near a window pane of its floor.
+            if(piece.height > 1.2f)
+                for(std::size_t t = 0; t < wallMesh.triangles.size(); ++t){
+                    if(Proc::semanticName(wallMesh.triangles[t].semantic) != "window") continue;
+                    glm::vec3 centre(0.0f);
+                    for(int k = 0; k < 3; ++k) centre += wallMesh.vertices[wallMesh.indices[t * 3 + k]].position / 3.0f;
+                    const uint32_t floor = uint32_t((centre.y - planned.elevation) / planned.floorHeight);
+                    if(floor != piece.floor) continue;
+                    const glm::vec2 d = glm::vec2(centre.x, centre.z) - planned.frameCenter;
+                    const glm::vec2 local{glm::dot(d, axis), glm::dot(d, across)};
+                    const glm::vec2 nearest = glm::clamp(local, piece.area.min, piece.area.max);
+                    if(glm::length(nearest - local) < 0.45f){ ++coveredWindows; note("window", piece.asset + " covers a window" + house); break; }
+                }
+        }
+        for(std::size_t k = 0; k < plan.rooms.size(); ++k){
+            const Proc::RoomType type = plan.rooms[k].type;
+            auto& has = byRoom[k];
+            const bool ok = type == Proc::RoomType::Bedroom ? has["bed"] > 0
+                          : type == Proc::RoomType::Kitchen ? has["kitchen_counter"] > 0
+                          : type == Proc::RoomType::Bathroom ? has["toilet"] > 0 && has["sink"] > 0
+                          : type == Proc::RoomType::Living ? has["sofa"] > 0
+                          : type == Proc::RoomType::Office ? has["desk"] > 0 : true;
+            if(!ok){ ++missingPieces; note("missing", Proc::roomTypeNames()[std::size_t(type)] + " without its main piece" + house); }
+        }
     }
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
     std::string reasonText;
     for(const auto& [reason, count] : reasons) reasonText += "\n        x" + std::to_string(count) + " " + reason;
@@ -180,6 +253,13 @@ int main(){
     report.check("rooms have sensible sizes (bedroom 7 m2 / 2.4 m, living 12 m2, bath 2.5 m2, kitchen 5 m2)", smallRooms == 0,
                  fmt("%d too small ", smallRooms) + firstProblem);
     report.check("every home has a kitchen and a bathroom, every office a toilet", incomplete == 0, fmt("%d incomplete", incomplete));
+    report.check("furniture: no two pieces overlap", collisions == 0, fmt("%d overlaps in %zu pieces ", collisions, pieces) + firstOf["overlap"]);
+    report.check("furniture: every piece stays in its room", outside == 0, fmt("%d outside ", outside) + firstOf["outside"]);
+    report.check("furniture: no piece stands in a door opening", blockedDoors == 0, fmt("%d in doors ", blockedDoors) + firstOf["door"]);
+    report.check("furniture: no piece taller than 1.2 m stands at a window", coveredWindows == 0, fmt("%d at windows ", coveredWindows) + firstOf["window"]);
+    report.check("furniture: bedroom bed, kitchen counter, bathroom toilet and basin, living room sofa, office desk", missingPieces == 0,
+                 fmt("%d rooms without ", missingPieces) + firstOf["missing"]);
+    report.check("300 furnished houses in under 5 s", seconds < 5.0, fmt("%.2f s, %zu pieces", seconds, pieces));
     report.check("at least 85% of the hand-drawn outlines become a planned house", sketchPassed >= sketched * 85 / 100,
                  fmt("%d/%d sketches passed", sketchPassed, sketched));
     return report.result();

@@ -13,7 +13,7 @@ namespace Engine::WeaverProcedura{
 
 // Recipe files carry this schema version. Increment it when serialized node
 // payloads or port meanings change.
-constexpr uint32_t graphSchemaVersion = 7;
+constexpr uint32_t graphSchemaVersion = 8;
 using NodeId = uint64_t;
 
 struct Link{
@@ -283,6 +283,10 @@ struct InteriorDoor{
     glm::vec2 from{0.0f}, to{0.0f};
 };
 
+struct InteriorPlan;
+// The room a door's leaf swings into: the room that is not open space, but never a bathroom.
+std::size_t doorLeafRoom(const InteriorPlan& plan, const InteriorDoor& door);
+
 struct InteriorPlan{
     std::vector<Room> rooms;
     std::vector<InteriorDoor> doors;
@@ -416,6 +420,80 @@ struct RoadFromCurveNode{
     float sampleSpacing = 1.0f;
 };
 
+// ---- Furniture and props (schema 8) ------------------------------------------------------
+// An asset is its own procedural recipe with named parameters (a bed of any width), kept
+// apart from the house recipes: the library builds it, Furnish only decides where it goes.
+// Asset space: base centred on the origin, width along X, height up Y, front toward +Z, so
+// the back (z = -depth / 2) stands against a wall.
+
+struct AssetParameter{
+    std::string name;
+    float defaultValue = 0.0f, minValue = 0.0f, maxValue = 0.0f;
+};
+
+enum class AssetPlacement : uint8_t{ Wall, Center, Corner };
+
+struct AssetInfo{
+    std::string id;
+    std::string category;              // bed, wardrobe, sofa, ... (see furnitureCategories)
+    std::vector<AssetParameter> parameters;
+    AssetPlacement placement = AssetPlacement::Wall;
+    float clearanceFront = 0.0f;       // free floor the asset needs in front of it
+};
+
+// Parameter values by name; parameters that are not listed keep their default.
+using AssetParameters = std::vector<std::pair<std::string, float>>;
+
+class AssetLibrary{
+public:
+    virtual ~AssetLibrary() = default;
+    virtual std::vector<std::string> ids() const = 0;                      // sorted
+    virtual const AssetInfo* info(const std::string& id) const = 0;        // nullptr when unknown
+    // Box of the asset for these parameters: x width, y height, z depth.
+    virtual bool bounds(const std::string& id, const AssetParameters& parameters, glm::vec3& size,
+                        std::string& error) const = 0;
+    virtual bool build(const std::string& id, const AssetParameters& parameters, MeshData& output,
+                       std::string& error) const = 0;
+};
+
+// Categories Furnish asks for; a library may hold more (tools, props).
+const std::vector<std::string>& furnitureCategories();
+std::vector<std::string> assetsInCategory(const AssetLibrary& library, const std::string& category);
+
+// One piece of furniture: which asset with which parameters, where and turned how. A layout is
+// data without geometry, so a data set can store it and a model can learn to edit it.
+struct Placement{
+    std::string asset;
+    AssetParameters parameters;
+    glm::vec3 position{0.0f};          // world position of the asset's base centre
+    float yawDegrees = 0.0f;           // about +Y; 0 keeps the front toward +Z
+    uint32_t floor = 0;
+    uint32_t room = 0;                 // index into the plan's rooms
+    LocalRect area;                    // floor the asset covers, in the footprint's local frame
+    float height = 0.0f;
+};
+
+// Footprint with a plan -> Placements: furniture for every room by its type (bedroom: bed
+// against the wall farthest from the door with night stands, a wardrobe; living room: sofa
+// facing a TV, a coffee table; kitchen: a counter run and a fridge; bathroom: toilet, basin,
+// bath or shower; ...). Nothing blocks a door, tall pieces keep off window walls. The wall
+// thicknesses should match the Walls and Interior nodes, so pieces stand at the wall faces.
+struct FurnishNode{
+    uint64_t seed = 1;
+    float wallThickness = 0.25f;
+    float partitionThickness = 0.12f;
+    float fill = 1.0f;                 // 0..1: share of the optional pieces (armchair, desk, shelves)
+};
+
+// Placements -> Mesh: builds every (asset, parameters) once and places its copies.
+struct PlaceAssetsNode{};
+
+// A single asset as a mesh at the origin (a prop or tool on its own).
+struct AssetNode{
+    std::string asset;
+    AssetParameters parameters;
+};
+
 using NodePayload = std::variant<std::monostate, CurveNode, RectangleProfileNode, SweepNode,
                                  GridNode, SetGridPointHeightNode, GridToMeshNode,
                                  InteriorBlockoutNode, AddPrimitiveNode, MoveNode, RotateNode,
@@ -425,7 +503,7 @@ using NodePayload = std::variant<std::monostate, CurveNode, RectangleProfileNode
                                  CurveSmoothNode, CatenaryCurveNode, CopyAlongCurveNode,
                                  FootprintNode, FootprintFromCurveNode, FloorStackNode, WallsNode,
                                  SlabNode, RoofNode, StairsNode, RoadFromCurveNode, RoomSplitNode,
-                                 InteriorNode>;
+                                 InteriorNode, FurnishNode, PlaceAssetsNode, AssetNode>;
 
 struct Node{
     NodeId id = 0;
@@ -457,6 +535,7 @@ struct EvaluationResult{
     std::vector<glm::vec3> points;
     std::vector<glm::vec3> pointNormals;  // same length as points
     bool pointCloudOutput = false;
+    std::vector<Placement> placements;    // every Furnish node's layout, in graph order
 
     EvaluationResult() = default;
     EvaluationResult(bool didSucceed, NodeId output, MeshData outputMesh, std::string message)
@@ -473,7 +552,8 @@ NodeId addNode(Graph& graph, NodePayload payload, float editorX = 0.0f, float ed
 ValidationResult validate(const Graph& graph);
 // Number of input ports a node has (Merge 8, Sweep and the Copy nodes 2, sources 0).
 uint32_t inputPortCount(const Node& node);
-EvaluationResult evaluate(const Graph& graph);
+// assets serves Furnish, Place Assets and Asset nodes; without it those nodes fail with a reason.
+EvaluationResult evaluate(const Graph& graph, const AssetLibrary* assets = nullptr);
 
 bool makeGrid(const GridNode& settings, PointGrid& output, std::string& error);
 bool gridToMesh(const PointGrid& grid, MeshData& output, std::string& error,
@@ -532,6 +612,11 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
 bool makeInterior(const Footprint& footprint, const InteriorNode& settings, MeshData& output, std::string& error,
                   std::size_t maxVertices = 4'000'000);
 bool roadFromCurve(const Curve& curve, const RoadFromCurveNode& settings, MeshData& output, std::string& error);
+// Furniture layout for a planned footprint; error names the rule that failed.
+bool furnish(const Footprint& footprint, const FurnishNode& settings, const AssetLibrary& library,
+             std::vector<Placement>& output, std::string& error);
+bool placeAssets(const std::vector<Placement>& placements, const AssetLibrary& library, MeshData& output,
+                 std::string& error, std::size_t maxVertices = 4'000'000);
 
 Profile makeRectangleProfile(float width, float height);
 Profile makeCircularProfile(float radius, uint32_t sides = 12);

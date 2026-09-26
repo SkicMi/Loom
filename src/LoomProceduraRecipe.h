@@ -293,6 +293,16 @@ inline std::string serialize(const Document& document){
                 << ",\"door_leaves\":" << (interior->doorLeaves ? "true" : "false")
                 << ",\"floor_finish\":" << (interior->floorFinish ? "true" : "false")
                 << ",\"stairs\":" << (interior->stairs ? "true" : "false") << '}';
+        }else if(const auto* furnish = std::get_if<Proc::FurnishNode>(&node.payload)){
+            out << "{\"type\":\"furnish\",\"seed\":" << furnish->seed << ",\"wall_thickness\":" << furnish->wallThickness
+                << ",\"partition_thickness\":" << furnish->partitionThickness << ",\"fill\":" << furnish->fill << '}';
+        }else if(std::holds_alternative<Proc::PlaceAssetsNode>(node.payload)){
+            out << "{\"type\":\"place_assets\"}";
+        }else if(const auto* asset = std::get_if<Proc::AssetNode>(&node.payload)){
+            out << "{\"type\":\"asset\",\"asset\":" << agentJsonEscape(asset->asset) << ",\"parameters\":{";
+            for(std::size_t p = 0; p < asset->parameters.size(); ++p)
+                out << (p ? "," : "") << agentJsonEscape(asset->parameters[p].first) << ':' << asset->parameters[p].second;
+            out << "}}";
         }else{
             throw std::runtime_error("recipe contains an unsupported node payload");
         }
@@ -311,10 +321,8 @@ inline std::string serialize(const Document& document){
     return encoded;
 }
 
-inline Document parse(const std::string& source){
-    if(source.empty() || source.size() > 1'000'000)
-        throw std::runtime_error("recipe file must contain 1 to 1000000 bytes");
-    const AgentJsonValue root = AgentJsonParser(source).parse();
+// A recipe already read as JSON (an asset file carries one inside it).
+inline Document parse(const AgentJsonValue& root){
     if(root.kind != AgentJsonValue::Kind::Object ||
        readString(required(root, "format"), "format") != "loom.weaverprocedura.recipe")
         throw std::runtime_error("not a Loom WeaverProcedura recipe");
@@ -327,7 +335,7 @@ inline Document parse(const std::string& source){
     if(schema < 3 || schema > Proc::graphSchemaVersion) throw std::runtime_error("unsupported recipe schema version");
     // Versions 4-7 add node types, per-triangle attributes, and optional fields with
     // defaults (tube_ratio, extrude use_filter/filter); older payloads keep their meaning.
-    // Version 7 adds the building and road nodes.
+    // Version 7 adds the building and road nodes, 8 furniture (furnish, place_assets, asset).
     document.graph.schemaVersion = Proc::graphSchemaVersion;
     document.graph.seed = readUnsigned(required(root, "seed"), "seed");
 
@@ -554,6 +562,22 @@ inline Document parse(const std::string& source){
             interior.floorFinish = readBool(required(parameters,"floor_finish"),"interior.floor_finish");
             interior.stairs = readBool(required(parameters,"stairs"),"interior.stairs");
             node.payload = interior;
+        }else if(type == "furnish"){
+            Proc::FurnishNode furnish;
+            furnish.seed = readUnsigned(required(parameters,"seed"),"furnish.seed");
+            furnish.wallThickness = readFloat(required(parameters,"wall_thickness"),"furnish.wall_thickness");
+            furnish.partitionThickness = readFloat(required(parameters,"partition_thickness"),"furnish.partition_thickness");
+            furnish.fill = readFloat(required(parameters,"fill"),"furnish.fill");
+            node.payload = furnish;
+        }else if(type == "place_assets"){
+            node.payload = Proc::PlaceAssetsNode{};
+        }else if(type == "asset"){
+            Proc::AssetNode asset;
+            asset.asset = readString(required(parameters,"asset"),"asset.asset");
+            const AgentJsonValue& values = required(parameters,"parameters");
+            if(values.kind != AgentJsonValue::Kind::Object) throw std::runtime_error("asset.parameters must be an object");
+            for(const auto& [name, value] : values.object) asset.parameters.push_back({name, readFloat(value, "asset.parameters")});
+            node.payload = std::move(asset);
         }else{
             throw std::runtime_error("unknown recipe node type: " + type);
         }
@@ -582,6 +606,12 @@ inline Document parse(const std::string& source){
     const Proc::ValidationResult validation = Proc::validate(document.graph);
     if(!validation) throw std::runtime_error(validation.error);
     return document;
+}
+
+inline Document parse(const std::string& source){
+    if(source.empty() || source.size() > 1'000'000)
+        throw std::runtime_error("recipe file must contain 1 to 1000000 bytes");
+    return parse(AgentJsonParser(source).parse());
 }
 
 } // namespace Loom::WeaverProceduraRecipe

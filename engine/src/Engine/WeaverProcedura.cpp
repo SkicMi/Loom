@@ -452,7 +452,7 @@ bool insetPolygon(const MeshData& mesh, const FacePatch& patch, float amount,
     return true;
 }
 
-enum class PortType{ Invalid, Curve, Profile, PointGrid, Mesh, Points, Footprint };
+enum class PortType{ Invalid, Curve, Profile, PointGrid, Mesh, Points, Footprint, Placements };
 
 PortType outputType(const Node& node, uint32_t port){
     if(port != 0) return PortType::Invalid;
@@ -480,6 +480,8 @@ PortType outputType(const Node& node, uint32_t port){
        std::holds_alternative<FloorStackNode>(node.payload) || std::holds_alternative<RoomSplitNode>(node.payload))
         return PortType::Footprint;
     if(std::holds_alternative<InteriorNode>(node.payload)) return PortType::Mesh;
+    if(std::holds_alternative<FurnishNode>(node.payload)) return PortType::Placements;
+    if(std::holds_alternative<PlaceAssetsNode>(node.payload) || std::holds_alternative<AssetNode>(node.payload)) return PortType::Mesh;
     if(std::holds_alternative<WallsNode>(node.payload) || std::holds_alternative<SlabNode>(node.payload) ||
        std::holds_alternative<RoofNode>(node.payload) || std::holds_alternative<StairsNode>(node.payload) ||
        std::holds_alternative<RoadFromCurveNode>(node.payload)) return PortType::Mesh;
@@ -514,8 +516,10 @@ PortType inputType(const Node& node, uint32_t port){
        port == 0) return PortType::Curve;
     if((std::holds_alternative<FloorStackNode>(node.payload) || std::holds_alternative<WallsNode>(node.payload) ||
         std::holds_alternative<SlabNode>(node.payload) || std::holds_alternative<RoofNode>(node.payload) ||
-        std::holds_alternative<RoomSplitNode>(node.payload) || std::holds_alternative<InteriorNode>(node.payload)) && port == 0)
+        std::holds_alternative<RoomSplitNode>(node.payload) || std::holds_alternative<InteriorNode>(node.payload) ||
+        std::holds_alternative<FurnishNode>(node.payload)) && port == 0)
         return PortType::Footprint;
+    if(std::holds_alternative<PlaceAssetsNode>(node.payload) && port == 0) return PortType::Placements;
     return PortType::Invalid;
 }
 
@@ -1373,7 +1377,7 @@ const std::vector<std::string>& semanticVocabulary(){
     static const std::vector<std::string> names = {
         "floor", "ceiling", "wall_exterior", "wall_interior", "roof", "window", "door", "frame",
         "stairs", "railing", "foundation", "trim", "glass", "road", "sidewalk", "curb",
-        "rope", "chain_link", "terrain", "prop",
+        "rope", "chain_link", "terrain", "prop", "furniture",
     };
     return names;
 }
@@ -1382,6 +1386,7 @@ const std::vector<std::string>& materialLibrary(){
     static const std::vector<std::string> names = {
         "plaster", "brick", "stone", "concrete", "wood_planks", "wood_beam", "roof_tiles", "roof_metal",
         "glass", "metal", "steel_chain", "asphalt", "paving", "rope_fiber", "ground_dirt", "grass",
+        "fabric", "ceramic",
     };
     return names;
 }
@@ -1899,6 +1904,16 @@ ValidationResult validate(const Graph& graph){
         }else if(const auto* interior = std::get_if<InteriorNode>(&node.payload)){
             if(!finite(interior->partitionThickness) || interior->partitionThickness < 0.05f || interior->partitionThickness > 0.4f)
                 return {false, "interior partition thickness must be between 0.05 and 0.4 m"};
+        }else if(const auto* furnishing = std::get_if<FurnishNode>(&node.payload)){
+            if(!finite(furnishing->wallThickness) || furnishing->wallThickness < 0.05f || furnishing->wallThickness > 2.0f ||
+               !finite(furnishing->partitionThickness) || furnishing->partitionThickness < 0.05f || furnishing->partitionThickness > 0.4f ||
+               !finite(furnishing->fill) || furnishing->fill < 0.0f || furnishing->fill > 1.0f)
+                return {false, "furnish settings are invalid"};
+        }else if(const auto* asset = std::get_if<AssetNode>(&node.payload)){
+            if(asset->asset.empty() || asset->asset.size() > 120 || asset->parameters.size() > 32)
+                return {false, "asset node needs an asset id of 1 to 120 characters and at most 32 parameters"};
+            for(const auto& [parameter, value] : asset->parameters)
+                if(parameter.empty() || !finite(value)) return {false, "asset parameters need a name and a finite value"};
         }
         if(!nodeIndex.emplace(node.id, i).second) return {false, "node IDs must be unique"};
         highestNodeId = std::max(highestNodeId, node.id);
@@ -1950,7 +1965,7 @@ ValidationResult validate(const Graph& graph){
     return {};
 }
 
-EvaluationResult evaluate(const Graph& graph){
+EvaluationResult evaluate(const Graph& graph, const AssetLibrary* assets){
     const ValidationResult validation = validate(graph);
     if(!validation) return {false, 0, {}, validation.error};
 
@@ -2000,6 +2015,8 @@ EvaluationResult evaluate(const Graph& graph){
     std::unordered_map<NodeId, Curve> curves;
     std::unordered_map<NodeId, Profile> profiles;
     std::unordered_map<NodeId, Footprint> footprints;
+    std::unordered_map<NodeId, std::vector<Placement>> layouts;
+    std::vector<Placement> allPlacements;
     std::unordered_map<NodeId, std::vector<const Link*>> incomingLinks;
     for(const Link& link : graph.links) incomingLinks[link.to].push_back(&link);
     auto linkInto = [&](NodeId node, uint32_t port) -> const Link*{
@@ -2036,6 +2053,9 @@ EvaluationResult evaluate(const Graph& graph){
             if(std::holds_alternative<RoadFromCurveNode>(node.payload)) return std::string("Road from Curve");
             if(std::holds_alternative<RoomSplitNode>(node.payload)) return std::string("Room Split");
             if(std::holds_alternative<InteriorNode>(node.payload)) return std::string("Interior");
+            if(std::holds_alternative<FurnishNode>(node.payload)) return std::string("Furnish");
+            if(std::holds_alternative<PlaceAssetsNode>(node.payload)) return std::string("Place Assets");
+            if(std::holds_alternative<AssetNode>(node.payload)) return std::string("Asset");
             return std::string("Node");
         }();
         // Resolves input 0 as a mesh for the single-input mesh operations.
@@ -2124,6 +2144,30 @@ EvaluationResult evaluate(const Graph& graph){
             const Footprint* footprint = footprintInput();
             if(!footprint) return fail(name + " needs a Footprint input");
             if(!makeInterior(*footprint, *interior, produced, error)) return fail(error);
+        }else if(const auto* furnishing = std::get_if<FurnishNode>(&node.payload)){
+            const Footprint* footprint = footprintInput();
+            if(!footprint) return fail(name + " needs a Footprint input");
+            if(!assets) return fail(name + " needs an asset library");
+            std::vector<Placement> layout;
+            if(!furnish(*footprint, *furnishing, *assets, layout, error)) return fail(error);
+            allPlacements.insert(allPlacements.end(), layout.begin(), layout.end());
+            layouts.emplace(node.id, std::move(layout));
+            producesMesh = false;
+        }else if(std::holds_alternative<PlaceAssetsNode>(node.payload)){
+            const Link* input = linkInto(node.id, 0);
+            if(!input) return fail(name + " needs a Placements input");
+            const auto layout = layouts.find(input->from);
+            if(layout == layouts.end()) return fail(name + " input did not produce placements");
+            if(!assets) return fail(name + " needs an asset library");
+            if(!placeAssets(layout->second, *assets, produced, error)) return fail(error);
+            if(produced.empty()) return fail(name + ": the layout holds no furniture");
+        }else if(const auto* asset = std::get_if<AssetNode>(&node.payload)){
+            if(!assets) return fail(name + " needs an asset library");
+            if(!assets->info(asset->asset)) return fail("unknown asset: " + asset->asset);
+            Placement single;
+            single.asset = asset->asset;
+            single.parameters = asset->parameters;
+            if(!placeAssets({single}, *assets, produced, error)) return fail(error);
         }else if(std::holds_alternative<WallsNode>(node.payload) || std::holds_alternative<SlabNode>(node.payload) ||
                  std::holds_alternative<RoofNode>(node.payload)){
             const Footprint* footprint = footprintInput();
@@ -2234,6 +2278,7 @@ EvaluationResult evaluate(const Graph& graph){
         const auto points = pointSets.find(outputId);
         if(points == pointSets.end() || points->second.positions.empty()) return fail("recipe point-cloud output is empty");
         EvaluationResult result{true,outputId,{}, {}};
+        result.placements = std::move(allPlacements);
         result.points = std::move(points->second.positions);
         result.pointNormals = std::move(points->second.normals);
         result.pointCloudOutput = true;
@@ -2241,7 +2286,9 @@ EvaluationResult evaluate(const Graph& graph){
     }
     const auto mesh = meshes.find(outputId);
     if(mesh == meshes.end() || mesh->second.empty()) return fail("recipe output mesh is empty");
-    return {true, outputId, std::move(mesh->second), {}};
+    EvaluationResult result{true, outputId, std::move(mesh->second), {}};
+    result.placements = std::move(allPlacements);
+    return result;
 }
 
 Profile makeRectangleProfile(float width, float height){

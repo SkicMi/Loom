@@ -71,6 +71,13 @@ glm::vec2 toLocal(const Footprint& footprint, const glm::vec2& world){
 
 }  // namespace
 
+std::size_t doorLeafRoom(const InteriorPlan& plan, const InteriorDoor& door){
+    const bool openA = isOpen(plan.rooms[door.roomA].type), openB = isOpen(plan.rooms[door.roomB].type);
+    std::size_t room = openB ? door.roomA : door.roomB, other = room == door.roomA ? door.roomB : door.roomA;
+    if(plan.rooms[room].type == RoomType::Bathroom && !(openA && openB)) std::swap(room, other);
+    return room;
+}
+
 const std::vector<std::string>& roomTypeNames(){
     static const std::vector<std::string> names = {"hall", "corridor", "stairs", "living", "kitchen", "bedroom",
                                                    "bathroom", "office", "meeting", "storage"};
@@ -829,11 +836,12 @@ bool makeInterior(const Footprint& footprint, const InteriorNode& settings, Mesh
         for(const glm::vec2& p : posts)
             localBox(mesh, footprint, p.x - t * 0.5f, p.x + t * 0.5f, p.y - t * 0.5f, p.y + t * 0.5f, low, high, wallTag, plaster, overflow, maxVertices);
 
-        // Door leaves, opened 90 degrees into the room that is not open space.
+        // Door leaves, opened 90 degrees into the room that is not open space; a bathroom's
+        // door opens outward, so the small room keeps its floor for the fixtures.
         if(settings.doorLeaves)
             for(const InteriorDoor& d : plan.doors){
                 if(d.floor != floor) continue;
-                const std::size_t room = isOpen(plan.rooms[d.roomB].type) ? d.roomA : d.roomB;
+                const std::size_t room = doorLeafRoom(plan, d);
                 const LocalRect& r = plan.rooms[room].rect;
                 const glm::vec2 center = (r.min + r.max) * 0.5f;
                 const bool alongX = std::abs(d.from.y - d.to.y) < eps;

@@ -4,7 +4,54 @@ Najnovije gore. Svaka akcija: datum, što, zašto, kako je provjereno.
 
 ## Sadašnje
 
-### STAO SAM OVDJE (2026-09-26, ~21:30) — interijer za slobodnu krivulju gotov, namještaj NIJE započet
+### STAO SAM OVDJE (2026-09-26, kasno) — namještaj prvi krug gotov
+Gotovo: asseti kao zasebni recepti, `AssetLibrary`, `Furnish` → Placements (podatak), `PlaceAssets`, `Asset`, shema 8,
+18 asseta, pravila po tipu sobe, test od 300 kuća s namještajem 14/14 (285/300, 92/100 skica, 18 835 komada, 0.56 s),
+`test_procedura_assets` 15/15, panel (gumb Furnish, "Create house" s namještajem). Detalji u Prošle.
+
+**Sljedeće (redom):**
+1. Kliknuti na Xvfb (ne na :1): Create house, gumb Furnish, `--recept` s namještenom kućom; snimka.
+2. Namještaj: kutni kuhinjski niz (L), gornji kuhinjski elementi iznad niza (ne na prozorskom zidu), tepih, lampe;
+   stolice oko stola zakrenute i djelomično ispod stola (sada 2 cm odmaknute).
+3. Više stilova po kategoriji (2–3 asseta: moderan, rustikalni) → Furnish ih bira po seedu jednom po kući (već radi).
+4. Asseti za alate/rekvizite (isti format) — kategorije izvan namještaja; AI ih uči zasebno od kuća.
+5. Faza 3 (`ProceduraGen`) može sad bilježiti i Placements u JSONL.
+
+## Buduće
+
+Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
+
+2. **Faza 2, ostatak** — `RoomSplit`, stepenice između katova, FloorStack s uvlačenjem po katu, bogatija pravila
+   otvora (izlozi u prizemlju, balkoni), `Noise`/`Displace` za teren, raskrižja cesta. Popis: CVOROVI.md → Fale.
+3. **Faza 3: `ProceduraGen`** — headless C++ program: sampler recepata iz gramatike, evaluate, validatori pravila,
+   petlja Pass / Fail → Why → Retry, JSONL zapis (prompt + akcije + metrike + seed + verzija), popravci kao primjeri.
+4. **Faza 4** — korisnik piše ~200 held-out promptova (hr/en).
+5. **Faza 5** — model 3–5M, zamrznuti višejezični encoder (kandidati: multilingual-e5, bge-m3), maskiranje akcija.
+6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
+
+## Prošle
+
+### 2026-09-26 — Namještaj: asseti kao recepti, Furnish, Place Assets (shema 8)
+- Korisnik: "podaci moraju dolaziti zasebno" → asset je zaseban Procedura recept (`procedura/assets/furniture/
+  *.loomasset.json`, generira `procedura/assets/napravi.py`) s parametrima i `bounds`; broj u receptu smije biti
+  `{"param","scale","offset"}`. 18 asseta (sve kategorije namještaja) od kvadara.
+- Engine: `AssetLibrary` (ids/info/bounds/build), port **Placements**, `FurnishNode` (seed, wall_thickness,
+  partition_thickness, fill), `PlaceAssetsNode`, `AssetNode`, `evaluate(graph, library)`, `EvaluationResult.placements`.
+  Pravila u novoj `engine/src/Engine/WeaverProceduraFurnish.cpp`, opisana u CVOROVI.md → "Pravila namještaja".
+  Vokabular: semantika `furniture`, materijali `fabric`, `ceramic` (boje u `src/LoomPbr.h`).
+- Loom: `src/LoomProceduraAssets.h` (`RecipeAssetLibrary`, `defaultAssetLibrary()`), `parse(const AgentJsonValue&)`.
+- Odstupanje od plana: debljine zidova su parametri Furnisha (ne plana), da Walls/Interior ne mijenjaju značenje.
+- Iteracije na testu od 300: prvi krug 263/300 (23 kupaonice bez mjesta za WC, 7 komada u vratima, 66 visokih uz
+  prozor) → vrata kupaonice otvaraju se prema van (`doorLeafRoom`, i u Interior) → stolica za stolom mora proći provjeru
+  kao tijelo → visoki komadi ne ispred prozorskog pojasa susjednog zida → WC/umivaonik u oba redoslijeda →
+  **285/300, 0 sudara, 0 izvan sobe, 0 u vratima, 0 uz prozor, svaka soba ima glavni komad, 0.56 s**. Jedina nova greška:
+  kupaonica 1.48 × 1.35 m (s razlogom).
+- Provjera: `test_procedura_assets` 15/15 (kutija svakog asseta = bounds na min/default/max, JSON, knjižnica),
+  `test_procedura_300` 14/14, `test_weaverprocedura` 75/75; vizualno tlocrti 8 kuća (12 katova) s oznakama komada i
+  Blender presjek (alati u scratchpadu: pregled.cpp, tlocrt.py, presjek.py).
+- Nije provjereno klikom: gumb Furnish i "Create house" u editoru.
+
+### 2026-09-26, ~21:30 — stanje prije namještaja (bivši "STAO SAM OVDJE")
 Gotovo i commitano (8fc8adc): FootprintFromCurve `rectify`, rastav na zone, planer na stablu zona, niše, pravilo
 fasade 2.2 m. `tests/test_procedura_300.cpp` 7/7 (286/300, 93/100 skica, 0 rupa/tamnih/premalih soba).
 
@@ -36,19 +83,6 @@ namještaj itd., ne samo kuće):**
 Alati za pregled (scratchpad, prenijeti u `tools/` ako trebaju): OBJ izvoz iz recepta, Blender presjeci/pogledi
 (workbench), kopija testa koja piše OBJ-ove.
 
-## Buduće
-
-Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
-
-2. **Faza 2, ostatak** — `RoomSplit`, stepenice između katova, FloorStack s uvlačenjem po katu, bogatija pravila
-   otvora (izlozi u prizemlju, balkoni), `Noise`/`Displace` za teren, raskrižja cesta. Popis: CVOROVI.md → Fale.
-3. **Faza 3: `ProceduraGen`** — headless C++ program: sampler recepata iz gramatike, evaluate, validatori pravila,
-   petlja Pass / Fail → Why → Retry, JSONL zapis (prompt + akcije + metrike + seed + verzija), popravci kao primjeri.
-4. **Faza 4** — korisnik piše ~200 held-out promptova (hr/en).
-5. **Faza 5** — model 3–5M, zamrznuti višejezični encoder (kandidati: multilingual-e5, bge-m3), maskiranje akcija.
-6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
-
-## Prošle
 
 ### 2026-09-26 — Interijer za tlocrt iz slobodne krivulje
 - `FootprintFromCurveNode.rectify` (JSON `rectify`, bez polja = false): okvir po najduljem bridu, bridovi se svrstaju

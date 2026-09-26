@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Engine/WeaverProcedura.h>
-#include "LoomProceduraRecipe.h"
+#include "LoomProceduraAssets.h"
 #include <Treadle/Ui.h>
 
 #include <algorithm>
@@ -87,6 +87,9 @@ inline std::string nodeType(const Engine::WeaverProcedura::Node& node){
     if(std::holds_alternative<Proc::RoadFromCurveNode>(node.payload)) return "Road from Curve";
     if(std::holds_alternative<Proc::RoomSplitNode>(node.payload)) return "Room Split";
     if(std::holds_alternative<Proc::InteriorNode>(node.payload)) return "Interior";
+    if(std::holds_alternative<Proc::FurnishNode>(node.payload)) return "Furnish";
+    if(std::holds_alternative<Proc::PlaceAssetsNode>(node.payload)) return "Place Assets";
+    if(std::holds_alternative<Proc::AssetNode>(node.payload)) return "Asset";
     return "Unknown node";
 }
 
@@ -179,6 +182,9 @@ inline std::string nodeSummary(const Engine::WeaverProcedura::Node& node){
         return std::string(split->program == Proc::InteriorProgram::Office ? "office" : "home") + " / seed " + std::to_string(split->seed);
     if(const auto* interior = std::get_if<Proc::InteriorNode>(&node.payload))
         return formatSize(interior->partitionThickness) + " m partitions" + (interior->stairs ? " / stairs" : "");
+    if(const auto* furnish = std::get_if<Proc::FurnishNode>(&node.payload))
+        return "seed " + std::to_string(furnish->seed) + " / fill " + formatSize(furnish->fill);
+    if(const auto* asset = std::get_if<Proc::AssetNode>(&node.payload)) return asset->asset;
     return {};
 }
 
@@ -208,7 +214,9 @@ inline std::string inputName(const Engine::WeaverProcedura::Node& node, uint32_t
        std::holds_alternative<Engine::WeaverProcedura::SlabNode>(node.payload) ||
        std::holds_alternative<Engine::WeaverProcedura::RoofNode>(node.payload) ||
        std::holds_alternative<Engine::WeaverProcedura::RoomSplitNode>(node.payload) ||
-       std::holds_alternative<Engine::WeaverProcedura::InteriorNode>(node.payload)) return "Footprint input";
+       std::holds_alternative<Engine::WeaverProcedura::InteriorNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::FurnishNode>(node.payload)) return "Footprint input";
+    if(std::holds_alternative<Engine::WeaverProcedura::PlaceAssetsNode>(node.payload)) return "Placements input";
     if(std::holds_alternative<Engine::WeaverProcedura::SetGridPointHeightNode>(node.payload) ||
        std::holds_alternative<Engine::WeaverProcedura::GridToMeshNode>(node.payload))
         return "Point Grid input";
@@ -282,7 +290,9 @@ inline bool isGeometryOutputNode(const Engine::WeaverProcedura::Node& node){
            std::holds_alternative<Proc::RoofNode>(node.payload) ||
            std::holds_alternative<Proc::StairsNode>(node.payload) ||
            std::holds_alternative<Proc::RoadFromCurveNode>(node.payload) ||
-           std::holds_alternative<Proc::InteriorNode>(node.payload);
+           std::holds_alternative<Proc::InteriorNode>(node.payload) ||
+           std::holds_alternative<Proc::PlaceAssetsNode>(node.payload) ||
+           std::holds_alternative<Proc::AssetNode>(node.payload);
 }
 
 inline Engine::WeaverProcedura::Node* terminalGeometryNode(WeaverProceduraPanelState& state){
@@ -389,7 +399,8 @@ inline bool appendLooseNode(WeaverProceduraPanelState& state, Engine::WeaverProc
     if(state.graph.nodes.size() >= 256){ state.recipeStatus = "Recipe has reached its node limit."; return false; }
     const bool readsFootprint = std::holds_alternative<Proc::FloorStackNode>(payload) || std::holds_alternative<Proc::WallsNode>(payload) ||
                                 std::holds_alternative<Proc::SlabNode>(payload) || std::holds_alternative<Proc::RoofNode>(payload) ||
-                                std::holds_alternative<Proc::RoomSplitNode>(payload) || std::holds_alternative<Proc::InteriorNode>(payload);
+                                std::holds_alternative<Proc::RoomSplitNode>(payload) || std::holds_alternative<Proc::InteriorNode>(payload) ||
+                                std::holds_alternative<Proc::FurnishNode>(payload);
     const Proc::Node* source = nullptr;
     for(const Proc::Node& node : state.graph.nodes)
         if(std::holds_alternative<Proc::FootprintNode>(node.payload) || std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload) ||
@@ -404,6 +415,22 @@ inline bool appendLooseNode(WeaverProceduraPanelState& state, Engine::WeaverProc
     state.expandedNodes[id] = true;
     markGraphChanged(state);
     state.recipeStatus = readsFootprint ? std::string() : "Added. Join it to the output with CONNECT or a Merge.";
+    return true;
+}
+
+// Furnish on the newest footprint and Place Assets after it; the mesh joins the output by Merge.
+inline bool appendFurniture(WeaverProceduraPanelState& state){
+    namespace Proc = Engine::WeaverProcedura;
+    if(state.graph.nodes.size() >= 255){ state.recipeStatus = "Recipe has reached its node limit."; return false; }
+    if(!appendLooseNode(state, Proc::FurnishNode{})) return false;
+    const Proc::Node& furnish = state.graph.nodes.back();
+    const float x = furnish.editorX + 240.0f, y = furnish.editorY;
+    const Proc::NodeId furnishId = furnish.id;
+    const Proc::NodeId place = Proc::addNode(state.graph, Proc::PlaceAssetsNode{}, x, y);
+    state.graph.links.push_back({furnishId, 0, place, 0});
+    state.expandedNodes[place] = true;
+    markGraphChanged(state);
+    state.recipeStatus = "Furniture added. Join Place Assets to the output with a Merge.";
     return true;
 }
 
@@ -488,7 +515,7 @@ inline bool eraseControlPoint(WeaverProceduraPanelState& state,
 
 inline bool evaluateGraph(WeaverProceduraPanelState& state){
     namespace Proc = Engine::WeaverProcedura;
-    Proc::EvaluationResult result = Proc::evaluate(state.graph);
+    Proc::EvaluationResult result = Proc::evaluate(state.graph, &Loom::WeaverProceduraRecipe::defaultAssetLibrary());
     if(result.succeeded){
         if(result.pointCloudOutput){
             Proc::MeshData markers;
@@ -625,11 +652,14 @@ inline bool createHouseExample(WeaverProceduraPanelState& state){
     const Proc::NodeId slabs = Proc::addNode(graph, slab, 744.0f, 120.0f);
     const Proc::NodeId roof = Proc::addNode(graph, Proc::RoofNode{}, 744.0f, 220.0f);
     const Proc::NodeId interior = Proc::addNode(graph, Proc::InteriorNode{}, 744.0f, 320.0f);
+    const Proc::NodeId furnish = Proc::addNode(graph, Proc::FurnishNode{}, 744.0f, 420.0f);
+    const Proc::NodeId place = Proc::addNode(graph, Proc::PlaceAssetsNode{}, 864.0f, 470.0f);
     const Proc::NodeId merge = Proc::addNode(graph, Proc::MergeNode{}, 984.0f, 170.0f);
     Proc::SetMaterialNode brick; brick.material = "brick"; brick.filter.semantic = "wall_exterior";
     const Proc::NodeId painted = Proc::addNode(graph, brick, 1224.0f, 170.0f);
     graph.links = {{footprint,0,stack,0},{stack,0,rooms,0},{rooms,0,walls,0},{rooms,0,slabs,0},{rooms,0,roof,0},{rooms,0,interior,0},
-                   {walls,0,merge,0},{slabs,0,merge,1},{roof,0,merge,2},{interior,0,merge,3},{merge,0,painted,0}};
+                   {rooms,0,furnish,0},{furnish,0,place,0},
+                   {walls,0,merge,0},{slabs,0,merge,1},{roof,0,merge,2},{interior,0,merge,3},{place,0,merge,4},{merge,0,painted,0}};
     return installExample(state, std::move(graph), "L-shaped House");
 }
 
@@ -909,9 +939,10 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
         if(buildingPart == 0) Panel::appendLooseNode(state,Proc::FootprintNode{});
         else if(buildingPart == 1) Panel::appendLooseNode(state,Proc::FloorStackNode{});
         else if(buildingPart == 2) Panel::appendLooseNode(state,Proc::WallsNode{});
-        const int interiorPart = ui.buttonRow({"Room Split","Interior"});
+        const int interiorPart = ui.buttonRow({"Room Split","Interior","Furnish"});
         if(interiorPart == 0) Panel::appendLooseNode(state,Proc::RoomSplitNode{});
         else if(interiorPart == 1) Panel::appendLooseNode(state,Proc::InteriorNode{});
+        else if(interiorPart == 2) Panel::appendFurniture(state);
         const int buildingTop = ui.buttonRow({"Slab","Roof","Stairs","Merge"});
         if(buildingTop == 0) Panel::appendLooseNode(state,Proc::SlabNode{});
         else if(buildingTop == 1) Panel::appendLooseNode(state,Proc::RoofNode{});
@@ -1235,6 +1266,13 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                 changed |= ui.checkbox("Door leaves",&interior->doorLeaves);
                 changed |= ui.checkbox("Floor finish",&interior->floorFinish);
                 changed |= ui.checkbox("Stairs",&interior->stairs);
+            }else if(auto* furnish = std::get_if<Proc::FurnishNode>(&node.payload)){
+                float seed = float(std::min<uint64_t>(furnish->seed, 100000));
+                if(ui.slider("Layout seed",&seed,1.0f,1000.0f)){ furnish->seed = uint64_t(std::lround(seed)); changed = true; }
+                changed |= ui.slider("Optional pieces",&furnish->fill,0.0f,1.0f);
+                changed |= ui.slider("Outer wall",&furnish->wallThickness,0.05f,1.0f,"m");
+                changed |= ui.slider("Partitions",&furnish->partitionThickness,0.05f,0.4f,"m");
+                ui.hint("Rules per room type; pieces come from procedura/assets. Match the walls to Walls and Interior.");
             }else if(auto* road = std::get_if<Proc::RoadFromCurveNode>(&node.payload)){
                 changed |= ui.slider("Road width",&road->roadWidth,1.0f,30.0f,"m");
                 changed |= ui.checkbox("Sidewalks",&road->sidewalks);

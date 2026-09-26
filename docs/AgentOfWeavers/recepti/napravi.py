@@ -77,7 +77,7 @@ def chain_posts():
     merge(r, posts + [chain, rope, ground])
     return r
 
-def building(name, shape, width, depth, wing, floors, roof_type, pitch=35, wall_material=None, program="residential", seed=1):
+def building(name, shape, width, depth, wing, floors, roof_type, pitch=35, wall_material=None, program="residential", seed=1, furnish=False, with_roof=True):
     """Footprint -> Floor Stack -> Walls/Slab/Roof -> Merge (schema 7, cvorovi srednje razine)."""
     r = Recipe(name)
     fp = r.node({"type": "footprint", "shape": shape, "width": width, "depth": depth, "wing_width": wing,
@@ -92,13 +92,19 @@ def building(name, shape, width, depth, wing, floors, roof_type, pitch=35, wall_
                     "sill_height": 0.9, "window_spacing": 3.0, "door": True, "door_edge": 0, "door_width": 1.0,
                     "door_height": 2.2})
     slab = r.node({"type": "slab", "thickness": 0.2, "inset": 0.1, "top_ceiling": True, "foundation": True})
-    roof = r.node({"type": "roof", "roof_type": roof_type, "pitch_degrees": pitch, "overhang": 0.4,
+    roof = None if not with_roof else r.node({"type": "roof", "roof_type": roof_type, "pitch_degrees": pitch, "overhang": 0.4,
                    "thickness": 0.25, "parapet_height": 0.9 if roof_type == "flat" else 0.0})
     interior = r.node({"type": "interior", "partition_thickness": 0.12, "door_leaves": True, "floor_finish": True,
                        "stairs": True})
-    for n in (walls, slab, roof, interior): r.link(st, n)
+    for n in (walls, slab, roof, interior):
+        if n is not None: r.link(st, n)
     ground = part(r, "plane", [width + 10, 1, depth + 10], [0, 0, 0], "terrain", "grass")
-    m = merge(r, [walls, slab, roof, interior, ground])
+    parts = [walls, slab] + ([roof] if with_roof else []) + [interior, ground]
+    if furnish:   # namjestaj: raspored po pravilima (podatak), asseti iz procedura/assets
+        f = r.node({"type": "furnish", "seed": seed, "wall_thickness": 0.25, "partition_thickness": 0.12, "fill": 1.0})
+        r.link(st, f)
+        parts.append(r.chain(f, {"type": "place_assets"}))
+    m = merge(r, parts)
     if wall_material:
         r.chain(m, {"type": "set_material", "material": wall_material,
                     "filter": {**ALL, "semantic": "wall_exterior"}})
@@ -120,5 +126,7 @@ if __name__ == "__main__":
     building("L House", "l_shape", 12, 10, 5, 2, "gable", wall_material="brick").save(os.path.join(here, "kuca_l.loomrecipe.json"))
     building("U Villa", "u_shape", 16, 12, 5, 1, "hip").save(os.path.join(here, "vila_u.loomrecipe.json"))
     building("Flat Block", "rectangle", 14, 10, 4, 5, "flat", program="office").save(os.path.join(here, "blok.loomrecipe.json"))
+    building("Furnished House", "l_shape", 14, 11, 6, 1, "gable", furnish=True, with_roof=False,
+             seed=3).save(os.path.join(here, "kuca_namjestena.loomrecipe.json"))
     street().save(os.path.join(here, "ulica.loomrecipe.json"))
     print("ok")

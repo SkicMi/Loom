@@ -3,7 +3,7 @@
 Razina: **N** = niska (za ljude), **S** = srednja (ono što model bira). Stanje: radi / popravak / fali.
 Tipovi portova: Curve, Profile, PointGrid, Mesh, Points, **Footprint** (shema 7).
 
-## Postojeći (shema 7)
+## Postojeći (shema 8)
 
 | Čvor | Razina | Stanje | Napomena |
 |---|---|---|---|
@@ -35,6 +35,17 @@ Tipovi portova: Curve, Profile, PointGrid, Mesh, Points, **Footprint** (shema 7)
 | `RoadFromCurveNode` | S | radi | asfalt, rubnjak, pločnik s obje strane |
 | `RoomSplitNode` | S | radi | pravila interijera: program (home/office), seed, širina hodnika, vrata, ulazni brid → plan u Footprintu |
 | `InteriorNode` | S | radi | pregradni zidovi s otvorima (stupići na spojevima), krila vrata otvorena 90°, podovi po sobi, stubište s dva kraka |
+| `FurnishNode` | S | radi | Footprint s planom → **Placements** (podatak: asset, parametri, položaj, zakret, kat, soba); pravila po tipu sobe |
+| `PlaceAssetsNode` | S | radi | Placements → Mesh; svaki (asset, parametri) gradi jednom |
+| `AssetNode` | S | radi | jedan asset kao mesh u ishodištu (rekvizit, alat) |
+
+Asseti su zasebni recepti (`procedura/assets/**/*.loomasset.json`, pišu ih `procedura/assets/napravi.py`): `id`,
+`category`, `parameters` [{name, default, min, max}], `bounds` (širina, visina, dubina), `placement`, `clearance_front`,
+`recipe`. Broj u receptu ili `bounds` smije biti `{"param": ime, "scale": s, "offset": o}`. Prostor asseta: baza na y = 0,
+sredina u ishodištu, širina po X, prednja strana prema +Z. `evaluate(graph, &library)`; bez knjižnice Furnish/Place
+Assets/Asset padaju s razlogom. Editor koristi `defaultAssetLibrary()` (LOOM_ROOT_DIR/procedura/assets).
+Kategorije: bed, nightstand, wardrobe, desk, chair, sofa, armchair, coffee_table, tv_stand, shelf, table,
+kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet.
 
 Zadane oznake novih čvorova (mijenjaju se sa `SetMaterial` + filter po semantici):
 zid vani `wall_exterior`/plaster, zid unutra `wall_interior`/plaster, špalete `frame`/plaster, staklo `window`/glass,
@@ -46,7 +57,8 @@ stepenice `stairs`/concrete, ograda `railing`/metal, cesta `road`/asphalt, `curb
 
 | Čvor | Razina | Za što |
 |---|---|---|
-| Namještaj | S | krevet, ormar, kuhinjski element, sanitarije, stol — po tipu sobe i pravilima razmaka |
+| Asseti za alate i rekvizite | S | isti format kao namještaj, druge kategorije |
+| Namještaj: kutni kuhinjski niz, gornji elementi | S | sada ravan niz uz jedan zid |
 | Kosi obris (ne pravokutni) za RoomSplit | S | sada treba `rectify` |
 | Stubište po dubini | S | sada krakovi uvijek idu uzduž reda; plitki redovi (< 2.6 m) nemaju mjesta |
 | `FloorStack` s uvlačenjem | S | različit tlocrt po katu (terase, neboderi) |
@@ -70,12 +82,29 @@ stepenice `stairs`/concrete, ograda `railing`/metal, cesta `road`/asphalt, `curb
 8. Prozori (Walls): samo unutar sobe; kupaonica mali visoki, hodnik/predsoblje samo na čelu, ostava bez.
 9. Greške s razlogom: premalo za dom, nema mjesta za stubište, nema ulaza, soba bez pristupa, zona preplitka.
 
+## Pravila namještaja (Furnish)
+
+1. Korisni pod sobe = pravokutnik sobe umanjen za vanjski zid (`wall_thickness`) ili pola pregrade.
+2. Vrata: u sobi u koju se krilo otvara slobodno je cijelo krilo (≥ 1 m), s druge strane korak od 0.6 m; ulazna vrata
+   1.5 × 1.3 m. Kupaonica se otvara prema van (i u `Interior`). Otvorena strana predsoblja ostaje prohodna.
+3. Komad stoji uz zid (leđa uz zid) ili u sredini (stol); tijelo ne dira vrata, druga tijela ni slobodni pod ispred njih;
+   slobodni pod komada ostaje u sobi i ne dira tijela.
+4. Visoki komadi (> 1.2 m) ne stoje uz vanjski zid s prozorima ni ispred prozorskog pojasa susjednog zida.
+5. Spavaća: krevet (1.6 / 1.4 / 0.9) što dalje od vrata, ne pod prozorom, s prolazom 0.55 uz bokove (bračni oba),
+   noćni ormarići, ormar u kutu; stol ako soba ≥ 11 m². Dnevni: sofa (razmak do suprotnog zida 2.2–5 m), stolić ispred,
+   TV nasuprot, fotelja, polica, blagovaonski stol ako ≥ 24 m². Kuhinja: najdulji slobodni niz (1.2–4.2 m), hladnjak
+   uz njega, stol sa stolicama ako stane. Kupaonica: kada, inače tuš, inače ništa — WC i umivaonik moraju stati.
+   Ured: stolovi sa stolicom (prednost prozoru) dok stanu. Sastanci: stol sa stolicama. Predsoblje: ormarić za cipele.
+   Ostava: police.
+6. Obavezni komadi (krevet, sofa, kuhinjski niz, WC + umivaonik, stol u uredu i sastancima) — ako ne stanu, greška s
+   razlogom i mjerama sobe. Ostali komadi ovise o `fill` (1 = svi koji stanu).
+
 ## Vokabulari (samo dodavanje na kraj)
 
 Semantika: floor, ceiling, wall_exterior, wall_interior, roof, window, door, frame, stairs, railing, foundation,
-trim, glass, road, sidewalk, curb, rope, chain_link, terrain, prop.
+trim, glass, road, sidewalk, curb, rope, chain_link, terrain, prop, furniture.
 
 Materijali: plaster, brick, stone, concrete, wood_planks, wood_beam, roof_tiles, roof_metal, glass, metal,
-steel_chain, asphalt, paving, rope_fiber, ground_dirt, grass.
+steel_chain, asphalt, paving, rope_fiber, ground_dirt, grass, fabric, ceramic.
 
 Imena enum parametara u receptu: `shape` = rectangle / l_shape / u_shape, `roof_type` = flat / gable / hip / shed.

@@ -1,0 +1,278 @@
+{
+ "format": "loom.weaverprocedura.asset",
+ "id": "fridge_basic",
+ "category": "fridge",
+ "parameters": [
+  {
+   "name": "width",
+   "default": 0.6,
+   "min": 0.55,
+   "max": 0.9
+  }
+ ],
+ "bounds": [
+  {
+   "param": "width"
+  },
+  1.85,
+  0.65
+ ],
+ "placement": "wall",
+ "clearance_front": 0.8,
+ "recipe": {
+  "format": "loom.weaverprocedura.recipe",
+  "schema_version": 8,
+  "name": "fridge_basic",
+  "seed": 1,
+  "nodes": [
+   {
+    "id": 1,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      {
+       "param": "width"
+      },
+      1.85,
+      0.63
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 2,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      0,
+      0.925,
+      -0.01
+     ]
+    }
+   },
+   {
+    "id": 3,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 4,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "plaster",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 5,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 6,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cube",
+     "size": [
+      0.03,
+      0.5,
+      0.02
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 7,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      {
+       "param": "width",
+       "scale": 0.5,
+       "offset": -0.06
+      },
+      1.1,
+      0.315
+     ]
+    }
+   },
+   {
+    "id": 8,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "furniture",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 9,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "metal",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 10,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 11,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "merge"
+    }
+   }
+  ],
+  "links": [
+   {
+    "from": 1,
+    "from_port": 0,
+    "to": 2,
+    "to_port": 0
+   },
+   {
+    "from": 2,
+    "from_port": 0,
+    "to": 3,
+    "to_port": 0
+   },
+   {
+    "from": 3,
+    "from_port": 0,
+    "to": 4,
+    "to_port": 0
+   },
+   {
+    "from": 4,
+    "from_port": 0,
+    "to": 5,
+    "to_port": 0
+   },
+   {
+    "from": 6,
+    "from_port": 0,
+    "to": 7,
+    "to_port": 0
+   },
+   {
+    "from": 7,
+    "from_port": 0,
+    "to": 8,
+    "to_port": 0
+   },
+   {
+    "from": 8,
+    "from_port": 0,
+    "to": 9,
+    "to_port": 0
+   },
+   {
+    "from": 9,
+    "from_port": 0,
+    "to": 10,
+    "to_port": 0
+   },
+   {
+    "from": 5,
+    "from_port": 0,
+    "to": 11,
+    "to_port": 0
+   },
+   {
+    "from": 10,
+    "from_port": 0,
+    "to": 11,
+    "to_port": 1
+   }
+  ]
+ }
+}

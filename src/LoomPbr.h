@@ -177,7 +177,7 @@ inline glm::vec3 proceduralMaterialColour(uint16_t material){
         {"roof_tiles", {0.48f, 0.20f, 0.14f}}, {"roof_metal", {0.36f, 0.40f, 0.43f}}, {"glass", {0.55f, 0.72f, 0.80f}},
         {"metal", {0.62f, 0.63f, 0.65f}}, {"steel_chain", {0.48f, 0.49f, 0.51f}}, {"asphalt", {0.16f, 0.16f, 0.17f}},
         {"paving", {0.66f, 0.63f, 0.57f}}, {"rope_fiber", {0.66f, 0.55f, 0.36f}}, {"ground_dirt", {0.38f, 0.29f, 0.20f}},
-        {"grass", {0.27f, 0.45f, 0.20f}},
+        {"grass", {0.27f, 0.45f, 0.20f}}, {"fabric", {0.34f, 0.45f, 0.60f}}, {"ceramic", {0.93f, 0.93f, 0.91f}},
     };
     const auto found = looks.find(Engine::WeaverProcedura::materialName(material));
     if(found == looks.end()) return glm::vec3(0.18f, 0.58f, 0.82f);
