@@ -103,8 +103,15 @@ public:
     GpuTracer& operator=(const GpuTracer&) = delete;
 
     //UNUTAR kadra (poslije beginFrame, prije beginPass): najvise `rows` redaka-uzoraka posla.
-    //Vraca koliko je redaka poslano. Svaki dispatch je jedan uzorak za pojas redaka
+    //Vraca koliko je redaka-uzoraka poslano. Dispatch racuna vise uzoraka po pikselu u jednoj
+    //petlji (regeneracija putanja), pojas je zato toliko puta uzi
     uint32_t record(uint32_t rows);
+
+    //REGENERACIJA PUTANJA: najvise uzoraka po pikselu u jednom dispatchu. Traka kojoj putanja
+    //zavrsi odmah pocne sljedeci uzorak, pa val ne ceka najdulju putanju. Prvi uzorci idu po
+    //jedan (brza prva slika), zatim 2 pa do ove granice; paket nikad ne prelazi provjeru
+    //prilagodljivog uzorkovanja (svakih 8). 1 = staro ponasanje. LOOM_SAMPLES_PER_DISPATCH za mjerenje
+    void setSamplesPerDispatch(uint32_t n){ samplesPerDispatch = std::max(1u, n); }
 
     //Unutar kadra: slika za prikaz u buffer (poslije record istog kadra)
     void recordDisplay(const DisplayOptions& options);
@@ -147,6 +154,8 @@ private:
     std::unique_ptr<Buffers> buffers;
     uint32_t size[2] = {0, 0};
     uint32_t sample = 0, row = 0;
+    uint32_t samplesPerDispatch = 4;
+    uint32_t chunk() const;         //uzoraka u sljedecem dispatchu
     uint32_t backplateTexture = ~0u;
     bool usingRayQuery = false;
     bool profiling = false;

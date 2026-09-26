@@ -334,17 +334,32 @@ int main(){
         plain.setProfiling(true);
         plain.renderAll();
         const std::vector<TracerGpu::CoherenceLevel> flat = plain.readCoherence();
-        TracerGpu::GpuTracer busy(loom, pipelines, Tracer::compile(mixed(0.3f)), settings);
-        busy.setProfiling(true);
-        busy.renderAll();
-        const std::vector<TracerGpu::CoherenceLevel> levels = busy.readCoherence();
+        //Mijesana scena: jedan uzorak po dispatchu (trake se prazne s dubinom) i regeneracija putanja
+        //(traka koja zavrsi pocne sljedeci uzorak) - udio aktivnih traka preko svih koraka
+        auto utilisation = [](const std::vector<TracerGpu::CoherenceLevel>& levels){
+            double active = 0.0, waves = 0.0;
+            for(const auto& level : levels){ active += level.activeLanes * level.waves; waves += level.waves; }
+            return waves > 0.0 ? active / waves : 0.0;
+        };
+        TracerGpu::GpuTracer single(loom, pipelines, Tracer::compile(mixed(0.3f)), settings);
+        single.setSamplesPerDispatch(1);
+        single.setProfiling(true);
+        single.renderAll();
+        const std::vector<TracerGpu::CoherenceLevel> levels = single.readCoherence();
+        TracerGpu::GpuTracer regenerating(loom, pipelines, Tracer::compile(mixed(0.3f)), settings);
+        regenerating.setSamplesPerDispatch(8);
+        regenerating.setProfiling(true);
+        regenerating.renderAll();
+        const double oneUse = utilisation(levels), regenUse = utilisation(regenerating.readCoherence());
         std::string table;
         for(size_t d = 0; d < levels.size() && d < 6; ++d)
             table += fmt(" d%zu: %.0f%% traka, %.2f mat.", d, 100.0 * levels[d].activeLanes, levels[d].materialsPerWave);
         const bool flatOk = !flat.empty() && std::abs(flat[0].activeLanes - 1.0) < 1e-9 && std::abs(flat[0].materialsPerWave - 1.0) < 1e-9;
-        report.check("koherencija", flatOk && levels.size() >= 3 && levels[0].materialsPerWave > 1.0 && levels[2].activeLanes < levels[0].activeLanes,
-                     fmt("samo pod: %.0f%% traka, %.2f materijala po valu; miješano:%s", flat.empty() ? 0.0 : 100.0 * flat[0].activeLanes,
-                         flat.empty() ? 0.0 : flat[0].materialsPerWave, table.c_str()));
+        report.check("koherencija", flatOk && levels.size() >= 3 && levels[0].materialsPerWave > 1.0 && levels[2].activeLanes < levels[0].activeLanes &&
+                     regenUse > oneUse,
+                     fmt("samo pod: %.0f%% traka, %.2f materijala po valu; miješano:%s; aktivnih traka ukupno %.0f%%, s regeneracijom %.0f%%",
+                         flat.empty() ? 0.0 : 100.0 * flat[0].activeLanes, flat.empty() ? 0.0 : flat[0].materialsPerWave, table.c_str(),
+                         100.0 * oneUse, 100.0 * regenUse));
     }
 
     //-- 5. filtar i post na kartici = procesorski A-trous + composite + applyPost + toDisplay -----------

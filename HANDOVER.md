@@ -781,6 +781,16 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
      rub 0.5713 / e^−0.56 = 0.5712, ratio/delta = kvadratura (±0.003), peć sa šumom 0.9987.
   `test_tracer_volume` 25/25 (procesor i kartica).
 
+- **Nadogradnje prema UHD i brzini (redom, commit po stavci):**
+  1. **Regeneracija putanja na kartici**: `trace` je razbijen na `startPath` / `stepPath` (stanje
+     putanje u `PathState`), a `tracePixel` vrti do 4 uzorka po pikselu u JEDNOJ petlji po
+     odbijanjima — traka kojoj putanja završi odmah počne sljedeći uzorak. Uzorci su isti kao prije
+     (isti indeksi), zbrojevi se upišu jednom. Prvi uzorci idu po 1, pa 2, pa 4; paket nikad ne
+     prelazi provjeru prilagodljivog uzorkovanja. `GpuTracer::setSamplesPerDispatch`,
+     `LOOM_SAMPLES_PER_DISPATCH`. Koherencija se sad broji po koraku petlje. Mješovita scena:
+     aktivnih traka 74 % → 83 %; lavapipe (val 8): magla s lampama 537.7 → 487.6 ms po uzorku,
+     visinska magla 199.7 → 186.6 ms. Na kartici s valom 32/64 očekivano više — izmjeriti.
+
 **Što dalje:**
 1. **Izmjeriti pravu karticu** (`loom-render projekt.usda --profil`) — sve dosad je lavapipe, gdje su
    i "hardverske" zrake softverske (ray query 11.1 ms prema BVH 9.2 ms po uzorku).

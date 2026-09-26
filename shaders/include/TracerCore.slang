@@ -71,10 +71,11 @@ struct Light{
 };
 
 struct Push{
-    uint sampleIndex;
+    uint sampleIndex;       // prvi uzorak ovog dispatcha
     uint rowStart;
     uint rowCount;
     uint flags;             // 1: brojati koherenciju (GpuTracer::setProfiling)
+    uint sampleCount;       // uzoraka po pikselu u ovom dispatchu (regeneracija putanja)
 };
 
 [[vk::push_constant]] ConstantBuffer<Push> push;
@@ -117,8 +118,13 @@ struct Push{
 // razlicitih materijala u valu i broj valova. Mjeri divergenciju koju bi wavefront (razvrstavanje
 // putanja po materijalu) uklonio - na bilo kojoj kartici, bez alata proizvodjaca
 [[vk::binding(29,0)]] RWStructuredBuffer<uint> coherence;
-void countCoherence(uint depth, uint shadeId){
-    if((push.flags & 1u) == 0 || depth >= 16) return;
+// Razina je KORAK petlje odbijanja u dispatchu (profileStep), ne dubina putanje: s regeneracijom
+// su u istom koraku trake na raznim dubinama. Za jedan uzorak po dispatchu je korak = dubina.
+// Koraci od 15 dalje idu u zadnju razinu
+static uint profileStep = 0;
+void countCoherence(uint shadeId){
+    if((push.flags & 1u) == 0) return;
+    const uint depth = min(profileStep, 15u);
     const uint active = WaveActiveCountBits(true);
     // razliciti materijali: najmanji jos neprebrojani id (jednoliko za val), pa ponovi
     uint distinct = 0;
@@ -1556,7 +1562,26 @@ struct PathResult{
     float3 albedo, normal;
 };
 
-PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
+// STANJE PUTANJE: sve sto tijelo petlje odbijanja nosi iz koraka u korak. trace() je startPath +
+// stepPath do kraja; tracePixel vrti vise uzoraka u jednoj petlji (regeneracija putanja)
+struct PathState{
+    PathResult result;
+    Sampler sampler;
+    float3 origin, direction;
+    float realDepth, coneWidth, coneSpread;
+    float3 beta, radiance;
+    float previousPdf;
+    float3 previousNormal, previousPoint;
+    bool mirrorChain, sawRough, caustic, previousMedium;
+    MediumSegment previousSegment;
+    float previousT, previousEvent;
+    uint depth, sampleIndex;
+};
+
+PathState startPath(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
+    PathState st;
+    st.sampleIndex = sampleIndex;
+    st.depth = 0;
     PathResult result;
     result.radiance = float3(0.0); result.background = float3(0.0); result.inscatter = float3(0.0);
     result.object = false; result.catcher = false; result.miss = false;
@@ -1565,10 +1590,6 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
 
     Sampler sampler;
     sampler.seed = pixelSeed; sampler.index = sampleIndex; sampler.dimension = 0;
-    const float sceneRadius = P.lens2.w;
-    const float epsilonScale = max(1e-6 * sceneRadius, 1e-7);
-    const float clampValue = P.values.x;
-    const uint maxBounces = P.counts.w;
 
     const float2 filterSample = sampler.next2D();
     const float2 lensSample = sampler.next2D();
@@ -1606,408 +1627,452 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
     float3 radiance = float3(0.0);
     float previousPdf = 0.0;
     float3 previousNormal = float3(0.0);
-    const uint candidates = max(1u, asuint(P.lightTree.y));
     bool mirrorChain = true;
     float3 previousPoint = origin;
-    const bool glass = (P.extra.z & 1u) != 0;
-    const uint volumeCount = asuint(P.holdout.z);
     bool sawRough = false, caustic = false;
-    // ekviangularno u magli (Renderer.cpp)
-    const bool equiangularOn = (P.extra.z & 4u) == 0 && P.lightTree.x > 0.0 && P.counts.x > 0;
     bool previousMedium = false;
     MediumSegment previousSegment;
     previousSegment.o = float3(0.0); previousSegment.d = float3(0.0);
     previousSegment.a = 0.0; previousSegment.b = 0.0; previousSegment.far = 0.0;
     float previousT = 0.0, previousEvent = 0.0;
 
-    for(uint depth = 0;; ++depth){
-        Hit hit;
-        hit.t = INF; hit.slot = NONE; hit.u = 0.0; hit.v = 0.0;
-        const uint salt = depth * 7919u + 13u;
-        traverse(origin, direction, INF, depth == 0 ? 0u : 1u, false, pixelSeed, sampleIndex, salt, hit);
-        const bool valid = hit.slot != NONE;
-        countCoherence(depth, valid ? triangleInfo[asuint(triangles[hit.slot * 3].w)].w : 0xFFFFFFFEu);
+    st.result = result;
+    st.sampler = sampler;
+    st.origin = origin;
+    st.direction = direction;
+    st.realDepth = realDepth;
+    st.coneWidth = coneWidth;
+    st.coneSpread = coneSpread;
+    st.beta = beta;
+    st.radiance = radiance;
+    st.previousPdf = previousPdf;
+    st.previousNormal = previousNormal;
+    st.previousPoint = previousPoint;
+    st.mirrorChain = mirrorChain;
+    st.sawRough = sawRough;
+    st.caustic = caustic;
+    st.previousMedium = previousMedium;
+    st.previousSegment = previousSegment;
+    st.previousT = previousT;
+    st.previousEvent = previousEvent;
+    return st;
+}
 
-        // kugla svjetla ispred plohe
-        float sphereT = valid ? hit.t : INF;
-        int sphere = -1;
-        for(uint i = 0; i < P.counts.z; ++i){
-            const uint index = lightLists[P.counts.y + i];
-            const Light l = lights[index];
-            float t;
-            if(hitSphere(origin, direction, l.position.xyz, l.position.w, sphereT, t)){ sphereT = t; sphere = int(index); }
+bool stepBody(Params P, uint pixelSeed, uint sampleIndex, uint depth, inout PathResult result, inout Sampler sampler,
+              inout float3 origin, inout float3 direction, float realDepth, inout float coneWidth, inout float coneSpread,
+              inout float3 beta, inout float3 radiance, inout float previousPdf, inout float3 previousNormal,
+              inout float3 previousPoint, inout bool mirrorChain, inout bool sawRough, inout bool caustic,
+              inout bool previousMedium, inout MediumSegment previousSegment, inout float previousT, inout float previousEvent){
+    const float sceneRadius = P.lens2.w;
+    const float epsilonScale = max(1e-6 * sceneRadius, 1e-7);
+    const float clampValue = P.values.x;
+    const uint maxBounces = P.counts.w;
+    const uint candidates = max(1u, asuint(P.lightTree.y));
+    const bool glass = (P.extra.z & 1u) != 0;
+    const uint volumeCount = asuint(P.holdout.z);
+    const bool equiangularOn = (P.extra.z & 4u) == 0 && P.lightTree.x > 0.0 && P.counts.x > 0;
+    Hit hit;
+    hit.t = INF; hit.slot = NONE; hit.u = 0.0; hit.v = 0.0;
+    const uint salt = depth * 7919u + 13u;
+    traverse(origin, direction, INF, depth == 0 ? 0u : 1u, false, pixelSeed, sampleIndex, salt, hit);
+    const bool valid = hit.slot != NONE;
+    countCoherence(valid ? triangleInfo[asuint(triangles[hit.slot * 3].w)].w : 0xFFFFFFFEu);
+
+    // kugla svjetla ispred plohe
+    float sphereT = valid ? hit.t : INF;
+    int sphere = -1;
+    for(uint i = 0; i < P.counts.z; ++i){
+        const uint index = lightLists[P.counts.y + i];
+        const Light l = lights[index];
+        float t;
+        if(hitSphere(origin, direction, l.position.xyz, l.position.w, sphereT, t)){ sphereT = t; sphere = int(index); }
+    }
+    // magla: dogadjaj rasprsenja prije plohe ili svjetla (Renderer.cpp)
+    if(volumeCount > 0){
+        const float2 free = sampler.next2D();
+        float t;
+        uint which;
+        float end = sphere >= 0 ? sphereT : (valid ? hit.t : INF);
+        // holdout: iza stvarne plohe iz splata kamera ne vidi maglu (Renderer.cpp)
+        if(depth == 0 && realDepth > 0.0){
+            const float forward = -dot(direction, P.cameraZ.xyz);
+            if(forward > 1e-6) end = min(end, realDepth * (1.0 + P.holdout.y) / forward);
         }
-        // magla: dogadjaj rasprsenja prije plohe ili svjetla (Renderer.cpp)
-        if(volumeCount > 0){
-            const float2 free = sampler.next2D();
-            float t;
-            uint which;
-            float end = sphere >= 0 ? sphereT : (valid ? hit.t : INF);
-            // holdout: iza stvarne plohe iz splata kamera ne vidi maglu (Renderer.cpp)
-            if(depth == 0 && realDepth > 0.0){
-                const float forward = -dot(direction, P.cameraZ.xyz);
-                if(forward > 1e-6) end = min(end, realDepth * (1.0 + P.holdout.y) / forward);
-            }
-            MediaOnRay media = mediaOnRay(volumeCount, origin, direction, end);
-            MediumSegment segment;
-            segment.o = origin; segment.d = direction;
-            const bool inMedium = media.extent(end, segment.a, segment.b);
-            segment.far = segment.b >= INF ? segment.a + 2.0 * sceneRadius : segment.b;
-            if(inMedium && equiangularOn && depth < maxBounces){
-                const float2 choice = sampler.next2D(), u = sampler.next2D(), v = sampler.next2D();
-                uint index;
-                float pick;
-                if(chooseLight(P, choice.x, segmentQuery(origin, direction, segment.a, segment.far), index, pick)){
-                    const Light light = lights[index];
-                    const uint kind = asuint(light.radiance.w);
-                    if(kind == LIGHT_SPHERE || kind == LIGHT_TRIANGLE){
-                        float b1, b2;
-                        const float3 centre = kind == LIGHT_TRIANGLE ? trianglePoint(light, u, b1, b2) : light.position.xyz;
-                        const Equiangular e = equiangular(origin, direction, centre, segment.a, segment.b);
-                        const float te = equiangularSample(e, v.x);
-                        const float pe = equiangularPdf(e, te);
-                        const float event = (te >= segment.a && te <= segment.b) ? media.eventPdf(te) : 0.0;
-                        const float3 p = origin + direction * te;
-                        // stvarno sigma(t) T(t) (Renderer.cpp)
-                        float real = event;
-                        uint scatterer = 0;
-                        if(event > 0.0){
-                            if(media.varies){
-                                VolumeRng rng;
-                                rng.state = hash2(pixelSeed ^ hash2(salt + 523u, sampleIndex * 977u), 0x68e31da4u);
-                                real = media.realTotal(te, v.y, scatterer);
-                                if(real > 0.0) real *= media.transmittance(te, rng);
-                            }else scatterer = media.pick(te, v.y);
-                        }
-                        LightSample ls;
-                        if(pe > 0.0 && real > 0.0 && sampleLightIndex(P, index, pick, p, u, ls)){
-                            const float3 albedo = volumes[scatterer * VOLUME_STRIDE + 3].rgb;
-                            const float phase = phaseOf(scatterer, dot(direction, ls.wi));
-                            if(phase > 0.0 && luminance(albedo * ls.value) > 0.0){
-                                const float limit = ls.distance >= INF ? INF : ls.distance * (1.0 - 1e-4);
-                                bool crossed;
-                                const float3 through = shadowTransmittance(p, ls.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 419u,
-                                                                           volumeCount, crossed);
-                                if(luminance(through) > 0.0){
-                                    const float own = ls.pdf / pick;
-                                    const float w = powerHeuristic3(pe * ls.pdf, event * choiceProbability(P, index, p, float3(0.0)) * own,
-                                                                    ls.delta || crossed ? 0.0 : event * phase);
-                                    const float3 c = clampContribution(beta * albedo * ls.value * through * (phase * real * w / (pe * ls.pdf)),
-                                                                       depth > 0, clampValue);
-                                    if(depth == 0) result.inscatter += c; else radiance += c;
-                                }
+        MediaOnRay media = mediaOnRay(volumeCount, origin, direction, end);
+        MediumSegment segment;
+        segment.o = origin; segment.d = direction;
+        const bool inMedium = media.extent(end, segment.a, segment.b);
+        segment.far = segment.b >= INF ? segment.a + 2.0 * sceneRadius : segment.b;
+        if(inMedium && equiangularOn && depth < maxBounces){
+            const float2 choice = sampler.next2D(), u = sampler.next2D(), v = sampler.next2D();
+            uint index;
+            float pick;
+            if(chooseLight(P, choice.x, segmentQuery(origin, direction, segment.a, segment.far), index, pick)){
+                const Light light = lights[index];
+                const uint kind = asuint(light.radiance.w);
+                if(kind == LIGHT_SPHERE || kind == LIGHT_TRIANGLE){
+                    float b1, b2;
+                    const float3 centre = kind == LIGHT_TRIANGLE ? trianglePoint(light, u, b1, b2) : light.position.xyz;
+                    const Equiangular e = equiangular(origin, direction, centre, segment.a, segment.b);
+                    const float te = equiangularSample(e, v.x);
+                    const float pe = equiangularPdf(e, te);
+                    const float event = (te >= segment.a && te <= segment.b) ? media.eventPdf(te) : 0.0;
+                    const float3 p = origin + direction * te;
+                    // stvarno sigma(t) T(t) (Renderer.cpp)
+                    float real = event;
+                    uint scatterer = 0;
+                    if(event > 0.0){
+                        if(media.varies){
+                            VolumeRng rng;
+                            rng.state = hash2(pixelSeed ^ hash2(salt + 523u, sampleIndex * 977u), 0x68e31da4u);
+                            real = media.realTotal(te, v.y, scatterer);
+                            if(real > 0.0) real *= media.transmittance(te, rng);
+                        }else scatterer = media.pick(te, v.y);
+                    }
+                    LightSample ls;
+                    if(pe > 0.0 && real > 0.0 && sampleLightIndex(P, index, pick, p, u, ls)){
+                        const float3 albedo = volumes[scatterer * VOLUME_STRIDE + 3].rgb;
+                        const float phase = phaseOf(scatterer, dot(direction, ls.wi));
+                        if(phase > 0.0 && luminance(albedo * ls.value) > 0.0){
+                            const float limit = ls.distance >= INF ? INF : ls.distance * (1.0 - 1e-4);
+                            bool crossed;
+                            const float3 through = shadowTransmittance(p, ls.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 419u,
+                                                                       volumeCount, crossed);
+                            if(luminance(through) > 0.0){
+                                const float own = ls.pdf / pick;
+                                const float w = powerHeuristic3(pe * ls.pdf, event * choiceProbability(P, index, p, float3(0.0)) * own,
+                                                                ls.delta || crossed ? 0.0 : event * phase);
+                                const float3 c = clampContribution(beta * albedo * ls.value * through * (phase * real * w / (pe * ls.pdf)),
+                                                                   depth > 0, clampValue);
+                                if(depth == 0) result.inscatter += c; else radiance += c;
                             }
                         }
                     }
                 }
             }
-            if(inMedium && sampleVolume(media, end, free, hash2(pixelSeed ^ hash2(salt + 211u, sampleIndex * 977u), 0x1b873593u), t, which)){
-                const float4 medium = volumes[which * VOLUME_STRIDE + 3];
-                const float event = media.eventPdf(t);
-                const float3 p = origin + direction * t;
-                if(depth == 0) result.object = true;
-                beta *= medium.rgb;
-                if(depth >= maxBounces || !(luminance(beta) > 0.0)) break;
-                {
-                    // RIS kao na plohi (Renderer.cpp)
-                    LightSample chosen;
-                    chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
-                    chosen.light = 0; chosen.pick = 1.0;
-                    float chosenPhase = 0.0, chosenTarget = 0.0, weightSum = 0.0;
-                    for(uint k = 0; k < candidates; ++k){
-                        LightSample ls;
-                        const float2 choice = sampler.next2D();
-                        const float2 u = sampler.next2D();
-                        if(!sampleLight(P, p, float3(0.0), choice.x, u, ls)) continue;
-                        const float phase = phaseOf(which, dot(direction, ls.wi));
-                        const float target = luminance(ls.value) * phase * (ls.delta ? 1.0 : powerHeuristic(ls.pdf, phase));
-                        if(!(target > 0.0)) continue;
-                        weightSum += target / ls.pdf;
-                        if(choice.y * weightSum < target / ls.pdf){ chosen = ls; chosenPhase = phase; chosenTarget = target; }
-                    }
-                    if(chosenTarget > 0.0){
-                        const float limit = chosen.distance >= INF ? INF : chosen.distance * (1.0 - 1e-4);
-                        bool crossed;
-                        const float3 through = shadowTransmittance(p, chosen.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 307u,
-                                                                   volumeCount, crossed);
-                        if(luminance(through) > 0.0){
-                            float equi = 0.0;
-                            if(equiangularOn){
-                                const Light light = lights[chosen.light];
-                                const float3 centre = asuint(light.radiance.w) == LIGHT_TRIANGLE ? p + chosen.wi * chosen.distance : light.position.xyz;
-                                equi = equiangularDensity(P, segment, chosen.light, centre, t) * (chosen.pdf / chosen.pick);
-                            }
-                            const float w = powerHeuristic3(event * chosen.pdf, chosen.delta || crossed ? 0.0 : event * chosenPhase, equi);
-                            radiance += clampContribution(beta * chosen.value * through * (chosenPhase * w * weightSum / (float(candidates) * chosenTarget)),
-                                                          depth > 0, clampValue);
-                        }
-                    }
-                }
-                float pdf;
-                const float3 next = samplePhase(which, direction, sampler.next2D(), pdf);
-                const float2 roulette = sampler.next2D();
-                mirrorChain = false;
-                previousPdf = pdf;
-                previousPoint = p;
-                previousNormal = float3(0.0);
-                previousMedium = true;
-                previousSegment = segment;
-                previousT = t;
-                previousEvent = event;
-                coneSpread += 0.2;
-                if(glass){ sawRough = true; caustic = false; }
-                if(depth >= 3){
-                    const float keep = clamp(max(max(beta.r, beta.g), beta.b), 0.05, 0.95);
-                    if(roulette.x >= keep) break;
-                    beta /= keep;
-                }
-                origin = p;
-                direction = next;
-                continue;
-            }
         }
-
-        if(sphere >= 0){
-            const Light l = lights[uint(sphere)];
-            const float3 p = origin + direction * sphereT;
-            float falloff = 1.0;
-            if((asuint(l.cone.w) & 2u) != 0) falloff = spotFalloff(dot(normalize(p - l.position.xyz), l.axis.xyz), l.cone.y, l.cone.z);
-            float3 le = l.radiance.rgb * falloff;
-            if(depth > 0){
-                const float3 toCentre = l.position.xyz - previousPoint;
-                const float d2 = dot(toCentre, toCentre);
-                const float sin2 = min(1.0, l.position.w * l.position.w / max(d2, 1e-20));
-                const float lightPdf = choiceProbability(P, uint(sphere), previousPoint, previousNormal) / (2.0 * PI * oneMinusCosFromSin2(sin2));
-                if(previousMedium && equiangularOn){
-                    const float equi = equiangularDensity(P, previousSegment, uint(sphere), l.position.xyz, previousT) /
-                                       (2.0 * PI * oneMinusCosFromSin2(sin2));
-                    le *= powerHeuristic3(previousEvent * previousPdf, previousEvent * lightPdf, equi);
-                }else le *= powerHeuristic(previousPdf, lightPdf);
-            }
-            if(!caustic) radiance += clampContribution(beta * le, depth > 1, clampValue);
+        if(inMedium && sampleVolume(media, end, free, hash2(pixelSeed ^ hash2(salt + 211u, sampleIndex * 977u), 0x1b873593u), t, which)){
+            const float4 medium = volumes[which * VOLUME_STRIDE + 3];
+            const float event = media.eventPdf(t);
+            const float3 p = origin + direction * t;
             if(depth == 0) result.object = true;
-            break;
-        }
-
-        if(!valid){
-            if(depth == 0){
-                result.miss = true;
-                result.background = escaped(P, direction, 0.0, true, false, false);
-            }else if(!caustic){
-                radiance += clampContribution(beta * escaped(P, direction, previousPdf, false, mirrorChain, true), depth > 1, clampValue);
+            beta *= medium.rgb;
+            if(depth >= maxBounces || !(luminance(beta) > 0.0)) return false;
+            {
+                // RIS kao na plohi (Renderer.cpp)
+                LightSample chosen;
+                chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
+                chosen.light = 0; chosen.pick = 1.0;
+                float chosenPhase = 0.0, chosenTarget = 0.0, weightSum = 0.0;
+                for(uint k = 0; k < candidates; ++k){
+                    LightSample ls;
+                    const float2 choice = sampler.next2D();
+                    const float2 u = sampler.next2D();
+                    if(!sampleLight(P, p, float3(0.0), choice.x, u, ls)) continue;
+                    const float phase = phaseOf(which, dot(direction, ls.wi));
+                    const float target = luminance(ls.value) * phase * (ls.delta ? 1.0 : powerHeuristic(ls.pdf, phase));
+                    if(!(target > 0.0)) continue;
+                    weightSum += target / ls.pdf;
+                    if(choice.y * weightSum < target / ls.pdf){ chosen = ls; chosenPhase = phase; chosenTarget = target; }
+                }
+                if(chosenTarget > 0.0){
+                    const float limit = chosen.distance >= INF ? INF : chosen.distance * (1.0 - 1e-4);
+                    bool crossed;
+                    const float3 through = shadowTransmittance(p, chosen.wi, limit, 2u, glass, pixelSeed, sampleIndex, salt + 307u,
+                                                               volumeCount, crossed);
+                    if(luminance(through) > 0.0){
+                        float equi = 0.0;
+                        if(equiangularOn){
+                            const Light light = lights[chosen.light];
+                            const float3 centre = asuint(light.radiance.w) == LIGHT_TRIANGLE ? p + chosen.wi * chosen.distance : light.position.xyz;
+                            equi = equiangularDensity(P, segment, chosen.light, centre, t) * (chosen.pdf / chosen.pick);
+                        }
+                        const float w = powerHeuristic3(event * chosen.pdf, chosen.delta || crossed ? 0.0 : event * chosenPhase, equi);
+                        radiance += clampContribution(beta * chosen.value * through * (chosenPhase * w * weightSum / (float(candidates) * chosenTarget)),
+                                                      depth > 0, clampValue);
+                    }
+                }
             }
-            break;
+            float pdf;
+            const float3 next = samplePhase(which, direction, sampler.next2D(), pdf);
+            const float2 roulette = sampler.next2D();
+            mirrorChain = false;
+            previousPdf = pdf;
+            previousPoint = p;
+            previousNormal = float3(0.0);
+            previousMedium = true;
+            previousSegment = segment;
+            previousT = t;
+            previousEvent = event;
+            coneSpread += 0.2;
+            if(glass){ sawRough = true; caustic = false; }
+            if(depth >= 3){
+                const float keep = clamp(max(max(beta.r, beta.g), beta.b), 0.05, 0.95);
+                if(roulette.x >= keep) return false;
+                beta /= keep;
+            }
+            origin = p;
+            direction = next;
+            return true;
         }
+    }
 
-        //-- ploha --------------------------------------------------------------------------------
-        const uint original = asuint(triangles[hit.slot * 3].w);
-        const uint flags = asuint(triangles[hit.slot * 3 + 1].w);
-        const uint emitter = asuint(triangles[hit.slot * 3 + 2].w);
-        const uint4 info = triangleInfo[original];
-        const Material material = materials[info.w];
-        const float b0 = 1.0 - hit.u - hit.v;
-        float3 v0, e1, e2;
-        triangleAt(hit.slot, v0, e1, e2);
-        const float3 p = v0 + e1 * hit.u + e2 * hit.v;
-        if(depth == 0 && realDepth > 0.0 && -toCamera(P, p).z > realDepth * (1.0 + P.holdout.y)){
+    if(sphere >= 0){
+        const Light l = lights[uint(sphere)];
+        const float3 p = origin + direction * sphereT;
+        float falloff = 1.0;
+        if((asuint(l.cone.w) & 2u) != 0) falloff = spotFalloff(dot(normalize(p - l.position.xyz), l.axis.xyz), l.cone.y, l.cone.z);
+        float3 le = l.radiance.rgb * falloff;
+        if(depth > 0){
+            const float3 toCentre = l.position.xyz - previousPoint;
+            const float d2 = dot(toCentre, toCentre);
+            const float sin2 = min(1.0, l.position.w * l.position.w / max(d2, 1e-20));
+            const float lightPdf = choiceProbability(P, uint(sphere), previousPoint, previousNormal) / (2.0 * PI * oneMinusCosFromSin2(sin2));
+            if(previousMedium && equiangularOn){
+                const float equi = equiangularDensity(P, previousSegment, uint(sphere), l.position.xyz, previousT) /
+                                   (2.0 * PI * oneMinusCosFromSin2(sin2));
+                le *= powerHeuristic3(previousEvent * previousPdf, previousEvent * lightPdf, equi);
+            }else le *= powerHeuristic(previousPdf, lightPdf);
+        }
+        if(!caustic) radiance += clampContribution(beta * le, depth > 1, clampValue);
+        if(depth == 0) result.object = true;
+        return false;
+    }
+
+    if(!valid){
+        if(depth == 0){
             result.miss = true;
             result.background = escaped(P, direction, 0.0, true, false, false);
-            break;
+        }else if(!caustic){
+            radiance += clampContribution(beta * escaped(P, direction, previousPdf, false, mirrorChain, true), depth > 1, clampValue);
         }
-        float3 ng = normalize(cross(e1, e2));
-        const float4 va = vertices[info.x * 3], vb = vertices[info.y * 3], vc = vertices[info.z * 3];
-        float3 ns = normalAt(info.x, va.xyz) * b0 + normalAt(info.y, vb.xyz) * hit.u + normalAt(info.z, vc.xyz) * hit.v;
-        ns = dot(ns, ns) > 1e-20 ? normalize(ns) : ng;
-        if(dot(ng, ns) < 0.0) ng = -ng;
-        const float2 uv = float2(va.w, vertices[info.x * 3 + 1].x) * b0 + float2(vb.w, vertices[info.y * 3 + 1].x) * hit.u +
-                          float2(vc.w, vertices[info.z * 3 + 1].x) * hit.v;
-
-        // razina mipmape iz stosca zrake (Renderer.cpp)
-        coneWidth += coneSpread * hit.t;
-        float lodBase = -INF;
-        {
-            const float2 uv0 = float2(va.w, vertices[info.x * 3 + 1].x);
-            const float2 du = float2(vb.w, vertices[info.y * 3 + 1].x) - uv0, dv = float2(vc.w, vertices[info.z * 3 + 1].x) - uv0;
-            const float uvArea = abs(du.x * dv.y - du.y * dv.x);
-            const float worldArea = length(cross(e1, e2));
-            const float cosHit = max(0.05, abs(dot(ng, direction)));
-            if((P.extra.z & 2u) == 0 && uvArea > 0.0 && worldArea > 0.0 && coneWidth > 0.0)
-                lodBase = log2(coneWidth / cosHit) + 0.5 * log2(uvArea / worldArea);
-        }
-
-        float3 baseColor = material.baseColor.rgb;
-        float metallic = material.surface.x, roughness = material.surface.y;
-        float transmission = material.layers.y, clearcoat = material.layers.z;
-        const float ior = max(1.0001, material.surface.w);
-        if(material.textures.x >= 0) baseColor *= sampleTextureLod(uint(material.textures.x), uv, lodFor(uint(material.textures.x), lodBase)).rgb;
-        if(material.textures.y >= 0){
-            const float4 mr = sampleTextureLod(uint(material.textures.y), uv, lodFor(uint(material.textures.y), lodBase));
-            roughness *= mr.g;
-            metallic *= mr.b;
-        }
-        if(material.textures.z >= 0){
-            const float4 tangent = float4(vertices[info.x * 3 + 1].yzw, vertices[info.x * 3 + 2].x) * b0 +
-                                   float4(vertices[info.y * 3 + 1].yzw, vertices[info.y * 3 + 2].x) * hit.u +
-                                   float4(vertices[info.z * 3 + 1].yzw, vertices[info.z * 3 + 2].x) * hit.v;
-            float3 t = tangent.xyz - ns * dot(ns, tangent.xyz);
-            if(dot(t, t) > 1e-20){
-                t = normalize(t);
-                const float3 bt = cross(ns, t) * (tangent.w < 0.0 ? -1.0 : 1.0);
-                float3 m = sampleTextureLod(uint(material.textures.z), uv, lodFor(uint(material.textures.z), lodBase)).rgb * 2.0 - 1.0;
-                m.x *= material.surface.z;
-                m.y *= material.surface.z;
-                const float3 bent = t * m.x + bt * m.y + ns * m.z;
-                if(dot(bent, bent) > 1e-20) ns = normalize(bent);
-            }
-        }
-        float3 emitted = material.emission.rgb;
-        if(material.textures.w >= 0) emitted *= sampleTextureLod(uint(material.textures.w), uv, lodFor(uint(material.textures.w), lodBase)).rgb;
-
-        const float3 wo = -direction;
-        const bool outside = dot(ng, wo) > 0.0;
-        if(!outside){ ng = -ng; ns = -ns; }
-        if(dot(ns, wo) < 1e-4) ns = ng;
-        const float eta = outside ? ior : 1.0 / ior;
-
-        if(depth == 0){
-            result.normal = outside ? ns : -ns;
-            result.albedo = baseColor;
-        }
-
-        //-- shadow catcher ---------------------------------------------------------------------------
-        if(depth == 0 && (flags & CATCHER) != 0){
-            result.catcher = true;
-            result.background = escaped(P, direction, 0.0, true, false, false);
-            const float3 from = offsetPoint(p, ng, true, epsilonScale);
-            for(int k = 0; k < 2; ++k){
-                LightSample ls;
-                const float2 choice = sampler.next2D();
-                if(!sampleLight(P, p, ng, choice.x, sampler.next2D(), ls)) continue;
-                const float cosine = dot(ng, ls.wi);
-                if(cosine <= 0.0) continue;
-                const float3 c = ls.value * (cosine / PI) / ls.pdf;
-                result.lit += c;
-                bool crossed;
-                result.shadowed += c * shadowTransmittance(from, ls.wi, ls.distance * (1.0 - 1e-4), 3u, glass,
-                                                           pixelSeed, sampleIndex, salt + 101u, volumeCount, crossed);
-            }
-            break;
-        }
-
-        //-- stvarna scena u odrazu i lomu -------------------------------------------------------------
-        if(depth > 0 && (flags & CATCHER) != 0 && P.flags.z != NONE){
-            const float3 local = toCamera(P, p);
-            if(local.z < 0.0){
-                bool inside;
-                const float3 plateColour = backplateAt(P, local, false, inside);
-                if(inside){
-                    if(mirrorChain){
-                        radiance += clampContribution(beta * plateColour, depth > 1, clampValue);
-                        break;
-                    }
-                    baseColor = min(plateColour, float3(0.9));
-                    metallic = 0.0;
-                    transmission = 0.0;
-                    clearcoat = 0.0;
-                    roughness = max(roughness, 0.6);
-                }
-            }
-        }
-
-        if(luminance(emitted) > 0.0 && (material.mode.y != 0 || outside) && !caustic){
-            float w = 1.0;
-            if(depth > 0 && emitter != NONE){
-                const Light l = lights[emitter];
-                const float dist2 = hit.t * hit.t;
-                const float cosLight = abs(dot(ng, direction));
-                const float lightPdf = cosLight > 0.0 ? choiceProbability(P, emitter, previousPoint, previousNormal) * dist2 / (cosLight * l.pick.w) : 0.0;
-                if(previousMedium && equiangularOn){
-                    const float equi = cosLight > 0.0 ? equiangularDensity(P, previousSegment, emitter, origin + direction * hit.t, previousT) *
-                                                        dist2 / (cosLight * l.pick.w) : 0.0;
-                    w = powerHeuristic3(previousEvent * previousPdf, previousEvent * lightPdf, equi);
-                }else w = powerHeuristic(previousPdf, lightPdf);
-            }
-            radiance += clampContribution(beta * emitted * w, depth > 1, clampValue);
-        }
-        if(depth == 0) result.object = true;
-        if(depth >= maxBounces) break;
-
-        float3 tangentX, tangentY;
-        basis(ns, tangentX, tangentY);
-        const Bsdf bsdf = makeBsdf(baseColor, metallic, roughness, ior, material.layers.x, transmission, clearcoat,
-                                   material.layers.w, float3(dot(wo, tangentX), dot(wo, tangentY), dot(wo, ns)), eta);
-
-        //-- izravno svjetlo (RIS, Renderer.cpp) ---------------------------------------------------------
-        const float3 receiver = transmission > 0.0 ? float3(0.0) : ng;
-        {
-            LightSample chosen;
-            chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
-            float3 chosenF = float3(0.0);
-            float chosenBsdfPdf = 0.0, chosenTarget = 0.0, weightSum = 0.0;
-            bool chosenSide = false;
-            for(uint k = 0; k < candidates; ++k){
-                LightSample ls;
-                const float2 choice = sampler.next2D();
-                const float2 u = sampler.next2D();
-                if(!sampleLight(P, p, receiver, choice.x, u, ls)) continue;
-                const float3 wiLocal = float3(dot(ls.wi, tangentX), dot(ls.wi, tangentY), dot(ls.wi, ns));
-                const bool geometricSide = dot(ls.wi, ng) > 0.0;
-                if(geometricSide != (wiLocal.z > 0.0)) continue;
-                float bsdfPdf;
-                const float3 f = evalBsdf(bsdf, wiLocal, bsdfPdf);
-                const float target = luminance(f * ls.value) * (ls.delta ? 1.0 : powerHeuristic(ls.pdf, bsdfPdf));
-                if(!(target > 0.0)) continue;
-                weightSum += target / ls.pdf;
-                if(choice.y * weightSum < target / ls.pdf){
-                    chosen = ls; chosenF = f; chosenBsdfPdf = bsdfPdf; chosenTarget = target; chosenSide = geometricSide;
-                }
-            }
-            if(chosenTarget > 0.0){
-                const float limit = chosen.distance >= INF ? INF : chosen.distance * (1.0 - 1e-4);
-                bool crossed;
-                const float3 through = shadowTransmittance(offsetPoint(p, ng, chosenSide, epsilonScale), chosen.wi, limit, 2u,
-                                                           glass, pixelSeed, sampleIndex, salt + 211u, volumeCount, crossed);
-                if(luminance(through) > 0.0){
-                    const float w = chosen.delta || crossed ? 1.0 : powerHeuristic(chosen.pdf, chosenBsdfPdf);
-                    radiance += clampContribution(beta * chosenF * chosen.value * through * (w * weightSum / (float(candidates) * chosenTarget)),
-                                                  depth > 0, clampValue);
-                }
-            }
-        }
-
-        //-- odbijanje ---------------------------------------------------------------------------------
-        const float2 u = sampler.next2D();
-        const float2 choice = sampler.next2D();
-        float3 wiLocal, weight;
-        float pdf;
-        bool glossy;
-        if(!sampleBsdf(bsdf, u, choice.x, wiLocal, weight, pdf, glossy)) break;
-        const float3 wi = tangentX * wiLocal.x + tangentY * wiLocal.y + ns * wiLocal.z;
-        const bool geometricSide = dot(wi, ng) > 0.0;
-        if(geometricSide != (wiLocal.z > 0.0)) break;
-        beta *= weight;
-        const float betaLum = luminance(beta);
-        if(!(betaLum > 0.0) || isinf(betaLum) || isnan(betaLum)) break;
-        mirrorChain = mirrorChain && glossy;
-        if(!glossy) coneSpread += 0.2;
-        if(glass){
-            if(!glossy){ sawRough = true; caustic = false; }
-            else if(!geometricSide && sawRough && (flags & TRANSMISSIVE) != 0) caustic = true;
-        }
-        previousPdf = pdf;
-        previousMedium = false;
-        previousPoint = p;
-        previousNormal = receiver;
-        if(depth >= 3){
-            const float keep = clamp(max(max(beta.r, beta.g), beta.b), 0.05, 0.95);
-            if(choice.y >= keep) break;
-            beta /= keep;
-        }
-        origin = offsetPoint(p, ng, geometricSide, epsilonScale);
-        direction = wi;
+        return false;
     }
-    result.radiance = radiance;
-    return result;
+
+    //-- ploha --------------------------------------------------------------------------------
+    const uint original = asuint(triangles[hit.slot * 3].w);
+    const uint flags = asuint(triangles[hit.slot * 3 + 1].w);
+    const uint emitter = asuint(triangles[hit.slot * 3 + 2].w);
+    const uint4 info = triangleInfo[original];
+    const Material material = materials[info.w];
+    const float b0 = 1.0 - hit.u - hit.v;
+    float3 v0, e1, e2;
+    triangleAt(hit.slot, v0, e1, e2);
+    const float3 p = v0 + e1 * hit.u + e2 * hit.v;
+    if(depth == 0 && realDepth > 0.0 && -toCamera(P, p).z > realDepth * (1.0 + P.holdout.y)){
+        result.miss = true;
+        result.background = escaped(P, direction, 0.0, true, false, false);
+        return false;
+    }
+    float3 ng = normalize(cross(e1, e2));
+    const float4 va = vertices[info.x * 3], vb = vertices[info.y * 3], vc = vertices[info.z * 3];
+    float3 ns = normalAt(info.x, va.xyz) * b0 + normalAt(info.y, vb.xyz) * hit.u + normalAt(info.z, vc.xyz) * hit.v;
+    ns = dot(ns, ns) > 1e-20 ? normalize(ns) : ng;
+    if(dot(ng, ns) < 0.0) ng = -ng;
+    const float2 uv = float2(va.w, vertices[info.x * 3 + 1].x) * b0 + float2(vb.w, vertices[info.y * 3 + 1].x) * hit.u +
+                      float2(vc.w, vertices[info.z * 3 + 1].x) * hit.v;
+
+    // razina mipmape iz stosca zrake (Renderer.cpp)
+    coneWidth += coneSpread * hit.t;
+    float lodBase = -INF;
+    {
+        const float2 uv0 = float2(va.w, vertices[info.x * 3 + 1].x);
+        const float2 du = float2(vb.w, vertices[info.y * 3 + 1].x) - uv0, dv = float2(vc.w, vertices[info.z * 3 + 1].x) - uv0;
+        const float uvArea = abs(du.x * dv.y - du.y * dv.x);
+        const float worldArea = length(cross(e1, e2));
+        const float cosHit = max(0.05, abs(dot(ng, direction)));
+        if((P.extra.z & 2u) == 0 && uvArea > 0.0 && worldArea > 0.0 && coneWidth > 0.0)
+            lodBase = log2(coneWidth / cosHit) + 0.5 * log2(uvArea / worldArea);
+    }
+
+    float3 baseColor = material.baseColor.rgb;
+    float metallic = material.surface.x, roughness = material.surface.y;
+    float transmission = material.layers.y, clearcoat = material.layers.z;
+    const float ior = max(1.0001, material.surface.w);
+    if(material.textures.x >= 0) baseColor *= sampleTextureLod(uint(material.textures.x), uv, lodFor(uint(material.textures.x), lodBase)).rgb;
+    if(material.textures.y >= 0){
+        const float4 mr = sampleTextureLod(uint(material.textures.y), uv, lodFor(uint(material.textures.y), lodBase));
+        roughness *= mr.g;
+        metallic *= mr.b;
+    }
+    if(material.textures.z >= 0){
+        const float4 tangent = float4(vertices[info.x * 3 + 1].yzw, vertices[info.x * 3 + 2].x) * b0 +
+                               float4(vertices[info.y * 3 + 1].yzw, vertices[info.y * 3 + 2].x) * hit.u +
+                               float4(vertices[info.z * 3 + 1].yzw, vertices[info.z * 3 + 2].x) * hit.v;
+        float3 t = tangent.xyz - ns * dot(ns, tangent.xyz);
+        if(dot(t, t) > 1e-20){
+            t = normalize(t);
+            const float3 bt = cross(ns, t) * (tangent.w < 0.0 ? -1.0 : 1.0);
+            float3 m = sampleTextureLod(uint(material.textures.z), uv, lodFor(uint(material.textures.z), lodBase)).rgb * 2.0 - 1.0;
+            m.x *= material.surface.z;
+            m.y *= material.surface.z;
+            const float3 bent = t * m.x + bt * m.y + ns * m.z;
+            if(dot(bent, bent) > 1e-20) ns = normalize(bent);
+        }
+    }
+    float3 emitted = material.emission.rgb;
+    if(material.textures.w >= 0) emitted *= sampleTextureLod(uint(material.textures.w), uv, lodFor(uint(material.textures.w), lodBase)).rgb;
+
+    const float3 wo = -direction;
+    const bool outside = dot(ng, wo) > 0.0;
+    if(!outside){ ng = -ng; ns = -ns; }
+    if(dot(ns, wo) < 1e-4) ns = ng;
+    const float eta = outside ? ior : 1.0 / ior;
+
+    if(depth == 0){
+        result.normal = outside ? ns : -ns;
+        result.albedo = baseColor;
+    }
+
+    //-- shadow catcher ---------------------------------------------------------------------------
+    if(depth == 0 && (flags & CATCHER) != 0){
+        result.catcher = true;
+        result.background = escaped(P, direction, 0.0, true, false, false);
+        const float3 from = offsetPoint(p, ng, true, epsilonScale);
+        for(int k = 0; k < 2; ++k){
+            LightSample ls;
+            const float2 choice = sampler.next2D();
+            if(!sampleLight(P, p, ng, choice.x, sampler.next2D(), ls)) continue;
+            const float cosine = dot(ng, ls.wi);
+            if(cosine <= 0.0) continue;
+            const float3 c = ls.value * (cosine / PI) / ls.pdf;
+            result.lit += c;
+            bool crossed;
+            result.shadowed += c * shadowTransmittance(from, ls.wi, ls.distance * (1.0 - 1e-4), 3u, glass,
+                                                       pixelSeed, sampleIndex, salt + 101u, volumeCount, crossed);
+        }
+        return false;
+    }
+
+    //-- stvarna scena u odrazu i lomu -------------------------------------------------------------
+    if(depth > 0 && (flags & CATCHER) != 0 && P.flags.z != NONE){
+        const float3 local = toCamera(P, p);
+        if(local.z < 0.0){
+            bool inside;
+            const float3 plateColour = backplateAt(P, local, false, inside);
+            if(inside){
+                if(mirrorChain){
+                    radiance += clampContribution(beta * plateColour, depth > 1, clampValue);
+                    return false;
+                }
+                baseColor = min(plateColour, float3(0.9));
+                metallic = 0.0;
+                transmission = 0.0;
+                clearcoat = 0.0;
+                roughness = max(roughness, 0.6);
+            }
+        }
+    }
+
+    if(luminance(emitted) > 0.0 && (material.mode.y != 0 || outside) && !caustic){
+        float w = 1.0;
+        if(depth > 0 && emitter != NONE){
+            const Light l = lights[emitter];
+            const float dist2 = hit.t * hit.t;
+            const float cosLight = abs(dot(ng, direction));
+            const float lightPdf = cosLight > 0.0 ? choiceProbability(P, emitter, previousPoint, previousNormal) * dist2 / (cosLight * l.pick.w) : 0.0;
+            if(previousMedium && equiangularOn){
+                const float equi = cosLight > 0.0 ? equiangularDensity(P, previousSegment, emitter, origin + direction * hit.t, previousT) *
+                                                    dist2 / (cosLight * l.pick.w) : 0.0;
+                w = powerHeuristic3(previousEvent * previousPdf, previousEvent * lightPdf, equi);
+            }else w = powerHeuristic(previousPdf, lightPdf);
+        }
+        radiance += clampContribution(beta * emitted * w, depth > 1, clampValue);
+    }
+    if(depth == 0) result.object = true;
+    if(depth >= maxBounces) return false;
+
+    float3 tangentX, tangentY;
+    basis(ns, tangentX, tangentY);
+    const Bsdf bsdf = makeBsdf(baseColor, metallic, roughness, ior, material.layers.x, transmission, clearcoat,
+                               material.layers.w, float3(dot(wo, tangentX), dot(wo, tangentY), dot(wo, ns)), eta);
+
+    //-- izravno svjetlo (RIS, Renderer.cpp) ---------------------------------------------------------
+    const float3 receiver = transmission > 0.0 ? float3(0.0) : ng;
+    {
+        LightSample chosen;
+        chosen.wi = float3(0.0, 1.0, 0.0); chosen.distance = INF; chosen.value = float3(0.0); chosen.pdf = 1.0; chosen.delta = false;
+        float3 chosenF = float3(0.0);
+        float chosenBsdfPdf = 0.0, chosenTarget = 0.0, weightSum = 0.0;
+        bool chosenSide = false;
+        for(uint k = 0; k < candidates; ++k){
+            LightSample ls;
+            const float2 choice = sampler.next2D();
+            const float2 u = sampler.next2D();
+            if(!sampleLight(P, p, receiver, choice.x, u, ls)) continue;
+            const float3 wiLocal = float3(dot(ls.wi, tangentX), dot(ls.wi, tangentY), dot(ls.wi, ns));
+            const bool geometricSide = dot(ls.wi, ng) > 0.0;
+            if(geometricSide != (wiLocal.z > 0.0)) continue;
+            float bsdfPdf;
+            const float3 f = evalBsdf(bsdf, wiLocal, bsdfPdf);
+            const float target = luminance(f * ls.value) * (ls.delta ? 1.0 : powerHeuristic(ls.pdf, bsdfPdf));
+            if(!(target > 0.0)) continue;
+            weightSum += target / ls.pdf;
+            if(choice.y * weightSum < target / ls.pdf){
+                chosen = ls; chosenF = f; chosenBsdfPdf = bsdfPdf; chosenTarget = target; chosenSide = geometricSide;
+            }
+        }
+        if(chosenTarget > 0.0){
+            const float limit = chosen.distance >= INF ? INF : chosen.distance * (1.0 - 1e-4);
+            bool crossed;
+            const float3 through = shadowTransmittance(offsetPoint(p, ng, chosenSide, epsilonScale), chosen.wi, limit, 2u,
+                                                       glass, pixelSeed, sampleIndex, salt + 211u, volumeCount, crossed);
+            if(luminance(through) > 0.0){
+                const float w = chosen.delta || crossed ? 1.0 : powerHeuristic(chosen.pdf, chosenBsdfPdf);
+                radiance += clampContribution(beta * chosenF * chosen.value * through * (w * weightSum / (float(candidates) * chosenTarget)),
+                                              depth > 0, clampValue);
+            }
+        }
+    }
+
+    //-- odbijanje ---------------------------------------------------------------------------------
+    const float2 u = sampler.next2D();
+    const float2 choice = sampler.next2D();
+    float3 wiLocal, weight;
+    float pdf;
+    bool glossy;
+    if(!sampleBsdf(bsdf, u, choice.x, wiLocal, weight, pdf, glossy)) return false;
+    const float3 wi = tangentX * wiLocal.x + tangentY * wiLocal.y + ns * wiLocal.z;
+    const bool geometricSide = dot(wi, ng) > 0.0;
+    if(geometricSide != (wiLocal.z > 0.0)) return false;
+    beta *= weight;
+    const float betaLum = luminance(beta);
+    if(!(betaLum > 0.0) || isinf(betaLum) || isnan(betaLum)) return false;
+    mirrorChain = mirrorChain && glossy;
+    if(!glossy) coneSpread += 0.2;
+    if(glass){
+        if(!glossy){ sawRough = true; caustic = false; }
+        else if(!geometricSide && sawRough && (flags & TRANSMISSIVE) != 0) caustic = true;
+    }
+    previousPdf = pdf;
+    previousMedium = false;
+    previousPoint = p;
+    previousNormal = receiver;
+    if(depth >= 3){
+        const float keep = clamp(max(max(beta.r, beta.g), beta.b), 0.05, 0.95);
+        if(choice.y >= keep) return false;
+        beta /= keep;
+    }
+    origin = offsetPoint(p, ng, geometricSide, epsilonScale);
+    direction = wi;
+    return true;
+}
+
+// Jedno odbijanje; false kad je putanja gotova (rezultat u s.result)
+bool stepPath(Params P, uint pixelSeed, inout PathState s){
+    const bool more = stepBody(P, pixelSeed, s.sampleIndex, s.depth, s.result, s.sampler, s.origin, s.direction, s.realDepth,
+                               s.coneWidth, s.coneSpread, s.beta, s.radiance, s.previousPdf, s.previousNormal, s.previousPoint,
+                               s.mirrorChain, s.sawRough, s.caustic, s.previousMedium, s.previousSegment, s.previousT, s.previousEvent);
+    if(!more){ s.result.radiance = s.radiance; return false; }
+    s.depth += 1;
+    return true;
+}
+
+PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
+    PathState s = startPath(P, pixel, sampleIndex, pixelSeed);
+    profileStep = 0;
+    while(stepPath(P, pixelSeed, s)) profileStep += 1;
+    return s.result;
 }
 
 // Najblizi trokut koji kamera vidi, bez alfa testa (dubina)
@@ -2063,7 +2128,7 @@ bool adaptiveConverged(float luminanceSum, float luminance2Sum, float samples, f
 }
 
 //=============================================================================================
-// JEDAN UZORAK PO PIKSELU, POJAS REDAKA
+// UZORCI PO PIKSELU, POJAS REDAKA
 //=============================================================================================
 // Jedan uzorak jednog piksela; entry point je u tracer.slang (BVH) i tracer_rq.slang (ray query)
 void tracePixel(uint3 id){
@@ -2095,28 +2160,43 @@ void tracePixel(uint3 id){
     adaptive[pixel] = state;
     if(stop) return;
 
-    const PathResult r = trace(P, float2(float(x) + 0.5, float(y) + 0.5), push.sampleIndex, pixelSeed);
-    float4 cg = accCg[pixel];
-    if(r.object){ cg.rgb += r.radiance; cg.w += 1.0; }
-    cg.rgb += r.inscatter;
-    accCg[pixel] = cg;
-    float4 background = accBackground[pixel];
-    if(r.miss){ background.rgb += r.background; background.w += 1.0; }
-    if(r.catcher){
-        background.rgb += r.background;
-        float4 lit = accLit[pixel];
-        lit.rgb += r.lit;
-        lit.w += 1.0;
-        accLit[pixel] = lit;
+    // REGENERACIJA PUTANJA: sampleCount uzoraka u JEDNOJ petlji po odbijanjima. Traka kojoj putanja
+    // zavrsi odmah pocne sljedeci uzorak istog piksela, pa val ne ceka najdulju putanju za svaki
+    // uzorak posebno (od dubine 2 bilo je samo 35 % aktivnih traka). Uzorci su isti kao trace()
+    // za svaki indeks; zbroji se skupe lokalno i upisu jednom
+    const uint count = max(1u, push.sampleCount);
+    const float2 centre = float2(float(x) + 0.5, float(y) + 0.5);
+    float4 cg = float4(0.0), background = float4(0.0), lit = float4(0.0), shadowed = float4(0.0);
+    float4 albedoSum = float4(0.0), normalSum = float4(0.0);
+    PathState path = startPath(P, centre, push.sampleIndex, pixelSeed);
+    uint done = 0;
+    for(uint guard = 0; guard < 1048576u; ++guard){
+        profileStep = guard;
+        if(stepPath(P, pixelSeed, path)) continue;
+        const PathResult r = path.result;
+        if(r.object){ cg.rgb += r.radiance; cg.w += 1.0; }
+        cg.rgb += r.inscatter;
+        if(r.miss){ background.rgb += r.background; background.w += 1.0; }
+        if(r.catcher){
+            background.rgb += r.background;
+            lit.rgb += r.lit;
+            lit.w += 1.0;
+        }
+        shadowed.rgb += r.shadowed;
+        shadowed.w += 1.0;
+        const float lum = luminance(r.radiance + r.background + r.inscatter);
+        albedoSum += float4(r.albedo, lum);
+        normalSum += float4(r.normal, lum * lum);
+        done += 1;
+        if(done >= count) break;
+        path = startPath(P, centre, push.sampleIndex + done, pixelSeed);
     }
-    accBackground[pixel] = background;
-    float4 shadowed = accShadowed[pixel];
-    shadowed.rgb += r.shadowed;
-    shadowed.w += 1.0;
-    accShadowed[pixel] = shadowed;
-    const float lum = luminance(r.radiance + r.background + r.inscatter);
-    accAlbedo[pixel] = accAlbedo[pixel] + float4(r.albedo, lum);
-    accNormal[pixel] = accNormal[pixel] + float4(r.normal, lum * lum);
+    accCg[pixel] = accCg[pixel] + cg;
+    accBackground[pixel] = accBackground[pixel] + background;
+    if(lit.w > 0.0) accLit[pixel] = accLit[pixel] + lit;
+    accShadowed[pixel] = accShadowed[pixel] + shadowed;
+    accAlbedo[pixel] = accAlbedo[pixel] + albedoSum;
+    accNormal[pixel] = accNormal[pixel] + normalSum;
 
     // dubina iz sredista piksela, jednom
     if(push.sampleIndex == 0){

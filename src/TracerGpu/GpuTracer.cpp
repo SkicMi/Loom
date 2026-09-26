@@ -11,6 +11,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -58,7 +59,7 @@ struct GpuLight{
 };
 static_assert(sizeof(GpuLight) == 80, "Light mora odgovarati shaders/tracer.slang");
 
-struct TracePush{ uint32_t sampleIndex, rowStart, rowCount, flags; };
+struct TracePush{ uint32_t sampleIndex, rowStart, rowCount, flags, sampleCount; };
 struct ResolvePush{ uint32_t width, height, backdrop, view; float gain; uint32_t plate, checker, padding; };
 struct FinishPush{
     uint32_t mode, width, height, step;
@@ -139,6 +140,7 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
     const Tracer::Scene& world = c.world;
     size[0] = world.camera.width;
     size[1] = world.camera.height;
+    if(const char* chunkOverride = std::getenv("LOOM_SAMPLES_PER_DISPATCH")) samplesPerDispatch = uint32_t(std::max(1, std::atoi(chunkOverride)));
     settings.samples = std::max(1u, settings.samples);
 
     //-- teksture: scena, pa nebo, pa snimka. Osam bita u jedno polje, float u drugo ----------------
@@ -535,19 +537,25 @@ GpuTracer::~GpuTracer() = default;
 
 float GpuTracer::progress() const{
     if(finished()) return 1.0f;
-    return (float(sample) + float(row) / float(std::max(1u, size[1]))) / float(settings.samples);
+    return (float(sample) + float(chunk()) * float(row) / float(std::max(1u, size[1]))) / float(settings.samples);
+}
+
+uint32_t GpuTracer::chunk() const{
+    const uint32_t ramp = std::min(samplesPerDispatch, std::max(1u, sample));
+    return std::max(1u, std::min({ramp, 8u - sample % 8u, settings.samples - std::min(sample, settings.samples)}));
 }
 
 uint32_t GpuTracer::record(uint32_t rows){
     uint32_t sent = 0;
     while(rows > 0 && !finished()){
-        const uint32_t band = std::min(rows, size[1] - row);
-        TracePush push{sample, row, band, profiling ? 1u : 0u};
+        const uint32_t count = chunk();
+        const uint32_t band = std::min(std::max(1u, rows / count), size[1] - row);
+        TracePush push{sample, row, band, profiling ? 1u : 0u, count};
         loom.renderer.dispatch(*buffers->trace, (size[0] + 7) / 8, (band + 7) / 8, 1, &push, sizeof(push));
         row += band;
-        rows -= band;
-        sent += band;
-        if(row >= size[1]){ row = 0; ++sample; }
+        rows -= std::min(rows, band * count);
+        sent += band * count;
+        if(row >= size[1]){ row = 0; sample += count; }
     }
     return sent;
 }
