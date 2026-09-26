@@ -227,10 +227,18 @@ struct Light{
 //   density     gustoca: koliko se svjetla izgubi po jedinici scene (1 / density je srednji put)
 //   color       albedo rasprsenja: udio izgubljenog svjetla koji se rasprsi (ostatak se upije)
 //   anisotropy  Henyey-Greenstein g: 0 na sve strane, > 0 naprijed (sjaj oko sunca), < 0 natrag
+//HEIGHT (magla po visini): beskonacna vodoravno; density je gustoca na visini entiteta, pada e
+//puta na svakih `height` jedinica prema lokalnoj +Y (i raste prema dolje) - izmaglica doline,
+//zrak koji gusne prema horizontu
 struct Volume{
+    enum class Shape{ Box, Height };
+    Shape shape = Shape::Box;
     glm::vec3 color{1.0f};
     float density = 0.5f;
     float anisotropy = 0.0f;
+    float anisotropy2 = 0.0f, lobeMix = 0.0f;   //drugi rezanj faze i njegov udio
+    float height = 2.0f;                        //Height
+    float edge = 0.0f, noise = 0.0f, noiseScale = 1.0f;     //Box: meki rub, sum gustoce
 };
 
 //Istrenirani gaussian splat, kao put do .ply

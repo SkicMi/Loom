@@ -631,6 +631,13 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
             v.albedo = glm::clamp(entity.volume->color, glm::vec3(0.0f), glm::vec3(1.0f));
             v.density = entity.volume->density;
             v.anisotropy = std::clamp(entity.volume->anisotropy, -0.95f, 0.95f);
+            v.anisotropy2 = std::clamp(entity.volume->anisotropy2, -0.95f, 0.95f);
+            v.lobeMix = std::clamp(entity.volume->lobeMix, 0.0f, 1.0f);
+            v.shape = entity.volume->shape == Warp::Volume::Shape::Height ? Tracer::Volume::Shape::Height : Tracer::Volume::Shape::Box;
+            v.height = std::max(1e-4f, entity.volume->height);
+            v.edge = std::clamp(entity.volume->edge, 0.0f, 0.5f);
+            v.noise = std::clamp(entity.volume->noise, 0.0f, 1.0f);
+            v.noiseScale = std::max(1e-4f, entity.volume->noiseScale);
             scene.volumes.push_back(v);
         }
         if(entity.mesh){

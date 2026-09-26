@@ -191,6 +191,14 @@ public:
             indent(in); out << "custom color3f loom:volumeColor = "; vector(entity.volume->color); out << '\n';
             indent(in); out << "custom float loom:volumeDensity = "; number(entity.volume->density); out << '\n';
             indent(in); out << "custom float loom:volumeAnisotropy = "; number(entity.volume->anisotropy); out << '\n';
+            const Volume& v = *entity.volume;
+            indent(in); out << "custom token loom:volumeShape = \"" << (v.shape == Volume::Shape::Height ? "height" : "box") << "\"\n";
+            indent(in); out << "custom float loom:volumeAnisotropy2 = "; number(v.anisotropy2); out << '\n';
+            indent(in); out << "custom float loom:volumeLobeMix = "; number(v.lobeMix); out << '\n';
+            indent(in); out << "custom float loom:volumeHeight = "; number(v.height); out << '\n';
+            indent(in); out << "custom float loom:volumeEdge = "; number(v.edge); out << '\n';
+            indent(in); out << "custom float loom:volumeNoise = "; number(v.noise); out << '\n';
+            indent(in); out << "custom float loom:volumeNoiseScale = "; number(v.noiseScale); out << '\n';
         }
         if(entity.points){
             const Points& points = *entity.points;
@@ -439,6 +447,13 @@ void readEntity(const usda::Prim& prim, Stage& stage, Id parent){
         if(const usda::Attribute* c = prim.find("loom:volumeColor")) v.color = asVector(c->value, v.color);
         v.density = float(numberOf(prim, "loom:volumeDensity", v.density));
         v.anisotropy = float(numberOf(prim, "loom:volumeAnisotropy", v.anisotropy));
+        v.shape = textOf(prim, "loom:volumeShape") == "height" ? Volume::Shape::Height : Volume::Shape::Box;
+        v.anisotropy2 = float(numberOf(prim, "loom:volumeAnisotropy2", v.anisotropy2));
+        v.lobeMix = float(numberOf(prim, "loom:volumeLobeMix", v.lobeMix));
+        v.height = float(numberOf(prim, "loom:volumeHeight", v.height));
+        v.edge = float(numberOf(prim, "loom:volumeEdge", v.edge));
+        v.noise = float(numberOf(prim, "loom:volumeNoise", v.noise));
+        v.noiseScale = float(numberOf(prim, "loom:volumeNoiseScale", v.noiseScale));
         entity.volume = v;
     }
     if(prim.type == "Points"){

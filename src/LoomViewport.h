@@ -382,6 +382,23 @@ inline ViewportReport paintStage(const Warp::Stage& stage, double frame, const V
             const glm::vec3 c = glm::mix(entity.volume->color, glm::vec3(0.7f, 0.85f, 1.0f), 0.5f);
             const Treadle::Color colour = isSelected ? accent : Treadle::Color{c.r, c.g, c.b, 0.75f};
             const float thickness = isSelected ? 2.0f : 1.2f;
+            //Magla po visini: mreza na visini ishodista i strelica gore do visine e-pada
+            if(entity.volume->shape == Warp::Volume::Shape::Height){
+                const glm::vec3 at(world[3]);
+                const glm::vec3 up = glm::normalize(glm::vec3(world[1]));
+                const glm::vec3 x = glm::normalize(glm::vec3(world[0])), z = glm::normalize(glm::vec3(world[2]));
+                const float size = std::max(1e-4f, extent.radius * 1.2f);
+                for(int i = -4; i <= 4; ++i){
+                    const float f = size * float(i) / 4.0f;
+                    segment(list, camera, at + x * f - z * size, at + x * f + z * size, 1.0f, colour);
+                    segment(list, camera, at + z * f - x * size, at + z * f + x * size, 1.0f, colour);
+                }
+                const glm::vec3 top = at + up * entity.volume->height;
+                segment(list, camera, at, top, thickness, colour);
+                segment(list, camera, top, top - up * entity.volume->height * 0.15f + x * entity.volume->height * 0.08f, thickness, colour);
+                segment(list, camera, top, top - up * entity.volume->height * 0.15f - x * entity.volume->height * 0.08f, thickness, colour);
+                return;
+            }
             glm::vec3 corner[8];
             for(int i = 0; i < 8; ++i)
                 corner[i] = glm::vec3(world * glm::vec4((i & 1) ? 0.5f : -0.5f, (i & 2) ? 0.5f : -0.5f, (i & 4) ? 0.5f : -0.5f, 1.0f));

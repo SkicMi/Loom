@@ -621,9 +621,14 @@ float3 surfaceTransmittance(float3 origin, float3 direction, float tMax, uint mo
 // MAGLA - Tracer/Volume.h
 //=============================================================================================
 static const uint MAX_VOLUME_SPANS = 8;
+// Po volumenu 8 float4: 3 retka svijet -> kutija, (albedo, gustoca), (g, g2, udio drugog, vrsta),
+// (ishodiste, k = 1/visina), (gore, rub), (sum, mjerilo suma, 0, 0). Vrsta 0 kutija, 1 visina
+static const uint VOLUME_STRIDE = 8;
+bool isHeightFog(uint v){ return asuint(volumes[v * VOLUME_STRIDE + 4].w) == 1u; }
+float volumeDensity(uint v){ return volumes[v * VOLUME_STRIDE + 3].w; }
 
 bool boxInterval(uint v, float3 o, float3 d, float tMax, out float t0, out float t1){
-    const float4 r0 = volumes[v * 5], r1 = volumes[v * 5 + 1], r2 = volumes[v * 5 + 2];
+    const float4 r0 = volumes[v * VOLUME_STRIDE], r1 = volumes[v * VOLUME_STRIDE + 1], r2 = volumes[v * VOLUME_STRIDE + 2];
     const float3 lo = float3(dot(r0.xyz, o) + r0.w, dot(r1.xyz, o) + r1.w, dot(r2.xyz, o) + r2.w);
     const float3 ld = float3(dot(r0.xyz, d), dot(r1.xyz, d), dot(r2.xyz, d));
     t0 = 0.0;
@@ -640,65 +645,139 @@ bool boxInterval(uint v, float3 o, float3 d, float tMax, out float t0, out float
     return t1 > t0;
 }
 
-float opticalDepth(uint count, float3 o, float3 d, float tMax){
-    float tau = 0.0;
-    uint n = 0;
-    for(uint v = 0; v < count && n < MAX_VOLUME_SPANS; ++v){
-        const float density = volumes[v * 5 + 3].w;
-        if(!(density > 0.0)) continue;
-        float t0, t1;
-        if(boxInterval(v, o, d, tMax, t0, t1)){ tau += density * (t1 - t0); ++n; }
+// magla po visini duz zrake: sigma(t) = d0 exp(-k (h0 + dh t))
+struct HeightRay{ float d0; float k; float h0; float dh; };
+HeightRay heightRay(uint v, float3 o, float3 d){
+    HeightRay h;
+    const float4 a = volumes[v * VOLUME_STRIDE + 5], b = volumes[v * VOLUME_STRIDE + 6];
+    h.d0 = volumeDensity(v); h.k = a.w; h.h0 = dot(o - a.xyz, b.xyz); h.dh = dot(d, b.xyz);
+    return h;
+}
+float heightSigma(HeightRay h, float t){ return h.d0 * exp(min(80.0, -h.k * (h.h0 + h.dh * t))); }
+float heightTau(HeightRay h, float t){
+    if(!(t > 0.0)) return 0.0;
+    const float base = h.d0 * exp(min(80.0, -h.k * h.h0));
+    const float x = h.k * h.dh;
+    if(t >= INF) return x > 1e-12 ? base / x : INF;
+    if(abs(x) * t < 1e-4) return base * t * (1.0 - 0.5 * x * t);
+    return base * (1.0 - exp(min(80.0, -x * t))) / x;
+}
+
+struct MediaOnRay{
+    float s0[MAX_VOLUME_SPANS];
+    float s1[MAX_VOLUME_SPANS];
+    uint spanIndex[MAX_VOLUME_SPANS];
+    uint spanCount;
+    HeightRay heights[MAX_VOLUME_SPANS];
+    uint heightIndex[MAX_VOLUME_SPANS];
+    uint heightCount;
+    float tau(float t){
+        float sum = 0.0;
+        for(uint i = 0; i < spanCount; ++i) sum += volumeDensity(spanIndex[i]) * max(0.0, min(t, s1[i]) - s0[i]);
+        for(uint i = 0; i < heightCount; ++i) sum += heightTau(heights[i], t);
+        return sum;
     }
-    return tau;
+    float sigma(float t){
+        float sum = 0.0;
+        for(uint i = 0; i < spanCount; ++i) if(s0[i] <= t && t <= s1[i]) sum += volumeDensity(spanIndex[i]);
+        for(uint i = 0; i < heightCount; ++i) sum += heightSigma(heights[i], t);
+        return sum;
+    }
+};
+
+MediaOnRay mediaOnRay(uint count, float3 o, float3 d, float tMax){
+    MediaOnRay m;
+    m.spanCount = 0; m.heightCount = 0;
+    for(uint v = 0; v < count; ++v){
+        if(!(volumeDensity(v) > 0.0)) continue;
+        if(isHeightFog(v)){
+            if(m.heightCount < MAX_VOLUME_SPANS){ m.heights[m.heightCount] = heightRay(v, o, d); m.heightIndex[m.heightCount] = v; m.heightCount++; }
+            continue;
+        }
+        if(m.spanCount >= MAX_VOLUME_SPANS) continue;
+        float t0, t1;
+        if(boxInterval(v, o, d, tMax, t0, t1)){ m.s0[m.spanCount] = t0; m.s1[m.spanCount] = t1; m.spanIndex[m.spanCount] = v; m.spanCount++; }
+    }
+    return m;
+}
+
+float opticalDepth(uint count, float3 o, float3 d, float tMax){
+    MediaOnRay m = mediaOnRay(count, o, d, tMax);
+    return m.tau(tMax);
 }
 
 bool sampleVolume(uint count, float3 o, float3 d, float tMax, float2 u, out float t, out uint which){
     t = 0.0; which = 0;
-    float s0[MAX_VOLUME_SPANS], s1[MAX_VOLUME_SPANS];
-    uint index[MAX_VOLUME_SPANS];
-    uint n = 0;
-    for(uint v = 0; v < count && n < MAX_VOLUME_SPANS; ++v){
-        if(!(volumes[v * 5 + 3].w > 0.0)) continue;
-        float t0, t1;
-        if(boxInterval(v, o, d, tMax, t0, t1)){ s0[n] = t0; s1[n] = t1; index[n] = v; ++n; }
-    }
-    if(n == 0) return false;
-    float edges[2 * MAX_VOLUME_SPANS];
-    for(uint i = 0; i < n; ++i){ edges[2 * i] = s0[i]; edges[2 * i + 1] = s1[i]; }
-    for(uint i = 1; i < 2 * n; ++i){
-        const float key = edges[i];
-        int j = int(i) - 1;
-        while(j >= 0 && edges[j] > key){ edges[j + 1] = edges[j]; --j; }
-        edges[j + 1] = key;
-    }
-    float tau = -log(max(1e-12, 1.0 - u.x));
-    for(uint e = 0; e + 1 < 2 * n; ++e){
-        const float a = edges[e], b = edges[e + 1];
-        if(!(b > a)) continue;
-        const float middle = 0.5 * (a + b);
-        float sigma = 0.0;
-        for(uint i = 0; i < n; ++i) if(s0[i] <= middle && middle <= s1[i]) sigma += volumes[index[i] * 5 + 3].w;
-        if(sigma <= 0.0) continue;
-        if(tau <= sigma * (b - a)){
-            t = a + tau / sigma;
-            float pick = u.y * sigma;
-            which = index[0];
-            for(uint i = 0; i < n; ++i){
-                if(!(s0[i] <= middle && middle <= s1[i])) continue;
-                which = index[i];
-                pick -= volumes[index[i] * 5 + 3].w;
-                if(pick < 0.0) break;
-            }
-            return true;
+    MediaOnRay m = mediaOnRay(count, o, d, tMax);
+    if(m.spanCount == 0 && m.heightCount == 0) return false;
+    const float target = -log(max(1e-12, 1.0 - u.x));
+    if(m.heightCount == 0){
+        uint n = m.spanCount;
+        float edges[2 * MAX_VOLUME_SPANS];
+        for(uint i = 0; i < n; ++i){ edges[2 * i] = m.s0[i]; edges[2 * i + 1] = m.s1[i]; }
+        for(uint i = 1; i < 2 * n; ++i){
+            const float key = edges[i];
+            int j = int(i) - 1;
+            while(j >= 0 && edges[j] > key){ edges[j + 1] = edges[j]; --j; }
+            edges[j + 1] = key;
         }
-        tau -= sigma * (b - a);
+        float tau = target;
+        bool found = false;
+        for(uint e = 0; e + 1 < 2 * n; ++e){
+            if(found) break;
+            const float a = edges[e], b = edges[e + 1];
+            if(!(b > a)) continue;
+            const float sigma = m.sigma(0.5 * (a + b));
+            if(sigma <= 0.0) continue;
+            if(tau <= sigma * (b - a)){ t = a + tau / sigma; found = true; }
+            else tau -= sigma * (b - a);
+        }
+        if(!found) return false;
+    }else{
+        if(m.tau(tMax) < target) return false;
+        float lo = 0.0, hi = tMax;
+        if(hi >= INF){
+            hi = 1.0;
+            for(int k = 0; k < 80 && m.tau(hi) < target; ++k) hi *= 2.0;
+        }
+        float x = 0.5 * (lo + hi);
+        for(int iteration = 0; iteration < 48; ++iteration){
+            const float f = m.tau(x) - target;
+            if(abs(f) <= 1e-6 * max(1.0, target)) break;
+            if(f > 0.0) hi = x; else lo = x;
+            const float slope = m.sigma(x);
+            float next = slope > 0.0 ? x - f / slope : 0.5 * (lo + hi);
+            if(!(next > lo && next < hi)) next = 0.5 * (lo + hi);
+            if(next == x) break;
+            x = next;
+        }
+        t = x;
     }
-    return false;
+    const float total = m.sigma(t);
+    float pick = u.y * total;
+    which = m.spanCount > 0 ? m.spanIndex[0] : m.heightIndex[0];
+    for(uint i = 0; i < m.spanCount; ++i){
+        if(!(m.s0[i] <= t && t <= m.s1[i])) continue;
+        which = m.spanIndex[i];
+        pick -= volumeDensity(m.spanIndex[i]);
+        if(pick < 0.0) return true;
+    }
+    for(uint i = 0; i < m.heightCount; ++i){
+        which = m.heightIndex[i];
+        pick -= heightSigma(m.heights[i], t);
+        if(pick < 0.0) return true;
+    }
+    return true;
 }
 
 float phaseHG(float cosTheta, float g){
     const float denominator = 1.0 + g * g - 2.0 * g * cosTheta;
     return (1.0 - g * g) / (4.0 * PI * denominator * sqrt(max(denominator, 1e-12)));
+}
+// mjesavina dvaju rezanja (Tracer::phaseOf)
+float phaseOf(uint v, float cosTheta){
+    const float4 p = volumes[v * VOLUME_STRIDE + 4];
+    return p.z > 0.0 ? (1.0 - p.z) * phaseHG(cosTheta, p.x) + p.z * phaseHG(cosTheta, p.y) : phaseHG(cosTheta, p.x);
 }
 
 float3 samplePhaseHG(float3 d, float g, float2 u, out float pdf){
@@ -714,6 +793,18 @@ float3 samplePhaseHG(float3 d, float g, float2 u, out float pdf){
     const float3 b = cross(d, a);
     pdf = phaseHG(cosTheta, g);
     return normalize(d * cosTheta + (a * cos(phi) + b * sin(phi)) * sinTheta);
+}
+float3 samplePhase(uint v, float3 d, float2 u, out float pdf){
+    const float4 p = volumes[v * VOLUME_STRIDE + 4];
+    float g = p.x;
+    if(p.z > 0.0){
+        if(u.x < p.z){ g = p.y; u.x = min(u.x / p.z, 0.99999994); }
+        else u.x = min((u.x - p.z) / (1.0 - p.z), 0.99999994);
+    }
+    float single;
+    const float3 next = samplePhaseHG(d, g, u, single);
+    pdf = phaseOf(v, dot(d, next));
+    return next;
 }
 
 // Zraka sjene: stakla na putu (surfaceTransmittance) puta prolaz kroz maglu
@@ -1309,10 +1400,14 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
             const float2 free = sampler.next2D();
             float t;
             uint which;
-            const float end = sphere >= 0 ? sphereT : (valid ? hit.t : INF);
+            float end = sphere >= 0 ? sphereT : (valid ? hit.t : INF);
+            // holdout: iza stvarne plohe iz splata kamera ne vidi maglu (Renderer.cpp)
+            if(depth == 0 && realDepth > 0.0){
+                const float forward = -dot(direction, P.cameraZ.xyz);
+                if(forward > 1e-6) end = min(end, realDepth * (1.0 + P.holdout.y) / forward);
+            }
             if(sampleVolume(volumeCount, origin, direction, end, free, t, which)){
-                const float4 medium = volumes[which * 5 + 3];
-                const float g = volumes[which * 5 + 4].x;
+                const float4 medium = volumes[which * VOLUME_STRIDE + 3];
                 const float3 p = origin + direction * t;
                 if(depth == 0) result.object = true;
                 beta *= medium.rgb;
@@ -1327,7 +1422,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                         const float2 choice = sampler.next2D();
                         const float2 u = sampler.next2D();
                         if(!sampleLight(P, p, float3(0.0), choice.x, u, ls)) continue;
-                        const float phase = phaseHG(dot(direction, ls.wi), g);
+                        const float phase = phaseOf(which, dot(direction, ls.wi));
                         const float target = luminance(ls.value) * phase * (ls.delta ? 1.0 : powerHeuristic(ls.pdf, phase));
                         if(!(target > 0.0)) continue;
                         weightSum += target / ls.pdf;
@@ -1346,7 +1441,7 @@ PathResult trace(Params P, float2 pixel, uint sampleIndex, uint pixelSeed){
                     }
                 }
                 float pdf;
-                const float3 next = samplePhaseHG(direction, g, sampler.next2D(), pdf);
+                const float3 next = samplePhase(which, direction, sampler.next2D(), pdf);
                 const float2 roulette = sampler.next2D();
                 mirrorChain = false;
                 previousPdf = pdf;

@@ -320,13 +320,18 @@ GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_
         for(uint32_t slot = 0; slot < prepared.size(); ++slot) if(c.triangleFlags[order[slot]] != 0) geometrySlots.push_back(slot);
     }
     p.holdout = glm::vec4(bitsToFloat(holdoutTexture), world.holdoutBias, bitsToFloat(uint32_t(world.volumes.size())), bitsToFloat(opaqueCount));
-    //Magla: 3 retka svijet -> kutija, (albedo, gustoca), (g)
+    //Magla, 8 float4 po volumenu: 3 retka svijet -> kutija, (albedo, gustoca), (g, g2, udio, vrsta),
+    //(ishodiste, 1/visina), (gore, rub), (sum, mjerilo suma)
     std::vector<glm::vec4> volumes;
     for(size_t i = 0; i < world.volumes.size(); ++i){
+        const Tracer::Volume& v = world.volumes[i];
         const glm::mat4 m = glm::transpose(c.volumeInverse[i]);
         volumes.push_back(m[0]); volumes.push_back(m[1]); volumes.push_back(m[2]);
-        volumes.push_back(glm::vec4(world.volumes[i].albedo, world.volumes[i].density));
-        volumes.push_back(glm::vec4(world.volumes[i].anisotropy, 0.0f, 0.0f, 0.0f));
+        volumes.push_back(glm::vec4(v.albedo, v.density));
+        volumes.push_back(glm::vec4(v.anisotropy, v.anisotropy2, v.lobeMix, bitsToFloat(v.shape == Tracer::Volume::Shape::Height ? 1u : 0u)));
+        volumes.push_back(glm::vec4(glm::vec3(v.toWorld[3]), 1.0f / std::max(v.height, 1e-6f)));
+        volumes.push_back(glm::vec4(glm::normalize(glm::vec3(v.toWorld[1])), v.edge));
+        volumes.push_back(glm::vec4(v.noise, v.noiseScale, 0.0f, 0.0f));
     }
     if(volumes.empty()) volumes.push_back(glm::vec4(0.0f));
     p.extra = glm::uvec4(settings.seed, uint32_t(c.sky.marginalCdf().size()), (settings.glassShadows ? 1u : 0u) | (settings.mipmaps ? 0u : 2u),

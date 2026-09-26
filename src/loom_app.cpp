@@ -194,7 +194,7 @@ std::string kindOf(const Warp::Entity& entity){
         const char* names[] = {"Sun Light", "Point Light", "Spot Light", "Area Light", "Sky Dome"};
         return names[int(entity.light->type)];
     }
-    if(entity.volume) return "Volume Box";
+    if(entity.volume) return entity.volume->shape == Warp::Volume::Shape::Height ? "Height Fog" : "Volume Box";
     if(entity.splat) return "Gaussian Splat";
     if(entity.joint) return "Joint";
     if(entity.model) return "Model (glTF)";
@@ -1877,8 +1877,29 @@ int main(int argc, char** argv){
         focus = Focus::Entity;
         message = "Added Volume Box - light (sun, spot) through it shows as rays in the render";
     };
+    //MAGLA PO VISINI: ishodiste na dnu scene, pada e puta na cetvrtini velicine scene; gustoca
+    //tako da vodoravno kroz scenu pri dnu prode oko pola svjetla
+    auto addHeightFog = [&](Warp::Id parent){
+        const Warp::Id id = stage.create("Height Fog", parent);
+        Warp::Entity& entity = *stage.get(id);
+        const float size = std::max(1e-3f, extent.radius);
+        Warp::Volume volume;
+        volume.shape = Warp::Volume::Shape::Height;
+        volume.height = 0.5f * size;
+        volume.density = 0.35f / size;
+        volume.color = glm::vec3(0.92f, 0.94f, 0.97f);
+        volume.anisotropy = 0.3f;
+        entity.volume = volume;
+        const glm::mat4 parentWorld = parent == Warp::None ? glm::mat4(1.0f) : stage.worldMatrix(parent, frame);
+        entity.local.translation = glm::vec3(glm::inverse(parentWorld) * glm::vec4(extent.centre - glm::vec3(0.0f, size * 0.5f, 0.0f), 1.0f));
+        entity.local.rotation = glm::normalize(glm::quat_cast(glm::inverse(glm::mat3(parentWorld))));
+        selected = id;
+        focus = Focus::Entity;
+        message = "Added Height Fog - denser low, thinner up; the horizon fades into it in the render";
+    };
     auto addLightMenu = [&](Warp::Id parent){
         if(ui.menuItem("Volume Box (fog)")) addVolume(parent);
+        if(ui.menuItem("Height Fog")) addHeightFog(parent);
         if(ui.menuItem("Sun Light")) addLight(Warp::Light::Type::Distant, parent);
         if(ui.menuItem("Point Light")) addLight(Warp::Light::Type::Sphere, parent);
         if(ui.menuItem("Spot Light")) addLight(Warp::Light::Type::Spot, parent);
@@ -3651,15 +3672,33 @@ int main(int argc, char** argv){
                 if(entity->volume && ui.componentHeader("VOLUME", {0.62f, 0.80f, 1.0f, 1.0f}, &volumeExpanded)){
                     //Gustoca po jedinici scene; ispod se vidi sto to znaci za OVU kutiju
                     Warp::Volume& v = *entity->volume;
-                    if(ui.dragFloat("Density", &v.density, 0.002f * std::max(0.01f, v.density))) v.density = std::max(0.0f, v.density);
+                    int shape = int(v.shape);
+                    if(ui.choice("Shape", {"Box", "Height Fog"}, &shape)) v.shape = Warp::Volume::Shape(shape);
+                    const bool heightFog = v.shape == Warp::Volume::Shape::Height;
+                    if(ui.dragFloat(heightFog ? "Density at Base" : "Density", &v.density, 0.002f * std::max(0.01f, v.density))) v.density = std::max(0.0f, v.density);
+                    if(heightFog && ui.dragFloat("Falloff Height", &v.height, 0.002f * std::max(1e-3f, extent.radius))) v.height = std::max(1e-4f, v.height);
                     float colour[3] = {v.color.r, v.color.g, v.color.b};
                     if(ui.dragVector("Scatter Color", colour, 0.004f))
                         v.color = glm::clamp(glm::vec3(colour[0], colour[1], colour[2]), glm::vec3(0.0f), glm::vec3(1.0f));
                     ui.slider("Anisotropy", &v.anisotropy, -0.9f, 0.9f);
+                    ui.slider("Second Lobe", &v.lobeMix, 0.0f, 1.0f);
+                    if(v.lobeMix > 0.0f) ui.slider("Second Anisotropy", &v.anisotropy2, -0.9f, 0.9f);
+                    if(!heightFog){
+                        ui.slider("Soft Edge", &v.edge, 0.0f, 0.5f);
+                        ui.slider("Noise", &v.noise, 0.0f, 1.0f);
+                        if(v.noise > 0.0f && ui.dragFloat("Noise Size", &v.noiseScale, 0.002f * std::max(1e-3f, extent.radius)))
+                            v.noiseScale = std::max(1e-4f, v.noiseScale);
+                    }
                     const glm::mat4 world = stage.worldMatrix(entity->id, frame);
-                    const float across = std::min({glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2]))});
                     char info[96];
-                    std::snprintf(info, sizeof(info), "%.0f%% of light passes the thinnest side", 100.0f * std::exp(-v.density * across));
+                    if(heightFog){
+                        //Vodoravno na visini ishodista: koliko svjetla prode kroz velicinu scene
+                        std::snprintf(info, sizeof(info), "%.0f%% passes %.3g units at the base", 100.0f * std::exp(-v.density * extent.radius * 2.0f),
+                                      extent.radius * 2.0f);
+                    }else{
+                        const float across = std::min({glm::length(glm::vec3(world[0])), glm::length(glm::vec3(world[1])), glm::length(glm::vec3(world[2]))});
+                        std::snprintf(info, sizeof(info), "%.0f%% of light passes the thinnest side", 100.0f * std::exp(-v.density * across));
+                    }
                     ui.value("Through", info);
                     ui.label(Treadle::fitText("Anisotropy > 0: glow around the sun; < 0: back-lit. Rendered by LoomTracer.",
                                               layout.properties.width - 30.0f, theme.textScale * 0.8f));

@@ -392,7 +392,12 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
             const glm::vec2 free = sampler.next2D();
             float t;
             uint32_t which;
-            const float end = sphereHit ? sphereT : (hit.valid() ? hit.t : Infinity);
+            float end = sphereHit ? sphereT : (hit.valid() ? hit.t : Infinity);
+            //Holdout: iza stvarne plohe iz splata nema magle koju bi kamera vidjela (tamo je snimka)
+            if(depth == 0 && realDepth > 0.0f){
+                const float forward = -glm::dot(ray.direction, glm::vec3(camera.cameraToWorld[2]));
+                if(forward > 1e-6f) end = std::min(end, realDepth * (1.0f + world.holdoutBias) / forward);
+            }
             if(sampleVolume(world.volumes, C.volumeInverse, ray.origin, ray.direction, end, free, t, which)){
                 const Volume& medium = world.volumes[which];
                 const glm::vec3 p = ray.origin + ray.direction * t;
@@ -408,7 +413,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                         const glm::vec2 choice = sampler.next2D();
                         const glm::vec2 u = sampler.next2D();
                         if(!sampleLight(p, glm::vec3(0.0f), choice.x, u, ls)) continue;
-                        const float phase = phaseHG(glm::dot(ray.direction, ls.wi), medium.anisotropy);
+                        const float phase = phaseOf(medium, glm::dot(ray.direction, ls.wi));
                         const float target = luminance(ls.value) * phase * (ls.delta ? 1.0f : powerHeuristic(ls.pdf, phase));
                         if(!(target > 0.0f)) continue;
                         weightSum += target / ls.pdf;
@@ -428,7 +433,7 @@ Renderer::PathResult Renderer::trace(glm::vec2 pixel, uint32_t sampleIndex, uint
                 }
                 //Novi smjer po fazi: tezina faza / pdf = 1
                 float pdf;
-                const glm::vec3 next = samplePhaseHG(ray.direction, medium.anisotropy, sampler.next2D(), pdf);
+                const glm::vec3 next = samplePhase(medium, ray.direction, sampler.next2D(), pdf);
                 const glm::vec2 roulette = sampler.next2D();
                 mirrorChain = false;
                 previousPdf = pdf;

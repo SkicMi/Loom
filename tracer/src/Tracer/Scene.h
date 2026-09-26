@@ -212,11 +212,21 @@ glm::mat4 cameraAt(const std::vector<glm::mat4>& keys, float time);
 
 //Jednolika magla u kutiji -0.5..0.5 lokalno (Volume.h): gustoca = gubitak po jedinici scene
 //(sivo), albedo = boja rasprsenja, anisotropy = Henyey-Greenstein g
+//Height: eksponencijalna magla po visini, beskonacna vodoravno - gustoca density na ishodistu
+//toWorld, pada e puta na svakih `height` jedinica duz lokalne +Y (i raste ispod)
 struct Volume{
+    enum class Shape{ Box, Height };
+    Shape shape = Shape::Box;
     glm::mat4 toWorld{1.0f};
     glm::vec3 albedo{1.0f};
     float density = 0.0f;
     float anisotropy = 0.0f;
+    //Drugi rezanj faze (natrag ili uzi naprijed), udio lobeMix: kapljice magle nisu jedan HG
+    float anisotropy2 = 0.0f, lobeMix = 0.0f;
+    float height = 1.0f;                        //Height: udaljenost na kojoj gustoca padne e puta
+    //Box: meki rub (udio pola kutije u kojem gustoca pada na nulu) i sum gustoce (0..1, mjerilo)
+    float edge = 0.0f, noise = 0.0f, noiseScale = 1.0f;
+    bool heterogeneous() const {return shape == Shape::Box && (edge > 0.0f || noise > 0.0f);}
 };
 
 //---------------------------------------------------------------------------------------------
