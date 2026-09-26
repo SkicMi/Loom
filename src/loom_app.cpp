@@ -988,7 +988,8 @@
             request.targetCharacter = Loom::motionCharacterForEntity(stage, motionPanel.targetCharacter);
             if(request.model.find("SOMA") == std::string::npos) request.model = "Kimodo-SOMA-RP-v1.1";
             //Isti opisi i trajanja kao take - broj kadrova mora biti isti da se spoj poklopi. Novi
-            //opis zamijeni sve: izvan raspona ionako vladaju ogranicenja, pa opis djeluje samo unutra
+            //opis ide SAMO na raspon, izvan njega ostaju izvorni opisi: jedan opis preko cijelog takea
+            //(npr. cucanj preko backflipa) se tukao s ogranicenjima i lik je u rasponu samo stajao
             //Broj kadrova iz samog BVH-a; opisi iz .txt mogu zaokruzivanjem trajanja dati kadar vise
             //ili manje, pa se zadnje trajanje dotjera da generirano ima tocno isto kadrova
             Engine::WeaverMotion::Clip takeClip;
@@ -996,8 +997,10 @@
             if(!Engine::WeaverMotion::readKimodoBvh(take.string(), takeClip, readProblem)){ message = "Could not read take: " + readProblem; return; }
             const int takeFrames = int(takeClip.frames.size());
             request.actions = Loom::motionActionsForClip(take);
-            if(!prompt.empty() || request.actions.empty()){
-                request.actions = {{prompt.empty() ? std::string("A person moves naturally") : prompt, float(takeFrames) / Loom::kimodoMotionFps}};
+            if(!prompt.empty()){
+                request.actions = Loom::motionRegenerationActions(request.actions, takeFrames, first, last, prompt);
+            }else if(request.actions.empty()){
+                request.actions = {{"A person moves naturally", float(takeFrames) / Loom::kimodoMotionFps}};
             }else if(const int planned = Loom::kimodoMotionFrameCount(request.actions); planned != takeFrames){
                 request.actions.back().duration += float(takeFrames - planned) / Loom::kimodoMotionFps;
             }

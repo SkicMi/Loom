@@ -54,7 +54,20 @@ class KimodoRangeTests(unittest.TestCase):
         outside = list(range(0, 40)) + list(range(80, 120))
         self.assertLess(np.abs(motion["local_rot_mats"][outside] - source["local_rot_mats"][outside]).max(), 1e-5)
         self.assertLess(np.abs(motion["root_positions"][outside] - source["root_positions"][outside]).max(), 1e-6)
-        self.assertLess(np.abs(motion["local_rot_mats"][45:75] - other["local_rot_mats"][45:75]).max(), 1e-5)
+        # Pretapanje na rubu raste s razmakom (do trecine raspona = 13 kadrova), pa je cisto generirano
+        # tek od 53 do 66
+        self.assertLess(np.abs(motion["local_rot_mats"][55:65] - other["local_rot_mats"][55:65]).max(), 1e-5)
+
+    def test_large_gap_at_edge_is_blended_without_a_jump(self):
+        # Druga varijanta je na rubovima raspona daleko od izvora (kao cucanj iza backflipa). Fiksno
+        # pretapanje od 4 kadra je ondje skakalo do 0.42 m po kadru; sirina po razmaku mora skok
+        # smanjiti barem za trecinu (izmjereno 0.419 -> 0.263 m)
+        def edges(motion):
+            steps = np.linalg.norm(np.diff(motion["posed_joints"], axis=0), axis=-1).max(axis=1)
+            return max(steps[36:44].max(), steps[76:84].max())
+        fixed = edges(kimodo_range.splice(SOURCE, OTHER, 40, 79, 4, adaptive=False))
+        adaptive = edges(kimodo_range.splice(SOURCE, OTHER, 40, 79, 4))
+        self.assertLess(adaptive, fixed * (2.0 / 3.0), f"rub {adaptive:.3f} m, fiksno {fixed:.3f} m")
 
     def test_splice_with_itself_writes_the_same_bvh_as_kimodo(self):
         with tempfile.TemporaryDirectory() as tmp:

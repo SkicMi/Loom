@@ -700,6 +700,78 @@ inline MotionRootWaypoint motionRootWaypointAt(const std::vector<MotionRootWaypo
     return value;
 }
 
+//DIO TAKEA S NOVIM OPISOM: opis vrijedi SAMO za raspon, a prije i poslije ostaju izvorni opisi.
+//Prva verzija je cijeli klip generirala s jednim novim opisom; kadrovi izvan raspona su ogranicenjima
+//drzani na starom pokretu (backflip), pa je model dobio opis koji se s njima kosi i u rasponu je
+//"stajao i malo maknuo rukama" (kukovi 0.99 m). S tri radnje isti raspon cucne (kukovi 0.44-0.61 m).
+//Komadi moraju trajati 1-10 s (filledActions ih inace odsijece i broj kadrova se ne poklopi): kraci
+//se spoje sa susjedom, dulji se podijele. " then " bi filledActions podijelio u dvije radnje od
+//punog trajanja, pa se u opisu zamijeni
+inline std::vector<MotionAction> motionRegenerationActions(const std::vector<MotionAction>& takeActions, int takeFrames,
+                                                           int first, int last, std::string prompt){
+    auto frameCount = [](float seconds){ return kimodoMotionFrameCount({MotionAction{"x", seconds}}); };
+    //CLI racuna kadrove kao int(stotinke * 30 / 100) - frames/30 to ne vraca uvijek (49/30 = 1.63 ->
+    //48 kadrova), pa se uzme najmanji broj stotinki koji daje tocno frames
+    auto secondsFor = [](int frames){ return float((frames * 100 + 29) / 30) / 100.0f; };
+    auto sanitize = [](std::string text){
+        for(size_t at = 0; (at = text.find(" then ", at)) != std::string::npos;) text.replace(at, 6, " and afterwards ");
+        return text;
+    };
+    prompt = sanitize(prompt);
+    struct Piece{ std::string prompt; int frames; };
+    std::vector<Piece> pieces;
+    //Izvorne radnje kao intervali kadrova
+    std::vector<std::pair<int, std::string>> spans;   //kraj (iskljucivo), opis
+    int cursor = 0;
+    for(const MotionAction& action : takeActions){
+        cursor += frameCount(action.duration);
+        spans.push_back({cursor, sanitize(action.prompt)});
+    }
+    auto sourceAt = [&](int frame) -> std::string{
+        for(const auto& [end, text] : spans) if(frame < end) return text;
+        return spans.empty() ? prompt : spans.back().second;
+    };
+    auto addSource = [&](int from, int to){      //[from, to)
+        for(int f = from; f < to;){
+            const std::string text = sourceAt(f);
+            int end = f;
+            while(end < to && sourceAt(end) == text) ++end;
+            pieces.push_back({text, end - f});
+            f = end;
+        }
+    };
+    first = std::clamp(first, 0, std::max(0, takeFrames - 1));
+    last = std::clamp(last, first, std::max(0, takeFrames - 1));
+    addSource(0, first);
+    pieces.push_back({prompt, last - first + 1});
+    addSource(last + 1, takeFrames);
+    //Komadi kraci od sekunde se spoje sa susjedom (novi opis ima prednost - izvan raspona ionako vode
+    //ogranicenja), dulji od 10 s se podijele
+    const int minimum = int(kimodoMotionFps), maximum = int(kimodoMotionFps) * 10;
+    for(bool merged = true; merged;){
+        merged = false;
+        for(size_t i = 0; i < pieces.size() && pieces.size() > 1; ++i){
+            if(pieces[i].frames >= minimum) continue;
+            const size_t into = i == 0 ? 1 : (i + 1 < pieces.size() && pieces[i + 1].prompt == prompt ? i + 1 : i - 1);
+            pieces[into].frames += pieces[i].frames;
+            pieces.erase(pieces.begin() + long(i));
+            merged = true;
+            break;
+        }
+    }
+    std::vector<MotionAction> actions;
+    for(const Piece& piece : pieces){
+        int left = piece.frames;
+        while(left > 0){
+            int take = std::min(left, maximum);
+            if(left - take > 0 && left - take < minimum) take = left - minimum;
+            actions.push_back({piece.prompt, secondsFor(take)});
+            left -= take;
+        }
+    }
+    return actions;
+}
+
 //Naredba za sluzbeni Kimodo CLI (izravno ili kroz Loom adapter za API-only postavke)
 inline std::string buildMotionCommand(const std::filesystem::path& executable, const MotionRequest& request,
                                       const std::filesystem::path& outputStem,

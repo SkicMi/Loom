@@ -286,5 +286,28 @@ int main(){
                      viaService.find("kimodo_service.py' run 'A person walks'") != std::string::npos &&
                      direct.find(" run ") == std::string::npos, viaService);
     }
+    //Dio takea s novim opisom: opis samo u rasponu, izvorni prije i poslije, tocan broj kadrova
+    {
+        const std::vector<Loom::MotionAction> take{{"Person jumps 5 times, than does backflip", 8.8866f}};
+        const std::vector<Loom::MotionAction> actions =
+            Loom::motionRegenerationActions(take, 266, 137, 232, "Person points a gun then crouches");
+        const bool shape = actions.size() == 3 && actions[0].prompt == take[0].prompt &&
+                           actions[1].prompt == "Person points a gun and afterwards crouches" && actions[2].prompt == take[0].prompt;
+        const bool frames = Loom::kimodoMotionFrameCount(actions) == 266 &&
+                            Loom::kimodoMotionFrameCount({actions[0]}) == 137 && Loom::kimodoMotionFrameCount({actions[1]}) == 96;
+        report.check("dio takea: izvor / novi opis / izvor, tocno 266 kadrova, raspon 137-232", shape && frames,
+                     actions.size() == 3 ? actions[1].prompt : std::to_string(actions.size()));
+        //Raspon 5 kadrova od kraja: komad iza je kraci od sekunde i spoji se s novim opisom
+        const std::vector<Loom::MotionAction> tail = Loom::motionRegenerationActions(take, 266, 200, 260, "crouch");
+        report.check("komad kraci od sekunde se spoji, ukupno isto",
+                     tail.size() == 2 && tail.back().prompt == "crouch" && Loom::kimodoMotionFrameCount(tail) == 266,
+                     std::to_string(tail.size()));
+        //Take od 25 s s jednim opisom: komadi dulji od 10 s se podijele (Kimodo ih inace odsijece)
+        const std::vector<Loom::MotionAction> longTake =
+            Loom::motionRegenerationActions({{"walk", 25.0f}}, 750, 300, 400, "wave");
+        bool withinLimits = Loom::kimodoMotionFrameCount(longTake) == 750;
+        for(const Loom::MotionAction& a : longTake) withinLimits = withinLimits && a.duration >= 1.0f && a.duration <= 10.0f;
+        report.check("dugi komadi podijeljeni na 1-10 s", withinLimits, std::to_string(longTake.size()));
+    }
     return report.result();
 }

@@ -82,7 +82,8 @@ def _slerp(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
     return out / np.linalg.norm(out, axis=-1, keepdims=True)
 
 
-def splice(source: Path, generated: Path, first: int, last: int, blend: int) -> dict[str, np.ndarray]:
+def splice(source: Path, generated: Path, first: int, last: int, blend: int,
+           adaptive: bool = True) -> dict[str, np.ndarray]:
     """Izvor izvan [first, last], generirano unutra; pretapanje kroz `blend` kadrova unutar raspona."""
     import torch
     from kimodo.skeleton import SOMASkeleton77
@@ -96,10 +97,25 @@ def splice(source: Path, generated: Path, first: int, last: int, blend: int) -> 
     root_gen = gen["root_positions"][:frames]
     q = q_src.copy()
     root = root_src.copy()
+    # SIRINA PRETAPANJA PO RUBU prema razmaku izmedju generiranog i izvora na tom rubu. Fiksna 4
+    # kadra su bila dovoljna kad je novi dio slican starom, ali kad se mijenja radnja (backflip ->
+    # cucanj s pistoljem) zadnji generirani kadar je daleko od prvog izvornog iza raspona i spoj je
+    # skocio 30-39 cm u jednom kadru. Cilj je najvise ~3 cm pomaka po kadru, do trecine raspona
+    posed_src = src["posed_joints"][:frames]
+    posed_gen = gen["posed_joints"][:frames]
+    span = max(1, last - first + 1)
+    def edge_blend(frame: int) -> int:
+        if not adaptive or not (0 <= frame < frames):
+            return blend
+        gap = float(np.linalg.norm(posed_gen[frame] - posed_src[frame], axis=-1).max())
+        return int(min(max(blend, int(np.ceil(gap / 0.03))), max(blend, span // 3)))
+    blend_in = edge_blend(max(0, first))
+    blend_out = edge_blend(min(frames - 1, last))
     for f in range(max(0, first), min(frames, last + 1)):
-        # Tezina generiranog: 0 na rubu raspona, 1 nakon `blend` kadrova unutra (smoothstep)
-        edge = min(f - first + 1, last - f + 1)
-        w = 1.0 if blend <= 0 else min(1.0, edge / float(blend + 1))
+        # Tezina generiranog: 0 na rubu raspona, 1 nakon blend_in/blend_out kadrova unutra (smoothstep)
+        w_in = 1.0 if blend_in <= 0 else min(1.0, (f - first + 1) / float(blend_in + 1))
+        w_out = 1.0 if blend_out <= 0 else min(1.0, (last - f + 1) / float(blend_out + 1))
+        w = min(w_in, w_out)
         w = w * w * (3.0 - 2.0 * w)
         q[f] = _slerp(q_src[f], q_gen[f], w)
         root[f] = root_src[f] + (root_gen[f] - root_src[f]) * w
@@ -156,9 +172,14 @@ def main(argv: list[str] | None = None) -> int:
     targets = sorted(args.generated.glob("*.npz")) if args.generated.is_dir() else [args.generated]
     if not targets:
         raise SystemExit(f"nema generiranih NPZ-ova u {args.generated}")
+    targets = [t for t in targets if not t.stem.endswith("_raw")]
     for npz in targets:
-        # Generirani BVH se prepise spojenim: editor uvozi upravo te datoteke
-        motion = splice(args.source, npz, args.first, args.last, args.blend)
+        # Generirani BVH se prepise spojenim: editor uvozi upravo te datoteke. Sirovi generirani
+        # NPZ ostaje kao *_raw.npz, pa se spoj moze ponoviti (i izmjeriti) bez novog generiranja
+        raw = npz.with_name(npz.stem + "_raw.npz")
+        if not raw.exists():
+            raw.write_bytes(npz.read_bytes())
+        motion = splice(args.source, raw, args.first, args.last, args.blend)
         write_spliced(motion, npz, npz.with_suffix(".bvh"))
         print(f"spojeno: {npz.with_suffix('.bvh').name} (izvor izvan {args.first}-{args.last}, pretapanje {args.blend} kadra)")
     return 0
