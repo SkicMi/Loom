@@ -714,7 +714,11 @@ inline std::string buildMotionCommand(const std::filesystem::path& executable, c
         durations += text;
     }
     std::string command = "TEXT_ENCODER_MODE=local TEXT_ENCODER_DEVICE=cpu " + shellQuoteArgument(executable.string()) + " ";
-    if(!adapterScript.empty()) command += shellQuoteArgument(adapterScript.string()) + " ";
+    if(!adapterScript.empty()){
+        command += shellQuoteArgument(adapterScript.string()) + " ";
+        //kimodo_service.py prima iste argumente kao kimodo_cli.py iza naredbe "run"
+        if(adapterScript.filename() == "kimodo_service.py") command += "run ";
+    }
     command += shellQuoteArgument(prompts) + " --model " + shellQuoteArgument(request.model) +
                           " --duration " + shellQuoteArgument(durations) +
                           " --num_samples " + std::to_string(std::clamp(request.numSamples, 1, 8)) +

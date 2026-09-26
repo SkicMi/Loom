@@ -917,7 +917,9 @@
                 return;
             }
             const fs::path runner = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/python";
-            const fs::path adapter = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_cli.py";
+            //Kroz Kimodo servis: modeli ostaju u memoriji izmedju generiranja (kimodo_service.py,
+            //44 -> 20 s po generiranju); kad servis ne moze, klijent sam izvede stari put
+            const fs::path adapter = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_service.py";
             const fs::path installedKimodo = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/kimodo_gen";
             if(!fs::is_regular_file(runner) || !fs::is_regular_file(adapter) || !fs::is_regular_file(installedKimodo)){
                 message = "Kimodo runner is not installed; see tools/weavermotion/README.md.";
@@ -965,7 +967,7 @@
             fs::path sourceNpz = take;
             sourceNpz.replace_extension(".npz");
             const fs::path runner = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/.venv-clean/bin/python";
-            const fs::path adapter = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_cli.py";
+            const fs::path adapter = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_service.py";
             const fs::path rangeTool = fs::path(LOOM_ROOT_DIR) / "tools/weavermotion/kimodo_range.py";
             if(!fs::is_regular_file(sourceNpz) || !fs::is_regular_file(runner) || !fs::is_regular_file(rangeTool)){
                 message = "Cannot regenerate part: the take has no Kimodo NPZ or Kimodo is not installed.";

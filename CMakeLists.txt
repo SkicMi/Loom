@@ -579,6 +579,9 @@ if(LOOM_BUILD_TESTS)
         # Ponovno generiranje dijela takea: ogranicenja i spoj, bez kartice (tools/weavermotion/kimodo_range.py)
         add_test(NAME test_kimodo_range
             COMMAND "${LOOM_KIMODO_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kimodo_range.py")
+        # Kimodo servis (modeli ostaju u memoriji): protokol, ponovna upotreba radnika, pad - bez modela
+        add_test(NAME test_kimodo_service
+            COMMAND "${LOOM_KIMODO_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kimodo_service.py")
     endif()
 
 

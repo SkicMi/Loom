@@ -274,5 +274,17 @@ int main(){
         std::filesystem::remove_all(directory);
     }
 
+    //Kimodo servis prima iste argumente kao kimodo_cli.py, ali iza naredbe "run"
+    {
+        Loom::MotionRequest serviceRequest;
+        serviceRequest.actions = {{"A person walks", 2.0f}};
+        const std::string viaService = Loom::buildMotionCommand("/venv/bin/python", serviceRequest, "/tmp/out",
+                                                                "/loom/tools/weavermotion/kimodo_service.py");
+        const std::string direct = Loom::buildMotionCommand("/venv/bin/python", serviceRequest, "/tmp/out",
+                                                            "/loom/tools/weavermotion/kimodo_cli.py");
+        report.check("naredba kroz servis ima 'run', izravna nema",
+                     viaService.find("kimodo_service.py' run 'A person walks'") != std::string::npos &&
+                     direct.find(" run ") == std::string::npos, viaService);
+    }
     return report.result();
 }
