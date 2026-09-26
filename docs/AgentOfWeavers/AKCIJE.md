@@ -4,10 +4,37 @@ Najnovije gore. Svaka akcija: datum, što, zašto, kako je provjereno.
 
 ## Sadašnje
 
-### STAO SAM OVDJE (2026-09-26, ~20:40) — faza 2, drugi krug: interijer gotov (prva verzija)
-**Sljedeće:** namještaj po tipu sobe (krevet, ormar, kuhinja, sanitarije, stol) s pravilima razmaka; zatim faza 3
-(`ProceduraGen` — test `tests/test_procedura_300.cpp` je već njegov začetak: sampler + validatori + razlozi).
-Pregled: sampler i render alati su bili u scratchpadu (OBJ izvoz + Blender presjeci); ako zatrebaju, prenijeti u `tools/`.
+### STAO SAM OVDJE (2026-09-26, ~21:30) — interijer za slobodnu krivulju gotov, namještaj NIJE započet
+Gotovo i commitano (8fc8adc): FootprintFromCurve `rectify`, rastav na zone, planer na stablu zona, niše, pravilo
+fasade 2.2 m. `tests/test_procedura_300.cpp` 7/7 (286/300, 93/100 skica, 0 rupa/tamnih/premalih soba).
+
+**Sljedeće: namještaj — dogovoreni pristup (korisnik: "podaci moraju dolaziti zasebno", AI će pisati i alate,
+namještaj itd., ne samo kuće):**
+1. **Asset = zaseban proceduralni recept** (JSON), npr. `procedura/assets/furniture/bed_basic.loomasset.json`:
+   `format: loom.weaverprocedura.asset`, `id`, `category` (bed, wardrobe, sofa, armchair, table, chair, desk,
+   kitchen_counter, fridge, toilet, sink, bathtub, shower, shelf, nightstand, tv_stand...), `parameters`
+   [{name, default, min, max}], `bounds` (širina/dubina/visina kao izrazi parametara), `placement` (wall / center /
+   corner), `clearance_front`, i `recipe` — običan recept u kojem broj može biti `{"param":"width","scale":0.5,
+   "offset":0}` (JSON predložak, razriješi se prije parsiranja; treba `parse(const AgentJsonValue&)`).
+   Isti format će AI učiti i za alate/rekvizite → treniraju se odvojeno od kuća.
+2. **Engine:** sučelje `AssetLibrary` (build(id, params) → MeshData; info(id); popis po kategoriji),
+   `evaluate(graph, const AssetLibrary*)`. Novi tip porta **Placements**; `FurnishNode` (Footprint s planom →
+   Placements: asset id, parametri, položaj, zakret 0/90/180/270, kat, soba) — raspored je PODATAK, bez geometrije;
+   `PlaceAssetsNode` (Placements → Mesh) gradi svaki (asset, parametri) jednom i instancira. EvaluationResult
+   izlaže i placements (za dataset).
+3. **Loom:** `RecipeAssetLibrary` čita mapu asseta (LOOM_ROOT_DIR), koristi je panel, --recept i testovi.
+4. **Pravila rasporeda po tipu sobe** (pravokutnici u lokalnom okviru sobe, sudari AABB, slobodna zona vrata
+   0.9×0.9, prozorski zid bez visokog namještaja): spavaća (krevet uza zid dalje od vrata + noćni ormarići, ormar),
+   dnevni (sofa nasuprot TV-a, stolić, fotelja, polica), kuhinja (niz elemenata uz najdulji zid bez vrata, hladnjak
+   na kraju, stol sa stolicama ako stane), kupaonica (WC, umivaonik, kada ≥ 1.7 m inače tuš), ured (stolovi uz
+   prozore), sastanci (stol + stolice), predsoblje (ormarić za cipele).
+   Debljina zidova: plan treba znati vanjski zid i pregradu (dodati u RoomSplit, Walls/Interior ih uzimaju iz plana).
+5. **Test:** proširiti test od 300 kuća: bez sudara, vrata slobodna, svaka spavaća ima krevet, kuhinja niz, kupaonica
+   WC; render presjeka s namještajem. Novi materijali (fabric, ceramic) samo dodavanjem na kraj; boje u
+   `src/LoomPbr.h` — pažnja, ta datoteka ima necommitane izmjene drugog agenta (commitati samo svoj hunk).
+
+Alati za pregled (scratchpad, prenijeti u `tools/` ako trebaju): OBJ izvoz iz recepta, Blender presjeci/pogledi
+(workbench), kopija testa koja piše OBJ-ove.
 
 ## Buduće
 
@@ -22,6 +49,21 @@ Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
 6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
 
 ## Prošle
+
+### 2026-09-26 — Interijer za tlocrt iz slobodne krivulje
+- `FootprintFromCurveNode.rectify` (JSON `rectify`, bez polja = false): okvir po najduljem bridu, bridovi se svrstaju
+  u x/z, nizovi se spoje na srednju liniju, paralelne linije bliže od 0.5 m postanu jedna (inače trake između krakova).
+- Pravokutni obris → zone: najbolji od tri rastava (najveći pravokutnik, vodoravne trake, okomite trake) po broju
+  zona manjih od 2.4 m; krovni dijelovi zalaze do pola roditelja sa `joined` stranom (kosi krovovi i za skice).
+- Planer: stablo zona (roditelj = prva zona s ≥ 1 m zajedničkog zida), hodnik okomito na granicu, bočni hodnik glavnog
+  dijela prema većini djece, dijete prema sredini roditelja, spojnice kroz red roditelja. Rezultati za pravokutnik/L/U
+  ostali isti (287/300).
+- Zona premalena za sobe (≥ 1.2 m) = niša/ostava; ćelija bez 2.2 m fasade na jednom zidu = kupaonica/ostava.
+  Nađeno testom: tamna kupaonica pretvarana u spavaću (servisni pojas), dnevni boravak mogao biti taman.
+- Test od 300: zadnjih 100 su ručne skice (T, H, Z, križ, stepenice, zarez; šum ±0.3 m, zakret) → 286/300,
+  93/100 skica, 0 rupa, 0 tamnih soba. Render 10 skica izvana i u presjeku: krovovi i planovi ispravni; manja mana:
+  kod križa se dijelovi krova različitog raspona malo probijaju.
+
 
 ### 2026-09-26 — Interijer po pravilima (RoomSplit, Interior) i test od 300 kuća
 - Korisnik pitao kako ručno štimanje pomaže AI generatoru — odgovor: ne štima se kuća nego generatori/pravila; dokaz

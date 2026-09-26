@@ -26,7 +26,7 @@ Tipovi portova: Curve, Profile, PointGrid, Mesh, Points, **Footprint** (shema 7)
 | `CopyToPointsNode` | S | radi | poravnanje po normali, slučajni zakret i skala |
 | `CopyAlongCurveNode` | S | radi | lanac (alternateRoll 90°), ograde, rasvjeta |
 | `FootprintNode` | S | radi | rectangle / l_shape / u_shape, širina, dubina, krilo, centar, zakret; brid 0 gleda prema +Z |
-| `FootprintFromCurveNode` | S | radi | zatvorena krivulja → obris bez dijelova (samo ravni krov) |
+| `FootprintFromCurveNode` | S | radi | zatvorena krivulja → obris; `rectify` poravna skicu na prave kutove → zone, kosi krov, RoomSplit |
 | `FloorStackNode` | S | radi | broj katova, visina kata, visina prizemlja |
 | `WallsNode` | S | radi | zidovi svih katova; prozori ravnomjerno po bridu, vrata na bridu `door_edge`; otvori su paneli, bez booleana |
 | `SlabNode` | S | radi | ploča na svakom katu (uvučena u zid), strop zadnjeg kata, podnožje do elevacije |
@@ -47,7 +47,7 @@ stepenice `stairs`/concrete, ograda `railing`/metal, cesta `road`/asphalt, `curb
 | Čvor | Razina | Za što |
 |---|---|---|
 | Namještaj | S | krevet, ormar, kuhinjski element, sanitarije, stol — po tipu sobe i pravilima razmaka |
-| RoomSplit za obris iz krivulje | S | sada samo tlocrti od pravokutnika |
+| Kosi obris (ne pravokutni) za RoomSplit | S | sada treba `rectify` |
 | Stubište po dubini | S | sada krakovi uvijek idu uzduž reda; plitki redovi (< 2.6 m) nemaju mjesta |
 | `FloorStack` s uvlačenjem | S | različit tlocrt po katu (terase, neboderi) |
 | Otvori po pravilu | S | trenutačno samo razmak prozora i jedna vrata; fale balkoni, izlozi u prizemlju, prozori po katu |
