@@ -325,9 +325,12 @@ struct FootprintNode{
     float rotationDegrees = 0.0f;
 };
 
-// Closed Curve -> Footprint from the XZ of its control points. It has no parts, so only a
-// flat roof fits it.
-struct FootprintFromCurveNode{};
+// Closed Curve -> Footprint from the XZ of its control points. A right-angled outline (or any
+// outline with rectify, which snaps a sketch to right angles along its longest edge) is split
+// into rectangles, so it takes pitched roofs and RoomSplit; any other outline a flat roof only.
+struct FootprintFromCurveNode{
+    bool rectify = false;
+};
 
 // Footprint -> Footprint: floor count, storey height and the ground floor's height.
 struct FloorStackNode{
@@ -511,7 +514,7 @@ bool makePointPreview(const std::vector<glm::vec3>& points, MeshData& output, st
                       std::size_t maxVertices = 1'000'000);
 
 bool makeFootprint(const FootprintNode& settings, Footprint& output, std::string& error);
-bool footprintFromCurve(const Curve& curve, Footprint& output, std::string& error);
+bool footprintFromCurve(const Curve& curve, Footprint& output, std::string& error, bool rectify = false);
 // Ear clipping of a simple polygon with positive area (see Footprint); indices into polygon.
 bool triangulatePolygon(const std::vector<glm::vec2>& polygon, std::vector<uint32_t>& output, std::string& error);
 // Moves every edge of a positive-area polygon inward by distance (negative: outward).

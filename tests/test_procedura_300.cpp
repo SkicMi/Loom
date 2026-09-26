@@ -1,8 +1,8 @@
-// 300 houses from the building and interior rules: random footprints, floors, programs and
-// roofs, sampled inside the footprint rules the way a data generator will. Every house either
-// passes or fails with a rule's reason; a passing house must have closed walls, a window in
-// every living room, bedroom, kitchen and office, rooms of sensible size, and a kitchen and a
-// bathroom in every home.
+// 300 houses from the building and interior rules: random footprints (the last 100 drawn by
+// hand as curves and snapped to right angles), floors, programs and roofs, sampled inside the
+// footprint rules the way a data generator will. Every house either passes or fails with a
+// rule's reason; a passing house must have closed walls, a window in every living room,
+// bedroom, kitchen and office, rooms of sensible size, and a kitchen and a bathroom in every home.
 #include "TestHarness.h"
 
 #include <Engine/WeaverProcedura.h>
@@ -32,6 +32,35 @@ bool closedWalls(const Proc::MeshData& mesh){
     return std::all_of(edges.begin(), edges.end(), [](const auto& entry){ return entry.second == 2; });
 }
 
+// A hand-drawn right-angled plan: T, H, Z, cross, steps or a notched block, every corner
+// nudged up to 0.3 m as a sketch would be, turned and moved at random.
+std::vector<glm::vec3> sketch(std::mt19937& rng){
+    auto uniform = [&](float a, float b){ return std::uniform_real_distribution<float>(a, b)(rng); };
+    const int kind = std::uniform_int_distribution<int>(0, 5)(rng);
+    const float w = uniform(12.0f, 22.0f), d = uniform(10.0f, 16.0f), a = uniform(5.0f, 7.0f);
+    const float hw = w * 0.5f, hd = d * 0.5f, ha = a * 0.5f;
+    std::vector<glm::vec2> p;
+    switch(kind){
+        case 0: p = {{-hw, -hd}, {hw, -hd}, {hw, -hd + a}, {ha, -hd + a}, {ha, hd}, {-ha, hd}, {-ha, -hd + a}, {-hw, -hd + a}}; break;       // T
+        case 1: p = {{-hw, -hd}, {-hw + a, -hd}, {-hw + a, -ha}, {hw - a, -ha}, {hw - a, -hd}, {hw, -hd}, {hw, hd}, {hw - a, hd},
+                     {hw - a, ha}, {-hw + a, ha}, {-hw + a, hd}, {-hw, hd}}; break;                                                          // H
+        case 2: p = {{-hw, -hd}, {ha, -hd}, {ha, -hd + a}, {hw, -hd + a}, {hw, hd}, {-ha, hd}, {-ha, hd - a}, {-hw, hd - a}}; break;          // Z
+        case 3: p = {{-ha, -hd}, {ha, -hd}, {ha, -ha}, {hw, -ha}, {hw, ha}, {ha, ha}, {ha, hd}, {-ha, hd}, {-ha, ha}, {-hw, ha},
+                     {-hw, -ha}, {-ha, -ha}}; break;                                                                                         // cross
+        case 4: p = {{-hw, -hd}, {hw, -hd}, {hw, 0.0f}, {hw * 0.3f, 0.0f}, {hw * 0.3f, hd}, {-hw, hd}}; break;                               // steps
+        default: p = {{-hw, -hd}, {hw, -hd}, {hw, hd}, {hw * 0.2f, hd}, {hw * 0.2f, hd - 3.0f}, {-hw * 0.3f, hd - 3.0f},
+                      {-hw * 0.3f, hd}, {-hw, hd}}; break;                                                                                   // notch
+    }
+    const float turn = uniform(0.0f, 6.2831853f), c = std::cos(turn), s = std::sin(turn);
+    const glm::vec2 offset{uniform(-20.0f, 20.0f), uniform(-20.0f, 20.0f)};
+    std::vector<glm::vec3> points;
+    for(const glm::vec2& q : p){
+        const glm::vec2 j = q + glm::vec2(uniform(-0.3f, 0.3f), uniform(-0.3f, 0.3f));
+        points.push_back({j.x * c + j.y * s + offset.x, 0.0f, -j.x * s + j.y * c + offset.y});
+    }
+    return points;
+}
+
 }  // namespace
 
 int main(){
@@ -40,11 +69,13 @@ int main(){
     auto uniform = [&](float a, float b){ return std::uniform_real_distribution<float>(a, b)(rng); };
     auto pick = [&](int a, int b){ return std::uniform_int_distribution<int>(a, b)(rng); };
 
+    int sketchPassed = 0;
     int passed = 0, holes = 0, darkRooms = 0, smallRooms = 0, incomplete = 0, unexplained = 0;
     std::map<std::string, int> reasons;
     std::string firstProblem;
-    const int houses = 300;
+    const int houses = 300, sketched = 100;   // the last 100 come from hand-drawn curves
     for(int n = 0; n < houses; ++n){
+        const bool fromSketch = n >= houses - sketched;
         Proc::FootprintNode footprint;
         footprint.shape = Proc::FootprintShape(pick(0, 2));
         footprint.width = uniform(7.0f, 22.0f);
@@ -70,21 +101,32 @@ int main(){
         slab.topCeiling = true;
 
         Proc::Graph graph;
-        const auto a = Proc::addNode(graph, footprint), b = Proc::addNode(graph, stack), c = Proc::addNode(graph, split);
+        Proc::NodeId a;
+        Proc::CurveNode drawn;
+        if(fromSketch){
+            drawn.curve.points = sketch(rng);
+            drawn.curve.closed = true;
+            const auto curveNode = Proc::addNode(graph, drawn);
+            a = Proc::addNode(graph, Proc::FootprintFromCurveNode{true});
+            graph.links.push_back({curveNode, 0, a, 0});
+        }else a = Proc::addNode(graph, footprint);
+        const auto b = Proc::addNode(graph, stack), c = Proc::addNode(graph, split);
         const auto w = Proc::addNode(graph, walls), s = Proc::addNode(graph, slab), r = Proc::addNode(graph, roof);
         const auto i = Proc::addNode(graph, Proc::InteriorNode{}), m = Proc::addNode(graph, Proc::MergeNode{});
-        graph.links = {{a,0,b,0},{b,0,c,0},{c,0,w,0},{c,0,s,0},{c,0,r,0},{c,0,i,0},{w,0,m,0},{s,0,m,1},{r,0,m,2},{i,0,m,3}};
+        graph.links.insert(graph.links.end(), {{a,0,b,0},{b,0,c,0},{c,0,w,0},{c,0,s,0},{c,0,r,0},{c,0,i,0},{w,0,m,0},{s,0,m,1},{r,0,m,2},{i,0,m,3}});
         const Proc::EvaluationResult result = Proc::evaluate(graph);
         if(!result.succeeded){
-            ++reasons[result.error];
+            ++reasons[(fromSketch ? "sketch: " : "") + result.error];
             if(result.error.empty()) ++unexplained;
             continue;
         }
         ++passed;
+        if(fromSketch) ++sketchPassed;
 
         std::string error;
         Proc::Footprint base, planned;
-        Proc::makeFootprint(footprint, base, error);
+        if(fromSketch) Proc::footprintFromCurve(drawn.curve, base, error, true);
+        else Proc::makeFootprint(footprint, base, error);
         base.floors = stack.floors; base.floorHeight = stack.floorHeight; base.elevation = stack.elevation;
         Proc::planInterior(base, split, planned, error);
         Proc::MeshData wallMesh;
@@ -138,5 +180,7 @@ int main(){
     report.check("rooms have sensible sizes (bedroom 7 m2 / 2.4 m, living 12 m2, bath 2.5 m2, kitchen 5 m2)", smallRooms == 0,
                  fmt("%d too small ", smallRooms) + firstProblem);
     report.check("every home has a kitchen and a bathroom, every office a toilet", incomplete == 0, fmt("%d incomplete", incomplete));
+    report.check("at least 85% of the hand-drawn outlines become a planned house", sketchPassed >= sketched * 85 / 100,
+                 fmt("%d/%d sketches passed", sketchPassed, sketched));
     return report.result();
 }

@@ -34,9 +34,11 @@ struct Band{
     bool alongX;          // u is local x
     float u0, u1, v0, v1;
     bool corridor;
+    bool alcove = false;
 };
 
 struct Slot{ float u0, u1; RoomType type; bool groundOnly; };
+// Band.alcove: a zone too small for rooms, kept as one storage room (a niche or closet).
 
 LocalRect bandRect(const Band& band, float u0, float u1, float v0, float v1){
     return band.alongX ? LocalRect{{u0, v0}, {u1, v1}} : LocalRect{{v0, u0}, {v1, u1}};
@@ -77,26 +79,58 @@ const std::vector<std::string>& roomTypeNames(){
 
 bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Footprint& output, std::string& error){
     if(footprint.zones.empty()){
-        error = "RoomSplit needs a footprint made of rectangles (Footprint node); traced outlines are not supported yet";
+        error = "RoomSplit needs a right-angled footprint: a Footprint node, or Footprint from Curve with rectify on";
         return false;
     }
     Random random(settings.seed);
     const float cw = settings.corridorWidth;
     const std::size_t zoneCount = footprint.zones.size();
 
-    // 1. Bands: every zone gets a corridor by its depth across the corridor axis. Zone 0 is the
-    //    main block; the others are arms that meet it on their -z end and run along z.
+    // 0. Zone tree: zone 0 is the main block; every other zone hangs off the first zone it shares
+    //    at least 1 m of boundary with. Its corridor runs away from that boundary.
+    struct Joint{ int parent = -1; bool lineAlongX = true; float line = 0.0f; };
+    std::vector<Joint> joints(zoneCount);
+    std::vector<std::size_t> order{0};
+    std::vector<bool> placed(zoneCount, false);
+    placed[0] = true;
+    for(std::size_t k = 0; k < order.size(); ++k){
+        const LocalRect& p = footprint.zones[order[k]];
+        for(std::size_t z = 0; z < zoneCount; ++z){
+            if(placed[z]) continue;
+            const LocalRect& r = footprint.zones[z];
+            const float ox = std::min(p.max.x, r.max.x) - std::max(p.min.x, r.min.x);
+            const float oz = std::min(p.max.y, r.max.y) - std::max(p.min.y, r.min.y);
+            Joint j;
+            if(ox >= 1.0f && (std::abs(p.max.y - r.min.y) < eps || std::abs(p.min.y - r.max.y) < eps)){
+                j = {int(order[k]), true, std::abs(p.max.y - r.min.y) < eps ? r.min.y : r.max.y};
+            }else if(oz >= 1.0f && (std::abs(p.max.x - r.min.x) < eps || std::abs(p.min.x - r.max.x) < eps)){
+                j = {int(order[k]), false, std::abs(p.max.x - r.min.x) < eps ? r.min.x : r.max.x};
+            }else continue;
+            joints[z] = j; placed[z] = true; order.push_back(z);
+        }
+    }
+    if(order.size() != zoneCount){ error = "footprint zones are not connected by at least 1 m of shared wall"; return false; }
+
+    // 1. Bands: every zone gets a corridor by its depth across the corridor axis.
     std::vector<Band> bands;
     std::vector<int> zoneCorridor(zoneCount, -1);
-    for(std::size_t z = 0; z < zoneCount; ++z){
+    for(const std::size_t z : order){
         const LocalRect& r = footprint.zones[z];
         const float sx = r.max.x - r.min.x, sz = r.max.y - r.min.y;
-        const bool alongX = z == 0 ? sx >= sz : false;
+        // The main block runs along its long side; a hanging zone away from its joint (a joint
+        // line along x means the zone runs along z).
+        const bool alongX = joints[z].parent < 0 ? sx >= sz : !joints[z].lineAlongX;
         const float u0 = alongX ? r.min.x : r.min.y, u1 = alongX ? r.max.x : r.max.y;
         const float v0 = alongX ? r.min.y : r.min.x, v1 = alongX ? r.max.y : r.max.x;
         const float depth = v1 - v0;
-        if(depth < 2.4f){ error = "zone " + std::to_string(z) + " is shallower than 2.4 m and cannot hold rooms"; return false; }
-        if(u1 - u0 < 2.0f){ error = "zone " + std::to_string(z) + " is shorter than 2 m and cannot hold rooms"; return false; }
+        if(depth < 2.4f || u1 - u0 < 2.0f){
+            // Too small for rooms: a niche or closet, reached from a neighbour, if 1.2 m either way.
+            if(std::min(depth, u1 - u0) < 1.2f){ error = "zone " + std::to_string(z) + " is narrower than 1.2 m"; return false; }
+            Band band{z, alongX, u0, u1, v0, v1, false};
+            band.alcove = true;
+            bands.push_back(band);
+            continue;
+        }
         auto addCorridor = [&](float a, float b){
             zoneCorridor[z] = int(bands.size());
             bands.push_back({z, alongX, u0, u1, a, b, true});
@@ -107,18 +141,46 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
             addCorridor(c - cw * 0.5f, c + cw * 0.5f);
             bands.push_back({z, alongX, u0, u1, c + cw * 0.5f, v1, false});
         }else if(depth >= 2.0f * cw + 2.0f && depth >= 4.4f){
-            // Side corridor: toward the arms (the courtyard) for the main block of an L or U,
-            // toward the courtyard for an arm, by seed for a plain rectangle.
+            // Side corridor. The main block puts it on the side most hanging zones attach to,
+            // so their corridors meet it; a hanging zone on the side toward its parent's middle
+            // (the courtyard of an L or U); a lone rectangle by seed.
             bool high;
-            if(zoneCount > 1 && z == 0) high = true;                                   // arms attach at +z
-            else if(z > 0) high = r.min.x <= footprint.zones[0].min.x + eps;           // left arm: courtyard at +x
-            else high = random.coin();
+            if(joints[z].parent < 0){
+                int score = 0;
+                for(std::size_t c = 0; c < zoneCount; ++c){
+                    if(joints[c].parent != int(z) || joints[c].lineAlongX != alongX) continue;
+                    score += std::abs(joints[c].line - v1) < eps ? 1 : std::abs(joints[c].line - v0) < eps ? -1 : 0;
+                }
+                high = score != 0 ? score > 0 : random.coin();
+            }else{
+                const LocalRect& p = footprint.zones[std::size_t(joints[z].parent)];
+                const float middle = alongX ? (p.min.y + p.max.y) * 0.5f : (p.min.x + p.max.x) * 0.5f;
+                high = std::abs(v1 - middle) < std::abs(v0 - middle);
+            }
             if(high){ bands.push_back({z, alongX, u0, u1, v0, v1 - cw, false}); addCorridor(v1 - cw, v1); }
             else{ addCorridor(v0, v0 + cw); bands.push_back({z, alongX, u0, u1, v0 + cw, v1, false}); }
         }else{
             bands.push_back({z, alongX, u0, u1, v0, v1, false});
         }
     }
+
+    // Facade of a room: its longest stretch on one outline edge (a window needs it on one wall).
+    std::vector<glm::vec2> localOutline;
+    for(const glm::vec2& p : footprint.outline) localOutline.push_back(toLocal(footprint, p));
+    auto facade = [&](const LocalRect& r){
+        float total = 0.0f;
+        for(std::size_t i = 0; i < localOutline.size(); ++i){
+            const glm::vec2 a = localOutline[i], b = localOutline[(i + 1) % localOutline.size()];
+            if(std::abs(a.y - b.y) < 1e-3f){
+                if(std::abs(a.y - r.min.y) > 1e-3f && std::abs(a.y - r.max.y) > 1e-3f) continue;
+                total = std::max(total, std::min(std::max(a.x, b.x), r.max.x) - std::max(std::min(a.x, b.x), r.min.x));
+            }else if(std::abs(a.x - b.x) < 1e-3f){
+                if(std::abs(a.x - r.min.x) > 1e-3f && std::abs(a.x - r.max.x) > 1e-3f) continue;
+                total = std::max(total, std::min(std::max(a.y, b.y), r.max.y) - std::max(std::min(a.y, b.y), r.min.y));
+            }
+        }
+        return total;
+    };
 
     std::vector<std::vector<Slot>> slots(bands.size());
     auto slotFree = [&](std::size_t band, float a, float b){
@@ -136,15 +198,17 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
         return 0;
     };
 
-    // 2. Connectors: an arm corridor that ends at a row of the main block continues through it.
-    for(std::size_t z = 1; z < zoneCount; ++z){
-        if(zoneCorridor[z] < 0) continue;
+    // 2. Connectors: a hanging zone's corridor that ends at a row of its parent continues
+    //    through that row to the parent's corridor.
+    for(std::size_t z = 0; z < zoneCount; ++z){
+        const int parent = joints[z].parent;
+        if(parent < 0 || zoneCorridor[z] < 0 || zoneCorridor[std::size_t(parent)] < 0) continue;
         const Band& arm = bands[std::size_t(zoneCorridor[z])];
         for(std::size_t b = 0; b < bands.size(); ++b){
             const Band& row = bands[b];
-            if(row.zone != 0 || row.corridor || !row.alongX || std::abs(row.v1 - footprint.zones[z].min.y) > eps) continue;
-            if(!slotFree(b, arm.v0, arm.v1)){ error = "arm corridor cannot pass through the main block"; return false; }
-            slots[b].push_back({arm.v0, arm.v1, RoomType::Corridor, false});
+            if(row.zone != std::size_t(parent) || row.corridor || row.alongX == arm.alongX) continue;
+            if(std::abs(row.v1 - joints[z].line) > eps && std::abs(row.v0 - joints[z].line) > eps) continue;
+            if(slotFree(b, arm.v0, arm.v1)) slots[b].push_back({arm.v0, arm.v1, RoomType::Corridor, false});
         }
     }
 
@@ -270,8 +334,9 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
         const std::size_t firstRoom = plan.rooms.size();
         for(std::size_t b = 0; b < bands.size(); ++b){
             const Band& band = bands[b];
-            if(band.corridor){
-                plan.rooms.push_back({floor, RoomType::Corridor, bandRect(band, band.u0, band.u1, band.v0, band.v1)});
+            if(band.corridor || band.alcove){
+                plan.rooms.push_back({floor, band.corridor ? RoomType::Corridor : RoomType::Storage,
+                                      bandRect(band, band.u0, band.u1, band.v0, band.v1)});
                 continue;
             }
             std::vector<Slot> here;
@@ -365,6 +430,18 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
                 }
             }
         }
+        // Cells without 2.2 m of facade on one wall cannot have a window (1.5 m and a 0.35 m margin
+        // to each partition): a bathroom (if the floor still needs one) or storage. Only the others
+        // take the program's rooms.
+        bool darkBathroom = false;
+        for(auto it = cells.begin(); it != cells.end();){
+            if(facade(plan.rooms[*it].rect) >= 2.2f){ ++it; continue; }
+            const LocalRect& r = plan.rooms[*it].rect;
+            const bool fits = area(r) >= 2.5f && std::min(r.max.x - r.min.x, r.max.y - r.min.y) >= 1.4f;
+            plan.rooms[*it].type = !darkBathroom && fits ? RoomType::Bathroom : RoomType::Storage;
+            darkBathroom |= plan.rooms[*it].type == RoomType::Bathroom;
+            it = cells.erase(it);
+        }
         // The living room takes in neighbouring bays of its row until it has 16 m2 (an open
         // living area), since rows are cut into bays of bedroom size.
         if(settings.program == InteriorProgram::Residential && floor == 0 && !cells.empty()){
@@ -403,7 +480,7 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
             if(floor == 0 && k < cells.size()) assign(cells[k++], RoomType::Living);
             if(floor == 0 && k < cells.size()) assign(cells[k++], RoomType::Kitchen);
             std::size_t last = cells.size();
-            if(last > k){ assign(cells[--last], RoomType::Bathroom); }
+            if(last > k && !darkBathroom){ assign(cells[--last], RoomType::Bathroom); }
             int bedrooms = 0;
             for(; k < last; ++k){
                 const LocalRect& r = plan.rooms[cells[k]].rect;
@@ -423,6 +500,7 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
                         const float depth = alongX ? r.max.y - r.min.y : r.max.x - r.min.x;
                         const float keep = donor == RoomType::Living ? std::max(2.4f, 12.0f / depth) : 2.4f;
                         LocalRect cut = r;
+                        const LocalRect original = r;
                         if(span - width >= keep){
                             if(alongX){ cut.max.x = r.min.x + width; r.min.x = cut.max.x; }
                             else{ cut.max.y = r.min.y + width; r.min.y = cut.max.y; }
@@ -445,6 +523,8 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
                                 else{ cut.max.x = r.min.x + width; r.min.x = cut.max.x; }
                             }
                         }
+                        // A kitchen needs its window; the donor keeps one too.
+                        if((type == RoomType::Kitchen && facade(cut) < 2.2f) || facade(r) < 2.2f){ r = original; continue; }
                         cellAlongX[plan.rooms.size()] = alongX;
                         plan.rooms.push_back({floor, type, cut});
                         return true;
@@ -493,9 +573,10 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
             LocalRect rest = r;
             if(alongX){ rest.min.x = r.min.x + limit; r.max.x = rest.min.x; }
             else{ rest.min.y = r.min.y + limit; r.max.y = rest.min.y; }
-            const bool roomy = area(rest) >= 7.0f && std::min(rest.max.x - rest.min.x, rest.max.y - rest.min.y) >= 2.4f;
-            const RoomType restType = settings.program == InteriorProgram::Office ? RoomType::Office
-                                    : roomy ? RoomType::Bedroom : RoomType::Storage;
+            const bool roomy = area(rest) >= 7.0f && std::min(rest.max.x - rest.min.x, rest.max.y - rest.min.y) >= 2.4f &&
+                               facade(rest) >= 2.2f;
+            const RoomType restType = !roomy ? RoomType::Storage
+                                    : settings.program == InteriorProgram::Office ? RoomType::Office : RoomType::Bedroom;
             plan.rooms.push_back({floor, restType, rest});
         }
         // With a service strip the bathrooms move there, off the facade: facade bathrooms become
@@ -504,7 +585,8 @@ bool planInterior(const Footprint& footprint, const RoomSplitNode& settings, Foo
             int bedrooms = 0;
             for(std::size_t i = firstRoom; i < plan.rooms.size(); ++i){
                 Room& room = plan.rooms[i];
-                if(room.type == RoomType::Bathroom && std::find(services.begin(), services.end(), i) == services.end())
+                if(room.type == RoomType::Bathroom && std::find(services.begin(), services.end(), i) == services.end() &&
+                   facade(room.rect) >= 2.2f)
                     room.type = settings.program == InteriorProgram::Office ? RoomType::Office
                               : area(room.rect) >= 7.0f && std::min(room.rect.max.x - room.rect.min.x, room.rect.max.y - room.rect.min.y) >= 2.4f
                                     ? RoomType::Bedroom : RoomType::Storage;

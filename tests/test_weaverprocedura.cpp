@@ -945,8 +945,8 @@ int main(){
                  semanticCount(roomsMesh, "stairs") > 0 && semanticCount(roomsMesh, "floor") > 0, error);
 
     Proc::Footprint tracedPlan;
-    report.check("RoomSplit explains that traced outlines are not supported yet",
-                 tracedMade && !Proc::planInterior(traced, Proc::RoomSplitNode{}, tracedPlan, error) && error.find("rectangles") != std::string::npos, error);
+    report.check("RoomSplit on a slanted traced outline explains that rectify is needed",
+                 tracedMade && !Proc::planInterior(traced, Proc::RoomSplitNode{}, tracedPlan, error) && error.find("rectify") != std::string::npos, error);
 
     Proc::Graph interiorJson;
     Proc::RoomSplitNode officeSplit; officeSplit.program = Proc::InteriorProgram::Office; officeSplit.seed = 42; officeSplit.entranceEdge = 3;

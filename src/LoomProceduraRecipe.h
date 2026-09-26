@@ -257,8 +257,8 @@ inline std::string serialize(const Document& document){
                 << ",\"width\":" << footprint->width << ",\"depth\":" << footprint->depth << ",\"wing_width\":" << footprint->wingWidth
                 << ",\"center\":[" << footprint->center.x << ',' << footprint->center.y << "],\"rotation_degrees\":"
                 << footprint->rotationDegrees << '}';
-        }else if(std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload)){
-            out << "{\"type\":\"footprint_from_curve\"}";
+        }else if(const auto* traced = std::get_if<Proc::FootprintFromCurveNode>(&node.payload)){
+            out << "{\"type\":\"footprint_from_curve\",\"rectify\":" << (traced->rectify ? "true" : "false") << '}';
         }else if(const auto* stack = std::get_if<Proc::FloorStackNode>(&node.payload)){
             out << "{\"type\":\"floor_stack\",\"floors\":" << stack->floors << ",\"floor_height\":" << stack->floorHeight
                 << ",\"elevation\":" << stack->elevation << '}';
@@ -486,7 +486,9 @@ inline Document parse(const std::string& source){
             footprint.rotationDegrees = readFloat(required(parameters,"rotation_degrees"),"footprint.rotation_degrees");
             node.payload = footprint;
         }else if(type == "footprint_from_curve"){
-            node.payload = Proc::FootprintFromCurveNode{};
+            Proc::FootprintFromCurveNode traced;
+            if(const AgentJsonValue* rectify = parameters.get("rectify")) traced.rectify = readBool(*rectify, "footprint_from_curve.rectify");
+            node.payload = traced;
         }else if(type == "floor_stack"){
             Proc::FloorStackNode stack;
             stack.floors = readU32(required(parameters,"floors"),"floor_stack.floors");

@@ -353,11 +353,217 @@ bool makeFootprint(const FootprintNode& settings, Footprint& output, std::string
     return true;
 }
 
-bool footprintFromCurve(const Curve& curve, Footprint& output, std::string& error){
+namespace{
+
+// Snaps a sketch to right angles: each edge counts as along x or along z (local frame), runs of
+// the same kind merge into one side at their mean line, and corners are where sides meet.
+bool orthogonalize(std::vector<glm::vec2>& local, std::string& error){
+    const std::size_t n = local.size();
+    std::vector<bool> alongX(n);
+    for(std::size_t i = 0; i < n; ++i){
+        const glm::vec2 d = local[(i + 1) % n] - local[i];
+        alongX[i] = std::abs(d.x) >= std::abs(d.y);
+    }
+    std::size_t start = 0;   // first edge of a run
+    while(start < n && alongX[start] == alongX[(start + n - 1) % n]) ++start;
+    if(start == n){ error = "rectify needs a closed outline with at least four sides"; return false; }
+    struct Side{ bool alongX; float line; };
+    std::vector<Side> sides;
+    for(std::size_t k = 0; k < n;){
+        const std::size_t first = (start + k) % n;
+        const bool kind = alongX[first];
+        double sum = 0.0; int count = 0;
+        while(k < n && alongX[(start + k) % n] == kind){
+            const std::size_t e = (start + k) % n;
+            for(const glm::vec2& p : {local[e], local[(e + 1) % n]}){ sum += kind ? p.y : p.x; ++count; }
+            ++k;
+        }
+        sides.push_back({kind, float(sum / count)});
+    }
+    if(sides.size() < 4 || sides.size() % 2 != 0){ error = "rectify needs at least four sides that turn at corners"; return false; }
+    // Parallel sides closer than 0.5 m are one wall line drawn twice: they share the mean line,
+    // otherwise a sketch leaves slivers between walls that were meant to line up.
+    for(const bool kind : {true, false}){
+        std::vector<std::size_t> same;
+        for(std::size_t k = 0; k < sides.size(); ++k) if(sides[k].alongX == kind) same.push_back(k);
+        std::sort(same.begin(), same.end(), [&](std::size_t a, std::size_t b){ return sides[a].line < sides[b].line; });
+        for(std::size_t first = 0; first < same.size();){
+            std::size_t last = first;
+            while(last + 1 < same.size() && sides[same[last + 1]].line - sides[same[last]].line < 0.5f) ++last;
+            float mean = 0.0f;
+            for(std::size_t k = first; k <= last; ++k) mean += sides[same[k]].line / float(last - first + 1);
+            for(std::size_t k = first; k <= last; ++k) sides[same[k]].line = mean;
+            first = last + 1;
+        }
+    }
+    std::vector<glm::vec2> corners;
+    for(std::size_t k = 0; k < sides.size(); ++k){
+        const Side& a = sides[k];
+        const Side& b = sides[(k + 1) % sides.size()];
+        corners.push_back(a.alongX ? glm::vec2(b.line, a.line) : glm::vec2(a.line, b.line));
+    }
+    local = std::move(corners);
+    return true;
+}
+
+bool pointInside(const std::vector<glm::vec2>& polygon, const glm::vec2& p){
+    bool in = false;
+    for(std::size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++)
+        if((polygon[i].y > p.y) != (polygon[j].y > p.y) &&
+           p.x < (polygon[j].x - polygon[i].x) * (p.y - polygon[i].y) / (polygon[j].y - polygon[i].y) + polygon[i].x) in = !in;
+    return in;
+}
+
+// Splits a right-angled polygon into rectangles on the grid of its corner lines. Three ways are
+// tried (largest rectangle first, horizontal strips, vertical strips) and the one with the fewest
+// zones too small for rooms (under 2.4 m on a side) wins, then the one with fewer zones.
+std::vector<LocalRect> rectangleZones(const std::vector<glm::vec2>& polygon){
+    std::vector<float> xs, zs;
+    for(const glm::vec2& p : polygon){ xs.push_back(p.x); zs.push_back(p.y); }
+    auto unique = [](std::vector<float>& v){
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end(), [](float a, float b){ return b - a < 1e-4f; }), v.end());
+    };
+    unique(xs); unique(zs);
+    const std::size_t nx = xs.size() - 1, nz = zs.size() - 1;
+    std::vector<int> inside(nx * nz, 0);
+    for(std::size_t i = 0; i < nx; ++i)
+        for(std::size_t j = 0; j < nz; ++j)
+            inside[j * nx + i] = pointInside(polygon, {(xs[i] + xs[i + 1]) * 0.5f, (zs[j] + zs[j + 1]) * 0.5f}) ? 1 : 0;
+
+    auto largestFirst = [&](){
+        std::vector<int> free = inside;
+        std::vector<LocalRect> zones;
+        while(zones.size() < 32){
+            std::vector<int> sum((nx + 1) * (nz + 1), 0);
+            for(std::size_t j = 0; j < nz; ++j)
+                for(std::size_t i = 0; i < nx; ++i)
+                    sum[(j + 1) * (nx + 1) + i + 1] = free[j * nx + i] + sum[j * (nx + 1) + i + 1] + sum[(j + 1) * (nx + 1) + i] - sum[j * (nx + 1) + i];
+            auto cells = [&](std::size_t i0, std::size_t j0, std::size_t i1, std::size_t j1){
+                return sum[j1 * (nx + 1) + i1] - sum[j0 * (nx + 1) + i1] - sum[j1 * (nx + 1) + i0] + sum[j0 * (nx + 1) + i0];
+            };
+            float bestArea = 0.0f; std::size_t b0 = 0, b1 = 0, c0 = 0, c1 = 0;
+            for(std::size_t i0 = 0; i0 < nx; ++i0)
+                for(std::size_t i1 = i0 + 1; i1 <= nx; ++i1)
+                    for(std::size_t j0 = 0; j0 < nz; ++j0)
+                        for(std::size_t j1 = j0 + 1; j1 <= nz; ++j1){
+                            if(cells(i0, j0, i1, j1) != int((i1 - i0) * (j1 - j0))) break;
+                            const float area = (xs[i1] - xs[i0]) * (zs[j1] - zs[j0]);
+                            if(area > bestArea){ bestArea = area; b0 = i0; b1 = i1; c0 = j0; c1 = j1; }
+                        }
+            if(bestArea <= 0.0f) break;
+            zones.push_back({{xs[b0], zs[c0]}, {xs[b1], zs[c1]}});
+            for(std::size_t i = b0; i < b1; ++i) for(std::size_t j = c0; j < c1; ++j) free[j * nx + i] = 0;
+        }
+        return zones;
+    };
+    // Strips: runs of inside cells per row (or column), stacked while the next row has the same run.
+    auto strips = [&](bool rows){
+        const std::size_t na = rows ? nz : nx, nb = rows ? nx : nz;
+        auto in = [&](std::size_t a, std::size_t b){ return rows ? inside[a * nx + b] : inside[b * nx + a]; };
+        std::vector<std::vector<std::pair<std::size_t, std::size_t>>> runs(na);
+        for(std::size_t a = 0; a < na; ++a)
+            for(std::size_t b = 0; b < nb;){
+                if(!in(a, b)){ ++b; continue; }
+                std::size_t e = b;
+                while(e < nb && in(a, e)) ++e;
+                runs[a].push_back({b, e});
+                b = e;
+            }
+        std::vector<LocalRect> zones;
+        std::vector<std::vector<bool>> used(na);
+        for(std::size_t a = 0; a < na; ++a) used[a].assign(runs[a].size(), false);
+        for(std::size_t a = 0; a < na; ++a)
+            for(std::size_t k = 0; k < runs[a].size(); ++k){
+                if(used[a][k]) continue;
+                const auto run = runs[a][k];
+                std::size_t last = a;
+                while(last + 1 < na){
+                    const auto& next = runs[last + 1];
+                    const auto found = std::find(next.begin(), next.end(), run);
+                    if(found == next.end()) break;
+                    used[last + 1][std::size_t(found - next.begin())] = true;
+                    ++last;
+                }
+                const float b0 = rows ? xs[run.first] : zs[run.first], b1 = rows ? xs[run.second] : zs[run.second];
+                const float a0 = rows ? zs[a] : xs[a], a1 = rows ? zs[last + 1] : xs[last + 1];
+                zones.push_back(rows ? LocalRect{{b0, a0}, {b1, a1}} : LocalRect{{a0, b0}, {a1, b1}});
+            }
+        std::sort(zones.begin(), zones.end(), [](const LocalRect& x, const LocalRect& y){
+            return (x.max.x - x.min.x) * (x.max.y - x.min.y) > (y.max.x - y.min.x) * (y.max.y - y.min.y);
+        });
+        return zones;
+    };
+    auto badness = [](const std::vector<LocalRect>& zones){
+        int bad = 0;
+        for(const LocalRect& r : zones) bad += std::min(r.max.x - r.min.x, r.max.y - r.min.y) < 2.4f ? 1 : 0;
+        return std::make_pair(bad, zones.size());
+    };
+    std::vector<LocalRect> best = largestFirst();
+    for(bool rows : {true, false}){
+        std::vector<LocalRect> candidate = strips(rows);
+        if(badness(candidate) < badness(best)) best = std::move(candidate);
+    }
+    return best;
+}
+
+}  // namespace
+
+bool footprintFromCurve(const Curve& curve, Footprint& output, std::string& error, bool rectify){
     std::vector<glm::vec2> outline;
     for(const glm::vec3& p : curve.points) outline.emplace_back(p.x, p.z);
     Footprint made;
     if(!finishFootprint(outline, made, error)) return false;
+
+    // Frame along the longest edge, centred on the corners' mean.
+    const std::size_t n = made.outline.size();
+    glm::vec2 center(0.0f), axis(1.0f, 0.0f);
+    float longest = 0.0f;
+    for(std::size_t i = 0; i < n; ++i){
+        center += made.outline[i] / float(n);
+        const glm::vec2 d = made.outline[(i + 1) % n] - made.outline[i];
+        if(glm::length(d) > longest){ longest = glm::length(d); axis = d / glm::length(d); }
+    }
+    made.frameCenter = center;
+    made.frameAxis = axis;
+    const glm::vec2 across{-axis.y, axis.x};
+    std::vector<glm::vec2> local;
+    for(const glm::vec2& p : made.outline) local.push_back({glm::dot(p - center, axis), glm::dot(p - center, across)});
+    if(rectify){
+        if(!orthogonalize(local, error)) return false;
+        std::vector<glm::vec2> world;
+        for(const glm::vec2& p : local) world.push_back(made.toWorld(p));
+        Footprint snapped = made;
+        if(!finishFootprint(world, snapped, error)){ error = "rectified outline: " + error; return false; }
+        made.outline = snapped.outline;
+        local.clear();
+        for(const glm::vec2& p : made.outline) local.push_back({glm::dot(p - center, axis), glm::dot(p - center, across)});
+    }
+    bool rightAngled = true;
+    for(std::size_t i = 0; i < local.size(); ++i){
+        const glm::vec2 d = local[(i + 1) % local.size()] - local[i];
+        rightAngled &= std::abs(d.x) < 1e-3f || std::abs(d.y) < 1e-3f;
+    }
+    if(rightAngled){
+        made.zones = rectangleZones(local);
+        // Roof parts: each zone, reaching halfway into the zone it hangs off so the two roofs
+        // meet under the ridge (as the arms of an L), with no overhang or hip on that end.
+        for(std::size_t z = 0; z < made.zones.size(); ++z){
+            LocalRect r = made.zones[z];
+            uint8_t joined = 0;
+            for(std::size_t p = 0; p < z; ++p){
+                const LocalRect& q = made.zones[p];
+                const float ox = std::min(q.max.x, r.max.x) - std::max(q.min.x, r.min.x);
+                const float oz = std::min(q.max.y, r.max.y) - std::max(q.min.y, r.min.y);
+                const float halfZ = (q.max.y - q.min.y) * 0.5f, halfX = (q.max.x - q.min.x) * 0.5f;
+                if(ox >= 1.0f && std::abs(q.max.y - r.min.y) < 1e-4f){ r.min.y -= halfZ; joined |= 4; break; }
+                if(ox >= 1.0f && std::abs(q.min.y - r.max.y) < 1e-4f){ r.max.y += halfZ; joined |= 8; break; }
+                if(oz >= 1.0f && std::abs(q.max.x - r.min.x) < 1e-4f){ r.min.x -= halfX; joined |= 1; break; }
+                if(oz >= 1.0f && std::abs(q.min.x - r.max.x) < 1e-4f){ r.max.x += halfX; joined |= 2; break; }
+            }
+            made.parts.push_back({made.toWorld((r.min + r.max) * 0.5f), (r.max - r.min) * 0.5f, axis, joined});
+        }
+    }
     output = std::move(made);
     return true;
 }

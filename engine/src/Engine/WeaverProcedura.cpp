@@ -2099,7 +2099,7 @@ EvaluationResult evaluate(const Graph& graph){
             const Curve* curve = curveInput();
             if(!curve) return fail(name + " needs a Curve input");
             Footprint made;
-            if(!footprintFromCurve(*curve, made, error)) return fail(error);
+            if(!footprintFromCurve(*curve, made, error, std::get<FootprintFromCurveNode>(node.payload).rectify)) return fail(error);
             footprints.emplace(node.id, std::move(made));
             producesMesh = false;
         }else if(const auto* stack = std::get_if<FloorStackNode>(&node.payload)){

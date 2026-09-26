@@ -158,7 +158,8 @@ inline std::string nodeSummary(const Engine::WeaverProcedura::Node& node){
         return std::string(shapes[std::min(int(footprint->shape), 2)]) + " / " + formatSize(footprint->width) + " x " +
                formatSize(footprint->depth) + " m";
     }
-    if(std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload)) return "closed curve outline / flat roof only";
+    if(const auto* traced = std::get_if<Proc::FootprintFromCurveNode>(&node.payload))
+        return traced->rectify ? "closed curve outline / snapped to right angles" : "closed curve outline";
     if(const auto* stack = std::get_if<Proc::FloorStackNode>(&node.payload))
         return std::to_string(stack->floors) + " floors x " + formatSize(stack->floorHeight) + " m";
     if(const auto* walls = std::get_if<Proc::WallsNode>(&node.payload))
@@ -1170,8 +1171,9 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                 changed |= ui.slider("Center X",&footprint->center.x,-50.0f,50.0f,"m");
                 changed |= ui.slider("Center Z",&footprint->center.y,-50.0f,50.0f,"m");
                 changed |= ui.slider("Rotation",&footprint->rotationDegrees,-180.0f,180.0f,"°");
-            }else if(std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload)){
-                ui.hint("Traces a closed Curve's XZ outline. Only a flat roof fits it.");
+            }else if(auto* traced = std::get_if<Proc::FootprintFromCurveNode>(&node.payload)){
+                changed |= ui.checkbox("Snap to right angles",&traced->rectify);
+                ui.hint("Right-angled outlines take pitched roofs and rooms; others a flat roof only.");
             }else if(auto* stack = std::get_if<Proc::FloorStackNode>(&node.payload)){
                 float floors = float(stack->floors);
                 if(ui.slider("Floors",&floors,1.0f,30.0f)){ stack->floors = uint32_t(std::lround(floors)); changed = true; }
