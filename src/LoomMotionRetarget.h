@@ -8,11 +8,14 @@
 #include <cctype>
 #include <cmath>
 #include <limits>
+#include <optional>
+#include <unordered_map>
 #include <string>
 #include <filesystem>
 
 #include <Spool/Gltf.h>
 #include <string_view>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -1008,6 +1011,94 @@ inline size_t motionApplyFootContactIk(Warp::Stage& stage, const Engine::WeaverM
     return contactFrames;
 }
 
+//PRSTI U SUSTAVU KOSTI. Tijelo se prenosi svjetskim rotacijama (izvor * mirna poza cilja), sto za
+//prste nije dovoljno: SOMA i ciljni rig nemaju isti mirni oblik sake (rasirenost, kut dlana, smjer
+//metakarpala), pa se savijanje oko SOMA osi prsta na cilju pretvori u savijanje i skretanje. Za
+//zglob prsta se rotacija prema roditelju prebaci iz sustava izvorne kosti (smjer kosti + normala
+//dlana) u sustav ciljne kosti: align[source] = F_cilj * F_izvor^-1. Ciljni roditelj mora biti
+//mapiran (parentSource), inace zglob ide starim putem
+struct MotionFingerAlignment{
+    std::vector<bool> active;
+    std::vector<glm::quat> align;
+    std::vector<int> parentSource;
+};
+
+inline MotionFingerAlignment motionFingerAlignment(const Engine::WeaverMotion::Clip& clip, const MotionRigRestPose& rest,
+                                                   const MotionRigMapping& mapping){
+    MotionFingerAlignment result;
+    const size_t count = clip.joints.size();
+    result.active.assign(count, false);
+    result.align.assign(count, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    result.parentSource.assign(count, -1);
+    if(clip.frames.empty() || mapping.targetBySource.size() != count) return result;
+    //Mirna poza izvora: kanonska T-poza (sve rotacije jedinicne)
+    Engine::WeaverMotion::Clip restClip;
+    restClip.joints = clip.joints;
+    restClip.frames.push_back(clip.frames.front());
+    for(glm::quat& rotation : restClip.frames[0].rotations) rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::vector<glm::vec3> sourceRest = motionPoseJointPositions(restClip, 0);
+    std::unordered_map<Warp::Id, size_t> targetIndex, sourceOf;
+    for(size_t i = 0; i < rest.joints.size(); ++i) targetIndex.emplace(rest.joints[i].id, i);
+    for(size_t i = 0; i < count; ++i) if(mapping.targetBySource[i] != Warp::None) sourceOf.emplace(mapping.targetBySource[i], i);
+    auto targetAt = [&](Warp::Id id){ return glm::vec3(rest.joints[targetIndex.at(id)].matrix[3]); };
+    auto targetChild = [&](Warp::Id id) -> Warp::Id{
+        for(const MotionRigJointRest& joint : rest.joints) if(joint.parentJoint == id) return joint.id;
+        return Warp::None;
+    };
+    auto sourceChild = [&](size_t id) -> int{
+        for(size_t i = 0; i < count; ++i) if(clip.joints[i].parent == int(id)) return int(i);
+        return -1;
+    };
+    auto frame = [](glm::vec3 direction, glm::vec3 normal){
+        direction = glm::normalize(direction);
+        normal = normal - direction * glm::dot(normal, direction);
+        if(glm::length(normal) < 1e-6f) return std::optional<glm::quat>();
+        normal = glm::normalize(normal);
+        return std::optional<glm::quat>(glm::normalize(glm::quat_cast(glm::mat3(direction, normal, glm::cross(direction, normal)))));
+    };
+    const std::vector<std::string> keys = motionSourceJointKeys(clip);
+    for(const std::string side : {"lefthand", "righthand"}){
+        int hand = -1;
+        for(size_t i = 0; i < count; ++i) if(keys[i] == side) hand = int(i);
+        if(hand < 0 || mapping.targetBySource[size_t(hand)] == Warp::None) continue;
+        //Baza kaziprsta i malog prsta: najniza mapirana kost lanca (Manny metakarpal, UniRig clanak 1)
+        auto base = [&](const std::string& finger) -> int{
+            for(char digit = '0'; digit <= '3'; ++digit)
+                for(size_t i = 0; i < count; ++i)
+                    if(keys[i] == side + finger + digit && mapping.targetBySource[i] != Warp::None) return int(i);
+            return -1;
+        };
+        const int index = base("index"), pinky = base("pinky");
+        if(index < 0 || pinky < 0) continue;
+        const Warp::Id targetHand = mapping.targetBySource[size_t(hand)];
+        const glm::vec3 sourceNormal = glm::cross(sourceRest[size_t(index)] - sourceRest[size_t(hand)], sourceRest[size_t(pinky)] - sourceRest[size_t(hand)]);
+        const glm::vec3 targetNormal = glm::cross(targetAt(mapping.targetBySource[size_t(index)]) - targetAt(targetHand),
+                                                  targetAt(mapping.targetBySource[size_t(pinky)]) - targetAt(targetHand));
+        if(glm::length(sourceNormal) < 1e-8f || glm::length(targetNormal) < 1e-8f) continue;
+        for(size_t i = 0; i < count; ++i){
+            if(keys[i].size() <= side.size() || keys[i].compare(0, side.size(), side) != 0) continue;
+            const Warp::Id target = mapping.targetBySource[i];
+            if(target == Warp::None || !targetIndex.count(target)) continue;
+            const Warp::Id targetParent = rest.joints[targetIndex.at(target)].parentJoint;
+            const auto parentSource = sourceOf.find(targetParent);
+            if(parentSource == sourceOf.end()) continue;
+            //Smjer kosti: prema djetetu, a zadnja kost nastavlja smjer od roditelja
+            const int sc = sourceChild(i);
+            const glm::vec3 sourceDirection = sc >= 0 ? sourceRest[size_t(sc)] - sourceRest[i]
+                                                      : sourceRest[i] - sourceRest[size_t(std::max(0, clip.joints[i].parent))];
+            const Warp::Id tc = targetChild(target);
+            const glm::vec3 targetDirection = tc != Warp::None ? targetAt(tc) - targetAt(target) : targetAt(target) - targetAt(targetParent);
+            if(glm::length(sourceDirection) < 1e-8f || glm::length(targetDirection) < 1e-8f) continue;
+            const auto fs = frame(sourceDirection, sourceNormal), ft = frame(targetDirection, targetNormal);
+            if(!fs || !ft) continue;
+            result.active[i] = true;
+            result.align[i] = glm::normalize(*ft * glm::inverse(*fs));
+            result.parentSource[i] = int(parentSource->second);
+        }
+    }
+    return result;
+}
+
 inline bool retargetMotionToRig(Warp::Stage& stage, const Engine::WeaverMotion::Clip& clip, Warp::Id rigRoot,
                                 double firstFrame, double frameStep, MotionRigFit& fit,
                                 MotionRigMapping& mapping, std::string& problem,
@@ -1040,6 +1131,8 @@ inline bool retargetMotionToRig(Warp::Stage& stage, const Engine::WeaverMotion::
         if(target != Warp::None) sourceForTarget.emplace(target, source);
     }
 
+    const MotionFingerAlignment fingers = motionFingerAlignment(clip, rest, mapping);
+
     for(size_t frameIndex = 0; frameIndex < clip.frames.size(); ++frameIndex){
         const double time = firstFrame + double(frameIndex) * frameStep;
         const std::vector<glm::quat> sourceWorld = motionWorldRotations(clip, frameIndex);
@@ -1067,6 +1160,13 @@ inline bool retargetMotionToRig(Warp::Stage& stage, const Engine::WeaverMotion::
                 // Apply every sampled source pose directly to the target's original bind frame;
                 // do not rebase arms to frame 0, which pins them to the display rest pose.
                 desiredWorld = glm::normalize(sourceWorld[source] * targetRestWorld);
+                //Prst: rotacija prema roditelju iz sustava SOMA kosti u sustav ciljne kosti
+                if(hasParentJoint && fingers.active[source]){
+                    const glm::quat relative = glm::inverse(sourceWorld[size_t(fingers.parentSource[source])]) * sourceWorld[source];
+                    const glm::quat aligned = fingers.align[source] * relative * glm::inverse(fingers.align[source]);
+                    const glm::quat parentRestWorld = motionRotationOf(rest.joints[parentIndex].matrix);
+                    desiredWorld = glm::normalize(parentDesiredWorld * glm::inverse(parentRestWorld) * aligned * targetRestWorld);
+                }
             }
             desiredJointWorld[targetIndex] = desiredWorld;
 

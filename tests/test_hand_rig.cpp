@@ -198,11 +198,10 @@ int main(){
                  m1 == "index_metacarpal_l" && m2 == "index_01_l" && m4 == "pinky_03_r" && t1 == "thumb_01_l",
                  fmt("%s %s %s %s", m1.c_str(), m2.c_str(), m4.c_str(), t1.c_str()));
 
-    //Tocnost prstiju: promjena kuta od mirne poze u korijenu prsta (metakarpal/clanak 1) i srednjem
-    //zglobu (clanak 1/2) na Mannyju prati istu promjenu u SOMA pokretu (prosjek po prstima i kadrovima).
-    //Ostatak (~7 st, najvise prstenjak) je razlika mirnog oblika sake: prijenos je u svjetskim rotacijama
-    float sumError = 0.0f;
-    size_t samples = 0;
+    //Tocnost prstiju: SAVIJANJE s predznakom (kut kosti prema roditeljskoj u ravnini savijanja, tj.
+    //kost + normala dlana) u korijenu prsta (metakarpal/clanak 1) i srednjem zglobu (clanak 1/2):
+    //promjena od mirne poze na Mannyju prati istu promjenu u SOMA pokretu. Rasirenost ne ulazi (mirni
+    //oblici saka se razlikuju). Prosjek po prstima i svakom petom kadru
     const char* sides[2] = {"Left", "Right"};
     const char* somaNames[4] = {"Index", "Middle", "Ring", "Pinky"};
     const char* mannyNames[4] = {"index", "middle", "ring", "pinky"};
@@ -210,9 +209,10 @@ int main(){
         for(size_t i = 0; i < soma.joints.size(); ++i) if(soma.joints[i].name == name) return int(i);
         return -1;
     };
-    auto bendAt = [](glm::vec3 a, glm::vec3 b, glm::vec3 c){
+    auto flexion = [](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 normal){
         const glm::vec3 u = glm::normalize(b - a), v = glm::normalize(c - b);
-        return glm::degrees(std::acos(std::clamp(glm::dot(u, v), -1.0f, 1.0f)));
+        const glm::vec3 side = glm::normalize(normal - u * glm::dot(normal, u));
+        return glm::degrees(std::atan2(glm::dot(v, side), glm::dot(v, u)));
     };
     const size_t sourceFrames = soma.frames.size();
     //SOMA mirna poza: kanonska T-poza (sve rotacije jedinicne)
@@ -220,32 +220,76 @@ int main(){
     somaRest.frames.resize(1);
     for(glm::quat& rotation : somaRest.frames[0].rotations) rotation = glm::quat(1, 0, 0, 0);
     const std::vector<glm::vec3> sourceRest = Loom::motionPoseJointPositions(somaRest, 0);
+    auto flexionError = [&](const Warp::Stage& plain, const Warp::Stage& restStage, const Loom::WeaverMotionImportReport& plainMotion, float& splayError){
+    float sumError = 0.0f, sumSplay = 0.0f;
+    size_t samples = 0;
+    auto at = [](const Warp::Stage& st, Warp::Id id){ return glm::vec3(st.worldMatrix(id, 1.0)[3]); };
     for(size_t frameIndex = 0; frameIndex < sourceFrames; frameIndex += 5){
         const std::vector<glm::vec3> source = Loom::motionPoseJointPositions(soma, frameIndex);
         const double time = plainMotion.firstFrame + double(frameIndex) * (plainMotion.lastFrame - plainMotion.firstFrame) / double(std::max<size_t>(1, sourceFrames - 1));
-        for(int side = 0; side < 2; ++side)
+        for(int side = 0; side < 2; ++side){
+            const char suffix = side == 0 ? 'l' : 'r';
+            const std::string hand = std::string(sides[side]) + "Hand";
+            const int sh = sourceIndexOf(hand), si = sourceIndexOf(hand + "Index1"), sp = sourceIndexOf(hand + "Pinky1");
+            const Warp::Id th = named(plain, std::string("hand_") + suffix), ti = named(plain, std::string("index_metacarpal_") + suffix),
+                           tp = named(plain, std::string("pinky_metacarpal_") + suffix);
+            auto w = [&](Warp::Id id){ return glm::vec3(plain.worldMatrix(id, time)[3]); };
+            auto r = [&](Warp::Id id){ return at(restStage, id); };   //mirna poza (ucitani lik bez pokreta)
+            const auto& S = source; const auto& R = sourceRest;
+            const glm::vec3 sn = glm::cross(S[size_t(si)] - S[size_t(sh)], S[size_t(sp)] - S[size_t(sh)]);
+            const glm::vec3 rn = glm::cross(R[size_t(si)] - R[size_t(sh)], R[size_t(sp)] - R[size_t(sh)]);
+            const glm::vec3 wn = glm::cross(w(ti) - w(th), w(tp) - w(th)), qn = glm::cross(r(ti) - r(th), r(tp) - r(th));
             for(int f = 0; f < 4; ++f){
-                const std::string stem = std::string(sides[side]) + "Hand" + somaNames[f];
+                const std::string stem = hand + somaNames[f];
                 const int s1 = sourceIndexOf(stem + "1"), s2 = sourceIndexOf(stem + "2"), s3 = sourceIndexOf(stem + "3"), s4 = sourceIndexOf(stem + "4");
-                const char suffix = side == 0 ? 'l' : 'r';
                 const std::string m = mannyNames[f];
                 const Warp::Id meta = named(plain, m + "_metacarpal_" + suffix), p1 = named(plain, m + "_01_" + suffix),
                                p2 = named(plain, m + "_02_" + suffix), p3 = named(plain, m + "_03_" + suffix);
                 if(s1 < 0 || s2 < 0 || s3 < 0 || s4 < 0 || meta == Warp::None || p3 == Warp::None) continue;
-                auto w = [&](Warp::Id id){ return glm::vec3(plain.worldMatrix(id, time)[3]); };
-                auto r = [&](Warp::Id id){ return at(stage, id); };   //mirna poza (ucitani lik bez pokreta)
-                const auto& S = source; const auto& R = sourceRest;
-                const float sourceRoot = bendAt(S[size_t(s1)], S[size_t(s2)], S[size_t(s3)]) - bendAt(R[size_t(s1)], R[size_t(s2)], R[size_t(s3)]);
-                const float sourceMiddle = bendAt(S[size_t(s2)], S[size_t(s3)], S[size_t(s4)]) - bendAt(R[size_t(s2)], R[size_t(s3)], R[size_t(s4)]);
-                const float targetRoot = bendAt(w(meta), w(p1), w(p2)) - bendAt(r(meta), r(p1), r(p2));
-                const float targetMiddle = bendAt(w(p1), w(p2), w(p3)) - bendAt(r(p1), r(p2), r(p3));
+                const float sourceRoot = flexion(S[size_t(s1)], S[size_t(s2)], S[size_t(s3)], sn) - flexion(R[size_t(s1)], R[size_t(s2)], R[size_t(s3)], rn);
+                const float sourceMiddle = flexion(S[size_t(s2)], S[size_t(s3)], S[size_t(s4)], sn) - flexion(R[size_t(s2)], R[size_t(s3)], R[size_t(s4)], rn);
+                const float targetRoot = flexion(w(meta), w(p1), w(p2), wn) - flexion(r(meta), r(p1), r(p2), qn);
+                const float targetMiddle = flexion(w(p1), w(p2), w(p3), wn) - flexion(r(p1), r(p2), r(p3), qn);
                 sumError += std::fabs(sourceRoot - targetRoot) + std::fabs(sourceMiddle - targetMiddle);
+                const float sourceSplay = flexion(S[size_t(s1)], S[size_t(s2)], S[size_t(s3)], glm::cross(sn, S[size_t(s2)] - S[size_t(s1)])) -
+                                          flexion(R[size_t(s1)], R[size_t(s2)], R[size_t(s3)], glm::cross(rn, R[size_t(s2)] - R[size_t(s1)]));
+                const float targetSplay = flexion(w(meta), w(p1), w(p2), glm::cross(wn, w(p1) - w(meta))) -
+                                          flexion(r(meta), r(p1), r(p2), glm::cross(qn, r(p1) - r(meta)));
+                sumSplay += std::fabs(sourceSplay - targetSplay);
                 samples += 2;
             }
+        }
     }
-    const float meanError = samples ? sumError / float(samples) : 999.0f;
-    std::printf("   MJERA prsti_kut_greska_st %.2f (%zu uzoraka)\n", meanError, samples);
-    report.check("kutovi zglobova prstiju prate SOMA pokret (prosjek do 8 st; s pomaknutom mapom 10.9)", samples > 0 && meanError < 8.0f,
+    splayError = samples ? 2.0f * sumSplay / float(samples) : 999.0f;
+    return samples ? sumError / float(samples) : 999.0f;
+    };
+    float splay = 0.0f;
+    const float meanError = flexionError(plain, stage, plainMotion, splay);
+    std::printf("   MJERA prsti_savijanje_greska_st %.4f, rasirenost %.4f (T-poza)\n", meanError, splay);
+    const size_t samples = 672;
+    report.check("savijanje prstiju prati SOMA pokret (prosjek do 8 st)", samples > 0 && meanError < 8.0f,
                  fmt("prosjek %.1f st, %zu uzoraka", meanError, samples));
+
+    //Isti pokret na liku u A-pozi sa zakrenutim dlanom (ruke 45 st dolje, saka 60 st oko podlaktice):
+    //mirni oblik sake vise nije SOMA T-poza, a savijanje prstiju mora ostati savijanje
+    Warp::Stage bent = stage;
+    for(const char suffix : {'l', 'r'}){
+        const float sign = suffix == 'l' ? 1.0f : -1.0f;
+        for(const auto& [bone, degrees] : {std::pair<std::string, float>{"upperarm_", 45.0f}, {"hand_", 60.0f}}){
+            const Warp::Id id = named(bent, bone + suffix);
+            const Warp::Entity* parent = bent.get(bent.get(id)->parent);
+            const glm::quat parentWorld = Loom::motionRotationOf(bent.worldMatrix(parent->id, 1.0));
+            const glm::vec3 worldAxis = bone == "hand_" ? glm::normalize(at(bent, id) - at(bent, parent->id)) : glm::vec3(0, 0, 1);
+            const glm::quat turn = glm::angleAxis(glm::radians(-sign * degrees), glm::inverse(parentWorld) * worldAxis);
+            bent.get(id)->local.rotation = glm::normalize(turn * bent.get(id)->local.rotation);
+        }
+    }
+    const Warp::Stage bentRest = bent;
+    const Loom::WeaverMotionImportReport bentMotion = retargeted(bent);
+    float bentSplay = 0.0f;
+    const float bentError = flexionError(bent, bentRest, bentMotion, bentSplay);
+    std::printf("   MJERA prsti_savijanje_greska_st %.4f, rasirenost %.4f (A-poza, zakrenut dlan)\n", bentError, bentSplay);
+    report.check("A-poza i zakrenut dlan: savijanje i rasirenost prate SOMA (do 2 st)", bentError < 2.0f && bentSplay < 2.0f,
+                 fmt("savijanje %.1f st, rasirenost %.1f st", bentError, bentSplay));
     return report.result();
 }
