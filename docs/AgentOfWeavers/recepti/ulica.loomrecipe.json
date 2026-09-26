@@ -1,0 +1,81 @@
+{
+ "format": "loom.weaverprocedura.recipe",
+ "schema_version": 6,
+ "name": "Street",
+ "seed": 1,
+ "nodes": [
+  {
+   "id": 1,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "curve",
+    "closed": false,
+    "points": [
+     [
+      -20,
+      0,
+      -6
+     ],
+     [
+      -6,
+      0,
+      0
+     ],
+     [
+      6,
+      0,
+      0
+     ],
+     [
+      20,
+      0,
+      8
+     ]
+    ]
+   }
+  },
+  {
+   "id": 2,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "curve_smooth",
+    "subdivisions": 8
+   }
+  },
+  {
+   "id": 3,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "road_from_curve",
+    "road_width": 6,
+    "sidewalks": true,
+    "sidewalk_width": 1.8,
+    "curb_height": 0.15,
+    "sample_spacing": 1.0
+   }
+  }
+ ],
+ "links": [
+  {
+   "from": 1,
+   "from_port": 0,
+   "to": 2,
+   "to_port": 0
+  },
+  {
+   "from": 2,
+   "from_port": 0,
+   "to": 3,
+   "to_port": 0
+  }
+ ]
+}

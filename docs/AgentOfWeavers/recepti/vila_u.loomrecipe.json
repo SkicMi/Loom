@@ -1,0 +1,258 @@
+{
+ "format": "loom.weaverprocedura.recipe",
+ "schema_version": 6,
+ "name": "U Villa",
+ "seed": 1,
+ "nodes": [
+  {
+   "id": 1,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "footprint",
+    "shape": "u_shape",
+    "width": 16,
+    "depth": 12,
+    "wing_width": 5,
+    "center": [
+     0,
+     0
+    ],
+    "rotation_degrees": 0
+   }
+  },
+  {
+   "id": 2,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "floor_stack",
+    "floors": 1,
+    "floor_height": 3.0,
+    "elevation": 0.4
+   }
+  },
+  {
+   "id": 3,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "walls",
+    "thickness": 0.25,
+    "windows": true,
+    "window_width": 1.2,
+    "window_height": 1.4,
+    "sill_height": 0.9,
+    "window_spacing": 3.0,
+    "door": true,
+    "door_edge": 0,
+    "door_width": 1.0,
+    "door_height": 2.2
+   }
+  },
+  {
+   "id": 4,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "slab",
+    "thickness": 0.2,
+    "inset": 0.1,
+    "top_ceiling": true,
+    "foundation": true
+   }
+  },
+  {
+   "id": 5,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "roof",
+    "roof_type": "hip",
+    "pitch_degrees": 35,
+    "overhang": 0.4,
+    "thickness": 0.25,
+    "parapet_height": 0.0
+   }
+  },
+  {
+   "id": 6,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "plane",
+    "size": [
+     26,
+     1,
+     22
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 7,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  {
+   "id": 8,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "terrain",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 9,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "grass",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 10,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 11,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "merge"
+   }
+  }
+ ],
+ "links": [
+  {
+   "from": 1,
+   "from_port": 0,
+   "to": 2,
+   "to_port": 0
+  },
+  {
+   "from": 2,
+   "from_port": 0,
+   "to": 3,
+   "to_port": 0
+  },
+  {
+   "from": 2,
+   "from_port": 0,
+   "to": 4,
+   "to_port": 0
+  },
+  {
+   "from": 2,
+   "from_port": 0,
+   "to": 5,
+   "to_port": 0
+  },
+  {
+   "from": 6,
+   "from_port": 0,
+   "to": 7,
+   "to_port": 0
+  },
+  {
+   "from": 7,
+   "from_port": 0,
+   "to": 8,
+   "to_port": 0
+  },
+  {
+   "from": 8,
+   "from_port": 0,
+   "to": 9,
+   "to_port": 0
+  },
+  {
+   "from": 9,
+   "from_port": 0,
+   "to": 10,
+   "to_port": 0
+  },
+  {
+   "from": 3,
+   "from_port": 0,
+   "to": 11,
+   "to_port": 0
+  },
+  {
+   "from": 4,
+   "from_port": 0,
+   "to": 11,
+   "to_port": 1
+  },
+  {
+   "from": 5,
+   "from_port": 0,
+   "to": 11,
+   "to_port": 2
+  },
+  {
+   "from": 10,
+   "from_port": 0,
+   "to": 11,
+   "to_port": 3
+  }
+ ]
+}

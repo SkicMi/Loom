@@ -45,8 +45,8 @@ Uzorak = `prompt + recept kao niz akcija + metrike + seed + generator_version`; 
 | # | Faza | Stanje |
 |---|---|---|
 | 0 | Projekt, uklanjanje starog agenta | gotovo |
-| 1 | Infrastruktura: Merge, atributi/provenance, selekcija, UV/normale, materijali, Copy-to-Points | u tijeku |
-| 2 | Čvorovi: kuća/zgrada, uže, lanac, cesta (+ testovi) | čeka |
+| 1 | Infrastruktura: Merge, atributi/provenance, selekcija, UV/normale, materijali, Copy-to-Points | gotovo |
+| 2 | Čvorovi: kuća/zgrada, uže, lanac, cesta (+ testovi) | u tijeku (prvi krug gotov, fali RoomSplit) |
 | 3 | `ProceduraGen` (headless) + validatori + petlja Pass/Fail/Why/Retry, 10k uzoraka | čeka |
 | 4 | Ručni held-out skup ~200 promptova (korisnik) | čeka |
 | 5 | Model 3–5M, zamrznuti encoder, legality masking; metrike validnosti i točnosti | čeka |

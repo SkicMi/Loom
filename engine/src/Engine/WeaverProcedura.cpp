@@ -452,7 +452,7 @@ bool insetPolygon(const MeshData& mesh, const FacePatch& patch, float amount,
     return true;
 }
 
-enum class PortType{ Invalid, Curve, Profile, PointGrid, Mesh, Points };
+enum class PortType{ Invalid, Curve, Profile, PointGrid, Mesh, Points, Footprint };
 
 PortType outputType(const Node& node, uint32_t port){
     if(port != 0) return PortType::Invalid;
@@ -476,6 +476,11 @@ PortType outputType(const Node& node, uint32_t port){
        std::holds_alternative<UVProjectNode>(node.payload) || std::holds_alternative<CopyToPointsNode>(node.payload) ||
        std::holds_alternative<CopyAlongCurveNode>(node.payload))
         return PortType::Mesh;
+    if(std::holds_alternative<FootprintNode>(node.payload) || std::holds_alternative<FootprintFromCurveNode>(node.payload) ||
+       std::holds_alternative<FloorStackNode>(node.payload)) return PortType::Footprint;
+    if(std::holds_alternative<WallsNode>(node.payload) || std::holds_alternative<SlabNode>(node.payload) ||
+       std::holds_alternative<RoofNode>(node.payload) || std::holds_alternative<StairsNode>(node.payload) ||
+       std::holds_alternative<RoadFromCurveNode>(node.payload)) return PortType::Mesh;
     return PortType::Invalid;
 }
 
@@ -503,6 +508,11 @@ PortType inputType(const Node& node, uint32_t port){
         if(port == 1) return PortType::Curve;
     }
     if(std::holds_alternative<CurveSmoothNode>(node.payload) && port == 0) return PortType::Curve;
+    if((std::holds_alternative<FootprintFromCurveNode>(node.payload) || std::holds_alternative<RoadFromCurveNode>(node.payload)) &&
+       port == 0) return PortType::Curve;
+    if((std::holds_alternative<FloorStackNode>(node.payload) || std::holds_alternative<WallsNode>(node.payload) ||
+        std::holds_alternative<SlabNode>(node.payload) || std::holds_alternative<RoofNode>(node.payload)) && port == 0)
+        return PortType::Footprint;
     return PortType::Invalid;
 }
 
@@ -1834,6 +1844,50 @@ ValidationResult validate(const Graph& graph){
                !finite(along->alternateRollDegrees) || std::abs(along->alternateRollDegrees) > 360.0f ||
                !normalized(along->referenceUp, up) || along->maxCopies == 0 || along->maxCopies > 100000)
                 return {false, "copy-along-curve settings are invalid"};
+        }else if(const auto* footprint = std::get_if<FootprintNode>(&node.payload)){
+            if(int(footprint->shape) > int(FootprintShape::UShape) || !finite(footprint->width) || !finite(footprint->depth) ||
+               !finite(footprint->wingWidth) || !finite(footprint->center) || !finite(footprint->rotationDegrees) ||
+               footprint->width < 1.0f || footprint->width > 500.0f || footprint->depth < 1.0f || footprint->depth > 500.0f ||
+               footprint->wingWidth < 1.0f || footprint->wingWidth > 500.0f ||
+               std::max(std::abs(footprint->center.x), std::abs(footprint->center.y)) > 100000.0f ||
+               std::abs(footprint->rotationDegrees) > 36000.0f)
+                return {false, "footprint settings are invalid"};
+        }else if(const auto* stack = std::get_if<FloorStackNode>(&node.payload)){
+            if(stack->floors < 1 || stack->floors > 60 || !finite(stack->floorHeight) || stack->floorHeight < 2.0f ||
+               stack->floorHeight > 12.0f || !finite(stack->elevation) || stack->elevation < 0.0f || stack->elevation > 100.0f)
+                return {false, "floor stack needs 1 to 60 floors of 2 to 12 m at an elevation of 0 to 100 m"};
+        }else if(const auto* walls = std::get_if<WallsNode>(&node.payload)){
+            const float values[] = {walls->thickness, walls->windowWidth, walls->windowHeight, walls->sillHeight,
+                                    walls->windowSpacing, walls->doorWidth, walls->doorHeight};
+            bool valid = true;
+            for(float value : values) valid &= finite(value);
+            if(!valid || walls->thickness < 0.05f || walls->thickness > 2.0f || walls->windowWidth < 0.3f ||
+               walls->windowWidth > 6.0f || walls->windowHeight < 0.3f || walls->windowHeight > 6.0f ||
+               walls->sillHeight < 0.0f || walls->sillHeight > 6.0f || walls->windowSpacing < walls->windowWidth + 0.2f ||
+               walls->windowSpacing > 50.0f || walls->doorWidth < 0.5f || walls->doorWidth > 6.0f ||
+               walls->doorHeight < 1.5f || walls->doorHeight > 8.0f || walls->doorEdge > 1023)
+                return {false, "wall settings are invalid"};
+        }else if(const auto* slab = std::get_if<SlabNode>(&node.payload)){
+            if(!finite(slab->thickness) || slab->thickness < 0.02f || slab->thickness > 2.0f ||
+               !finite(slab->inset) || slab->inset < 0.0f || slab->inset > 2.0f)
+                return {false, "slab settings are invalid"};
+        }else if(const auto* roof = std::get_if<RoofNode>(&node.payload)){
+            if(int(roof->type) > int(RoofType::Shed) || !finite(roof->pitchDegrees) || roof->pitchDegrees < 2.0f ||
+               roof->pitchDegrees > 70.0f || !finite(roof->overhang) || roof->overhang < 0.0f || roof->overhang > 3.0f ||
+               !finite(roof->thickness) || roof->thickness < 0.05f || roof->thickness > 2.0f ||
+               !finite(roof->parapetHeight) || roof->parapetHeight < 0.0f || roof->parapetHeight > 3.0f)
+                return {false, "roof settings are invalid"};
+        }else if(const auto* stairs = std::get_if<StairsNode>(&node.payload)){
+            if(!finite(stairs->width) || stairs->width < 0.5f || stairs->width > 10.0f || !finite(stairs->totalRise) ||
+               stairs->totalRise < 0.2f || stairs->totalRise > 20.0f || stairs->steps < 2 || stairs->steps > 200 ||
+               !finite(stairs->treadDepth) || stairs->treadDepth < 0.15f || stairs->treadDepth > 1.0f)
+                return {false, "stairs settings are invalid"};
+        }else if(const auto* road = std::get_if<RoadFromCurveNode>(&node.payload)){
+            if(!finite(road->roadWidth) || road->roadWidth < 1.0f || road->roadWidth > 100.0f ||
+               !finite(road->sidewalkWidth) || road->sidewalkWidth < 0.5f || road->sidewalkWidth > 20.0f ||
+               !finite(road->curbHeight) || road->curbHeight < 0.0f || road->curbHeight > 1.0f ||
+               !finite(road->sampleSpacing) || road->sampleSpacing < 0.1f || road->sampleSpacing > 20.0f)
+                return {false, "road settings are invalid"};
         }
         if(!nodeIndex.emplace(node.id, i).second) return {false, "node IDs must be unique"};
         highestNodeId = std::max(highestNodeId, node.id);
@@ -1934,6 +1988,7 @@ EvaluationResult evaluate(const Graph& graph){
     std::unordered_map<NodeId, PointSet> pointSets;
     std::unordered_map<NodeId, Curve> curves;
     std::unordered_map<NodeId, Profile> profiles;
+    std::unordered_map<NodeId, Footprint> footprints;
     std::unordered_map<NodeId, std::vector<const Link*>> incomingLinks;
     for(const Link& link : graph.links) incomingLinks[link.to].push_back(&link);
     auto linkInto = [&](NodeId node, uint32_t port) -> const Link*{
@@ -1962,6 +2017,12 @@ EvaluationResult evaluate(const Graph& graph){
             if(std::holds_alternative<UVProjectNode>(node.payload)) return std::string("UV Project");
             if(std::holds_alternative<CopyToPointsNode>(node.payload)) return std::string("Copy to Points");
             if(std::holds_alternative<CopyAlongCurveNode>(node.payload)) return std::string("Copy along Curve");
+            if(std::holds_alternative<FootprintFromCurveNode>(node.payload)) return std::string("Footprint from Curve");
+            if(std::holds_alternative<FloorStackNode>(node.payload)) return std::string("Floor Stack");
+            if(std::holds_alternative<WallsNode>(node.payload)) return std::string("Walls");
+            if(std::holds_alternative<SlabNode>(node.payload)) return std::string("Slab");
+            if(std::holds_alternative<RoofNode>(node.payload)) return std::string("Roof");
+            if(std::holds_alternative<RoadFromCurveNode>(node.payload)) return std::string("Road from Curve");
             return std::string("Node");
         }();
         // Resolves input 0 as a mesh for the single-input mesh operations.
@@ -1978,6 +2039,19 @@ EvaluationResult evaluate(const Graph& graph){
         }
         MeshData produced;
         bool producesMesh = true;
+        // Resolves input 0 for the nodes that read a footprint or a curve.
+        auto footprintInput = [&]() -> const Footprint*{
+            const Link* link = linkInto(node.id, 0);
+            if(!link) return nullptr;
+            const auto source = footprints.find(link->from);
+            return source == footprints.end() ? nullptr : &source->second;
+        };
+        auto curveInput = [&]() -> const Curve*{
+            const Link* link = linkInto(node.id, 0);
+            if(!link) return nullptr;
+            const auto source = curves.find(link->from);
+            return source == curves.end() ? nullptr : &source->second;
+        };
 
         if(const auto* curve = std::get_if<CurveNode>(&node.payload)){
             curves.emplace(node.id, curve->curve);
@@ -2003,6 +2077,42 @@ EvaluationResult evaluate(const Graph& graph){
             const auto curve = curves.find(curveLink->from);
             if(curve == curves.end()) return fail("Copy along Curve input did not produce a curve");
             if(!copyAlongCurve(*meshInput, curve->second, *along, produced, error)) return fail(error);
+        }else if(const auto* footprintNode = std::get_if<FootprintNode>(&node.payload)){
+            Footprint made;
+            if(!makeFootprint(*footprintNode, made, error)) return fail(error);
+            footprints.emplace(node.id, std::move(made));
+            producesMesh = false;
+        }else if(std::holds_alternative<FootprintFromCurveNode>(node.payload)){
+            const Curve* curve = curveInput();
+            if(!curve) return fail(name + " needs a Curve input");
+            Footprint made;
+            if(!footprintFromCurve(*curve, made, error)) return fail(error);
+            footprints.emplace(node.id, std::move(made));
+            producesMesh = false;
+        }else if(const auto* stack = std::get_if<FloorStackNode>(&node.payload)){
+            const Footprint* footprint = footprintInput();
+            if(!footprint) return fail(name + " needs a Footprint input");
+            Footprint stacked = *footprint;
+            stacked.floors = stack->floors;
+            stacked.floorHeight = stack->floorHeight;
+            stacked.elevation = stack->elevation;
+            footprints.emplace(node.id, std::move(stacked));
+            producesMesh = false;
+        }else if(std::holds_alternative<WallsNode>(node.payload) || std::holds_alternative<SlabNode>(node.payload) ||
+                 std::holds_alternative<RoofNode>(node.payload)){
+            const Footprint* footprint = footprintInput();
+            if(!footprint) return fail(name + " needs a Footprint input");
+            bool made = false;
+            if(const auto* walls = std::get_if<WallsNode>(&node.payload)) made = makeWalls(*footprint, *walls, produced, error);
+            else if(const auto* slab = std::get_if<SlabNode>(&node.payload)) made = makeSlabs(*footprint, *slab, produced, error);
+            else made = makeRoof(*footprint, std::get<RoofNode>(node.payload), produced, error);
+            if(!made) return fail(error);
+        }else if(const auto* stairs = std::get_if<StairsNode>(&node.payload)){
+            if(!makeStairs(*stairs, produced, error)) return fail(error);
+        }else if(const auto* road = std::get_if<RoadFromCurveNode>(&node.payload)){
+            const Curve* curve = curveInput();
+            if(!curve) return fail(name + " needs a Curve input");
+            if(!roadFromCurve(*curve, *road, produced, error)) return fail(error);
         }else if(const auto* rectangle = std::get_if<RectangleProfileNode>(&node.payload)){
             profiles.emplace(node.id, makeRectangleProfile(rectangle->width, rectangle->height));
             producesMesh = false;

@@ -1,0 +1,877 @@
+{
+ "format": "loom.weaverprocedura.recipe",
+ "schema_version": 6,
+ "name": "Test House",
+ "seed": 1,
+ "nodes": [
+  {
+   "id": 1,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "plane",
+    "size": [
+     14,
+     1,
+     12
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 2,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  {
+   "id": 3,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "terrain",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 4,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "grass",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 5,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 6,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "cube",
+    "size": [
+     6.2,
+     0.3,
+     5.2
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 7,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     0,
+     0.15,
+     0
+    ]
+   }
+  },
+  {
+   "id": 8,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "foundation",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 9,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "concrete",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 10,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 11,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "cube",
+    "size": [
+     6,
+     3,
+     5
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 12,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     0,
+     1.8,
+     0
+    ]
+   }
+  },
+  {
+   "id": 13,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "wall_exterior",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 14,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "brick",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 15,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 16,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "cube",
+    "size": [
+     6.6,
+     1,
+     1
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 17,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "rotate",
+    "degrees": [
+     45,
+     0,
+     0
+    ],
+    "pivot": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  {
+   "id": 18,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "scale",
+    "factor": [
+     1,
+     1.5,
+     4.1
+    ],
+    "pivot": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  {
+   "id": 19,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     0,
+     3.3,
+     0
+    ]
+   }
+  },
+  {
+   "id": 20,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "roof",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 21,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "roof_tiles",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 22,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 23,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "cube",
+    "size": [
+     1.0,
+     2.0,
+     0.1
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 24,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     0,
+     1.3,
+     2.52
+    ]
+   }
+  },
+  {
+   "id": 25,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "door",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 26,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "wood_planks",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 27,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 28,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "cube",
+    "size": [
+     1.1,
+     1.0,
+     0.08
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 29,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     -1.9,
+     2.0,
+     2.52
+    ]
+   }
+  },
+  {
+   "id": 30,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "window",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 31,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "glass",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 32,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 33,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "cube",
+    "size": [
+     1.1,
+     1.0,
+     0.08
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 34,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     1.9,
+     2.0,
+     2.52
+    ]
+   }
+  },
+  {
+   "id": 35,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "window",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 36,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "glass",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 37,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 38,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "merge"
+   }
+  }
+ ],
+ "links": [
+  {
+   "from": 1,
+   "from_port": 0,
+   "to": 2,
+   "to_port": 0
+  },
+  {
+   "from": 2,
+   "from_port": 0,
+   "to": 3,
+   "to_port": 0
+  },
+  {
+   "from": 3,
+   "from_port": 0,
+   "to": 4,
+   "to_port": 0
+  },
+  {
+   "from": 4,
+   "from_port": 0,
+   "to": 5,
+   "to_port": 0
+  },
+  {
+   "from": 6,
+   "from_port": 0,
+   "to": 7,
+   "to_port": 0
+  },
+  {
+   "from": 7,
+   "from_port": 0,
+   "to": 8,
+   "to_port": 0
+  },
+  {
+   "from": 8,
+   "from_port": 0,
+   "to": 9,
+   "to_port": 0
+  },
+  {
+   "from": 9,
+   "from_port": 0,
+   "to": 10,
+   "to_port": 0
+  },
+  {
+   "from": 11,
+   "from_port": 0,
+   "to": 12,
+   "to_port": 0
+  },
+  {
+   "from": 12,
+   "from_port": 0,
+   "to": 13,
+   "to_port": 0
+  },
+  {
+   "from": 13,
+   "from_port": 0,
+   "to": 14,
+   "to_port": 0
+  },
+  {
+   "from": 14,
+   "from_port": 0,
+   "to": 15,
+   "to_port": 0
+  },
+  {
+   "from": 16,
+   "from_port": 0,
+   "to": 17,
+   "to_port": 0
+  },
+  {
+   "from": 17,
+   "from_port": 0,
+   "to": 18,
+   "to_port": 0
+  },
+  {
+   "from": 18,
+   "from_port": 0,
+   "to": 19,
+   "to_port": 0
+  },
+  {
+   "from": 19,
+   "from_port": 0,
+   "to": 20,
+   "to_port": 0
+  },
+  {
+   "from": 20,
+   "from_port": 0,
+   "to": 21,
+   "to_port": 0
+  },
+  {
+   "from": 21,
+   "from_port": 0,
+   "to": 22,
+   "to_port": 0
+  },
+  {
+   "from": 23,
+   "from_port": 0,
+   "to": 24,
+   "to_port": 0
+  },
+  {
+   "from": 24,
+   "from_port": 0,
+   "to": 25,
+   "to_port": 0
+  },
+  {
+   "from": 25,
+   "from_port": 0,
+   "to": 26,
+   "to_port": 0
+  },
+  {
+   "from": 26,
+   "from_port": 0,
+   "to": 27,
+   "to_port": 0
+  },
+  {
+   "from": 28,
+   "from_port": 0,
+   "to": 29,
+   "to_port": 0
+  },
+  {
+   "from": 29,
+   "from_port": 0,
+   "to": 30,
+   "to_port": 0
+  },
+  {
+   "from": 30,
+   "from_port": 0,
+   "to": 31,
+   "to_port": 0
+  },
+  {
+   "from": 31,
+   "from_port": 0,
+   "to": 32,
+   "to_port": 0
+  },
+  {
+   "from": 33,
+   "from_port": 0,
+   "to": 34,
+   "to_port": 0
+  },
+  {
+   "from": 34,
+   "from_port": 0,
+   "to": 35,
+   "to_port": 0
+  },
+  {
+   "from": 35,
+   "from_port": 0,
+   "to": 36,
+   "to_port": 0
+  },
+  {
+   "from": 36,
+   "from_port": 0,
+   "to": 37,
+   "to_port": 0
+  },
+  {
+   "from": 5,
+   "from_port": 0,
+   "to": 38,
+   "to_port": 0
+  },
+  {
+   "from": 10,
+   "from_port": 0,
+   "to": 38,
+   "to_port": 1
+  },
+  {
+   "from": 15,
+   "from_port": 0,
+   "to": 38,
+   "to_port": 2
+  },
+  {
+   "from": 22,
+   "from_port": 0,
+   "to": 38,
+   "to_port": 3
+  },
+  {
+   "from": 27,
+   "from_port": 0,
+   "to": 38,
+   "to_port": 4
+  },
+  {
+   "from": 32,
+   "from_port": 0,
+   "to": 38,
+   "to_port": 5
+  },
+  {
+   "from": 37,
+   "from_port": 0,
+   "to": 38,
+   "to_port": 6
+  }
+ ]
+}

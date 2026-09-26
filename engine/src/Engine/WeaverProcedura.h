@@ -13,7 +13,7 @@ namespace Engine::WeaverProcedura{
 
 // Recipe files carry this schema version. Increment it when serialized node
 // payloads or port meanings change.
-constexpr uint32_t graphSchemaVersion = 6;
+constexpr uint32_t graphSchemaVersion = 7;
 using NodeId = uint64_t;
 
 struct Link{
@@ -243,13 +243,115 @@ struct PointFromMeshNode{
     uint64_t seed = 1;
 };
 
+// ---- Buildings and roads (schema 7) -------------------------------------------------
+// Middle-level nodes: the model chooses a footprint, floors, walls with openings and a roof
+// type instead of editing triangles. Openings are cut as wall panels, never by booleans.
+
+// One rectangle of a footprint; roofs are built per part, ridge along the long side.
+struct FootprintPart{
+    glm::vec2 center{0.0f};        // XZ
+    glm::vec2 halfSize{1.0f};      // along axis, across axis
+    glm::vec2 axis{1.0f, 0.0f};    // unit XZ direction of halfSize.x
+};
+
+// outline is the exterior wall line in XZ with positive area (x0*z1 - x1*z0 summed), so an
+// edge (dx, dz) faces outward along (dz, -dx). Footprints traced from a curve have no parts.
+struct Footprint{
+    std::vector<glm::vec2> outline;
+    std::vector<FootprintPart> parts;
+    float elevation = 0.0f;        // Y of the ground floor
+    uint32_t floors = 1;
+    float floorHeight = 3.0f;
+};
+
+enum class FootprintShape : uint8_t{ Rectangle, LShape, UShape };
+
+// width along X and depth along Z before rotation. L and U: a back bar along X that is
+// wingWidth deep, with arms wingWidth wide running to +Z (L: left arm, U: both arms).
+struct FootprintNode{
+    FootprintShape shape = FootprintShape::Rectangle;
+    float width = 10.0f;
+    float depth = 8.0f;
+    float wingWidth = 4.0f;
+    glm::vec2 center{0.0f};
+    float rotationDegrees = 0.0f;
+};
+
+// Closed Curve -> Footprint from the XZ of its control points. It has no parts, so only a
+// flat roof fits it.
+struct FootprintFromCurveNode{};
+
+// Footprint -> Footprint: floor count, storey height and the ground floor's height.
+struct FloorStackNode{
+    uint32_t floors = 2;
+    float floorHeight = 3.0f;
+    float elevation = 0.0f;
+};
+
+// Footprint -> Mesh: exterior walls of every floor. Windows are spaced evenly on each edge;
+// the door sits in the middle of outline edge doorEdge (mod edge count) on the ground floor.
+struct WallsNode{
+    float thickness = 0.25f;
+    bool windows = true;
+    float windowWidth = 1.2f;
+    float windowHeight = 1.4f;
+    float sillHeight = 0.9f;
+    float windowSpacing = 3.0f;    // target distance between window centers
+    bool door = true;
+    uint32_t doorEdge = 0;
+    float doorWidth = 1.0f;
+    float doorHeight = 2.2f;
+};
+
+// Footprint -> Mesh: a floor slab at every storey, inset so its edges hide in the walls;
+// optionally the top floor's ceiling (under a pitched roof) and a plinth from Y 0 up to
+// the elevation.
+struct SlabNode{
+    float thickness = 0.2f;
+    float inset = 0.1f;
+    bool topCeiling = false;
+    bool foundation = true;
+};
+
+enum class RoofType : uint8_t{ Flat, Gable, Hip, Shed };
+
+// Footprint -> Mesh on top of the last floor. Gable, hip and shed are built per footprint
+// part; flat covers the outline and fits every footprint.
+struct RoofNode{
+    RoofType type = RoofType::Gable;
+    float pitchDegrees = 35.0f;
+    float overhang = 0.4f;
+    float thickness = 0.2f;        // flat roof slab
+    float parapetHeight = 0.0f;    // flat roof only; 0 = none
+};
+
+// Straight solid stairs from the origin along +Z, rising in +Y.
+struct StairsNode{
+    float width = 1.2f;
+    float totalRise = 3.0f;
+    uint32_t steps = 16;
+    float treadDepth = 0.28f;
+    bool railing = true;
+};
+
+// Curve -> Mesh: road surface on the curve, curbs and sidewalks on both sides.
+struct RoadFromCurveNode{
+    float roadWidth = 6.0f;
+    bool sidewalks = true;
+    float sidewalkWidth = 1.8f;
+    float curbHeight = 0.15f;
+    float sampleSpacing = 1.0f;
+};
+
 using NodePayload = std::variant<std::monostate, CurveNode, RectangleProfileNode, SweepNode,
                                  GridNode, SetGridPointHeightNode, GridToMeshNode,
                                  InteriorBlockoutNode, AddPrimitiveNode, MoveNode, RotateNode,
                                  ScaleNode, ExtrudeNode, BevelNode, MeshToPointNode,
                                  PointFromMeshNode, CircleProfileNode, MergeNode, SetSemanticNode,
                                  SetMaterialNode, SmoothNormalsNode, UVProjectNode, CopyToPointsNode,
-                                 CurveSmoothNode, CatenaryCurveNode, CopyAlongCurveNode>;
+                                 CurveSmoothNode, CatenaryCurveNode, CopyAlongCurveNode,
+                                 FootprintNode, FootprintFromCurveNode, FloorStackNode, WallsNode,
+                                 SlabNode, RoofNode, StairsNode, RoadFromCurveNode>;
 
 struct Node{
     NodeId id = 0;
@@ -336,6 +438,22 @@ bool copyAlongCurve(const MeshData& instance, const Curve& curve, const CopyAlon
 bool makePointPreview(const std::vector<glm::vec3>& points, MeshData& output, std::string& error,
                       std::size_t maxDisplayedPoints = 20'000, float markerSize = 0.06f,
                       std::size_t maxVertices = 1'000'000);
+
+bool makeFootprint(const FootprintNode& settings, Footprint& output, std::string& error);
+bool footprintFromCurve(const Curve& curve, Footprint& output, std::string& error);
+// Ear clipping of a simple polygon with positive area (see Footprint); indices into polygon.
+bool triangulatePolygon(const std::vector<glm::vec2>& polygon, std::vector<uint32_t>& output, std::string& error);
+// Moves every edge of a positive-area polygon inward by distance (negative: outward).
+bool offsetPolygon(const std::vector<glm::vec2>& polygon, float distance, std::vector<glm::vec2>& output,
+                   std::string& error);
+bool makeWalls(const Footprint& footprint, const WallsNode& settings, MeshData& output, std::string& error,
+               std::size_t maxVertices = 2'000'000);
+bool makeSlabs(const Footprint& footprint, const SlabNode& settings, MeshData& output, std::string& error,
+               std::size_t maxVertices = 2'000'000);
+bool makeRoof(const Footprint& footprint, const RoofNode& settings, MeshData& output, std::string& error,
+              std::size_t maxVertices = 2'000'000);
+bool makeStairs(const StairsNode& settings, MeshData& output, std::string& error);
+bool roadFromCurve(const Curve& curve, const RoadFromCurveNode& settings, MeshData& output, std::string& error);
 
 Profile makeRectangleProfile(float width, float height);
 Profile makeCircularProfile(float radius, uint32_t sides = 12);

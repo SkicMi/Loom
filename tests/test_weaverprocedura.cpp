@@ -665,5 +665,203 @@ int main(){
     }catch(const std::exception& failure){ curveJson = failure.what(); }
     report.check("schema 6 Recipe round-trips curve nodes, torus, and filtered Extrude", curveRoundTrip, curveJson);
 
+    // ---- Buildings and roads (schema 7) ----
+    auto polygonArea = [](const std::vector<glm::vec2>& polygon){
+        double sum = 0.0;
+        for(std::size_t i = 0; i < polygon.size(); ++i){
+            const glm::vec2 a = polygon[i], b = polygon[(i + 1) % polygon.size()];
+            sum += double(a.x) * b.y - double(b.x) * a.y;
+        }
+        return sum * 0.5;
+    };
+    auto triangleArea = [](const Proc::MeshData& mesh, std::size_t t){
+        const glm::vec3 a = mesh.vertices[mesh.indices[t * 3]].position, b = mesh.vertices[mesh.indices[t * 3 + 1]].position,
+                        c = mesh.vertices[mesh.indices[t * 3 + 2]].position;
+        return 0.5 * double(glm::length(glm::cross(b - a, c - a)));
+    };
+    auto highestY = [](const Proc::MeshData& mesh){
+        float y = -1e9f;
+        for(const Proc::MeshVertex& v : mesh.vertices) y = std::max(y, v.position.y);
+        return y;
+    };
+    auto semanticCount = [](const Proc::MeshData& mesh, const std::string& name){
+        const uint16_t id = Proc::semanticId(name);
+        return std::count_if(mesh.triangles.begin(), mesh.triangles.end(), [&](const Proc::TriangleAttributes& t){ return t.semantic == id; });
+    };
+
+    Proc::FootprintNode rectSettings; rectSettings.width = 10.0f; rectSettings.depth = 8.0f;
+    Proc::FootprintNode lSettings = rectSettings; lSettings.shape = Proc::FootprintShape::LShape; lSettings.wingWidth = 4.0f;
+    Proc::FootprintNode uSettings = rectSettings; uSettings.shape = Proc::FootprintShape::UShape; uSettings.wingWidth = 3.0f;
+    Proc::Footprint rectPrint, lPrint, uPrint;
+    const bool printsMade = Proc::makeFootprint(rectSettings, rectPrint, error) && Proc::makeFootprint(lSettings, lPrint, error) &&
+                            Proc::makeFootprint(uSettings, uPrint, error);
+    const glm::vec2 frontEdge = printsMade ? rectPrint.outline[1] - rectPrint.outline[0] : glm::vec2(0.0f);
+    report.check("Footprint builds rectangle, L and U outlines with positive area and roof parts",
+                 printsMade && rectPrint.outline.size() == 4 && lPrint.outline.size() == 6 && uPrint.outline.size() == 8 &&
+                 rectPrint.parts.size() == 1 && lPrint.parts.size() == 2 && uPrint.parts.size() == 3 &&
+                 std::abs(polygonArea(rectPrint.outline) - 80.0) < 1e-3 && std::abs(polygonArea(lPrint.outline) - (40.0 + 16.0)) < 1e-3 &&
+                 std::abs(polygonArea(uPrint.outline) - (30.0 + 2 * 15.0)) < 1e-3 &&
+                 frontEdge.y == 0.0f && frontEdge.x < 0.0f,   // edge 0 faces +Z: outward (dz, -dx) = (0, +)
+                 error);
+
+    std::vector<uint32_t> lTriangles;
+    const bool lTriangulated = printsMade && Proc::triangulatePolygon(lPrint.outline, lTriangles, error);
+    double lSum = 0.0;
+    for(std::size_t i = 0; lTriangulated && i < lTriangles.size(); i += 3)
+        lSum += polygonArea({lPrint.outline[lTriangles[i]], lPrint.outline[lTriangles[i + 1]], lPrint.outline[lTriangles[i + 2]]});
+    report.check("Ear clipping covers a concave L footprint with n-2 positive triangles",
+                 lTriangulated && lTriangles.size() == 12 && std::abs(lSum - 56.0) < 1e-3, error);
+
+    std::vector<glm::vec2> insetRect, insetL;
+    const bool insetMade = printsMade && Proc::offsetPolygon(rectPrint.outline, 0.25f, insetRect, error) &&
+                           Proc::offsetPolygon(lPrint.outline, 0.25f, insetL, error);
+    report.check("Offset polygon moves every edge inward, also around the L's concave corner",
+                 insetMade && std::abs(polygonArea(insetRect) - 9.5 * 7.5) < 1e-3 &&
+                 std::abs(polygonArea(insetL) - (9.5 * 3.5 + 3.5 * 4.0)) < 1e-3, error);
+    std::vector<glm::vec2> tooFar;
+    report.check("Offset polygon refuses an inset that swallows the outline",
+                 printsMade && !Proc::offsetPolygon(rectPrint.outline, 4.5f, tooFar, error), "inset 4.5 on an 8 m depth");
+
+    Proc::WallsNode wallSettings;
+    Proc::MeshData walls;
+    const bool wallsMade = printsMade && Proc::makeWalls(rectPrint, wallSettings, walls, error);
+    double exteriorArea = 0.0, windowArea = 0.0, doorArea = 0.0;
+    bool doorOnFront = wallsMade && semanticCount(walls, "door") > 0;
+    for(std::size_t t = 0; wallsMade && t < walls.triangles.size(); ++t){
+        const glm::vec3 normal = walls.vertices[walls.indices[t * 3]].normal;
+        const uint16_t tag = walls.triangles[t].semantic;
+        if(tag == Proc::semanticId("wall_exterior") && std::abs(normal.y) < 0.5f) exteriorArea += triangleArea(walls, t);
+        if(tag == Proc::semanticId("window")) windowArea += triangleArea(walls, t);
+        if(tag == Proc::semanticId("door")){
+            doorArea += triangleArea(walls, t);
+            for(int k = 0; k < 3; ++k) doorOnFront &= walls.vertices[walls.indices[t * 3 + k]].position.z > 3.8f;
+        }
+    }
+    // Panes are two-sided: exterior panels + one side of every pane = whole facade.
+    report.check("Walls cut windows and a front door as panels: facade area is conserved",
+                 wallsMade && std::abs(exteriorArea + windowArea * 0.5 + doorArea * 0.5 - 36.0 * 3.0) < 1e-2 &&
+                 windowArea > 0.0 && std::abs(doorArea * 0.5 - 1.0 * 2.2) < 1e-3 && doorOnFront &&
+                 std::abs(highestY(walls) - 3.0f) < 1e-5f, error + " facade " + std::to_string(exteriorArea));
+
+    // Without the panes the wall is a closed solid: every edge is shared by exactly two
+    // triangles. A T-junction (a vertex in the middle of a neighbour's edge) breaks this.
+    auto closedWithout = [](const Proc::MeshData& mesh, const std::vector<std::string>& skip){
+        std::map<std::tuple<long,long,long,long,long,long>, int> edges;
+        auto key = [](const glm::vec3& p){ return std::make_tuple(std::lround(p.x * 1000.0f), std::lround(p.y * 1000.0f), std::lround(p.z * 1000.0f)); };
+        for(std::size_t t = 0; t < mesh.triangles.size(); ++t){
+            if(std::any_of(skip.begin(), skip.end(), [&](const std::string& name){ return mesh.triangles[t].semantic == Proc::semanticId(name); }))
+                continue;
+            for(int k = 0; k < 3; ++k){
+                auto a = key(mesh.vertices[mesh.indices[t * 3 + k]].position), b = key(mesh.vertices[mesh.indices[t * 3 + (k + 1) % 3]].position);
+                if(b < a) std::swap(a, b);
+                ++edges[std::tuple_cat(a, b)];
+            }
+        }
+        return !edges.empty() && std::all_of(edges.begin(), edges.end(), [](const auto& entry){ return entry.second == 2; });
+    };
+    Proc::Footprint twoFloorL = lPrint; twoFloorL.floors = 2;
+    Proc::MeshData lWalls;
+    const bool lWallsMade = printsMade && Proc::makeWalls(twoFloorL, wallSettings, lWalls, error);
+    report.check("Walls are a closed solid without T-junctions (rectangle and two-floor L with door)",
+                 wallsMade && lWallsMade && closedWithout(walls, {"window", "door"}) && closedWithout(lWalls, {"window", "door"}), error);
+
+    Proc::WallsNode tallWindows = wallSettings; tallWindows.windowHeight = 2.5f;
+    Proc::MeshData rejectedWalls;
+    report.check("Walls explain why windows do not fit in the storey",
+                 !Proc::makeWalls(rectPrint, tallWindows, rejectedWalls, error) && error.find("storey") != std::string::npos, error);
+
+    Proc::Footprint stacked = lPrint; stacked.floors = 3; stacked.floorHeight = 3.2f; stacked.elevation = 0.4f;
+    Proc::RoofNode gable; gable.overhang = 0.5f;
+    Proc::RoofNode hip = gable; hip.type = Proc::RoofType::Hip;
+    Proc::MeshData gableRoof, hipRoof;
+    const bool roofsMade = Proc::makeRoof(stacked, gable, gableRoof, error) && Proc::makeRoof(stacked, hip, hipRoof, error);
+    const float roofBase = 0.4f + 3.0f * 3.2f;
+    const float ridge = roofBase + 0.05f + 2.0f * std::tan(35.0f * 3.14159265f / 180.0f);   // 4 m arm, 5 cm above the walls
+    report.check("Gable and hip roofs sit on the last floor with the ridge at half-span times the pitch",
+                 roofsMade && std::abs(highestY(gableRoof) - ridge) < 1e-3f && std::abs(highestY(hipRoof) - ridge) < 1e-3f &&
+                 semanticCount(gableRoof, "wall_exterior") == 4 && semanticCount(hipRoof, "wall_exterior") == 0 &&
+                 semanticCount(hipRoof, "roof") > 0, error);
+
+    Proc::Footprint traced;
+    const bool tracedMade = Proc::footprintFromCurve({{{0,0,0},{6,0,0},{6,0,4},{3,0,6},{0,0,4}}, true}, traced, error);
+    Proc::RoofNode flat; flat.type = Proc::RoofType::Flat; flat.parapetHeight = 0.8f;
+    Proc::MeshData flatRoof, refusedGable;
+    const bool flatMade = tracedMade && Proc::makeRoof(traced, flat, flatRoof, error);
+    const bool gableRefused = tracedMade && !Proc::makeRoof(traced, gable, refusedGable, error) &&
+                              error.find("flat") != std::string::npos;
+    report.check("Traced footprints take a flat roof with parapet; gable explains it needs rectangles",
+                 flatMade && gableRefused && std::abs(highestY(flatRoof) - (3.0f + 0.2f + 0.8f)) < 1e-4f, error);
+
+    Proc::SlabNode slabs; slabs.topCeiling = true;
+    Proc::MeshData slabMesh;
+    const bool slabsMade = Proc::makeSlabs(stacked, slabs, slabMesh, error);
+    std::size_t upwardFloorTriangles = 0;
+    for(std::size_t t = 0; slabsMade && t < slabMesh.triangles.size(); ++t)
+        if(slabMesh.triangles[t].semantic == Proc::semanticId("floor") && slabMesh.vertices[slabMesh.indices[t * 3]].normal.y > 0.9f)
+            ++upwardFloorTriangles;
+    report.check("Slabs give every floor a slab, a ceiling under the roof and a plinth up to the elevation",
+                 slabsMade && upwardFloorTriangles == 3 * 4 && semanticCount(slabMesh, "foundation") > 0 &&
+                 semanticCount(slabMesh, "ceiling") > 0, error);
+
+    Proc::StairsNode stairSettings;
+    Proc::MeshData stairs;
+    const bool stairsMade = Proc::makeStairs(stairSettings, stairs, error);
+    float stairsDepth = 0.0f;
+    for(std::size_t t = 0; stairsMade && t < stairs.triangles.size(); ++t)
+        if(stairs.triangles[t].semantic == Proc::semanticId("stairs"))
+            for(int k = 0; k < 3; ++k) stairsDepth = std::max(stairsDepth, stairs.vertices[stairs.indices[t * 3 + k]].position.z);
+    report.check("Stairs climb the total rise over steps times tread depth, with railings",
+                 stairsMade && std::abs(stairsDepth - 16 * 0.28f) < 1e-4f && semanticCount(stairs, "railing") > 0 &&
+                 std::abs(highestY(stairs) - (3.0f + 0.9f + 0.03f)) < 0.05f, error);
+
+    Proc::RoadFromCurveNode roadSettings;
+    Proc::MeshData road;
+    const bool roadMade = Proc::roadFromCurve({{{0,0,0},{20,0,0}}, false}, roadSettings, road, error);
+    float roadHalfWidth = 0.0f;
+    for(const Proc::MeshVertex& v : road.vertices) roadHalfWidth = std::max(roadHalfWidth, std::abs(v.position.z));
+    report.check("Road from Curve lays asphalt, curbs and sidewalks across the full width",
+                 roadMade && semanticCount(road, "road") > 0 && semanticCount(road, "curb") > 0 &&
+                 semanticCount(road, "sidewalk") > 0 && std::abs(roadHalfWidth - (3.0f + 1.8f)) < 1e-4f, error);
+
+    Proc::Graph house;
+    const auto printNode = Proc::addNode(house, lSettings);
+    const auto stackNode = Proc::addNode(house, Proc::FloorStackNode{2, 3.0f, 0.3f});
+    const auto wallNode = Proc::addNode(house, wallSettings);
+    const auto slabNode = Proc::addNode(house, Proc::SlabNode{});
+    const auto roofNode = Proc::addNode(house, gable);
+    const auto houseMerge = Proc::addNode(house, Proc::MergeNode{});
+    house.links = {{printNode,0,stackNode,0},{stackNode,0,wallNode,0},{stackNode,0,slabNode,0},{stackNode,0,roofNode,0},
+                   {wallNode,0,houseMerge,0},{slabNode,0,houseMerge,1},{roofNode,0,houseMerge,2}};
+    const Proc::EvaluationResult houseResult = Proc::evaluate(house);
+    const bool everyTriangleTagged = houseResult.succeeded && std::all_of(houseResult.mesh.triangles.begin(), houseResult.mesh.triangles.end(),
+        [](const Proc::TriangleAttributes& t){ return t.semantic != 0 && t.material != 0 && t.createdBy != 0; });
+    report.check("Footprint -> Floor Stack -> Walls/Slab/Roof -> Merge evaluates with every triangle tagged",
+                 houseResult.succeeded && everyTriangleTagged, houseResult.error);
+
+    Proc::Graph wrongPort = house;
+    wrongPort.links.push_back({stackNode, 0, Proc::addNode(wrongPort, Proc::MoveNode{}), 0});
+    report.check("A Footprint cannot feed a Mesh input", !Proc::validate(wrongPort).valid, "footprint -> move accepted");
+
+    Proc::Graph buildingJson = house;
+    Proc::addNode(buildingJson, Proc::StairsNode{2.0f, 2.5f, 12, 0.3f, false});
+    Proc::addNode(buildingJson, Proc::RoadFromCurveNode{8.0f, false, 2.0f, 0.1f, 0.5f});
+    Proc::addNode(buildingJson, Proc::FootprintFromCurveNode{});
+    bool buildingRoundTrip = false;
+    std::string buildingText;
+    try{
+        buildingText = Loom::WeaverProceduraRecipe::serialize({"Building", buildingJson});
+        const auto back = Loom::WeaverProceduraRecipe::parse(buildingText).graph;
+        const auto& print = std::get<Proc::FootprintNode>(back.nodes[0].payload);
+        const auto& roofBack = std::get<Proc::RoofNode>(back.nodes[4].payload);
+        buildingRoundTrip = print.shape == Proc::FootprintShape::LShape && std::abs(print.wingWidth - 4.0f) < 1e-6f &&
+            std::get<Proc::FloorStackNode>(back.nodes[1].payload).floors == 2 &&
+            std::get<Proc::WallsNode>(back.nodes[2].payload).door &&
+            roofBack.type == Proc::RoofType::Gable && std::abs(roofBack.overhang - 0.5f) < 1e-6f &&
+            std::get<Proc::StairsNode>(back.nodes[6].payload).steps == 12 &&
+            !std::get<Proc::RoadFromCurveNode>(back.nodes[7].payload).sidewalks &&
+            std::holds_alternative<Proc::FootprintFromCurveNode>(back.nodes[8].payload) && back.links.size() == house.links.size();
+    }catch(const std::exception& failure){ buildingText = failure.what(); }
+    report.check("schema 7 Recipe round-trips building and road nodes", buildingRoundTrip, buildingText);
+
     return report.result();
 }

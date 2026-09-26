@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace Loom::WeaverProceduraRecipe{
 
@@ -97,6 +98,32 @@ inline Proc::PrimitiveType readPrimitive(const AgentJsonValue& value){
     if(name == "cylinder") return Proc::PrimitiveType::Cylinder;
     if(name == "torus") return Proc::PrimitiveType::Torus;
     throw std::runtime_error("unknown primitive type: " + name);
+}
+
+inline glm::vec2 readVec2(const AgentJsonValue& value, const char* field){
+    if(value.kind != AgentJsonValue::Kind::Array || value.array.size() != 2)
+        throw std::runtime_error(std::string(field) + " must contain two numbers");
+    return {readFloat(value.array[0], field), readFloat(value.array[1], field)};
+}
+
+// Closed name lists for enum parameters; the index is the enum value.
+inline const std::vector<std::string>& footprintShapeNames(){
+    static const std::vector<std::string> names = {"rectangle", "l_shape", "u_shape"};
+    return names;
+}
+inline const std::vector<std::string>& roofTypeNames(){
+    static const std::vector<std::string> names = {"flat", "gable", "hip", "shed"};
+    return names;
+}
+inline std::size_t readName(const AgentJsonValue& value, const std::vector<std::string>& names, const char* field){
+    const std::string name = readString(value, field);
+    const auto found = std::find(names.begin(), names.end(), name);
+    if(found == names.end()) throw std::runtime_error(std::string("unknown ") + field + ": " + name);
+    return std::size_t(found - names.begin());
+}
+inline const std::string& nameOf(const std::vector<std::string>& names, std::size_t index){
+    if(index >= names.size()) throw std::runtime_error("enum value outside its name list");
+    return names[index];
 }
 
 inline void writeFilter(std::ostream& out, const Proc::TriangleFilter& filter){
@@ -221,6 +248,38 @@ inline std::string serialize(const Document& document){
                 << ",\"roll_degrees\":" << along->rollDegrees << ",\"alternate_roll_degrees\":" << along->alternateRollDegrees
                 << ",\"reference_up\":[" << along->referenceUp.x << ',' << along->referenceUp.y << ',' << along->referenceUp.z
                 << "],\"max_copies\":" << along->maxCopies << '}';
+        }else if(const auto* footprint = std::get_if<Proc::FootprintNode>(&node.payload)){
+            out << "{\"type\":\"footprint\",\"shape\":" << agentJsonEscape(nameOf(footprintShapeNames(), std::size_t(footprint->shape)))
+                << ",\"width\":" << footprint->width << ",\"depth\":" << footprint->depth << ",\"wing_width\":" << footprint->wingWidth
+                << ",\"center\":[" << footprint->center.x << ',' << footprint->center.y << "],\"rotation_degrees\":"
+                << footprint->rotationDegrees << '}';
+        }else if(std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload)){
+            out << "{\"type\":\"footprint_from_curve\"}";
+        }else if(const auto* stack = std::get_if<Proc::FloorStackNode>(&node.payload)){
+            out << "{\"type\":\"floor_stack\",\"floors\":" << stack->floors << ",\"floor_height\":" << stack->floorHeight
+                << ",\"elevation\":" << stack->elevation << '}';
+        }else if(const auto* walls = std::get_if<Proc::WallsNode>(&node.payload)){
+            out << "{\"type\":\"walls\",\"thickness\":" << walls->thickness << ",\"windows\":" << (walls->windows ? "true" : "false")
+                << ",\"window_width\":" << walls->windowWidth << ",\"window_height\":" << walls->windowHeight
+                << ",\"sill_height\":" << walls->sillHeight << ",\"window_spacing\":" << walls->windowSpacing
+                << ",\"door\":" << (walls->door ? "true" : "false") << ",\"door_edge\":" << walls->doorEdge
+                << ",\"door_width\":" << walls->doorWidth << ",\"door_height\":" << walls->doorHeight << '}';
+        }else if(const auto* slab = std::get_if<Proc::SlabNode>(&node.payload)){
+            out << "{\"type\":\"slab\",\"thickness\":" << slab->thickness << ",\"inset\":" << slab->inset
+                << ",\"top_ceiling\":" << (slab->topCeiling ? "true" : "false")
+                << ",\"foundation\":" << (slab->foundation ? "true" : "false") << '}';
+        }else if(const auto* roof = std::get_if<Proc::RoofNode>(&node.payload)){
+            out << "{\"type\":\"roof\",\"roof_type\":" << agentJsonEscape(nameOf(roofTypeNames(), std::size_t(roof->type)))
+                << ",\"pitch_degrees\":" << roof->pitchDegrees << ",\"overhang\":" << roof->overhang
+                << ",\"thickness\":" << roof->thickness << ",\"parapet_height\":" << roof->parapetHeight << '}';
+        }else if(const auto* stairs = std::get_if<Proc::StairsNode>(&node.payload)){
+            out << "{\"type\":\"stairs\",\"width\":" << stairs->width << ",\"total_rise\":" << stairs->totalRise
+                << ",\"steps\":" << stairs->steps << ",\"tread_depth\":" << stairs->treadDepth
+                << ",\"railing\":" << (stairs->railing ? "true" : "false") << '}';
+        }else if(const auto* road = std::get_if<Proc::RoadFromCurveNode>(&node.payload)){
+            out << "{\"type\":\"road_from_curve\",\"road_width\":" << road->roadWidth
+                << ",\"sidewalks\":" << (road->sidewalks ? "true" : "false") << ",\"sidewalk_width\":" << road->sidewalkWidth
+                << ",\"curb_height\":" << road->curbHeight << ",\"sample_spacing\":" << road->sampleSpacing << '}';
         }else{
             throw std::runtime_error("recipe contains an unsupported node payload");
         }
@@ -253,8 +312,9 @@ inline Document parse(const std::string& source){
         throw std::runtime_error("recipe name must contain 1 to 120 characters");
     const uint64_t schema = readUnsigned(required(root, "schema_version"), "schema_version");
     if(schema < 3 || schema > Proc::graphSchemaVersion) throw std::runtime_error("unsupported recipe schema version");
-    // Versions 4-6 add node types, per-triangle attributes, and optional fields with
+    // Versions 4-7 add node types, per-triangle attributes, and optional fields with
     // defaults (tube_ratio, extrude use_filter/filter); older payloads keep their meaning.
+    // Version 7 adds the building and road nodes.
     document.graph.schemaVersion = Proc::graphSchemaVersion;
     document.graph.seed = readUnsigned(required(root, "seed"), "seed");
 
@@ -403,6 +463,67 @@ inline Document parse(const std::string& source){
             along.referenceUp = readVec3(required(parameters,"reference_up"),"copy_along_curve.reference_up");
             along.maxCopies = readU32(required(parameters,"max_copies"),"copy_along_curve.max_copies");
             node.payload = along;
+        }else if(type == "footprint"){
+            Proc::FootprintNode footprint;
+            footprint.shape = Proc::FootprintShape(readName(required(parameters,"shape"), footprintShapeNames(), "footprint.shape"));
+            footprint.width = readFloat(required(parameters,"width"),"footprint.width");
+            footprint.depth = readFloat(required(parameters,"depth"),"footprint.depth");
+            footprint.wingWidth = readFloat(required(parameters,"wing_width"),"footprint.wing_width");
+            footprint.center = readVec2(required(parameters,"center"),"footprint.center");
+            footprint.rotationDegrees = readFloat(required(parameters,"rotation_degrees"),"footprint.rotation_degrees");
+            node.payload = footprint;
+        }else if(type == "footprint_from_curve"){
+            node.payload = Proc::FootprintFromCurveNode{};
+        }else if(type == "floor_stack"){
+            Proc::FloorStackNode stack;
+            stack.floors = readU32(required(parameters,"floors"),"floor_stack.floors");
+            stack.floorHeight = readFloat(required(parameters,"floor_height"),"floor_stack.floor_height");
+            stack.elevation = readFloat(required(parameters,"elevation"),"floor_stack.elevation");
+            node.payload = stack;
+        }else if(type == "walls"){
+            Proc::WallsNode walls;
+            walls.thickness = readFloat(required(parameters,"thickness"),"walls.thickness");
+            walls.windows = readBool(required(parameters,"windows"),"walls.windows");
+            walls.windowWidth = readFloat(required(parameters,"window_width"),"walls.window_width");
+            walls.windowHeight = readFloat(required(parameters,"window_height"),"walls.window_height");
+            walls.sillHeight = readFloat(required(parameters,"sill_height"),"walls.sill_height");
+            walls.windowSpacing = readFloat(required(parameters,"window_spacing"),"walls.window_spacing");
+            walls.door = readBool(required(parameters,"door"),"walls.door");
+            walls.doorEdge = readU32(required(parameters,"door_edge"),"walls.door_edge");
+            walls.doorWidth = readFloat(required(parameters,"door_width"),"walls.door_width");
+            walls.doorHeight = readFloat(required(parameters,"door_height"),"walls.door_height");
+            node.payload = walls;
+        }else if(type == "slab"){
+            Proc::SlabNode slab;
+            slab.thickness = readFloat(required(parameters,"thickness"),"slab.thickness");
+            slab.inset = readFloat(required(parameters,"inset"),"slab.inset");
+            slab.topCeiling = readBool(required(parameters,"top_ceiling"),"slab.top_ceiling");
+            slab.foundation = readBool(required(parameters,"foundation"),"slab.foundation");
+            node.payload = slab;
+        }else if(type == "roof"){
+            Proc::RoofNode roof;
+            roof.type = Proc::RoofType(readName(required(parameters,"roof_type"), roofTypeNames(), "roof.roof_type"));
+            roof.pitchDegrees = readFloat(required(parameters,"pitch_degrees"),"roof.pitch_degrees");
+            roof.overhang = readFloat(required(parameters,"overhang"),"roof.overhang");
+            roof.thickness = readFloat(required(parameters,"thickness"),"roof.thickness");
+            roof.parapetHeight = readFloat(required(parameters,"parapet_height"),"roof.parapet_height");
+            node.payload = roof;
+        }else if(type == "stairs"){
+            Proc::StairsNode stairs;
+            stairs.width = readFloat(required(parameters,"width"),"stairs.width");
+            stairs.totalRise = readFloat(required(parameters,"total_rise"),"stairs.total_rise");
+            stairs.steps = readU32(required(parameters,"steps"),"stairs.steps");
+            stairs.treadDepth = readFloat(required(parameters,"tread_depth"),"stairs.tread_depth");
+            stairs.railing = readBool(required(parameters,"railing"),"stairs.railing");
+            node.payload = stairs;
+        }else if(type == "road_from_curve"){
+            Proc::RoadFromCurveNode road;
+            road.roadWidth = readFloat(required(parameters,"road_width"),"road_from_curve.road_width");
+            road.sidewalks = readBool(required(parameters,"sidewalks"),"road_from_curve.sidewalks");
+            road.sidewalkWidth = readFloat(required(parameters,"sidewalk_width"),"road_from_curve.sidewalk_width");
+            road.curbHeight = readFloat(required(parameters,"curb_height"),"road_from_curve.curb_height");
+            road.sampleSpacing = readFloat(required(parameters,"sample_spacing"),"road_from_curve.sample_spacing");
+            node.payload = road;
         }else{
             throw std::runtime_error("unknown recipe node type: " + type);
         }

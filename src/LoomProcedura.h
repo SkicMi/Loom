@@ -77,6 +77,14 @@ inline std::string nodeType(const Engine::WeaverProcedura::Node& node){
     if(std::holds_alternative<Proc::CurveSmoothNode>(node.payload)) return "Curve Smooth";
     if(std::holds_alternative<Proc::CatenaryCurveNode>(node.payload)) return "Catenary curve";
     if(std::holds_alternative<Proc::CopyAlongCurveNode>(node.payload)) return "Copy along Curve";
+    if(std::holds_alternative<Proc::FootprintNode>(node.payload)) return "Footprint";
+    if(std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload)) return "Footprint from Curve";
+    if(std::holds_alternative<Proc::FloorStackNode>(node.payload)) return "Floor Stack";
+    if(std::holds_alternative<Proc::WallsNode>(node.payload)) return "Walls";
+    if(std::holds_alternative<Proc::SlabNode>(node.payload)) return "Slab";
+    if(std::holds_alternative<Proc::RoofNode>(node.payload)) return "Roof";
+    if(std::holds_alternative<Proc::StairsNode>(node.payload)) return "Stairs";
+    if(std::holds_alternative<Proc::RoadFromCurveNode>(node.payload)) return "Road from Curve";
     return "Unknown node";
 }
 
@@ -143,6 +151,27 @@ inline std::string nodeSummary(const Engine::WeaverProcedura::Node& node){
     if(const auto* along = std::get_if<Proc::CopyAlongCurveNode>(&node.payload))
         return "every " + formatSize(along->spacing) + " m" +
                (along->alternateRollDegrees != 0.0f ? " / alternate " + formatSize(along->alternateRollDegrees) + "°" : "");
+    if(const auto* footprint = std::get_if<Proc::FootprintNode>(&node.payload)){
+        static const char* shapes[] = {"rectangle", "L", "U"};
+        return std::string(shapes[std::min(int(footprint->shape), 2)]) + " / " + formatSize(footprint->width) + " x " +
+               formatSize(footprint->depth) + " m";
+    }
+    if(std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload)) return "closed curve outline / flat roof only";
+    if(const auto* stack = std::get_if<Proc::FloorStackNode>(&node.payload))
+        return std::to_string(stack->floors) + " floors x " + formatSize(stack->floorHeight) + " m";
+    if(const auto* walls = std::get_if<Proc::WallsNode>(&node.payload))
+        return formatSize(walls->thickness) + " m" + (walls->windows ? " / windows" : "") + (walls->door ? " / door" : "");
+    if(const auto* slab = std::get_if<Proc::SlabNode>(&node.payload))
+        return formatSize(slab->thickness) + " m slabs" + (slab->foundation ? " / plinth" : "");
+    if(const auto* roof = std::get_if<Proc::RoofNode>(&node.payload)){
+        static const char* types[] = {"flat", "gable", "hip", "shed"};
+        return std::string(types[std::min(int(roof->type), 3)]) +
+               (roof->type == Proc::RoofType::Flat ? "" : " / " + formatSize(roof->pitchDegrees) + "°");
+    }
+    if(const auto* stairs = std::get_if<Proc::StairsNode>(&node.payload))
+        return std::to_string(stairs->steps) + " steps / " + formatSize(stairs->totalRise) + " m rise";
+    if(const auto* road = std::get_if<Proc::RoadFromCurveNode>(&node.payload))
+        return formatSize(road->roadWidth) + " m road" + (road->sidewalks ? " / sidewalks" : "");
     return {};
 }
 
@@ -164,7 +193,13 @@ inline std::string inputName(const Engine::WeaverProcedura::Node& node, uint32_t
         return port == 0 ? "Instance mesh" : "Points input";
     if(std::holds_alternative<Engine::WeaverProcedura::CopyAlongCurveNode>(node.payload))
         return port == 0 ? "Instance mesh" : "Curve input";
-    if(std::holds_alternative<Engine::WeaverProcedura::CurveSmoothNode>(node.payload)) return "Curve input";
+    if(std::holds_alternative<Engine::WeaverProcedura::CurveSmoothNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::FootprintFromCurveNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::RoadFromCurveNode>(node.payload)) return "Curve input";
+    if(std::holds_alternative<Engine::WeaverProcedura::FloorStackNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::WallsNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::SlabNode>(node.payload) ||
+       std::holds_alternative<Engine::WeaverProcedura::RoofNode>(node.payload)) return "Footprint input";
     if(std::holds_alternative<Engine::WeaverProcedura::SetGridPointHeightNode>(node.payload) ||
        std::holds_alternative<Engine::WeaverProcedura::GridToMeshNode>(node.payload))
         return "Point Grid input";
@@ -232,7 +267,12 @@ inline bool isGeometryOutputNode(const Engine::WeaverProcedura::Node& node){
            std::holds_alternative<Proc::SmoothNormalsNode>(node.payload) ||
            std::holds_alternative<Proc::UVProjectNode>(node.payload) ||
            std::holds_alternative<Proc::CopyToPointsNode>(node.payload) ||
-           std::holds_alternative<Proc::CopyAlongCurveNode>(node.payload);
+           std::holds_alternative<Proc::CopyAlongCurveNode>(node.payload) ||
+           std::holds_alternative<Proc::WallsNode>(node.payload) ||
+           std::holds_alternative<Proc::SlabNode>(node.payload) ||
+           std::holds_alternative<Proc::RoofNode>(node.payload) ||
+           std::holds_alternative<Proc::StairsNode>(node.payload) ||
+           std::holds_alternative<Proc::RoadFromCurveNode>(node.payload);
 }
 
 inline Engine::WeaverProcedura::Node* terminalGeometryNode(WeaverProceduraPanelState& state){
@@ -329,6 +369,30 @@ inline bool appendMeshNode(WeaverProceduraPanelState& state, Engine::WeaverProce
     state.expandedNodes[id] = true;
     markGraphChanged(state);
     state.recipeStatus.clear();
+    return true;
+}
+
+// Adds a node without chaining it to the mesh flow. Nodes that read a footprint are wired
+// to the newest footprint producer; the rest are joined with CONNECT or a Merge.
+inline bool appendLooseNode(WeaverProceduraPanelState& state, Engine::WeaverProcedura::NodePayload payload){
+    namespace Proc = Engine::WeaverProcedura;
+    if(state.graph.nodes.size() >= 256){ state.recipeStatus = "Recipe has reached its node limit."; return false; }
+    const bool readsFootprint = std::holds_alternative<Proc::FloorStackNode>(payload) || std::holds_alternative<Proc::WallsNode>(payload) ||
+                                std::holds_alternative<Proc::SlabNode>(payload) || std::holds_alternative<Proc::RoofNode>(payload);
+    const Proc::Node* source = nullptr;
+    for(const Proc::Node& node : state.graph.nodes)
+        if(std::holds_alternative<Proc::FootprintNode>(node.payload) || std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload) ||
+           std::holds_alternative<Proc::FloorStackNode>(node.payload)) source = &node;
+    if(readsFootprint && !source){ state.recipeStatus = "Add a Footprint first."; return false; }
+    const float x = source ? source->editorX + 240.0f : 24.0f;
+    const float y = 60.0f + 70.0f * float(state.graph.nodes.size() % 8);
+    const Proc::NodeId sourceId = source ? source->id : 0;
+    const Proc::NodeId id = Proc::addNode(state.graph, std::move(payload), x, y);
+    if(!id){ state.recipeStatus = "Could not add the node."; return false; }
+    if(readsFootprint) state.graph.links.push_back({sourceId, 0, id, 0});
+    state.expandedNodes[id] = true;
+    markGraphChanged(state);
+    state.recipeStatus = readsFootprint ? std::string() : "Added. Join it to the output with CONNECT or a Merge.";
     return true;
 }
 
@@ -533,6 +597,40 @@ inline bool createChainExample(WeaverProceduraPanelState& state){
     const Proc::NodeId painted = Proc::addNode(graph, paint, 760.0f, 170.0f);
     graph.links = {{linkMesh,0,chain,0},{path,0,chain,1},{chain,0,tagged,0},{tagged,0,painted,0}};
     return installExample(state, std::move(graph), "Hanging Chain");
+}
+
+// L-shaped two-storey house: Footprint -> Floor Stack -> Walls, Slab, Roof -> Merge.
+inline bool createHouseExample(WeaverProceduraPanelState& state){
+    namespace Proc = Engine::WeaverProcedura;
+    Proc::Graph graph;
+    Proc::FootprintNode print;
+    print.shape = Proc::FootprintShape::LShape;
+    print.width = 12.0f; print.depth = 10.0f; print.wingWidth = 5.0f;
+    const Proc::NodeId footprint = Proc::addNode(graph, print, 24.0f, 170.0f);
+    const Proc::NodeId stack = Proc::addNode(graph, Proc::FloorStackNode{2, 3.0f, 0.4f}, 264.0f, 170.0f);
+    const Proc::NodeId walls = Proc::addNode(graph, Proc::WallsNode{}, 504.0f, 60.0f);
+    Proc::SlabNode slab; slab.topCeiling = true;
+    const Proc::NodeId slabs = Proc::addNode(graph, slab, 504.0f, 170.0f);
+    const Proc::NodeId roof = Proc::addNode(graph, Proc::RoofNode{}, 504.0f, 280.0f);
+    const Proc::NodeId merge = Proc::addNode(graph, Proc::MergeNode{}, 744.0f, 170.0f);
+    Proc::SetMaterialNode brick; brick.material = "brick"; brick.filter.semantic = "wall_exterior";
+    const Proc::NodeId painted = Proc::addNode(graph, brick, 984.0f, 170.0f);
+    graph.links = {{footprint,0,stack,0},{stack,0,walls,0},{stack,0,slabs,0},{stack,0,roof,0},
+                   {walls,0,merge,0},{slabs,0,merge,1},{roof,0,merge,2},{merge,0,painted,0}};
+    return installExample(state, std::move(graph), "L-shaped House");
+}
+
+// A curved street with curbs and sidewalks.
+inline bool createStreetExample(WeaverProceduraPanelState& state){
+    namespace Proc = Engine::WeaverProcedura;
+    Proc::Graph graph;
+    Proc::CurveNode path;
+    path.curve.points = {{-20.0f, 0.0f, -6.0f}, {-6.0f, 0.0f, 0.0f}, {6.0f, 0.0f, 0.0f}, {20.0f, 0.0f, 8.0f}};
+    const Proc::NodeId curve = Proc::addNode(graph, std::move(path), 24.0f, 170.0f);
+    const Proc::NodeId smooth = Proc::addNode(graph, Proc::CurveSmoothNode{8}, 264.0f, 170.0f);
+    const Proc::NodeId road = Proc::addNode(graph, Proc::RoadFromCurveNode{}, 504.0f, 170.0f);
+    graph.links = {{curve,0,smooth,0},{smooth,0,road,0}};
+    return installExample(state, std::move(graph), "Street");
 }
 
 inline bool createGridExample(WeaverProceduraPanelState& state){
@@ -757,6 +855,15 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
         const int hanging = ui.buttonRow({"Create rope","Create chain"});
         if(hanging == 0) Panel::createRopeExample(state);
         else if(hanging == 1) Panel::createChainExample(state);
+        ui.caption("BUILDINGS AND STREETS");
+        const int built = ui.buttonRow({"Create house","Create street"});
+        if(built == 0) Panel::createHouseExample(state);
+        else if(built == 1) Panel::createStreetExample(state);
+        if(ui.button("Create stairs")) Panel::installExample(state, [] {
+            Engine::WeaverProcedura::Graph graph;
+            Engine::WeaverProcedura::addNode(graph, Engine::WeaverProcedura::StairsNode{}, 24.0f, 170.0f);
+            return graph;
+        }(), "Stairs");
         ui.separator();
         ui.caption("START A MESH RECIPE");
         ui.hint("Build one primitive, then chain mesh operations onto it.");
@@ -784,6 +891,16 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
         else if(lookOperation == 1) Panel::appendMeshNode(state,Proc::SetMaterialNode{});
         else if(lookOperation == 2) Panel::appendMeshNode(state,Proc::SmoothNormalsNode{});
         else if(lookOperation == 3) Panel::appendMeshNode(state,Proc::UVProjectNode{});
+        ui.caption("ADD BUILDING PARTS");
+        const int buildingPart = ui.buttonRow({"Footprint","Floors","Walls"});
+        if(buildingPart == 0) Panel::appendLooseNode(state,Proc::FootprintNode{});
+        else if(buildingPart == 1) Panel::appendLooseNode(state,Proc::FloorStackNode{});
+        else if(buildingPart == 2) Panel::appendLooseNode(state,Proc::WallsNode{});
+        const int buildingTop = ui.buttonRow({"Slab","Roof","Stairs","Merge"});
+        if(buildingTop == 0) Panel::appendLooseNode(state,Proc::SlabNode{});
+        else if(buildingTop == 1) Panel::appendLooseNode(state,Proc::RoofNode{});
+        else if(buildingTop == 2) Panel::appendLooseNode(state,Proc::StairsNode{});
+        else if(buildingTop == 3) Panel::appendLooseNode(state,Proc::MergeNode{});
         if(!state.recipeStatus.empty()) ui.status(state.recipeStatus,{0.95f,0.70f,0.26f,1.0f});
 
         bool hasGridOutput = false;
@@ -1026,6 +1143,72 @@ inline void drawWeaverProceduraPanel(Treadle::Ui& ui, WeaverProceduraPanelState&
                 changed |= ui.slider("Start offset",&along->startOffset,0.0f,10.0f,"m");
                 changed |= ui.slider("Roll",&along->rollDegrees,-180.0f,180.0f,"°");
                 changed |= ui.slider("Alternate roll",&along->alternateRollDegrees,-180.0f,180.0f,"°");
+            }else if(auto* footprint = std::get_if<Proc::FootprintNode>(&node.payload)){
+                int shape = int(footprint->shape);
+                if(ui.choice("Shape",{"Rectangle","L shape","U shape"},&shape) && shape >= 0 && shape < 3){
+                    footprint->shape = Proc::FootprintShape(shape); changed = true;
+                }
+                changed |= ui.slider("Width (X)",&footprint->width,1.0f,60.0f,"m");
+                changed |= ui.slider("Depth (Z)",&footprint->depth,1.0f,60.0f,"m");
+                if(footprint->shape != Proc::FootprintShape::Rectangle)
+                    changed |= ui.slider("Wing width",&footprint->wingWidth,1.0f,30.0f,"m");
+                changed |= ui.slider("Center X",&footprint->center.x,-50.0f,50.0f,"m");
+                changed |= ui.slider("Center Z",&footprint->center.y,-50.0f,50.0f,"m");
+                changed |= ui.slider("Rotation",&footprint->rotationDegrees,-180.0f,180.0f,"°");
+            }else if(std::holds_alternative<Proc::FootprintFromCurveNode>(node.payload)){
+                ui.hint("Traces a closed Curve's XZ outline. Only a flat roof fits it.");
+            }else if(auto* stack = std::get_if<Proc::FloorStackNode>(&node.payload)){
+                float floors = float(stack->floors);
+                if(ui.slider("Floors",&floors,1.0f,30.0f)){ stack->floors = uint32_t(std::lround(floors)); changed = true; }
+                changed |= ui.slider("Floor height",&stack->floorHeight,2.0f,6.0f,"m");
+                changed |= ui.slider("Ground floor elevation",&stack->elevation,0.0f,3.0f,"m");
+            }else if(auto* walls = std::get_if<Proc::WallsNode>(&node.payload)){
+                changed |= ui.slider("Thickness",&walls->thickness,0.05f,0.8f,"m");
+                changed |= ui.checkbox("Windows",&walls->windows);
+                if(walls->windows){
+                    changed |= ui.slider("Window width",&walls->windowWidth,0.3f,4.0f,"m");
+                    changed |= ui.slider("Window height",&walls->windowHeight,0.3f,4.0f,"m");
+                    changed |= ui.slider("Sill height",&walls->sillHeight,0.0f,3.0f,"m");
+                    changed |= ui.slider("Window spacing",&walls->windowSpacing,walls->windowWidth + 0.2f,12.0f,"m");
+                }
+                changed |= ui.checkbox("Door",&walls->door);
+                if(walls->door){
+                    float edge = float(walls->doorEdge);
+                    if(ui.slider("Door on edge",&edge,0.0f,11.0f)){ walls->doorEdge = uint32_t(std::lround(edge)); changed = true; }
+                    changed |= ui.slider("Door width",&walls->doorWidth,0.5f,3.0f,"m");
+                    changed |= ui.slider("Door height",&walls->doorHeight,1.5f,4.0f,"m");
+                }
+            }else if(auto* slab = std::get_if<Proc::SlabNode>(&node.payload)){
+                changed |= ui.slider("Thickness",&slab->thickness,0.02f,0.6f,"m");
+                changed |= ui.slider("Inset",&slab->inset,0.0f,1.0f,"m");
+                changed |= ui.checkbox("Ceiling under the roof",&slab->topCeiling);
+                changed |= ui.checkbox("Foundation plinth",&slab->foundation);
+            }else if(auto* roof = std::get_if<Proc::RoofNode>(&node.payload)){
+                int type = int(roof->type);
+                if(ui.choice("Roof type",{"Flat","Gable","Hip","Shed"},&type) && type >= 0 && type < 4){
+                    roof->type = Proc::RoofType(type); changed = true;
+                }
+                if(roof->type != Proc::RoofType::Flat) changed |= ui.slider("Pitch",&roof->pitchDegrees,2.0f,70.0f,"°");
+                changed |= ui.slider("Overhang",&roof->overhang,0.0f,2.0f,"m");
+                if(roof->type == Proc::RoofType::Flat){
+                    changed |= ui.slider("Slab thickness",&roof->thickness,0.05f,1.0f,"m");
+                    changed |= ui.slider("Parapet height",&roof->parapetHeight,0.0f,2.0f,"m");
+                }
+            }else if(auto* stairs = std::get_if<Proc::StairsNode>(&node.payload)){
+                changed |= ui.slider("Width",&stairs->width,0.5f,5.0f,"m");
+                changed |= ui.slider("Total rise",&stairs->totalRise,0.2f,10.0f,"m");
+                float steps = float(stairs->steps);
+                if(ui.slider("Steps",&steps,2.0f,60.0f)){ stairs->steps = uint32_t(std::lround(steps)); changed = true; }
+                changed |= ui.slider("Tread depth",&stairs->treadDepth,0.15f,1.0f,"m");
+                changed |= ui.checkbox("Railing",&stairs->railing);
+            }else if(auto* road = std::get_if<Proc::RoadFromCurveNode>(&node.payload)){
+                changed |= ui.slider("Road width",&road->roadWidth,1.0f,30.0f,"m");
+                changed |= ui.checkbox("Sidewalks",&road->sidewalks);
+                if(road->sidewalks){
+                    changed |= ui.slider("Sidewalk width",&road->sidewalkWidth,0.5f,6.0f,"m");
+                    changed |= ui.slider("Curb height",&road->curbHeight,0.0f,0.4f,"m");
+                }
+                changed |= ui.slider("Sample spacing",&road->sampleSpacing,0.1f,5.0f,"m");
             }
         }
         if(changed){

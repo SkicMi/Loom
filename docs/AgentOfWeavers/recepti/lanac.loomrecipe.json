@@ -1,0 +1,620 @@
+{
+ "format": "loom.weaverprocedura.recipe",
+ "schema_version": 6,
+ "name": "Chain Between Posts",
+ "seed": 1,
+ "nodes": [
+  {
+   "id": 1,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "cylinder",
+    "size": [
+     0.25,
+     3.2,
+     0.25
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 2,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     -3.1,
+     1.6,
+     0
+    ]
+   }
+  },
+  {
+   "id": 3,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "prop",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 4,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "wood_beam",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 5,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 6,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "cylinder",
+    "size": [
+     0.25,
+     3.2,
+     0.25
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 7,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     3.1,
+     1.6,
+     0
+    ]
+   }
+  },
+  {
+   "id": 8,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "prop",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 9,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "wood_beam",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 10,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 11,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "catenary_curve",
+    "start": [
+     -3,
+     3,
+     0
+    ],
+    "end": [
+     3,
+     3,
+     0
+    ],
+    "sag": 1.0,
+    "samples": 96
+   }
+  },
+  {
+   "id": 12,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "torus",
+    "size": [
+     0.16,
+     0.16,
+     0.1
+    ],
+    "tube_ratio": 0.22
+   }
+  },
+  {
+   "id": 13,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "copy_along_curve",
+    "spacing": 0.085,
+    "start_offset": 0,
+    "roll_degrees": 0,
+    "alternate_roll_degrees": 90,
+    "reference_up": [
+     0,
+     1,
+     0
+    ],
+    "max_copies": 10000
+   }
+  },
+  {
+   "id": 14,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "chain_link",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 15,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "steel_chain",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 16,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "catenary_curve",
+    "start": [
+     -3,
+     2.2,
+     0
+    ],
+    "end": [
+     3,
+     2.2,
+     0
+    ],
+    "sag": 0.6,
+    "samples": 48
+   }
+  },
+  {
+   "id": 17,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "circle_profile",
+    "radius": 0.03,
+    "sides": 10
+   }
+  },
+  {
+   "id": 18,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "sweep",
+    "sample_spacing": 0.1,
+    "reference_up": [
+     0,
+     1,
+     0
+    ],
+    "cap_ends": true,
+    "max_vertices": 1000000
+   }
+  },
+  {
+   "id": 19,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "rope",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 20,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "rope_fiber",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 21,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "add_primitive",
+    "primitive": "plane",
+    "size": [
+     10,
+     1,
+     4
+    ],
+    "tube_ratio": 0.25
+   }
+  },
+  {
+   "id": 22,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "move",
+    "offset": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  {
+   "id": 23,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_semantic",
+    "semantic": "terrain",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 24,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "set_material",
+    "material": "ground_dirt",
+    "filter": {
+     "semantic": "",
+     "use_direction": false,
+     "direction": [
+      0,
+      1,
+      0
+     ],
+     "max_angle_degrees": 30
+    }
+   }
+  },
+  {
+   "id": 25,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "uv_project",
+    "tile_size": 1.0
+   }
+  },
+  {
+   "id": 26,
+   "position": [
+    0.0,
+    0.0
+   ],
+   "parameters": {
+    "type": "merge"
+   }
+  }
+ ],
+ "links": [
+  {
+   "from": 1,
+   "from_port": 0,
+   "to": 2,
+   "to_port": 0
+  },
+  {
+   "from": 2,
+   "from_port": 0,
+   "to": 3,
+   "to_port": 0
+  },
+  {
+   "from": 3,
+   "from_port": 0,
+   "to": 4,
+   "to_port": 0
+  },
+  {
+   "from": 4,
+   "from_port": 0,
+   "to": 5,
+   "to_port": 0
+  },
+  {
+   "from": 6,
+   "from_port": 0,
+   "to": 7,
+   "to_port": 0
+  },
+  {
+   "from": 7,
+   "from_port": 0,
+   "to": 8,
+   "to_port": 0
+  },
+  {
+   "from": 8,
+   "from_port": 0,
+   "to": 9,
+   "to_port": 0
+  },
+  {
+   "from": 9,
+   "from_port": 0,
+   "to": 10,
+   "to_port": 0
+  },
+  {
+   "from": 12,
+   "from_port": 0,
+   "to": 13,
+   "to_port": 0
+  },
+  {
+   "from": 11,
+   "from_port": 0,
+   "to": 13,
+   "to_port": 1
+  },
+  {
+   "from": 13,
+   "from_port": 0,
+   "to": 14,
+   "to_port": 0
+  },
+  {
+   "from": 14,
+   "from_port": 0,
+   "to": 15,
+   "to_port": 0
+  },
+  {
+   "from": 16,
+   "from_port": 0,
+   "to": 18,
+   "to_port": 0
+  },
+  {
+   "from": 17,
+   "from_port": 0,
+   "to": 18,
+   "to_port": 1
+  },
+  {
+   "from": 18,
+   "from_port": 0,
+   "to": 19,
+   "to_port": 0
+  },
+  {
+   "from": 19,
+   "from_port": 0,
+   "to": 20,
+   "to_port": 0
+  },
+  {
+   "from": 21,
+   "from_port": 0,
+   "to": 22,
+   "to_port": 0
+  },
+  {
+   "from": 22,
+   "from_port": 0,
+   "to": 23,
+   "to_port": 0
+  },
+  {
+   "from": 23,
+   "from_port": 0,
+   "to": 24,
+   "to_port": 0
+  },
+  {
+   "from": 24,
+   "from_port": 0,
+   "to": 25,
+   "to_port": 0
+  },
+  {
+   "from": 5,
+   "from_port": 0,
+   "to": 26,
+   "to_port": 0
+  },
+  {
+   "from": 10,
+   "from_port": 0,
+   "to": 26,
+   "to_port": 1
+  },
+  {
+   "from": 15,
+   "from_port": 0,
+   "to": 26,
+   "to_port": 2
+  },
+  {
+   "from": 20,
+   "from_port": 0,
+   "to": 26,
+   "to_port": 3
+  },
+  {
+   "from": 25,
+   "from_port": 0,
+   "to": 26,
+   "to_port": 4
+  }
+ ]
+}
