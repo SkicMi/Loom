@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (376 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (377 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -417,4 +417,10 @@ Iz `benchmarks/mjerenja.jsonl` (376 zapisa). Slozi se iznova s `tools/bench/mjer
 | 2026-09-26 05:03 |  | Kimodo servis (modeli u memoriji): 4 varijante, 200 koraka, 120 kadrova | mjera=zidni sat, izravno_s=44, servis_prvi_s=49.90, servis_sljedeci_s=20.30, iz_editora_s=19.9 / 17.9, isti_izlaz=0.00 m razlike uz isto sjeme, ram_gb=14.90, odluka=zadrzano: editor generira kroz kimodo_service.py, radnik se gasi nakon 20 min bez posla |
 | 2026-09-26 05:03 |  | foot IK: lijepljenje stopala u skoku (stopalo > 5 cm iznad poda bez IK-a, < 2 cm s IK-om) | mjera=glue probe na Mascot_Manny, prije=6 od 8 commitanih varijanti skoka, najvise 13 kadrova do 10 cm (motion_1790369311054_00); tvoj take motion_1790382707996_01: 27 kadrova, poslije=0 na svih 8 i na tvom takeu, klizanje_hod_prije_poslije=5.7 -> 4.0 cm/s, odluka=zadrzano: zakljucava se samo vodoravno, prag dodira 2 % visine, pustanje kroz 3 kadra |
 | 2026-09-26 13:22 | motion_1790419879047_03 | Replace dijela takea (backflip, kadrovi 137-232 od 266) s 'Person points a gun while crouched' | mjera=kimodo_range + posed_joints na SOMA77, 4 varijante, jedan_opis_kukovi_m=0.99 (lik stoji), tri_opisa_kukovi_m=0.42-0.61 (cucne), izvan_raspona_m=0.000, rub_kraj_fiksno_m=0.303-0.387, rub_kraj_prilagodjeno_m=0.101-0.105, izvor_najveci_korak_uz_rub_m=0.092, napomena=sirovo generirano rekonstruirano iz cistog dijela raspona (cucanj miruje ~1 mm/kadar), odluka=zadrzano: opis samo na raspon, izvorni opisi prije/poslije; pretapanje ruba po razmaku (~3 cm/kadar, do trecine raspona) |
+
+## rig
+
+| datum | snimka | opis | ostalo |
+|---|---|---|---|
+| 2026-09-26 19:02 | mascot-03 -> mascot-manny (UE5 Manny profil) | hand rig (tools/autorig/hand_rig.py): +X savija prst u dlan, jedna os savijanja po prstu | mjera=hand_rig.py report: 15 st savijanja, pomak vrha okomito na prst (dlan: cos prema dlanu, bocno: udio u stranu), prije_dlan=-1.000 (svi prsti savijaju se prema nadlanici), prije_bocno=palac 0.977, ostali do 0.076, poslije_dlan=+0.999 (svih 10 prstiju), poslije_bocno=najvise 0.042 (palac), loom_drska_16mm=prsti bez prodora, zadnji zglobovi najvise 2.1 cm od drske (test_hand_rig), odluka=zadrzano: Manny auto-rig dobiva hand rig; desni klik HumanoidMascott koristi mascot-manny |
 

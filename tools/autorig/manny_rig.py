@@ -210,6 +210,12 @@ def convert(source: Path, output: Path, template_path: Path) -> None:
         bone.parent = bones[item["parent"]] if item["parent"] else None
         if item["name"] not in anchors and item["name"].startswith(("ik_", "interaction", "center_of_mass")):
             bone.use_deform = False
+    # Hand rig: tails along the fingers and one flexion axis per finger, +X curls into the palm
+    # (hand_rig.py). Positions and weights stay as UniRig predicted them
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from hand_rig import orient_hands
+    oriented = orient_hands(arm)
+    print(f"Manny Auto Rig: hand rig oriented {oriented}", flush=True)
     bpy.ops.object.mode_set(mode="OBJECT")
     if {bone.name for bone in arm.data.bones} != set(template):
         raise ValueError("Manny skeleton conversion lost bones")

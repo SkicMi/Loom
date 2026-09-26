@@ -147,3 +147,74 @@ class DeformationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandRigTests(unittest.TestCase):
+    """hand_rig.py in Blender: +X bends every finger into the palm and keeps it in its own plane."""
+
+    def build(self, pose: str):
+        """Pelvis + one arm per side with five fingers; UniRig-like random rolls on every bone."""
+        import bpy
+        import random
+        from mathutils import Vector, Matrix
+        from math import radians
+        for obj in list(bpy.data.objects):
+            bpy.data.objects.remove(obj, do_unlink=True)
+        arm = bpy.data.objects.new("rig", bpy.data.armatures.new("rig"))
+        bpy.context.collection.objects.link(arm)
+        bpy.context.view_layer.objects.active = arm
+        arm.select_set(True)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bones = arm.data.edit_bones
+        rng = random.Random(7)
+        pelvis = bones.new("pelvis")
+        pelvis.head, pelvis.tail = (0, 0, 1.0), (0, 0, 1.1)
+        for side, sign in (("l", 1.0), ("r", -1.0)):
+            # T-pose: arm along +-X, palm down. A-pose: arm rotated 45 degrees down, palm toward the thigh
+            tilt = Matrix.Rotation(radians(-45.0 * sign), 3, "Y") if pose == "A" else Matrix.Identity(3)
+            shoulder = Vector((0.2 * sign, 0, 1.45))
+            def at(x, y, z=0.0):
+                return shoulder + tilt @ Vector((x * sign, y, z))
+            hand = bones.new(f"hand_{side}")
+            hand.head, hand.tail = at(0.55, 0), at(0.62, 0)
+            hand.parent = pelvis
+            spread = {"index": 0.03, "middle": 0.01, "ring": -0.01, "pinky": -0.03}
+            for finger, y in spread.items():
+                meta = bones.new(f"{finger}_metacarpal_{side}")
+                meta.head, meta.tail = at(0.56, y * 0.6), at(0.63, y)
+                meta.parent = hand
+                parent = meta
+                for i in (1, 2, 3):
+                    bone = bones.new(f"{finger}_0{i}_{side}")
+                    bone.head, bone.tail = at(0.63 + 0.03 * (i - 1), y), at(0.66 + 0.03 * (i - 1), y)
+                    bone.parent = parent
+                    parent = bone
+            parent = hand
+            for i in (1, 2, 3):
+                bone = bones.new(f"thumb_0{i}_{side}")
+                bone.head, bone.tail = at(0.57 + 0.025 * i, 0.04 + 0.01 * i, -0.01), at(0.595 + 0.025 * i, 0.05 + 0.01 * i, -0.01)
+                bone.parent = parent
+                parent = bone
+        for bone in bones:
+            bone.roll = radians(rng.uniform(-180.0, 180.0))
+        return arm
+
+    def check(self, pose: str) -> None:
+        import bpy
+        import hand_rig
+        arm = self.build(pose)
+        bpy.ops.object.mode_set(mode="EDIT")
+        report = hand_rig.orient_hands(arm)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        self.assertEqual(report, {"l": 19, "r": 19})      #4 prsta x (metakarpal + 3) + palac 3
+        curls = hand_rig.curl_report(arm)
+        self.assertEqual(len(curls), 10)
+        for name, value in curls.items():
+            self.assertGreater(value["palm"], 0.99, f"{pose}-pose {name} does not curl into the palm: {value}")
+            self.assertLess(value["lateral"], 0.05, f"{pose}-pose {name} bends sideways: {value}")
+
+    def test_t_pose_fingers_curl_into_palm(self) -> None:
+        self.check("T")
+
+    def test_a_pose_fingers_curl_into_palm(self) -> None:
+        self.check("A")

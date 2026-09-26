@@ -4,8 +4,10 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_autorig import DeformationTests
+from test_autorig import DeformationTests, HandRigTests
 
-result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(DeformationTests))
+suite = unittest.TestSuite([unittest.defaultTestLoader.loadTestsFromTestCase(DeformationTests),
+                           unittest.defaultTestLoader.loadTestsFromTestCase(HandRigTests)])
+result = unittest.TextTestRunner(verbosity=2).run(suite)
 if not result.wasSuccessful():
     raise RuntimeError("Blender deformation tests failed")

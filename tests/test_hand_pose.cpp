@@ -74,6 +74,30 @@ int main(){
     report.check("normala dlana -y (iz savijenog srednjeg prsta)", glm::length(hand.palmNormal - glm::vec3(0, -1, 0)) < 1e-3f,
                  fmt("%.2f %.2f %.2f", hand.palmNormal.x, hand.palmNormal.y, hand.palmNormal.z));
 
+    //Ravni prsti (Manny u T-pozi): strana dlana iz tijela - dlan gleda prema zdjelici lika
+    for(const float pelvisY : {-0.5f, 0.5f}){
+        Warp::Stage body;
+        const Warp::Id pelvis = body.create("pelvis");
+        body.get(pelvis)->joint = Warp::Joint{};
+        const Warp::Id wrist = body.create("hand", pelvis);
+        body.get(wrist)->joint = Warp::Joint{};
+        body.get(wrist)->local.translation = glm::vec3(0.4f, -pelvisY, 0.0f);   //zdjelica je pelvisY od sake
+        const glm::vec3 bases[5] = {{0.02f, 0.0f, 0.03f}, {0.08f, 0.0f, 0.03f}, {0.085f, 0.0f, 0.01f}, {0.08f, 0.0f, -0.01f}, {0.075f, 0.0f, -0.03f}};
+        for(int f = 0; f < 5; ++f){
+            Warp::Id parent = wrist;
+            for(int j = 0; j < 3; ++j){
+                const Warp::Id id = body.create("f" + std::to_string(f) + "_" + std::to_string(j), parent);
+                body.get(id)->joint = Warp::Joint{};
+                body.get(id)->local.translation = j == 0 ? bases[f] : glm::vec3(0.03f, 0.0f, 0.0f);
+                parent = id;
+            }
+        }
+        const Loom::HandFingers straight = Loom::handFingersOf(body, wrist, 1.0);
+        report.check(pelvisY < 0.0f ? "ravni prsti: zdjelica ispod - dlan dolje" : "ravni prsti: zdjelica iznad - dlan gore",
+                     straight.valid() && std::fabs(straight.palmNormal.y - (pelvisY < 0.0f ? -1.0f : 1.0f)) < 1e-3f,
+                     fmt("%.2f %.2f %.2f", straight.palmNormal.x, straight.palmNormal.y, straight.palmNormal.z));
+    }
+
     //Poza iz preseta primijenjena privremeno na kopiju: vrhovi prema dlanu
     //Kopija s pozom preseta; prsti nemaju trackove, pa vrijedi local
     auto posed = [&](const char* preset){

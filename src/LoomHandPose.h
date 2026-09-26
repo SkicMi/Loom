@@ -94,7 +94,24 @@ inline HandFingers handFingersOf(const Warp::Stage& stage, Warp::Id hand, double
     glm::vec3 normal = glm::cross(base(index) - wrist, base(pinky) - wrist);
     if(glm::length(normal) < 1e-8f) return result;
     normal = glm::normalize(normal);
-    //Strana dlana iz savijenosti srednjeg prsta: vrh odstupa od pravca prve kosti prema dlanu
+    //STRANA DLANA 1: prema tijelu. Dlan gleda prema strani tijela (T-poza: dolje, A-poza: prema bedru),
+    //pa je normala na strani najviseg zgloba lika (korijen/zdjelica) - isto pravilo kao hand_rig.py
+    //u auto-rigu. Ravni prsti (Manny u T-pozi) inace ne kazu nista
+    Warp::Id top = hand;
+    for(Warp::Id walk = entity->parent; walk != Warp::None;){
+        const Warp::Entity* joint = stage.get(walk);
+        if(!joint || !joint->joint) break;
+        top = walk;
+        walk = joint->parent;
+    }
+    if(top != hand){
+        const glm::vec3 body = handpose::at(stage, top, frame) - wrist;
+        if(glm::length(body) > 1e-6f && std::fabs(glm::dot(glm::normalize(body), normal)) > 0.05f){
+            result.palmNormal = glm::dot(body, normal) >= 0.0f ? normal : -normal;
+            return result;
+        }
+    }
+    //STRANA DLANA 2: iz savijenosti srednjeg prsta - vrh odstupa od pravca prve kosti prema dlanu
     const std::vector<Warp::Id>& middle = result.fingers[2];
     const glm::vec3 m0 = handpose::at(stage, middle.front(), frame);
     const glm::vec3 m1 = handpose::at(stage, middle[1], frame);
@@ -234,8 +251,26 @@ inline JointPose conformedHandPoseAt(const Warp::Stage& stage, const HandFingers
         for(size_t j = 0; j < count; ++j){
             const float maximum = std::min(115.0f, preset.curl[f][j] * 1.3f);
             if(maximum <= 0.0f) continue;
-            //Vec u dodiru na nuli: ne savija se dalje (clanak je na drsci)
-            if(touches(angles, j)) break;
+            //Vec u dodiru na nuli (palac u T-pozi lezi na strani dlana, tocno gdje sjeda drska):
+            //zglob se ISPRUZI tek toliko da clanak izadje iz drske, pa se nastavlja sa sljedecim
+            if(touches(angles, j)){
+                std::vector<float> trial = angles;
+                float free = 0.0f, stuck = 0.0f;
+                bool found = false;
+                for(float open = -5.0f; open >= -60.0f; open -= 5.0f){
+                    trial[j] = open;
+                    if(!touches(trial, j)){ free = open; found = true; break; }
+                    stuck = open;
+                }
+                if(!found) break;
+                for(int step = 0; step < steps; ++step){
+                    const float mid = 0.5f * (free + stuck);
+                    trial[j] = mid;
+                    if(touches(trial, j)) stuck = mid; else free = mid;
+                }
+                angles[j] = free;
+                continue;
+            }
             float low = 0.0f, high = maximum;
             std::vector<float> trial = angles;
             trial[j] = maximum;
