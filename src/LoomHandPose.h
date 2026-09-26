@@ -52,12 +52,13 @@ inline glm::quat worldRotation(const Warp::Stage& stage, Warp::Id id, double fra
 }
 }
 
-inline HandFingers handFingersOf(const Warp::Stage& stage, Warp::Id hand, double frame){
+//Prsti iz stabla uz zadane polozaje zglobova (svijet u kadru, ili mirna poza bez kljuceva)
+inline HandFingers handFingersFrom(const Warp::Stage& stage, Warp::Id hand, const std::function<glm::vec3(Warp::Id)>& positionOf){
     HandFingers result;
     const Warp::Entity* entity = stage.get(hand);
     if(!entity) return result;
     result.hand = hand;
-    const glm::vec3 wrist = handpose::at(stage, hand, frame);
+    const glm::vec3 wrist = positionOf(hand);
     //Lanci: svako dijete sake, pa prvo dijete-kost dok ih ima
     std::vector<std::vector<Warp::Id>> chains;
     for(Warp::Id child : entity->children){
@@ -75,7 +76,7 @@ inline HandFingers handFingersOf(const Warp::Stage& stage, Warp::Id hand, double
     if(chains.size() < 3) return result;
     //Metakarpal (lanac od 4+) se ne savija: zadnje tri kosti su prst
     for(auto& chain : chains) if(chain.size() > 3) chain.erase(chain.begin(), chain.end() - 3);
-    auto base = [&](const std::vector<Warp::Id>& chain){ return handpose::at(stage, chain.front(), frame); };
+    auto base = [&](const std::vector<Warp::Id>& chain){ return positionOf(chain.front()); };
     size_t thumb = 0;
     for(size_t i = 1; i < chains.size(); ++i)
         if(glm::length(base(chains[i]) - wrist) < glm::length(base(chains[thumb]) - wrist)) thumb = i;
@@ -105,7 +106,7 @@ inline HandFingers handFingersOf(const Warp::Stage& stage, Warp::Id hand, double
         walk = joint->parent;
     }
     if(top != hand){
-        const glm::vec3 body = handpose::at(stage, top, frame) - wrist;
+        const glm::vec3 body = positionOf(top) - wrist;
         if(glm::length(body) > 1e-6f && std::fabs(glm::dot(glm::normalize(body), normal)) > 0.05f){
             result.palmNormal = glm::dot(body, normal) >= 0.0f ? normal : -normal;
             return result;
@@ -113,16 +114,20 @@ inline HandFingers handFingersOf(const Warp::Stage& stage, Warp::Id hand, double
     }
     //STRANA DLANA 2: iz savijenosti srednjeg prsta - vrh odstupa od pravca prve kosti prema dlanu
     const std::vector<Warp::Id>& middle = result.fingers[2];
-    const glm::vec3 m0 = handpose::at(stage, middle.front(), frame);
-    const glm::vec3 m1 = handpose::at(stage, middle[1], frame);
-    const glm::vec3 tip = handpose::at(stage, middle.back(), frame);
+    const glm::vec3 m0 = positionOf(middle.front());
+    const glm::vec3 m1 = positionOf(middle[1]);
+    const glm::vec3 tip = positionOf(middle.back());
     const glm::vec3 direction = glm::normalize(m1 - m0);
     const glm::vec3 bend = (tip - m0) - direction * glm::dot(tip - m0, direction);
     float side = glm::dot(bend, normal);
     //Ravan srednji prst: palac je na strani dlana
-    if(std::fabs(side) < 1e-6f * glm::length(tip - m0)) side = glm::dot(handpose::at(stage, result.fingers[0].back(), frame) - wrist, normal);
+    if(std::fabs(side) < 1e-6f * glm::length(tip - m0)) side = glm::dot(positionOf(result.fingers[0].back()) - wrist, normal);
     result.palmNormal = side >= 0.0f ? normal : -normal;
     return result;
+}
+
+inline HandFingers handFingersOf(const Warp::Stage& stage, Warp::Id hand, double frame){
+    return handFingersFrom(stage, hand, [&](Warp::Id id){ return handpose::at(stage, id, frame); });
 }
 
 //Preset: savijanje u stupnjevima po prstu (palac..mali) i po kosti (baza, srednja, vrh)

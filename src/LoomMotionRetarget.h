@@ -318,14 +318,42 @@ inline std::vector<std::string> motionTargetAliases(std::string_view sourceKey){
         for(const std::string_view name : {"thumb", "index", "middle", "ring", "pinky"}){
             if(finger.compare(0, name.size(), name) != 0) continue;
             const std::string_view digit = finger.substr(name.size());
-            if(digit.size() != 1 || digit[0] < '1' || digit[0] > '3') break;
+            if(digit.size() != 1 || digit[0] < '0' || digit[0] > '3') break;
             const char suffix = side == "left" ? 'l' : 'r';
+            //0: metakarpal (motionSourceJointKeys) - Manny index_metacarpal_l, rig bez njega ga nema
+            if(digit[0] == '0') return {std::string(name) + "metacarpal" + suffix};
             const std::string number(1, digit[0]);
             return {source, std::string(name) + "0" + number + suffix,
                     std::string(name) + number + suffix};
         }
     }
     return {source};
+}
+
+//KLJUCEVI IZVORNIH ZGLOBOVA za mapiranje. Kimodo SOMA ima cetiri kosti po prstu prije vrha
+//(LeftHandIndex1..4 + LeftHandIndexEnd): 1 je METAKARPAL (od zapesca do zgloba sake), 2..4 su
+//clanci. Mixamo ima 1..3 clanke i list 4. Bez ovoga je SOMA metakarpal isao na Mannyjev index_01, a
+//svaki clanak jedan zglob dalje (savijanje korijena prsta na srednjem clanku). Lanac s cetvrtom
+//kosti koja ima dijete se prebroji: 1 -> 0 (metakarpal), 2..4 -> 1..3. Palac ima tri kosti u oba
+inline std::vector<std::string> motionSourceJointKeys(const Engine::WeaverMotion::Clip& clip){
+    std::vector<std::string> keys;
+    keys.reserve(clip.joints.size());
+    for(const Engine::WeaverMotion::Joint& joint : clip.joints) keys.push_back(motionJointKey(joint.name));
+    std::vector<bool> hasChild(clip.joints.size(), false);
+    for(const Engine::WeaverMotion::Joint& joint : clip.joints)
+        if(joint.parent >= 0 && size_t(joint.parent) < hasChild.size()) hasChild[size_t(joint.parent)] = true;
+    for(const char* side : {"lefthand", "righthand"})
+        for(const char* finger : {"index", "middle", "ring", "pinky"}){
+            const std::string stem = std::string(side) + finger;
+            const auto fourth = std::find(keys.begin(), keys.end(), stem + "4");
+            if(fourth == keys.end() || !hasChild[size_t(fourth - keys.begin())]) continue;
+            for(std::string& key : keys){
+                if(key.size() != stem.size() + 1 || key.compare(0, stem.size(), stem) != 0) continue;
+                const char digit = key.back();
+                if(digit >= '1' && digit <= '4') key.back() = char(digit - 1);
+            }
+        }
+    return keys;
 }
 
 inline bool motionIsUnrealMannequin(const MotionRigRestPose& pose){
@@ -357,8 +385,9 @@ inline MotionRigMapping mapMotionBones(const Engine::WeaverMotion::Clip& clip,
                       motionIsUnrealMannequin(restPose) ? "Unreal Mannequin" : "named bones";
 
     std::unordered_set<Warp::Id> usedTargets;
+    const std::vector<std::string> sourceKeys = motionSourceJointKeys(clip);
     for(size_t source = 0; source < clip.joints.size(); ++source){
-        const std::string key = motionJointKey(clip.joints[source].name);
+        const std::string& key = sourceKeys[source];
         if(key == "hips" || key == "hip" || key == "pelvis") mapping.sourceHips = int(source);
         Warp::Id target = Warp::None;
         if(verifiedUniRig){

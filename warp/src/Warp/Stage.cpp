@@ -469,7 +469,7 @@ uint64_t Stage::fingerprint() const{
         }
         h.add(e.animator.has_value());
         if(e.animator){
-            h.add(e.animator->enabled); h.add(e.animator->activeAnimation); h.add(e.animator->relaxedUniRigPose); h.add(e.animator->animations.size());
+            h.add(e.animator->enabled); h.add(e.animator->activeAnimation); h.add(e.animator->relaxedUniRigPose); h.add(e.animator->relaxedHands); h.add(e.animator->animations.size());
             for(const AnimationClip& clip : e.animator->animations){
                 h.text(clip.name); h.add(clip.startFrame); h.add(clip.endFrame); h.add(clip.loop); h.add(clip.inPlace); h.add(clip.tracks.size());
                 auto tracks = [&](const std::vector<AnimatorTrack>& list){

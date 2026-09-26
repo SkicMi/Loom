@@ -109,6 +109,8 @@ struct Animator{
     size_t activeAnimation = 0;
     bool enabled = true;
     bool relaxedUniRigPose = false;
+    //Mirna poza prstiju (Loom::applyRelaxedHandsRestPose) je vec u lokalnim rotacijama prstiju
+    bool relaxedHands = false;
 };
 
 //---------------------------------------------------------------------------------------------

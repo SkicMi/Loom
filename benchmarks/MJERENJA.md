@@ -1,6 +1,6 @@
 # Mjerenja
 
-Iz `benchmarks/mjerenja.jsonl` (377 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
+Iz `benchmarks/mjerenja.jsonl` (378 zapisa). Slozi se iznova s `tools/bench/mjerenja.py tablica`. Vrijeme je u sekundama; PSNR u dB na IZDVOJENIM kadrovima (koje trening nije vidio); ostrina je energija detalja nacrtanog prema snimljenom (1 = jednako ostro). Usporedba je razlika B - A po istim kadrovima s procjenom pogreske; dva ista treninga razlikuju se do oko 0.12 dB, pa razlika manja od dvije pogreske nije nalaz. Vrijeme treninga i solvea koji su isli istovremeno na kartici nije cisto.
 
 ## solve
 
@@ -423,4 +423,5 @@ Iz `benchmarks/mjerenja.jsonl` (377 zapisa). Slozi se iznova s `tools/bench/mjer
 | datum | snimka | opis | ostalo |
 |---|---|---|---|
 | 2026-09-26 19:02 | mascot-03 -> mascot-manny (UE5 Manny profil) | hand rig (tools/autorig/hand_rig.py): +X savija prst u dlan, jedna os savijanja po prstu | mjera=hand_rig.py report: 15 st savijanja, pomak vrha okomito na prst (dlan: cos prema dlanu, bocno: udio u stranu), prije_dlan=-1.000 (svi prsti savijaju se prema nadlanici), prije_bocno=palac 0.977, ostali do 0.076, poslije_dlan=+0.999 (svih 10 prstiju), poslije_bocno=najvise 0.042 (palac), loom_drska_16mm=prsti bez prodora, zadnji zglobovi najvise 2.1 cm od drske (test_hand_rig), odluka=zadrzano: Manny auto-rig dobiva hand rig; desni klik HumanoidMascott koristi mascot-manny |
+| 2026-09-26 19:35 | mascot-manny + WeaverMotion/motion_1790274564101.bvh | prsti Kimodo -> Manny: SOMA Index1 je metakarpal (4 kosti + End), mapa je bila pomaknuta za jedan zglob; + mirne sake na svakom rigu (LoomRelaxedHands.h) | mjera=test_hand_rig: prosjecna razlika promjene kuta (od mirne poze) u korijenu i srednjem zglobu prsta, Manny prema SOMA, 672 uzorka, prije=10.9 st (Index1->index_01, Index4 bez cilja), poslije=7.2 st (Index1->index_metacarpal, 2..4 -> 01..03); ostatak najvise prstenjak - razlika mirnog oblika sake, mirne_sake=30 zglobova, vrh srednjeg prsta 30 mm prema dlanu; retarget na opustenom liku = pokret + mirna poza (odstupanje 0.7 st), odluka=zadrzano: mapa po strukturi izvora (Mixamo 1..3 + list 4 ostaje), mirne sake pri uvozu lika i prije Kimodo retargeta |
 

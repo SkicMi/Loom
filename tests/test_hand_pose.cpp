@@ -7,9 +7,11 @@
 //   - grip savije vrhove prema dlanu; pistol ostavi kaziprst gotovo ravan
 //   - hvat 10-30 postane jedan sloj: u 20 prsti savijeni, prije ulaza i iza izlaza nista
 //   - promjena preseta ne dodaje sloj nego ga zamijeni; brisanje hvata brise sloj
+//   - mirne sake na rigu bez UniRiga: ravni prsti se u mirnoj pozi saviju prema dlanu, klip koji
+//     vec postoji se prebazi (pokret sake isti), druga primjena ne mijenja nista
 #include "TestHarness.h"
 
-#include "../src/LoomHandPose.h"
+#include "../src/LoomRelaxedHands.h"
 
 #include <cmath>
 
@@ -96,6 +98,68 @@ int main(){
         report.check(pelvisY < 0.0f ? "ravni prsti: zdjelica ispod - dlan dolje" : "ravni prsti: zdjelica iznad - dlan gore",
                      straight.valid() && std::fabs(straight.palmNormal.y - (pelvisY < 0.0f ? -1.0f : 1.0f)) < 1e-3f,
                      fmt("%.2f %.2f %.2f", straight.palmNormal.x, straight.palmNormal.y, straight.palmNormal.z));
+    }
+
+    //Mirne sake: lik s dvije sake ravnih prstiju (T-poza, zdjelica ispod) i klip u kojem se saka okrece
+    {
+        Warp::Stage body;
+        const Warp::Id rig = body.create("Character");
+        const Warp::Id pelvis = body.create("pelvis", rig);
+        body.get(pelvis)->joint = Warp::Joint{};
+        std::array<Warp::Id, 2> wrists{};
+        std::array<std::array<std::vector<Warp::Id>, 5>, 2> chains;
+        const glm::vec3 bases[5] = {{0.02f, 0.0f, 0.03f}, {0.08f, 0.0f, 0.03f}, {0.085f, 0.0f, 0.01f}, {0.08f, 0.0f, -0.01f}, {0.075f, 0.0f, -0.03f}};
+        for(int side = 0; side < 2; ++side){
+            const float x = side == 0 ? 1.0f : -1.0f;
+            wrists[size_t(side)] = body.create(side == 0 ? "hand_l" : "hand_r", pelvis);
+            body.get(wrists[size_t(side)])->joint = Warp::Joint{};
+            body.get(wrists[size_t(side)])->local.translation = glm::vec3(0.7f * x, 0.5f, 0.0f);
+            for(int f = 0; f < 5; ++f){
+                Warp::Id parent = wrists[size_t(side)];
+                for(int j = 0; j < 3; ++j){
+                    const Warp::Id id = body.create((side == 0 ? "l" : "r") + std::to_string(f) + "_" + std::to_string(j), parent);
+                    body.get(id)->joint = Warp::Joint{};
+                    body.get(id)->local.translation = j == 0 ? glm::vec3(bases[f].x * x, bases[f].y, bases[f].z) : glm::vec3(0.03f * x, 0.0f, 0.0f);
+                    chains[size_t(side)][size_t(f)].push_back(id);
+                    parent = id;
+                }
+            }
+        }
+        //Klip: srednji prst lijeve sake ima track (ravan u 1, savijen za 30 st oko z u 20)
+        Warp::AnimationClip clip;
+        clip.name = "take";
+        clip.startFrame = 1.0;
+        clip.endFrame = 20.0;
+        Warp::AnimatorTrack track;
+        track.target = chains[0][2][0];
+        track.rotationKeys.set(1.0, glm::quat(1, 0, 0, 0));
+        track.rotationKeys.set(20.0, glm::angleAxis(glm::radians(-30.0f), glm::vec3(0, 0, 1)));
+        clip.tracks.push_back(track);
+        Warp::Animator animator;
+        animator.animations.push_back(clip);
+        body.get(rig)->animator = animator;
+        const float restTip[2] = {at(body, chains[0][2].back(), 1.0).y, at(body, chains[1][2].back(), 1.0).y};
+        const float animatedBend = at(body, chains[0][2].back(), 20.0).y - restTip[0];
+
+        size_t changed = 0;
+        const bool relaxed = Loom::applyRelaxedHandsRestPose(body, rig, &changed);
+        const float leftTip = at(body, chains[0][2].back(), 1.0).y, rightTip = at(body, chains[1][2].back(), 1.0).y;
+        report.check("mirne sake: 30 zglobova, vrhovi obje sake prema dlanu (dolje)",
+                     relaxed && changed == 30 && leftTip < restTip[0] - 0.005f && rightTip < restTip[1] - 0.005f,
+                     fmt("%zu zglobova, lijevi %.4f -> %.4f, desni %.4f -> %.4f", changed, restTip[0], leftTip, restTip[1], rightTip));
+        //Mali prst savijen vise od kaziprsta (opustena saka)
+        const auto reachOf = [&](int f){ return glm::length(at(body, chains[0][size_t(f)].back(), 1.0) - at(body, chains[0][size_t(f)].front(), 1.0)); };
+        report.check("mirne sake: mali prst savijeniji od kaziprsta", reachOf(4) < reachOf(1) - 1e-4f,
+                     fmt("kaziprst %.4f, mali %.4f", reachOf(1), reachOf(4)));
+        //Klip prebazen: u 20 prst je savijen za isto (i jos malo zbog mirne poze), a ne vracen na ravno
+        const float animatedNow = at(body, chains[0][2].back(), 20.0).y - at(body, chains[0][2].back(), 1.0).y;
+        report.check("klip prebazen: savijanje iz pokreta ostaje", std::fabs(animatedNow - animatedBend) < 0.01f && animatedNow < -0.01f,
+                     fmt("prije %.4f, poslije %.4f", animatedBend, animatedNow));
+        const glm::quat before = body.get(chains[0][2][0])->local.rotation;
+        size_t again = 99;
+        Loom::applyRelaxedHandsRestPose(body, rig, &again);
+        report.check("druga primjena ne mijenja nista", again == 0 && Loom::relaxedHandsApplied(body, rig) &&
+                     std::fabs(glm::dot(before, body.get(chains[0][2][0])->local.rotation)) > 0.99999f, fmt("%zu", again));
     }
 
     //Poza iz preseta primijenjena privremeno na kopiju: vrhovi prema dlanu

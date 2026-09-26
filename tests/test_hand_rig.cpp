@@ -7,10 +7,15 @@
 //   - savijanje oko lokalne X osi svakog zgloba vodi vrh prsta prema dlanu, u ravnini prsta
 //   - drska polumjera 1.6 cm u lijevoj saci (gripAlignedWorld): prsti se omotaju bez prodora,
 //     a zglobovi su uz drsku
+//   - mirne sake (applyRelaxedHandsRestPose): 30 zglobova, prsti se saviju prema dlanu (Z hand riga),
+//     a Kimodo pokret (WeaverMotion/motion_1790274564101.bvh) kroz retarget zadrzi opustene prste
 #include "TestHarness.h"
 
 #include "../src/LoomModel.h"
 #include "../src/LoomTool.h"
+#include "../src/LoomRelaxedHands.h"
+#include "../src/LoomWeaverMotion.h"
+#include "../src/LoomMotionPanel.h"
 
 #include <cmath>
 #include <filesystem>
@@ -141,5 +146,106 @@ int main(){
     }
     report.check("drska u saci: prsti bez prodora, zadnji zglobovi uz drsku", framed && !penetrates && farthest < 0.025f,
                  fmt("prodor %d, najdalji zglob %.1f cm", int(penetrates), farthest * 100.0f));
+
+    //Mirne sake na Manny mascotu
+    const Warp::Id rig = Loom::motionCharacterForEntity(stage, stage.get(hand)->parent);
+    Warp::Stage relaxed = stage;
+    size_t changed = 0;
+    const bool applied = Loom::applyRelaxedHandsRestPose(relaxed, rig, &changed);
+    const glm::vec3 wrist = at(stage, hand);
+    const glm::vec3 tip0 = at(stage, named(stage, "middle_03_l")), tip1 = at(relaxed, named(relaxed, "middle_03_l"));
+    const float towardPalm = glm::dot(tip1 - tip0, handZ);
+    report.check("mirne sake: 30 zglobova, vrh srednjeg prsta prema dlanu", applied && changed == 30 && towardPalm > 0.002f,
+                 fmt("%zu zglobova, vrh %.1f mm prema dlanu (saka na %.2f m)", changed, towardPalm * 1000.0f, wrist.y));
+
+    //Kimodo pokret na opustenom liku: mirna poza prstiju se zadrzi kao pomak preko pokreta - prsti u
+    //pokretu = prsti istog pokreta na neopustenom liku + savijanje mirne poze (SOMA sama savija prste)
+    const std::filesystem::path bvh = std::filesystem::path(__FILE__).parent_path().parent_path() / "WeaverMotion/motion_1790274564101.bvh";
+    auto retargeted = [&](Warp::Stage& target){
+        Loom::MotionPlacement placement;
+        placement.parent = rig;
+        placement.fitToParentRig = true;
+        placement.sceneFps = 30.0;
+        return Loom::importWeaverMotionBvh(target, bvh, placement);
+    };
+    Warp::Stage plain = stage;
+    const Loom::WeaverMotionImportReport motion = retargeted(relaxed), plainMotion = retargeted(plain);
+    auto degrees = [](glm::quat a, glm::quat b){ return glm::degrees(2.0f * std::acos(std::min(1.0f, std::fabs(glm::dot(a, b))))); };
+    float worst = 0.0f, relaxation = 0.0f;
+    const double sample = 0.5 * (motion.firstFrame + motion.lastFrame);
+    for(const char* name : {"index_01_l", "middle_02_l", "ring_01_l", "pinky_02_r", "thumb_02_r"}){
+        const Warp::Id id = named(relaxed, name);
+        const glm::quat turn = glm::inverse(plain.get(id)->local.rotation) * relaxed.get(id)->local.rotation;
+        worst = std::max(worst, degrees(relaxed.localAt(id, sample).rotation, plain.localAt(id, sample).rotation * turn));
+        relaxation = std::max(relaxation, degrees(turn, glm::quat(1, 0, 0, 0)));
+    }
+    report.check("retarget zadrzi mirnu pozu prstiju preko pokreta (do 3 st)",
+                 motion.problem.empty() && plainMotion.problem.empty() && worst < 3.0f && relaxation > 10.0f,
+                 fmt("%s odstupanje %.1f st, mirna poza do %.0f st, kadar %.0f", motion.problem.c_str(), worst, relaxation, sample));
+
+    //SOMA prsti: Index1 je metakarpal, Index2..4 clanci; palac 1..3
+    Engine::WeaverMotion::Clip soma;
+    std::string bvhError;
+    Engine::WeaverMotion::readKimodoBvh(bvh.string(), soma, bvhError);
+    const Loom::MotionRigMapping mapping = Loom::mapMotionBones(soma, Loom::motionRigRestPose(stage, rig));
+    auto targetOf = [&](const char* source) -> std::string{
+        for(size_t i = 0; i < soma.joints.size(); ++i)
+            if(soma.joints[i].name == source && mapping.targetBySource[i] != Warp::None) return stage.get(mapping.targetBySource[i])->name;
+        return "-";
+    };
+    const std::string m1 = targetOf("LeftHandIndex1"), m2 = targetOf("LeftHandIndex2"), m4 = targetOf("RightHandPinky4"), t1 = targetOf("LeftHandThumb1");
+    report.check("SOMA prsti na Manny: Index1 metakarpal, Index2 index_01, Pinky4 pinky_03, Thumb1 thumb_01",
+                 m1 == "index_metacarpal_l" && m2 == "index_01_l" && m4 == "pinky_03_r" && t1 == "thumb_01_l",
+                 fmt("%s %s %s %s", m1.c_str(), m2.c_str(), m4.c_str(), t1.c_str()));
+
+    //Tocnost prstiju: promjena kuta od mirne poze u korijenu prsta (metakarpal/clanak 1) i srednjem
+    //zglobu (clanak 1/2) na Mannyju prati istu promjenu u SOMA pokretu (prosjek po prstima i kadrovima).
+    //Ostatak (~7 st, najvise prstenjak) je razlika mirnog oblika sake: prijenos je u svjetskim rotacijama
+    float sumError = 0.0f;
+    size_t samples = 0;
+    const char* sides[2] = {"Left", "Right"};
+    const char* somaNames[4] = {"Index", "Middle", "Ring", "Pinky"};
+    const char* mannyNames[4] = {"index", "middle", "ring", "pinky"};
+    auto sourceIndexOf = [&](const std::string& name){
+        for(size_t i = 0; i < soma.joints.size(); ++i) if(soma.joints[i].name == name) return int(i);
+        return -1;
+    };
+    auto bendAt = [](glm::vec3 a, glm::vec3 b, glm::vec3 c){
+        const glm::vec3 u = glm::normalize(b - a), v = glm::normalize(c - b);
+        return glm::degrees(std::acos(std::clamp(glm::dot(u, v), -1.0f, 1.0f)));
+    };
+    const size_t sourceFrames = soma.frames.size();
+    //SOMA mirna poza: kanonska T-poza (sve rotacije jedinicne)
+    Engine::WeaverMotion::Clip somaRest = soma;
+    somaRest.frames.resize(1);
+    for(glm::quat& rotation : somaRest.frames[0].rotations) rotation = glm::quat(1, 0, 0, 0);
+    const std::vector<glm::vec3> sourceRest = Loom::motionPoseJointPositions(somaRest, 0);
+    for(size_t frameIndex = 0; frameIndex < sourceFrames; frameIndex += 5){
+        const std::vector<glm::vec3> source = Loom::motionPoseJointPositions(soma, frameIndex);
+        const double time = plainMotion.firstFrame + double(frameIndex) * (plainMotion.lastFrame - plainMotion.firstFrame) / double(std::max<size_t>(1, sourceFrames - 1));
+        for(int side = 0; side < 2; ++side)
+            for(int f = 0; f < 4; ++f){
+                const std::string stem = std::string(sides[side]) + "Hand" + somaNames[f];
+                const int s1 = sourceIndexOf(stem + "1"), s2 = sourceIndexOf(stem + "2"), s3 = sourceIndexOf(stem + "3"), s4 = sourceIndexOf(stem + "4");
+                const char suffix = side == 0 ? 'l' : 'r';
+                const std::string m = mannyNames[f];
+                const Warp::Id meta = named(plain, m + "_metacarpal_" + suffix), p1 = named(plain, m + "_01_" + suffix),
+                               p2 = named(plain, m + "_02_" + suffix), p3 = named(plain, m + "_03_" + suffix);
+                if(s1 < 0 || s2 < 0 || s3 < 0 || s4 < 0 || meta == Warp::None || p3 == Warp::None) continue;
+                auto w = [&](Warp::Id id){ return glm::vec3(plain.worldMatrix(id, time)[3]); };
+                auto r = [&](Warp::Id id){ return at(stage, id); };   //mirna poza (ucitani lik bez pokreta)
+                const auto& S = source; const auto& R = sourceRest;
+                const float sourceRoot = bendAt(S[size_t(s1)], S[size_t(s2)], S[size_t(s3)]) - bendAt(R[size_t(s1)], R[size_t(s2)], R[size_t(s3)]);
+                const float sourceMiddle = bendAt(S[size_t(s2)], S[size_t(s3)], S[size_t(s4)]) - bendAt(R[size_t(s2)], R[size_t(s3)], R[size_t(s4)]);
+                const float targetRoot = bendAt(w(meta), w(p1), w(p2)) - bendAt(r(meta), r(p1), r(p2));
+                const float targetMiddle = bendAt(w(p1), w(p2), w(p3)) - bendAt(r(p1), r(p2), r(p3));
+                sumError += std::fabs(sourceRoot - targetRoot) + std::fabs(sourceMiddle - targetMiddle);
+                samples += 2;
+            }
+    }
+    const float meanError = samples ? sumError / float(samples) : 999.0f;
+    std::printf("   MJERA prsti_kut_greska_st %.2f (%zu uzoraka)\n", meanError, samples);
+    report.check("kutovi zglobova prstiju prate SOMA pokret (prosjek do 8 st; s pomaknutom mapom 10.9)", samples > 0 && meanError < 8.0f,
+                 fmt("prosjek %.1f st, %zu uzoraka", meanError, samples));
     return report.result();
 }

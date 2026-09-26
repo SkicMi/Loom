@@ -313,6 +313,7 @@ public:
             indent(animatorDepth); out << "custom bool loom:animatorComponent = 1\n";
             indent(animatorDepth); out << "custom bool loom:enabled = " << (animator.enabled ? 1 : 0) << '\n';
             indent(animatorDepth); out << "custom bool loom:relaxedUniRigPose = " << (animator.relaxedUniRigPose ? 1 : 0) << '\n';
+            indent(animatorDepth); out << "custom bool loom:relaxedHands = " << (animator.relaxedHands ? 1 : 0) << '\n';
             indent(animatorDepth); out << "custom int loom:activeAnimation = " << animator.activeAnimation << '\n';
             for(size_t clipIndex = 0; clipIndex < animator.animations.size(); ++clipIndex){
                 const AnimationClip& clip = animator.animations[clipIndex];
@@ -427,6 +428,7 @@ Animator readAnimator(const usda::Prim& prim){
     Animator animator;
     animator.enabled = numberOf(prim, "loom:enabled", 1.0) != 0.0;
     animator.relaxedUniRigPose = numberOf(prim, "loom:relaxedUniRigPose", 0.0) != 0.0;
+    animator.relaxedHands = numberOf(prim, "loom:relaxedHands", 0.0) != 0.0;
     animator.activeAnimation = size_t(std::max(0.0, numberOf(prim, "loom:activeAnimation", 0.0)));
     for(const usda::Prim& clipPrim : prim.children){
         if(numberOf(clipPrim, "loom:animationClip", 0.0) == 0.0) continue;

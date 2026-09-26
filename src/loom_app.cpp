@@ -58,6 +58,7 @@
     #include "LoomTimelineRows.h"
     #include "LoomHold.h"
     #include "LoomTool.h"
+    #include "LoomRelaxedHands.h"
     #include "LoomMoodboard.h"
     #include "LoomAutoRig.h"
     #include "LoomRender.h"
@@ -882,11 +883,9 @@
                 }
                 bool relaxedTargetPose = false;
                 if(resolvedTarget != Warp::None){
-                    const Loom::MotionRigRestPose targetRest = Loom::motionRigRestPose(stage, resolvedTarget);
-                    std::array<Warp::Id, 52> uniRigIds;
-                    if(compare == Loom::MotionCompareMode::None &&
-                       Loom::motionFindVerifiedUniRig52(targetRest, uniRigIds))
-                        relaxedTargetPose = Loom::applyUniRigRelaxedRestPose(stage, resolvedTarget);
+                    //Mirne sake prije retargeta: pokret ih zadrzi (UniRig-52 i ramena/laktove)
+                    if(compare == Loom::MotionCompareMode::None)
+                        relaxedTargetPose = Loom::applyRelaxedHandsRestPose(stage, resolvedTarget);
                     placement.parent = resolvedTarget;
                     placement.position = glm::vec3(0.0f);
                     placement.scale = 1.0f;
@@ -2003,11 +2002,8 @@
             afterModelImport(report, wasEmpty);
             const bool animatorReady = hasRig && Loom::ensureRigAnimator(stage, rigRoot);
             bool naturalPose = false;
-            if(animatorReady && path.filename() != "bend_preview.glb"){
-                std::array<Warp::Id, 52> ids;
-                if(Loom::motionFindVerifiedUniRig52(rest, ids))
-                    naturalPose = Loom::applyUniRigRelaxedRestPose(stage, rigRoot);
-            }
+            if(animatorReady && path.filename() != "bend_preview.glb")
+                naturalPose = Loom::applyRelaxedHandsRestPose(stage, rigRoot);
             if(naturalPose) message = "Humanoid imported with Animator and natural arm and finger pose.";
             else if(animatorReady) message = "Humanoid imported with Animator ready.";
             else message = "Imported " + path.filename().string() + "; no skeleton was found.";
@@ -3667,17 +3663,17 @@
                     const Loom::MotionRigRestPose rigRest = Loom::motionRigRestPose(stage, animatorRig);
                     std::array<Warp::Id, 52> uniRigIds;
                     const bool verifiedUniRig = Loom::motionFindVerifiedUniRig52(rigRest, uniRigIds);
-                    if(verifiedUniRig){
-                        ui.value("Rest pose", rigEntity->animator && rigEntity->animator->relaxedUniRigPose
-                            ? "Relaxed hands" : "UniRig pose available");
-                        if((!rigEntity->animator || !rigEntity->animator->relaxedUniRigPose) &&
-                           ui.button("Apply Natural Pose")){
+                    const bool relaxedHands = Loom::relaxedHandsApplied(stage, animatorRig);
+                    if(verifiedUniRig || relaxedHands || !Loom::restHandsOf(stage, rigRest).empty()){
+                        ui.value("Rest pose", relaxedHands ? "Relaxed hands" : "Straight fingers");
+                        if(!relaxedHands && ui.button(verifiedUniRig ? "Apply Natural Pose" : "Relax Hands")){
                             size_t changed = 0;
-                            if(Loom::applyUniRigRelaxedRestPose(stage, animatorRig, &changed)){
+                            if(Loom::applyRelaxedHandsRestPose(stage, animatorRig, &changed)){
                                 playing = false;
                                 eulerFor = Warp::None;
-                                message = "Natural stance applied to shoulders, elbows, wrists, and fingers.";
-                            }else message = "Could not apply the UniRig natural pose.";
+                                message = verifiedUniRig ? "Natural stance applied to shoulders, elbows, wrists, and fingers."
+                                                         : "Relaxed " + std::to_string(changed) + " finger joints; animations keep their motion.";
+                            }else message = "Could not find finger chains under the hands of this rig.";
                         }
                     }
                     ui.separator();
