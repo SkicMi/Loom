@@ -1099,6 +1099,68 @@ inline MotionFingerAlignment motionFingerAlignment(const Engine::WeaverMotion::C
     return result;
 }
 
+//MIRNA POZA LIKA NIJE T-POZA. Kimodo rotacije vrijede od kanonske T-poze, a lik iz Auto Riga stoji u
+//A-pozi (ruke ~45 st dolje) ili bilo kojoj drugoj. Bez ovoga svaka kost ruke nosi tu razliku kroz cijeli
+//pokret (ruke spustene u izvoru stoje odmaknute od tijela). Za kosti udova: okret u svijetu koji mirnu
+//kost lika okrene u smjer iste kosti u T-pozi izvora; saka jos i dlanom (kaziprst x mali prst).
+//Kod T-poziranog lika okret je ~jedinicni, pa se nista ne mijenja
+inline std::vector<glm::quat> motionLimbRestAlignment(const Engine::WeaverMotion::Clip& clip, const MotionRigRestPose& rest,
+                                                      const MotionRigMapping& mapping){
+    const size_t count = clip.joints.size();
+    std::vector<glm::quat> result(count, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    if(clip.frames.empty() || mapping.targetBySource.size() != count) return result;
+    Engine::WeaverMotion::Clip restClip;
+    restClip.joints = clip.joints;
+    restClip.frames.push_back(clip.frames.front());
+    for(glm::quat& rotation : restClip.frames[0].rotations) rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::vector<glm::vec3> sourceRest = motionPoseJointPositions(restClip, 0);
+    std::unordered_map<Warp::Id, size_t> targetIndex;
+    for(size_t i = 0; i < rest.joints.size(); ++i) targetIndex.emplace(rest.joints[i].id, i);
+    const std::vector<std::string> keys = motionSourceJointKeys(clip);
+    auto find = [&](const std::string& key) -> int{
+        for(size_t i = 0; i < count; ++i) if(keys[i] == key && mapping.targetBySource[i] != Warp::None &&
+                                             targetIndex.count(mapping.targetBySource[i])) return int(i);
+        return -1;
+    };
+    //Prva mapirana kost prsta (Manny metakarpal ili clanak 1)
+    auto fingerBase = [&](const std::string& stem) -> int{
+        for(char digit = '0'; digit <= '4'; ++digit) if(const int found = find(stem + digit); found >= 0) return found;
+        return -1;
+    };
+    auto sourceAt = [&](int i){ return sourceRest[size_t(i)]; };
+    auto targetAt = [&](int i){ return glm::vec3(rest.joints[targetIndex.at(mapping.targetBySource[size_t(i)])].matrix[3]); };
+    auto frameOf = [](glm::vec3 direction, glm::vec3 normal) -> std::optional<glm::mat3>{
+        if(glm::length(direction) < 1e-8f) return std::nullopt;
+        direction = glm::normalize(direction);
+        normal -= direction * glm::dot(normal, direction);
+        if(glm::length(normal) < 1e-8f) return std::nullopt;
+        normal = glm::normalize(normal);
+        return glm::mat3(direction, normal, glm::cross(direction, normal));
+    };
+    for(const std::string side : {"left", "right"}){
+        const std::pair<const char*, const char*> chains[] = {
+            {"shoulder", "arm"}, {"arm", "forearm"}, {"forearm", "hand"}, {"leg", "shin"}, {"shin", "foot"}};
+        for(const auto& [from, to] : chains){
+            const int a = find(side + from), b = find(side + to);
+            if(a < 0 || b < 0) continue;
+            const glm::vec3 source = sourceAt(b) - sourceAt(a), target = targetAt(b) - targetAt(a);
+            if(glm::length(source) < 1e-8f || glm::length(target) < 1e-8f) continue;
+            const glm::vec3 t = glm::normalize(target), u = glm::normalize(source), axis = glm::cross(t, u);
+            if(glm::length(axis) < 1e-6f) continue;
+            result[size_t(a)] = glm::angleAxis(std::acos(std::clamp(glm::dot(t, u), -1.0f, 1.0f)), glm::normalize(axis));
+        }
+        const int hand = find(side + "hand"), index = fingerBase(side + "handindex"),
+                  middle = fingerBase(side + "handmiddle"), pinky = fingerBase(side + "handpinky");
+        if(hand < 0 || index < 0 || middle < 0 || pinky < 0) continue;
+        const auto source = frameOf(sourceAt(middle) - sourceAt(hand),
+                                    glm::cross(sourceAt(index) - sourceAt(hand), sourceAt(pinky) - sourceAt(hand)));
+        const auto target = frameOf(targetAt(middle) - targetAt(hand),
+                                    glm::cross(targetAt(index) - targetAt(hand), targetAt(pinky) - targetAt(hand)));
+        if(source && target) result[size_t(hand)] = glm::normalize(glm::quat_cast(*source * glm::transpose(*target)));
+    }
+    return result;
+}
+
 inline bool retargetMotionToRig(Warp::Stage& stage, const Engine::WeaverMotion::Clip& clip, Warp::Id rigRoot,
                                 double firstFrame, double frameStep, MotionRigFit& fit,
                                 MotionRigMapping& mapping, std::string& problem,
@@ -1132,6 +1194,7 @@ inline bool retargetMotionToRig(Warp::Stage& stage, const Engine::WeaverMotion::
     }
 
     const MotionFingerAlignment fingers = motionFingerAlignment(clip, rest, mapping);
+    const std::vector<glm::quat> limbs = motionLimbRestAlignment(clip, rest, mapping);
 
     for(size_t frameIndex = 0; frameIndex < clip.frames.size(); ++frameIndex){
         const double time = firstFrame + double(frameIndex) * frameStep;
@@ -1159,7 +1222,8 @@ inline bool retargetMotionToRig(Warp::Stage& stage, const Engine::WeaverMotion::
                 // BVH rotations are the NVIDIA/Kimodo pose relative to its canonical T-pose.
                 // Apply every sampled source pose directly to the target's original bind frame;
                 // do not rebase arms to frame 0, which pins them to the display rest pose.
-                desiredWorld = glm::normalize(sourceWorld[source] * targetRestWorld);
+                // limbs: the target's rest limb turned onto the source T-pose (A-posed characters).
+                desiredWorld = glm::normalize(sourceWorld[source] * limbs[source] * targetRestWorld);
                 //Prst: rotacija prema roditelju iz sustava SOMA kosti u sustav ciljne kosti
                 if(hasParentJoint && fingers.active[source]){
                     const glm::quat relative = glm::inverse(sourceWorld[size_t(fingers.parentSource[source])]) * sourceWorld[source];

@@ -855,121 +855,60 @@ Na kartici se post još ne računa: progresivni prikaz GPU rendera je bez posta,
 renderira i spremi prozor kad render završi (`--render-pogled` za engine Viewport). Pod Xvfb-om s
 lavapipeom (`VK_ICD_FILENAMES=.../lvp_icd.json xvfb-run -a ...`) radi i bez kartice.
 
-### 9. Šake, prsti i hvat predmeta — STANJE 26.9. (navečer)
+### 9. Šake, prsti, hvat predmeta i auto-rig — STANJE 27.9. (Claude, sekcija hvata)
 
 Cilj korisnika: (a) kad lik uhvati predmet (mač, pištolj...), prsti se prirodno sklope oko njega i
-realno ga drže; (b) UI/UX hvata jednostavan i intuitivan. Lik za sve provjere je **desni klik >
-HumanoidMascott** = `tools/autorig/outputs/humanoid-mascott/rigged.glb` (novi lik, izravni rig — vidi
-"Novi mascot" niže; lokalno, nije u gitu), u editoru `./build/loom --mascott`. Stari lik (Clockwork
-Sentinel) je još u `outputs/mascot-manny`, `mascot-01..03` i `rig_*` — nije obrisan.
+realno ga drže; (b) UI/UX hvata jednostavan; (c) hand rig se sam primijeni na humanoide i čisto
+retargetira na UE Manny. Lik za sve provjere je **desni klik > HumanoidMascott** =
+`tools/autorig/outputs/humanoid-mascott/rigged.glb` (izlaz auto-riga iz
+`assets/characters/HumanoidMascott.glb`; oboje lokalno, **GLB ne ide u git** — korisnikova odluka), u
+editoru `./build/loom --mascott`. Stari lik (Clockwork Sentinel, `mascot-*`, `rig_*`) je obrisan.
 
 **Gotovo i commitano (main):**
 
 | commit | što | mjera |
 |---|---|---|
 | `106b548` | hand rig u auto-rigu: +X savija prst u dlan, Z prema dlanu | savijanje prema dlanu -1.000 → +0.999 |
-| `fef29b1` | mirne šake na svakom rigu (`LoomRelaxedHands.h`, gumb Relax Hands); SOMA `Index1` je metakarpal — mapa retargeta bila pomaknuta za zglob | greška kutova prstiju 10.9 → 7.2° |
-| `99f51c6` | prsti se prenose u sustavu kosti (`motionFingerAlignment`); UniRig peace sign provjeren (`test_unirig_fingers`) | A-poza + zakrenut dlan: savijanje/raširenost 8.1/16.0 → 0.44/0.44° |
-| `b5f73f6` | hvat: drška u dlanu, prsti se omataju kao pravi prst, pištolj za rukohvat | vidi dolje |
+| `fef29b1` | mirne šake na svakom rigu (`LoomRelaxedHands.h`); SOMA `Index1` je metakarpal | kutovi prstiju 10.9 → 7.2° |
+| `99f51c6` | prsti se prenose u sustavu kosti (`motionFingerAlignment`) | savijanje/raširenost 8.1/16.0 → 0.44/0.44° |
+| `b5f73f6` | hvat: drška u dlanu, omatanje prstiju, pištolj za rukohvat | mač: omatanje 47 → 150° |
+| `4bdbfdb` | novi mascot, izravni Manny rig bez UniRiga (`tools/autorig/direct_rig.py`) | 49 s umjesto ~4 min, validacija prolazi |
+| `e9010ab` | hvat uz štitnik (`defaultGrip` s mjerilom: dlan 7 cm ispod ruba štitnika, bez klizanja na štitnik); Look at the hand bira smjer koji tijelo ne zaklanja (`holdViewDirection`) | dlan 4.9/3.9 cm, vrhovi ≤ 0.8 cm, omatanje 104° (deblja kožna drška) |
+| `dfa3976` | Auto Rig: `run.py --backend auto` zadano — direct, a UniRig samo ako direct padne (direct izlaz ostaje u `<izlaz>-direct-failed`); gumb treba samo `.venv` + `direct_rig.py` (`Loom::autoRigBackendReady`) | mascot kroz `auto` prolazi direct putem |
+| (ovaj) | **ruke u pokretu na A-poziranom liku**: `motionLimbRestAlignment` u `LoomMotionRetarget.h` | vidi dolje |
 
-`b5f73f6` u detalju (`test_grab_real`, mascot-manny 1.80 m + `~/Downloads/bastard_sword__lowpoly.glb`):
-- točka dlana je bila **zapešće** (Manny nema `MiddleEnd`) → sad iz prstiju u stablu, 70 % prema zglobovima;
-- lik bez animacije nije savijao prste → `syncHoldHandLayers` napravi prazan klip "Pose";
-- omatanje: svi zglobovi zajedno u malim koracima + pokušaj od stisnute šake; vrh prsta (rig bez kosti
-  vrha) nosi rotacija zadnjeg zgloba; granice anatomske 90/110/90°;
-- dijagonalni power grip 20°, `pistolGrip` (rukohvat poprijeko na cijev, cijev naprijed za obje šake),
-  debljina drške prema dlanu, potraga položaja šake na dršci, collider za prste iz mreže 2 mm;
-- mač: dlan 4.6 cm (očekivano 4.6), omatanje 47 → 150°, vrhovi ≤ 1.0 cm od drške, bez prodora, 39 ms;
-- pištolj (Desert Eagle, 460k trokuta): rukohvat u dlanu, cijev naprijed, 2955 → 285 ms; mali prst
-  pada ispod rukohvata (šaka mascota je veća od rukohvata) — prihvatljivo, nije savršeno.
-- CLI za snimke hvata: `--lik <glb>`, `--tool <glb>`, `--uhvati desna|lijeva`, `--pogled-saka <yaw> <pitch>`
-  (npr. `./build/loom --mascott --tool ~/Downloads/bastard_sword__lowpoly.glb --uhvati desna --pogled-saka -1.2 -0.4 --snimi x.png`).
+**Ruke na A-poziranom liku (27.9.)** — korisnik je vidio ruke odmaknute/iskrivljene u svakom Kimodo
+pokretu. Uzrok: `retargetMotionToRig` radi `sourceWorld * targetRestWorld`, tj. pretpostavlja da je
+mirna poza lika T-poza kao kanonska poza Kimoda. Novi lik stoji u A-pozi, pa je svaka kost ruke kroz
+cijeli pokret nosila razliku A→T. Sad se za ključnicu, nadlakticu, podlakticu, bedro i potkoljenicu
+dodaje okret mirne kosti lika na smjer iste kosti u T-pozi izvora, a za šaku još i ravninu dlana
+(kažiprst × mali prst); prsti idu za šakom. Kod T-poziranog lika okret je ~jedinični.
+`tests/test_manny_arms.cpp` (skok `motion_1790419879047_00`, preskače se bez lokalnog lika): najveći kut
+nadlaktice/podlaktice lika prema izvoru **68 → 5°**; take "points a gun" 8-9°. Kriterij 15°.
 
-**HOLD u Inspectoru — provjereno na Xvfb-u (26.9. kasno):** sekcija **HOLD** umjesto plutajućeg TOOL EDITOR
-panela. Kliknuto i radi: Right hand / Left hand (hvat od ovog kadra), Other hand, Let go here (traka na
-timelineu staje, predmet ostaje gdje ga je šaka pustila), Remove, preseti (Open otvori prste), Hand on the
-tool (šaka klizi po predmetu), Flip, Turn palm, Look at the hand. Kod: `loom_app.cpp`, traži
-`//HOLD: sve o drzanju predmeta`. Popravljeno usput:
-- mač je u Inspectoru pokazivao **ANIMATOR lika** (`motionCharacterForEntity` se od toola popne do
-  `Scene_Root`); nakon hvata se raširio i gurnuo HOLD izvan pogleda → za tool nema Animatora;
-- **dlan je ležao na oštrici**: `defaultGrip` je stavljao `palm = axes[1]` (širina). Sad `axes[2]`
-  (plosnati dio u dlanu, oštrica/štitnik naprijed kao zglobovi). `test_grab_real` ima mjeru "oštrica":
-  0° → 90°, omatanje 150 → 162°, dlan 4.3 cm (očekivano 4.3);
-- OBJECT HUD je pokrivao šaku (ishodište toola je u dlanu) → za predmet u šaci ide u gornji desni kut;
-- Look at the hand je gledao kroz podlakticu → `lookAtHand`: sa strane palca, malo odozgo, odmak 6× veličina
-  šake. Isto iz CLI: `--pogled-saka auto` (odabir ostaje, snimka je ono što korisnik vidi);
-- klizač Hand on the tool je kod Flip skakao 12 → 88 % → postotak uvijek od istog kraja predmeta.
-
-**Novi mascot i izravni Manny rig bez UniRiga — U RADU, NIJE COMMITANO (26.9. noću):**
-- Korisnik je dao novi model: premješten iz `~/Downloads` u `assets/characters/HumanoidMascott.glb`
-  (47 MB, 400k vrhova, bez riga, A-poza, razdvojeni prsti; nije u gitu — `assets/` je necommitan).
-- UniRig na njemu predvidi samo **40 kostiju** (3 prsta po šaci) za seed 42, 1 i 7 → `manny_rig.py` ga
-  odbije. Korisnik je tražio "direktni Manny bez UniRiga", pa je napisan **`tools/autorig/direct_rig.py`**
-  (samo numpy, radi u Blenderu): zglobovi iz geometrije — međunožje (sredina x≈0), noge i kralježnica po
-  omjerima Manny predloška između izmjerenih sidara, ruka praćenjem horizontalnih presjeka (pazuh, vrh
-  ramena, zapešće = najuži presjek prije prstiju, lakat na 50.5 %), prsti kao grane stabla presjeka šake
-  (`finger_branches`: palac se odvoji prvi, ostali po udaljenosti od palca), zglobovi prstiju po omjerima
-  članaka; težine = najbliži segment kosti s uskim prijelazom, lijeva/desna strana odvojene. Izlaz je
-  raspored UniRig-52 (`bone_N`, isto stablo roditelja) → postojeći `manny_rig.py` + `hand_rig.py` +
-  `validate.py`.
-- `run.py --backend direct` (od 26.9. zadano je `auto`: prvo direct, a ako padne i UniRig je instaliran,
-  UniRig u isti izlaz; direct izlaz ostaje u `<izlaz>-direct-failed`. Editorov Auto Rig gumb koristi `auto`
-  i treba samo `.venv` + `direct_rig.py`, `vendor/UniRig` više nije uvjet):
-  `tools/autorig/.venv/bin/python tools/autorig/run.py --backend direct --input assets/characters/HumanoidMascott.glb --output tools/autorig/outputs/humanoid-mascott`
-  → 49 s (UniRig ~4 min), prolazi Blender validaciju. Slika zglobova preko rendera: ramena/laktovi/koljena
-  na zglobnim diskovima, svih 5 prstiju prati članke, lijevo = desno na mm.
-- `manny_rig.py`: **metakarpali** se sad stavljaju na pravac zapešće → baza svog prsta (omjer iz Manny
-  predloška, ~0.41) umjesto reziduala najbližih zglobova — kod raširenih prstiju je metakarpal malog
-  prsta prelazio preko prstenjaka (raširenost u `test_hand_rig` 2.49 → 0.66°). Mijenja i UniRig put.
-- Mjere (skripta u scratchpadu, isti kriterij kao zamka niže): šaka 427 → ~6200 vrhova; vrhovi prstiju
-  vezani za kost dalje od 3 cm 23.7 % → 3.9 % (desna) / 5.7 % (lijeva); kosti prstiju bez vrha 10/19 → samo
-  4 metakarpala (u Mannyju bez težina, tako i treba). `test_grab_real` 5/5: omatanje 162 → 175°, vrhovi
-  ≤ 0.8 cm, dlan 3.4/3.4 cm. `test_hand_rig` 10/10.
-- Kod prebačen na novi lik: `addHumanoidMascott` u `loom_app.cpp` (samo `humanoid-mascott`, bez starih
-  rezervi), `tests/test_hand_rig.cpp` i `tests/test_grab_real.cpp`. `test_unirig_fingers` ostaje na
-  starom `mascot-03` (vidi zamke).
-- Editor se gradi; snimke novog lika (`n0.png` cijeli lik, `n1.png` mač u desnoj s `--pogled-saka auto`)
-  su snimljene, ali **nisu pregledane**.
+**Kako se provjerava:**
+- `test_grab_real`, `test_hand_rig`, `test_hold`, `test_tool`, `test_manny_arms` (svi s lokalnim likom).
+- Snimke: `./build/loom --mascott --tool ~/Downloads/bastard_sword__lowpoly.glb --uhvati desna --pogled-saka auto --snimi x.png`;
+  pokret: `--pokret WeaverMotion/<take>/<take>_00.bvh --kadar 60`. Samo na vlastitom Xvfb-u.
+- Auto-rig: `tools/autorig/.venv/bin/python tools/autorig/run.py --input <glb> --output <mapa>` (+ `--backend direct|unirig`).
 
 **Zamke:**
-- `test_unirig_fingers` i `applyUniRigActionDetails` / UniRig preset mirne poze (`LoomMotionRetarget.h`,
-  `LoomRelaxedHands.h`) okreću prste i ruke oko **svjetskih osi** — podešeno za stari UniRig lik u T-pozi.
-  Na `rigged_direct52.glb` (A-poza) peace sign pada (kažiprst 53°, srednji 64° umjesto ≤ 25°). Glavni
-  mascot ide Manny putem pa to ne dira; kad se `mascot-03` obriše, test se preskače.
-- `pkill -f`/`pgrep -f` s uzorkom iz vlastite naredbe ubije i vlastitu ljusku — gasi samo po spremljenom PID-u.
-- (stari lik) **Mesh šake mascota je loš za prste**, ne algoritam: cijela desna šaka ~430 vrhova; 6 kostiju prstiju
-  (`index_01`, `middle_01`, `pinky_01`, `pinky_02`, `ring_02`, `thumb_01`) nije glavna kost nijednom vrhu;
-  24 % vrhova prstiju vezano je za kost dalje od 3 cm (neki `index_02` vrhovi 10.7 cm). Kod savijanja se
-  razvuku u "krhotine" — vidi se već u mirnoj pozi. Novi čišći model (odvojeni prsti, dovoljno petlji na
-  zglobovima, ~2-5k vrhova po šaci, T/A-poza s blago raširenim prstima) kroz auto-rig bi to riješio.
-- Kad mjeriš prste, kut bez predznaka laže (miješa bočni otklon sa savijanjem) — mjeri s predznakom u
-  ravnini savijanja (tako je "7° ostatak" bio artefakt).
-- Model uvezen kao `scene.gltf` (Sketchfab zip) ne prepozna se po imenu → ostane 514 m dug. Treba
-  procjena veličine iz oblika kad ime ništa ne kaže.
-- `WeaverMotion/Manny_reference.glb` kroz `--lik` se razleti (mjerilo/hijerarhija) — nije vezano za hvat.
-- Drugi agent (Codex) istodobno mijenja `loom_app.cpp`, Proceduru i render; commitaj samo svoje hunkove
-  (`git apply --cached` s izdvojenim hunkovima). Njihov build zna biti privremeno slomljen.
-- Xvfb `:78` je dvaput ugašen izvana; koristi vlastiti (npr. `:79`).
+- Direct rig radi za stojeći A/T-lik s rukama odmaknutim od tijela; **T-poza nije isprobana**
+  (horizontalni presjeci ruke tada ne rade) — tada uskače UniRig.
+- `applyUniRigActionDetails` i UniRig preset mirne poze okreću prste oko **svjetskih osi** (podešeno za
+  stari T-poza UniRig lik). Mascot ide Manny putem pa ga to ne dira; `test_unirig_fingers` se preskače.
+- Kad mjeriš prste, kut bez predznaka laže (miješa bočni otklon sa savijanjem) — mjeri s predznakom.
+- Model uvezen kao `scene.gltf` (Sketchfab zip) ne prepozna se po imenu → ostane 514 m dug.
+- `pkill -f`/`pgrep -f` s uzorkom iz vlastite naredbe ubije vlastitu ljusku — gasi po spremljenom PID-u.
+- Drugi agent (Codex) istodobno mijenja `loom_app.cpp`, compositor i render; commitaj samo svoje hunkove
+  (HEAD verzija + moje zamjene → `git hash-object -w` + `git update-index --cacheinfo`). `test_compositor`
+  (Relight) trenutno pada na njihovom necommitanom radu.
 
-**Sljedeći koraci, redom:**
-1. **Pregledati snimke novog lika** (`./build/loom --mascott --snimi x.png`, i s mačem:
-   `--tool ~/Downloads/bastard_sword__lowpoly.glb --uhvati desna --pogled-saka auto`): trga li se mesh
-   (oklop ramena, zdjelica, kablovi preko laktova), jesu li prsti čisti u hvatu. Ako se dijelovi trgaju:
-   u `direct_rig.skin_weights` kruto vezati zavarene dijelove i kad su dulji (sad samo < 8 % visine), a u
-   `manny_rig._rigidify_fragmented_mesh` ne vezati kruto UV-otoke koji prelaze zglob (sad svih 19914 otoka).
-2. Provjeriti Kimodo pokret na novom liku (hod, peace sign kroz Manny put) i `bend_preview.glb`.
-3. **Commit** (samo svoje): `tools/autorig/direct_rig.py`, `run.py`, `manny_rig.py`, `tests/test_hand_rig.cpp`,
-   `tests/test_grab_real.cpp`, hunk `addHumanoidMascott` u `loom_app.cpp` (tuđi hunkovi ostaju — isti
-   postupak kao 4e40b78: HEAD verzija + moje zamjene → `git update-index --cacheinfo`), HANDOVER; mjerenje
-   u `benchmarks/mjerenja.jsonl` + `MJERENJA.md`. `assets/characters/HumanoidMascott.glb` (47 MB) pitati
-   korisnika hoće li u git.
-4. **Obrisati stari lik** (korisnik je tražio): `tools/autorig/outputs/mascot-manny`, `mascot-01..03`,
-   `rig_*` (sve Clockwork Sentinel). Prije toga odlučiti o `test_unirig_fingers` (preskakat će se).
-5. ~~`direct` kao zadani backend Auto Rig gumba~~ — GOTOVO 26.9. (`auto`, UniRig kao rezerva). Otvoreno:
-   T-poza nije isprobana na directu (horizontalni presjeci ruke) — ako padne, radi UniRig rezerva.
-6. UniRig-52 detalji pokreta i preset mirne poze s osima iz dlana umjesto svjetskih (vidi zamke).
-7. Stare stavke: veličina toola bez imena (514 m), pištolj (okidač, high grip, dvoručni), hvat kroz
-   Kimodo klip, Right hand → Other hand na istom mjestu (dvoklik), Animator stavke (`animator-plan-2026-09`).
+**Sljedeći koraci:**
+1. Isprobati direct rig na liku u T-pozi.
+2. UniRig-52 detalji pokreta i preset mirne poze s osima iz dlana umjesto svjetskih.
+3. Veličina toola bez imena (procjena iz oblika), pištolj (okidač, high grip, dvoručni), hvat kroz Kimodo
+   klip, Right hand → Other hand na istom mjestu, Animator stavke (`animator-plan-2026-09`).
 
 ### 10. AgentOfWeavers i WeaverProcedura — STANJE 27.9. (Claude, Procedura sekcija)
 
