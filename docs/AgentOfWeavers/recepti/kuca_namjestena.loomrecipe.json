@@ -81,7 +81,7 @@
     "type": "slab",
     "thickness": 0.2,
     "inset": 0.1,
-    "top_ceiling": true,
+    "top_ceiling": false,
     "foundation": true
    }
   },

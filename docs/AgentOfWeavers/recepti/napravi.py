@@ -91,7 +91,7 @@ def building(name, shape, width, depth, wing, floors, roof_type, pitch=35, wall_
     walls = r.node({"type": "walls", "thickness": 0.25, "windows": True, "window_width": 1.2, "window_height": 1.4,
                     "sill_height": 0.9, "window_spacing": 3.0, "door": True, "door_edge": 0, "door_width": 1.0,
                     "door_height": 2.2})
-    slab = r.node({"type": "slab", "thickness": 0.2, "inset": 0.1, "top_ceiling": True, "foundation": True})
+    slab = r.node({"type": "slab", "thickness": 0.2, "inset": 0.1, "top_ceiling": with_roof, "foundation": True})
     roof = None if not with_roof else r.node({"type": "roof", "roof_type": roof_type, "pitch_degrees": pitch, "overhang": 0.4,
                    "thickness": 0.25, "parapet_height": 0.9 if roof_type == "flat" else 0.0})
     interior = r.node({"type": "interior", "partition_thickness": 0.12, "door_leaves": True, "floor_finish": True,

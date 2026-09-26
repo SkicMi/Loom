@@ -10,7 +10,7 @@ Gotovo: asseti kao zasebni recepti, `AssetLibrary`, `Furnish` → Placements (po
 `test_procedura_assets` 15/15, panel (gumb Furnish, "Create house" s namještajem). Detalji u Prošle.
 
 **Sljedeće (redom):**
-1. Kliknuti na Xvfb (ne na :1): Create house, gumb Furnish, `--recept` s namještenom kućom; snimka.
+1. ~~Klik-test na Xvfb~~ — gotovo, vidi Prošle.
 2. Namještaj: kutni kuhinjski niz (L), gornji kuhinjski elementi iznad niza (ne na prozorskom zidu), tepih, lampe;
    stolice oko stola zakrenute i djelomično ispod stola (sada 2 cm odmaknute).
 3. Više stilova po kategoriji (2–3 asseta: moderan, rustikalni) → Furnish ih bira po seedu jednom po kući (već radi).
@@ -47,6 +47,15 @@ Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
 6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
 
 ## Prošle
+
+### 2026-09-26 — Klik-test namještaja u editoru (Xvfb :93)
+- Editor pokrenut s `HOME` u scratchpadu: autosave nespremljene scene ide u `$HOME/.local/share/loom`, pa se korisnikov
+  autosave ne dira i nema dijaloga "Restore Autosave".
+- `--recept kuca_namjestena` učita i izračuna kuću; gumb **Furnish** doda Furnish + Place Assets iza Room Splita
+  (14 → 16 čvorova, poruka "Join Place Assets to the output with a Merge"); **New Recipe → Create house** daje L kuću
+  s namještajem (11 čvorova / 14 veza), bez greške.
+- Testni recept bez krova imao je strop zadnjeg kata preko namještaja → `napravi.py`: `top_ceiling` samo s krovom.
+  Snimka odozgo: kreveti, ormari, sofa, kuhinjski stol sa stolicama, kada/WC/umivaonik, boje fabric/ceramic.
 
 ### 2026-09-26 — Namještaj: asseti kao recepti, Furnish, Place Assets (shema 8)
 - Korisnik: "podaci moraju dolaziti zasebno" → asset je zaseban Procedura recept (`procedura/assets/furniture/
