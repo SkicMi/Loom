@@ -215,6 +215,30 @@ int main(){
                  extruded.indices.size() > cube.indices.size() && std::abs(extrudedMaxX-1.25f) < 1e-5f,
                  fmt("ready %d, triangles %zu->%zu, maxX %.4f, %s",extrudeReady,cube.indices.size()/3,
                      extruded.indices.size()/3,double(extrudedMaxX),error.c_str()));
+    using ExtrudePositionKey = std::tuple<int,int,int>;
+    using ExtrudeEdgeKey = std::pair<ExtrudePositionKey,ExtrudePositionKey>;
+    std::map<ExtrudeEdgeKey,int> extrudeEdgeIncidence;
+    auto extrudePositionKey = [](const glm::vec3& point){
+        return ExtrudePositionKey{int(std::lround(point.x*10000.0f)),int(std::lround(point.y*10000.0f)),
+                                  int(std::lround(point.z*10000.0f))};
+    };
+    if(extrudeReady){
+        for(std::size_t i = 0; i+2 < extruded.indices.size(); i += 3){
+            const uint32_t ids[] = {extruded.indices[i],extruded.indices[i+1],extruded.indices[i+2]};
+            for(int edge = 0; edge < 3; ++edge){
+                ExtrudePositionKey a = extrudePositionKey(extruded.vertices[ids[edge]].position);
+                ExtrudePositionKey b = extrudePositionKey(extruded.vertices[ids[(edge+1)%3]].position);
+                if(b < a) std::swap(a,b);
+                ++extrudeEdgeIncidence[{a,b}];
+            }
+        }
+    }
+    bool extrudeWatertight = extrudeReady && !extrudeEdgeIncidence.empty();
+    for(const auto& edge : extrudeEdgeIncidence) extrudeWatertight &= edge.second == 2;
+    report.check("Extrude keeps every geometric edge watertight",extrudeWatertight,
+                 fmt("%zu edges, %zu edges have incidence other than two",extrudeEdgeIncidence.size(),
+                     std::size_t(std::count_if(extrudeEdgeIncidence.begin(),extrudeEdgeIncidence.end(),
+                         [](const auto& edge){ return edge.second != 2; }))));
     extrudeSettings.faceIndex = uint32_t(cube.indices.size()/3);
     Proc::MeshData rejectedExtrusion;
     report.check("Extrude rejects a seed triangle outside the mesh",
@@ -296,8 +320,39 @@ int main(){
     std::string bevelAfterExtrudeError;
     const bool bevelAfterExtrudeReady = preBevelResult.succeeded &&
         Proc::bevelMesh(preBevelResult.mesh,Proc::BevelNode{},bevelAfterExtrude,bevelAfterExtrudeError);
+    bevelEdgeIncidence.clear();
+    if(bevelAfterExtrudeReady){
+        for(std::size_t i = 0; i+2 < bevelAfterExtrude.indices.size(); i += 3){
+            const uint32_t ids[] = {bevelAfterExtrude.indices[i],bevelAfterExtrude.indices[i+1],
+                                    bevelAfterExtrude.indices[i+2]};
+            for(int edge = 0; edge < 3; ++edge){
+                PositionKey a = positionKey(bevelAfterExtrude.vertices[ids[edge]].position);
+                PositionKey b = positionKey(bevelAfterExtrude.vertices[ids[(edge+1)%3]].position);
+                if(b < a) std::swap(a,b);
+                ++bevelEdgeIncidence[{a,b}];
+            }
+        }
+    }
+    const bool extrudedBevelIsClosed = bevelAfterExtrudeReady && !bevelEdgeIncidence.empty() &&
+        std::all_of(bevelEdgeIncidence.begin(),bevelEdgeIncidence.end(),[](const auto& edge){ return edge.second == 2; });
+    std::string openExtrudedBevelEdges;
+    for(const auto& edge : bevelEdgeIncidence){
+        if(edge.second != 1) continue;
+        const auto& a = edge.first.first;
+        const auto& b = edge.first.second;
+        openExtrudedBevelEdges += " [" + std::to_string(std::get<0>(a)) + "," +
+            std::to_string(std::get<1>(a)) + "," + std::to_string(std::get<2>(a)) + "->" +
+            std::to_string(std::get<0>(b)) + "," + std::to_string(std::get<1>(b)) + "," +
+            std::to_string(std::get<2>(b)) + "]";
+    }
     const Proc::EvaluationResult meshOperationResult = Proc::evaluate(meshOperationRecipe);
     report.check("Bevel accepts transformed extruded geometry",bevelAfterExtrudeReady,bevelAfterExtrudeError);
+    report.check("Bevel keeps an extruded mesh watertight",extrudedBevelIsClosed,
+                 fmt("%zu geometric edges (%zu open, %zu with incidence above two)",bevelEdgeIncidence.size(),
+                     std::size_t(std::count_if(bevelEdgeIncidence.begin(),bevelEdgeIncidence.end(),
+                         [](const auto& edge){ return edge.second == 1; })),
+                     std::size_t(std::count_if(bevelEdgeIncidence.begin(),bevelEdgeIncidence.end(),
+                         [](const auto& edge){ return edge.second > 2; }))) + openExtrudedBevelEdges);
     report.check("Recipe evaluator chains Add Primitive, Move, Rotate, Scale, Extrude, and Bevel",
                  meshOperationResult.succeeded && meshOperationResult.outputNode == bevelId && !meshOperationResult.mesh.empty(),
                  meshOperationResult.error);

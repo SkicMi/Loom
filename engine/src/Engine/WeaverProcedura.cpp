@@ -981,7 +981,7 @@ bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& outpu
         const glm::vec3 normalA = patches[first.patch].normal;
         const glm::vec3 normalB = patches[second.patch].normal;
         glm::vec3 edgeNormal;
-        if(!normalized(normalA+normalB,edgeNormal) || glm::dot(normalA,normalB) > 0.9999f) continue;
+        if(!normalized(normalA+normalB,edgeNormal)) continue;
 
         uint32_t aStart = first.innerStart, aEnd = first.innerEnd;
         uint32_t bStart = 0, bEnd = 0;
@@ -992,6 +992,20 @@ bool bevelMesh(const MeshData& input, const BevelNode& settings, MeshData& outpu
         }else{
             error = "bevel edge endpoints do not match";
             return false;
+        }
+
+        // Coplanar patches can share a boundary after extrusion. Their inset caps
+        // leave a planar seam; fill it instead of leaving a visible open slot.
+        if(glm::dot(normalA,normalB) > 0.9999f){
+            appendOrientedTriangle(generated,aStart,aEnd,bEnd,normalA);
+            appendOrientedTriangle(generated,aStart,bEnd,bStart,normalA);
+            CornerPath startPath, endPath;
+            startPath.normal = endPath.normal = normalA;
+            startPath.ring = {aStart,bStart};
+            endPath.ring = {aEnd,bEnd};
+            cornerPaths[first.startKey].push_back(std::move(startPath));
+            cornerPaths[first.endKey].push_back(std::move(endPath));
+            continue;
         }
 
         const glm::vec3 pStart = input.vertices[first.start].position;
