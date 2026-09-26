@@ -14,6 +14,8 @@
 
 #include <TracerGpu/GpuTracer.h>
 #include <Tracer/Renderer.h>
+#include <Tracer/Denoise.h>
+#include <Tracer/Post.h>
 
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -297,6 +299,65 @@ int main(){
         int worst = 0;
         for(size_t i = 0; i < shown.size(); ++i) worst = std::max(worst, std::abs(int(shown[i]) - int(expected[i])));
         report.check("prikaz = procesor", shown.size() == expected.size() && worst <= 1, fmt("najveca razlika %d", worst));
+    }
+
+    //-- 5. filtar i post na kartici = procesorski A-trous + composite + applyPost + toDisplay -----------
+    {
+        Tracer::RenderSettings settings;
+        settings.samples = 32;
+        TracerGpu::GpuTracer tracer(loom, pipelines, Tracer::compile(mixed(0.3f)), settings);
+        tracer.renderAll();
+        TracerGpu::DisplayOptions options;
+        options.view = Tracer::ViewTransform::AgX;
+        options.exposure = 0.4f;
+        options.denoise = true;
+        options.post.enabled = true;
+        options.post.bloom = 0.15f;
+        options.post.bloomRadius = 0.05f;
+        options.post.bloomThreshold = 0.5f;
+        options.post.vignette = 0.3f;
+        options.post.chromaticAberration = 1.5f;
+        options.post.temperature = 5000.0f;
+        options.post.contrast = 1.2f;
+        options.post.saturation = 0.8f;
+        options.post.grain = 0.05f;
+        options.grainSeed = 1234u;
+        const auto start = std::chrono::steady_clock::now();
+        loom.renderer.beginFrame();
+        tracer.recordDisplay(options);
+        loom.renderer.endFrame();
+        const std::vector<uint8_t> shown = tracer.readDisplay();
+        const double gpuSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        Tracer::Frame frame = tracer.readFrame(false);
+        const auto cpuStart = std::chrono::steady_clock::now();
+        Tracer::denoiseFrame(frame, Tracer::Denoiser::ATrous);
+        std::vector<float> beauty = Tracer::composite(frame, Tracer::Backdrop::Environment);
+        Tracer::PostSettings post = options.post;
+        post.exposure = options.exposure;
+        post.grainSeed = options.grainSeed;
+        Tracer::applyPost(beauty, frame.width, frame.height, post);
+        const std::vector<uint8_t> expected = Tracer::toDisplay(beauty, frame.width, frame.height, Tracer::ViewTransform::AgX, 0.0f);
+        const double cpuSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - cpuStart).count();
+        int worst = 0;
+        double mean = 0.0;
+        for(size_t i = 0; i < shown.size() && i < expected.size(); ++i){
+            const int d = std::abs(int(shown[i]) - int(expected[i]));
+            worst = std::max(worst, d);
+            mean += d;
+        }
+        mean /= double(std::max<size_t>(1, shown.size()));
+        //Filtar bez posta mijenja sliku (inace test ne bi mjerio filtar)
+        options.post.enabled = false;
+        options.denoise = false;
+        loom.renderer.beginFrame();
+        tracer.recordDisplay(options);
+        loom.renderer.endFrame();
+        const std::vector<uint8_t> plain = tracer.readDisplay();
+        int changed = 0;
+        for(size_t i = 0; i < plain.size(); ++i) changed = std::max(changed, std::abs(int(plain[i]) - int(shown[i])));
+        report.check("filtar i post na kartici = procesor", shown.size() == expected.size() && worst <= 3 && mean < 0.2 && changed > 20,
+                     fmt("najveca razlika %d, srednja %.3f (bez filtra i posta razlika %d); kartica %.3f s, procesor %.3f s",
+                         worst, mean, changed, gpuSeconds, cpuSeconds));
     }
 
     report.checkNoValidationMessages();

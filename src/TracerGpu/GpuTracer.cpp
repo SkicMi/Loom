@@ -24,6 +24,7 @@ namespace{
 constexpr uint32_t None = 0xFFFFFFFFu;
 constexpr uint32_t TraceBindings = 22;
 constexpr uint32_t ResolveBindings = 7;
+constexpr uint32_t FinishBindings = 16;
 
 //Raspored mora biti isti kao Params u shaders/tracer.slang: samo vec4 i uvec4, pa std430 nema
 //sto poravnati drukcije nego C++
@@ -57,6 +58,16 @@ static_assert(sizeof(GpuLight) == 80, "Light mora odgovarati shaders/tracer.slan
 
 struct TracePush{ uint32_t sampleIndex, rowStart, rowCount, padding; };
 struct ResolvePush{ uint32_t width, height, backdrop, view; float gain; uint32_t plate, checker, padding; };
+struct FinishPush{
+    uint32_t mode, width, height, step;
+    uint32_t srcOffset, dstOffset, srcWidth, srcHeight;
+    uint32_t dstWidth, dstHeight, backdrop, view;
+    uint32_t plate, flags, grainSeed, padding;
+    float gain, bloom, bloomThreshold, bloomScale;
+    float chromatic, vignette, contrast, saturation;
+    float grain, balanceR, balanceG, balanceB;
+};
+static_assert(sizeof(FinishPush) == 112, "FinishPush mora odgovarati shaders/tracer_finish.slang");
 
 float bitsToFloat(uint32_t bits){ float f; std::memcpy(&f, &bits, 4); return f; }
 
@@ -80,10 +91,11 @@ ComputePipelineConfig configFor(const char* shader, uint32_t bindings, uint32_t 
 }
 
 struct Pipelines::State{
-    VulkanComputePipeline trace, resolve;
+    VulkanComputePipeline trace, resolve, finish;
     explicit State(const VulkanDevice& device)
     : trace(device, configFor("tracer.comp.spv", TraceBindings, sizeof(TracePush))),
-      resolve(device, configFor("tracer_resolve.comp.spv", ResolveBindings, sizeof(ResolvePush))){}
+      resolve(device, configFor("tracer_resolve.comp.spv", ResolveBindings, sizeof(ResolvePush))),
+      finish(device, configFor("tracer_finish.comp.spv", FinishBindings, sizeof(FinishPush))){}
 };
 
 Pipelines::Pipelines(LoomInitializer& loom) : state(std::make_unique<State>(loom.device)){}
@@ -92,7 +104,11 @@ Pipelines::~Pipelines() = default;
 struct GpuTracer::Buffers{
     std::vector<VulkanBuffer> owned;        //sve, redom vezanja 0..19 shadera tracera
     std::optional<VulkanBuffer> display;
-    std::optional<ComputeMaterial> trace, resolve;
+    std::optional<ComputeMaterial> trace, resolve, finish;
+    //Za filtar i post na kartici, stvoreno kad prvi put zatreba: A, B, normala+dubina,
+    //albedo+pokrivenost, slika, piramida bloom-a
+    std::vector<VulkanBuffer> finishing;
+    std::vector<glm::uvec4> levels;         //piramida: pocetak, sirina, visina
 };
 
 GpuTracer::GpuTracer(LoomInitializer& loom_, Pipelines& pipelines_, std::shared_ptr<const Tracer::CompiledScene> scene,
@@ -321,6 +337,7 @@ uint32_t GpuTracer::record(uint32_t rows){
 }
 
 void GpuTracer::recordDisplay(const DisplayOptions& options){
+    if(options.denoise || options.post.active()){ recordFinish(options); return; }
     ResolvePush push{};
     push.width = size[0];
     push.height = size[1];
@@ -330,6 +347,104 @@ void GpuTracer::recordDisplay(const DisplayOptions& options){
     push.plate = backplateTexture;
     push.checker = options.checker ? 1u : 0u;
     loom.renderer.dispatch(*buffers->resolve, (size[0] + 7) / 8, (size[1] + 7) / 8, 1, &push, sizeof(push));
+}
+
+void GpuTracer::recordFinish(const DisplayOptions& options){
+    const VulkanDevice& device = loom.device;
+    const uint32_t w = size[0], h = size[1];
+    const vk::DeviceSize pixels = vk::DeviceSize(w) * h;
+    if(!buffers->finish){
+        //Piramida: razina 0 puna velicina, pa pola, pola... do 1x1
+        uint32_t offset = 0, lw = w, lh = h;
+        buffers->levels.push_back(glm::uvec4(0, w, h, 0));
+        offset += lw * lh;
+        while(lw > 1 || lh > 1){
+            lw = std::max(1u, (lw + 1) / 2);
+            lh = std::max(1u, (lh + 1) / 2);
+            buffers->levels.push_back(glm::uvec4(offset, lw, lh, 0));
+            offset += lw * lh;
+        }
+        const vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+                                           vk::BufferUsageFlagBits::eTransferDst;
+        for(int k = 0; k < 5; ++k) buffers->finishing.emplace_back(device, std::max<vk::DeviceSize>(pixels * 16, 16), usage, MemoryUsage::GPU_ONLY);
+        buffers->finishing.emplace_back(device, std::max<vk::DeviceSize>(vk::DeviceSize(offset) * 16, 16), usage, MemoryUsage::GPU_ONLY);
+        buffers->finish.emplace(device, loom.getDescriptorPool(), pipelines.state->finish);
+        const uint32_t accumulators[7] = {13, 14, 15, 16, 17, 18, 19};
+        for(uint32_t b = 0; b < 7; ++b) buffers->finish->setStorageBuffer(b, buffers->owned[accumulators[b]]);
+        buffers->finish->setStorageBuffer(7, buffers->owned[6]);
+        buffers->finish->setStorageBuffer(8, buffers->owned[7]);
+        for(uint32_t b = 0; b < 6; ++b) buffers->finish->setStorageBuffer(9 + b, buffers->finishing[b]);
+        buffers->finish->setStorageBuffer(15, *buffers->display);
+    }
+    const Tracer::PostSettings& s = options.post;
+    const bool post = s.active();
+    FinishPush push{};
+    push.width = w;
+    push.height = h;
+    push.backdrop = options.backdrop == Tracer::Backdrop::Environment ? 0u : options.backdrop == Tracer::Backdrop::Transparent ? 1u : 2u;
+    push.view = options.view == Tracer::ViewTransform::AgX ? 1u : 0u;
+    push.plate = backplateTexture;
+    push.flags = (options.checker ? 1u : 0u) | (options.denoise ? 2u : 0u) | (post ? 4u : 0u);
+    push.grainSeed = options.grainSeed;
+    push.gain = std::exp2(options.exposure);
+    push.bloom = std::clamp(s.bloom, 0.0f, 1.0f);
+    push.bloomThreshold = s.bloomThreshold;
+    push.chromatic = s.chromaticAberration;
+    push.vignette = s.vignette;
+    push.contrast = s.contrast;
+    push.saturation = s.saturation;
+    push.grain = s.grain;
+    //Balans bijele kao Post.cpp
+    float white[3] = {1.0f, 1.0f, 1.0f}, neutral[3];
+    Tracer::blackBody(s.temperature, white);
+    Tracer::blackBody(6500.0f, neutral);
+    glm::vec3 balance(white[0] / neutral[0], white[1] / neutral[1], white[2] / neutral[2]);
+    balance.g *= 1.0f - 0.25f * std::clamp(s.tint, -1.0f, 1.0f);
+    balance /= 0.2126f * balance.r + 0.7152f * balance.g + 0.0722f * balance.b;
+    push.balanceR = balance.r; push.balanceG = balance.g; push.balanceB = balance.b;
+
+    auto run = [&](uint32_t mode, uint32_t gx, uint32_t gy){
+        push.mode = mode;
+        loom.renderer.dispatch(*buffers->finish, (gx + 7) / 8, (gy + 7) / 8, 1, &push, sizeof(push));
+    };
+    //Filtar: priprema i pet prolaza A <-> B (kao Denoise.cpp); kompozit cita posljednji
+    run(0, w, h);
+    bool inB = false;
+    if(options.denoise){
+        for(int k = 0; k < 5; ++k){
+            push.step = 1u << k;
+            push.flags = (push.flags & ~16u) | (inB ? 16u : 0u);
+            run(1, w, h);
+            inB = !inB;
+        }
+    }
+    push.flags = (push.flags & ~16u) | (inB ? 16u : 0u);
+    run(2, w, h);
+    if(post && s.bloom > 0.0f){
+        const float radius = std::max(2.0f, s.bloomRadius * float(w));
+        const int wanted = std::clamp(int(std::ceil(std::log2(radius))), 1, 12);
+        const int top = std::min(wanted, int(buffers->levels.size()) - 1);
+        if(top >= 1){
+            run(3, w, h);
+            for(int k = 1; k <= top; ++k){
+                const glm::uvec4 from = buffers->levels[size_t(k - 1)], to = buffers->levels[size_t(k)];
+                push.srcOffset = from.x; push.srcWidth = from.y; push.srcHeight = from.z;
+                push.dstOffset = to.x; push.dstWidth = to.y; push.dstHeight = to.z;
+                run(4, to.y, to.z);
+            }
+            for(int k = top - 1; k >= 1; --k){
+                const glm::uvec4 from = buffers->levels[size_t(k + 1)], to = buffers->levels[size_t(k)];
+                push.srcOffset = from.x; push.srcWidth = from.y; push.srcHeight = from.z;
+                push.dstOffset = to.x; push.dstWidth = to.y; push.dstHeight = to.z;
+                run(5, to.y, to.z);
+            }
+            const glm::uvec4 first = buffers->levels[1];
+            push.srcOffset = first.x; push.srcWidth = first.y; push.srcHeight = first.z;
+            push.bloomScale = 1.0f / float(top);
+            run(6, w, h);
+        }
+    }
+    run(7, w, h);
 }
 
 std::vector<uint8_t> GpuTracer::readDisplay(){

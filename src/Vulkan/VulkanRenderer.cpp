@@ -1364,7 +1364,8 @@ void VulkanRenderer::recordDispatch(const ComputeMaterial& material,
         //argumente naredbe - to je zaseban pristup i mora stajati izrijekom. Bez njega upis
         //prethodnog dispatcha ne postane vidljiv dohvatu grupa: llvmpipe to prezivi jer je
         //serijski, a NVIDIA procita staro i dispatcha smece
-        barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead
+        //eShaderWrite: sljedeci dispatch smije pisati isto mjesto (ping-pong, razine piramide)
+        barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eTransferRead
                               | vk::AccessFlagBits2::eHostRead | vk::AccessFlagBits2::eIndirectCommandRead;
 
         vk::DependencyInfo dep;

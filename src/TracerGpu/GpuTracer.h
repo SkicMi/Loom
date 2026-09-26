@@ -19,6 +19,7 @@
 //=============================================================================================
 #include <Tracer/Compiled.h>
 #include <Tracer/Film.h>
+#include <Tracer/Post.h>
 #include <Tracer/Renderer.h>
 
 #include <cstdint>
@@ -44,6 +45,11 @@ struct DisplayOptions{
     Tracer::ViewTransform view = Tracer::ViewTransform::Standard;
     float exposure = 0.0f;
     bool checker = false;           //prozirno preko sahovnice (prozor editora)
+    //Filtar suma (A-trous) i post na kartici: slika koja se cisti izgleda kao gotov kadar
+    //(shaders/tracer_finish.slang). Bez njih ide jednostavni resolve
+    bool denoise = false;
+    Tracer::PostSettings post;      //exposure gore ima prednost
+    uint32_t grainSeed = 0;
 };
 
 class GpuTracer{
@@ -61,6 +67,8 @@ public:
 
     //Unutar kadra: slika za prikaz u buffer (poslije record istog kadra)
     void recordDisplay(const DisplayOptions& options);
+    //Filtar i post (recordDisplay ga zove kad su ukljuceni)
+    void recordFinish(const DisplayOptions& options);
     //Izvan kadra: ceka karticu i cita sliku za prikaz (RGBA8, sRGB)
     std::vector<uint8_t> readDisplay();
 

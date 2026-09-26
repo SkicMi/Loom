@@ -86,6 +86,10 @@ public:
                 options.view = job.options.view;
                 options.exposure = job.options.exposure;
                 options.checker = true;
+                //Pregled kao gotov kadar: filtar suma i post na kartici (isti kao displayImage)
+                options.denoise = job.options.denoise;
+                options.post = job.options.post;
+                options.grainSeed = uint32_t(std::llround(job.frame)) * 7919u + job.options.post.grainSeed;
                 tracer->recordDisplay(options);
                 previewRequested = true;
             }

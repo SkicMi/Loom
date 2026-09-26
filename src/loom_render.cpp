@@ -165,6 +165,7 @@ int main(int argc, char** argv){
             config.width = 64;
             config.height = 64;
             config.headless = true;
+            config.maxDescriptorSets = 256;        //tracer: trace, resolve i filtar/post na kartici
             config.appName = "loom-render";
             config.engineName = "Loom";
             loom = std::make_unique<LoomInitializer>(config);
