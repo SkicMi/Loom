@@ -47,7 +47,14 @@ Assets/Asset padaju s razlogom. Editor koristi `defaultAssetLibrary()` (LOOM_ROO
 Asset ima i `style` (basic / modern / rustic, zatvoren popis, samo dodavanje; bez polja = basic). `Furnish.style`
 daje cijeloj kući jedan stil (prazno = po seedu); kategorija bez asseta tog stila uzima basic. 51 asset: 22 basic,
 15 modern, 14 rustic.
-Kategorije: bed, nightstand, wardrobe, desk, chair, sofa, armchair, coffee_table, tv_stand, shelf, table,
+Alati, oružje i rekviziti su isti format (mape `tools/`, `weapons/`, `props/`, uče se odvojeno od namještaja).
+Zatvoren popis `assetCategories()` s vrstom `assetKind()`: furniture / tool (hammer, axe, saw, shovel, pickaxe,
+wrench, screwdriver, knife) / weapon (sword, spear, mace, club) / prop (crate, barrel, bucket, lantern, bottle,
+book, plant_pot, chest). Nepoznata kategorija ne učita se. Prostor alata: kraj drške na y = 0, glava/oštrica prema
++Y, udarna strana prema +Z. Alat i oružje moraju imati `grips` (polja Warp Grip: point, axis, palm, thickness,
+preset, hand; brojevi smiju biti `{"param"}`), preset iz poza šake (grip, pistol, cup, fist, point, relaxed, open).
+`writeGlb` (src/LoomProceduraGlb.h) izvozi mesh s hvatovima u `extras.loom_tool`.
+Kategorije namještaja: bed, nightstand, wardrobe, desk, chair, sofa, armchair, coffee_table, tv_stand, shelf, table,
 kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet, rug, floor_lamp, table_lamp, wall_cabinet.
 Placement ima i `base` (visina dna iznad poda: lampa na ormariću, gornji element) i `under` (indeks stola pod koji je
 stolica uvučena); komadi koji se ne preklapaju po visini, stolica pod svojim stolom i tepih nisu sudar.

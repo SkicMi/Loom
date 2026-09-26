@@ -449,6 +449,25 @@ struct AssetInfo{
 // Parameter values by name; parameters that are not listed keep their default.
 using AssetParameters = std::vector<std::pair<std::string, float>>;
 
+// Where a hand holds an asset, in asset space; the same fields as Warp's Grip, so a generated
+// tool goes straight into Loom's hold. axis runs along the handle from the little finger toward the
+// thumb (toward the head or blade), palm from the handle toward the palm.
+struct AssetGrip{
+    std::string name = "Main";
+    glm::vec3 point{0.0f};
+    glm::vec3 axis{0.0f, 1.0f, 0.0f};
+    glm::vec3 palm{1.0f, 0.0f, 0.0f};
+    float thickness = 0.0f;            // handle radius
+    std::string preset = "grip";       // finger pose: grip, pistol, cup, fist, point, relaxed, open
+    int hand = 0;                      // 0 either, 1 right, 2 left
+};
+
+// Every asset category, a closed list (append only), and its kind: furniture, tool, weapon or prop.
+// Tools and weapons are held, so their assets must carry a grip. Tool space: the handle's end on
+// the floor (y = 0), the head or blade up +Y, the striking edge or face toward +Z.
+const std::vector<std::string>& assetCategories();
+std::string assetKind(const std::string& category);    // empty for an unknown category
+
 class AssetLibrary{
 public:
     virtual ~AssetLibrary() = default;
@@ -459,6 +478,11 @@ public:
                         std::string& error) const = 0;
     virtual bool build(const std::string& id, const AssetParameters& parameters, MeshData& output,
                        std::string& error) const = 0;
+    // Grips for these parameters; none for most furniture.
+    virtual bool grips(const std::string&, const AssetParameters&, std::vector<AssetGrip>& output, std::string&) const{
+        output.clear();
+        return true;
+    }
 };
 
 // Categories Furnish asks for; a library may hold more (tools, props).

@@ -726,6 +726,27 @@ const std::vector<std::string>& furnitureCategories(){
     return names;
 }
 
+const std::vector<std::string>& assetCategories(){
+    static const std::vector<std::string> names = [&]{
+        std::vector<std::string> all = furnitureCategories();
+        for(const char* name : {"hammer", "axe", "saw", "shovel", "pickaxe", "wrench", "screwdriver", "knife",
+                                "sword", "spear", "mace", "club",
+                                "crate", "barrel", "bucket", "lantern", "bottle", "book", "plant_pot", "chest"})
+            all.push_back(name);
+        return all;
+    }();
+    return names;
+}
+
+std::string assetKind(const std::string& category){
+    const auto& furniture = furnitureCategories();
+    if(std::find(furniture.begin(), furniture.end(), category) != furniture.end()) return "furniture";
+    for(const char* name : {"hammer", "axe", "saw", "shovel", "pickaxe", "wrench", "screwdriver", "knife"}) if(category == name) return "tool";
+    for(const char* name : {"sword", "spear", "mace", "club"}) if(category == name) return "weapon";
+    const auto& all = assetCategories();
+    return std::find(all.begin(), all.end(), category) != all.end() ? "prop" : "";
+}
+
 std::vector<std::string> assetsInCategory(const AssetLibrary& library, const std::string& category){
     std::vector<std::string> result;
     for(const std::string& id : library.ids()){

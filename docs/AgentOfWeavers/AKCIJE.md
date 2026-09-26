@@ -13,7 +13,9 @@ Gotovo: asseti kao zasebni recepti, `AssetLibrary`, `Furnish` → Placements (po
 1. ~~Klik-test na Xvfb~~ — gotovo, vidi Prošle.
 2. ~~Namještaj: kutni niz, gornji elementi, tepisi, lampe, stolice pod stolom~~ — gotovo, vidi Prošle.
 3. ~~Stilovi~~ — gotovo, vidi Prošle.
-4. Asseti za alate/rekvizite (isti format) — kategorije izvan namještaja; AI ih uči zasebno od kuća.
+4. ~~Asseti za alate/rekvizite~~ — gotovo, vidi Prošle. Ostaje: gumb "Export GLB" u panelu i uvoz koji čita
+   `extras.loom_tool` (hvat iz recepta umjesto procjene iz oblika) — oboje dira tuđe datoteke (LoomPbr.h za boje,
+   uvoz alata u loom_app/LoomImporter), pa prvo pitati korisnika.
 5. Faza 3 (`ProceduraGen`) može sad bilježiti i Placements u JSONL.
 
 ## Buduće
@@ -46,6 +48,23 @@ Redom kojim se radi; kad se počne, stavka ide u Sadašnje.
 6. **Faza 6** — skaliranje, kontrastni parovi za uređivanje, vizualni evaluator.
 
 ## Prošle
+
+### 2026-09-26 — Alati, oružje i rekviziti kao asseti (s hvatom za šaku)
+- Zatvoren popis kategorija (`assetCategories()`, `assetKind()`), 20 novih asseta u `procedura/assets/{tools,weapons,
+  props}` (čekić, sjekira, pila, lopata, pijuk, ključ, odvijač, nož; mač, koplje, buzdovan, toljaga; sanduk, bačva,
+  kanta, fenjer, boca, knjiga, tegla s biljkom, škrinja), ukupno 71 asset.
+- `AssetGrip` = polja Warp Grip; `AssetLibrary::grips(id, parametri)`; hvat ovisi o parametrima (dulja drška,
+  hvat drugdje). Alat/oružje bez hvata, nepoznat preset ili kategorija se ne učitaju.
+- `src/LoomProceduraGlb.h`: `writeGlb` (primitiv po materijalu, boje od pozivatelja, hvat u `extras.loom_tool`).
+- Test hvata: mreža se presiječe ravninom kroz točku hvata okomitom na os; najbliži presjek mora biti unutar debljine
+  drške + 1 cm (prva verzija je tražila vrhove oko točke, a valjak ih ima samo na krajevima — lažni pad).
+- Provjera: `test_procedura_assets` 25/25 (51 hvat na dršci na min/default/max, preseti = `gripPresets()` iz
+  LoomHandPose.h, mač → .glb → Spool ga učita s istim brojem trokuta i hvatom), 300 kuća 16/16, 75/75, 29/29, 8/8.
+  Vizualno: svi alati/oružje/rekviziti u Blenderu s označenim hvatovima.
+- **Nezgoda:** Python skripta `open(p,'w').write(f(open(p).read()))` ispraznila je `src/LoomPbr.h` s necommitanim
+  HDRI radom drugog agenta. Vraćeno iz Codex zapisnika (`~/.codex/sessions`, njegove apply_patch zakrpe) nad
+  `865b4ca` + moji commitani redci (3-way merge); `git diff --stat` opet +128/−11 kao prije, editor i PBR test
+  prolaze. Premještanje tablice boja iz LoomPbr.h zato odgođeno.
 
 ### 2026-09-26 — Stilovi namještaja (basic, modern, rustic)
 - Stil je zatvoren vokabular u engineu (`styleNames()`, samo dodavanje), polje `style` u assetu (bez polja = basic,

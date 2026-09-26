@@ -1,0 +1,307 @@
+{
+ "format": "loom.weaverprocedura.asset",
+ "id": "mace_basic",
+ "category": "mace",
+ "style": "basic",
+ "parameters": [
+  {
+   "name": "length",
+   "default": 0.6,
+   "min": 0.5,
+   "max": 0.8
+  }
+ ],
+ "bounds": [
+  0.14,
+  {
+   "param": "length",
+   "offset": 0.07
+  },
+  0.14
+ ],
+ "placement": "center",
+ "clearance_front": 0.0,
+ "grips": [
+  {
+   "name": "Main",
+   "point": [
+    0,
+    {
+     "param": "length",
+     "scale": 0.2
+    },
+    0
+   ],
+   "axis": [
+    0,
+    1,
+    0
+   ],
+   "palm": [
+    1,
+    0,
+    0
+   ],
+   "thickness": 0.0175,
+   "preset": "grip",
+   "hand": 0
+  }
+ ],
+ "recipe": {
+  "format": "loom.weaverprocedura.recipe",
+  "schema_version": 8,
+  "name": "mace_basic",
+  "seed": 1,
+  "nodes": [
+   {
+    "id": 1,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "cylinder",
+     "size": [
+      0.035,
+      {
+       "param": "length"
+      },
+      0.035
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 2,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      0,
+      {
+       "param": "length",
+       "scale": 0.5
+      },
+      0
+     ]
+    }
+   },
+   {
+    "id": 3,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "prop",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 4,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "wood_beam",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 5,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 6,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "add_primitive",
+     "primitive": "sphere",
+     "size": [
+      0.14,
+      0.14,
+      0.14
+     ],
+     "tube_ratio": 0.25
+    }
+   },
+   {
+    "id": 7,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "move",
+     "offset": [
+      0,
+      {
+       "param": "length"
+      },
+      0
+     ]
+    }
+   },
+   {
+    "id": 8,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_semantic",
+     "semantic": "prop",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 9,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "set_material",
+     "material": "metal",
+     "filter": {
+      "semantic": "",
+      "use_direction": false,
+      "direction": [
+       0,
+       1,
+       0
+      ],
+      "max_angle_degrees": 30
+     }
+    }
+   },
+   {
+    "id": 10,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "uv_project",
+     "tile_size": 0.5
+    }
+   },
+   {
+    "id": 11,
+    "position": [
+     0,
+     0
+    ],
+    "parameters": {
+     "type": "merge"
+    }
+   }
+  ],
+  "links": [
+   {
+    "from": 1,
+    "from_port": 0,
+    "to": 2,
+    "to_port": 0
+   },
+   {
+    "from": 2,
+    "from_port": 0,
+    "to": 3,
+    "to_port": 0
+   },
+   {
+    "from": 3,
+    "from_port": 0,
+    "to": 4,
+    "to_port": 0
+   },
+   {
+    "from": 4,
+    "from_port": 0,
+    "to": 5,
+    "to_port": 0
+   },
+   {
+    "from": 6,
+    "from_port": 0,
+    "to": 7,
+    "to_port": 0
+   },
+   {
+    "from": 7,
+    "from_port": 0,
+    "to": 8,
+    "to_port": 0
+   },
+   {
+    "from": 8,
+    "from_port": 0,
+    "to": 9,
+    "to_port": 0
+   },
+   {
+    "from": 9,
+    "from_port": 0,
+    "to": 10,
+    "to_port": 0
+   },
+   {
+    "from": 5,
+    "from_port": 0,
+    "to": 11,
+    "to_port": 0
+   },
+   {
+    "from": 10,
+    "from_port": 0,
+    "to": 11,
+    "to_port": 1
+   }
+  ]
+ }
+}

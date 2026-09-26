@@ -4,13 +4,20 @@
 // recipe nodes (asset, furnish, place_assets) through JSON and evaluate.
 #include "TestHarness.h"
 
+#include "../src/LoomHandPose.h"
 #include "../src/LoomProceduraAssets.h"
+#include "../src/LoomProceduraGlb.h"
+
+#include <Spool/Gltf.h>
 
 #include <Engine/WeaverProcedura.h>
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <set>
 #include <string>
 
 namespace Proc = Engine::WeaverProcedura;
@@ -160,6 +167,98 @@ int main(){
         "parameters":[],"bounds":[1,1,1],"placement":"wall","clearance_front":0,"recipe":{}})"); }
     catch(const std::exception& problem){ styleRejected = std::string(problem.what()).find("baroque") != std::string::npos; }
     report.check("an asset with an unknown style does not load", styleRejected, "");
+    // Tools, weapons and props: every category has an asset, held ones have grips on their handle.
+    std::string emptyCategories;
+    for(const std::string& category : Proc::assetCategories())
+        if(Proc::assetsInCategory(library, category).empty()) emptyCategories += " " + category;
+    report.check("the library has an asset for every category (furniture, tools, weapons, props)", emptyCategories.empty(),
+                 "missing:" + emptyCategories);
+    std::string gripProblem;
+    int gripsChecked = 0;
+    for(const std::string& id : library.ids()){
+        const Proc::AssetInfo* info = library.info(id);
+        const std::string kind = Proc::assetKind(info->category);
+        for(int variant = 0; variant < 3; ++variant){
+            Proc::AssetParameters parameters;
+            for(const Proc::AssetParameter& p : info->parameters)
+                parameters.push_back({p.name, variant == 0 ? p.minValue : variant == 1 ? p.defaultValue : p.maxValue});
+            std::vector<Proc::AssetGrip> grips;
+            Proc::MeshData mesh;
+            glm::vec3 size;
+            if(!library.grips(id, parameters, grips, error) || !library.build(id, parameters, mesh, error) ||
+               !library.bounds(id, parameters, size, error)){ gripProblem += " " + id + ": " + error; continue; }
+            if((kind == "tool" || kind == "weapon") && grips.empty()) gripProblem += " " + id + " has no grip";
+            for(const Proc::AssetGrip& grip : grips){
+                ++gripsChecked;
+                const bool inside = std::abs(grip.point.x) <= size.x * 0.5f + 1e-3f && grip.point.y >= -1e-3f &&
+                                    grip.point.y <= size.y + 1e-3f && std::abs(grip.point.z) <= size.z * 0.5f + 1e-3f;
+                // The handle is really there: cut the mesh with the plane through the grip point across
+                // the axis; the nearest cut must lie about one handle radius from the point.
+                float nearest = 1e9f;
+                for(std::size_t t = 0; t + 2 < mesh.indices.size(); t += 3){
+                    glm::vec3 q[3];
+                    float h[3];
+                    for(int k = 0; k < 3; ++k){ q[k] = mesh.vertices[mesh.indices[t + k]].position; h[k] = glm::dot(q[k] - grip.point, grip.axis); }
+                    std::vector<glm::vec3> cut;
+                    for(int k = 0; k < 3; ++k){
+                        const int m = (k + 1) % 3;
+                        if((h[k] < 0.0f) != (h[m] < 0.0f)) cut.push_back(q[k] + (q[m] - q[k]) * (h[k] / (h[k] - h[m])));
+                    }
+                    if(cut.size() != 2) continue;
+                    const glm::vec3 d = cut[1] - cut[0];
+                    const float f = glm::dot(d, d) > 1e-12f ? std::clamp(glm::dot(grip.point - cut[0], d) / glm::dot(d, d), 0.0f, 1.0f) : 0.0f;
+                    nearest = std::min(nearest, glm::length(cut[0] + d * f - grip.point));
+                }
+                if(!inside || nearest > grip.thickness + 0.01f || std::abs(glm::dot(grip.axis, grip.palm)) > 1e-3f)
+                    gripProblem += " " + id + "/" + grip.name + fmt(" (inside %d, handle surface %.3f m away)", int(inside), nearest);
+            }
+        }
+    }
+    report.check("every tool and weapon has a grip, and each grip sits on its handle inside the box", gripProblem.empty() && gripsChecked > 0,
+                 fmt("%d grips ", gripsChecked) + gripProblem);
+    std::string presetMismatch;
+    std::vector<std::string> handPresets;
+    for(const Loom::GripPreset& preset : Loom::gripPresets()) handPresets.push_back(preset.name);
+    if(handPresets != Recipe::assetGripPresetNames()) presetMismatch = "asset grip presets differ from LoomHandPose gripPresets()";
+    report.check("asset grip presets are the hand poses Loom knows", presetMismatch.empty(), presetMismatch);
+    bool badCategory = false, toolWithoutGrip = false;
+    try{ Recipe::RecipeAssetLibrary broken; broken.add(R"({"format":"loom.weaverprocedura.asset","id":"x","category":"spaceship",
+        "parameters":[],"bounds":[1,1,1],"placement":"center","clearance_front":0,"recipe":{}})"); }
+    catch(const std::exception& problem){ badCategory = std::string(problem.what()).find("spaceship") != std::string::npos; }
+    try{
+        Recipe::RecipeAssetLibrary broken;
+        std::string source = R"({"format":"loom.weaverprocedura.asset","id":"x","category":"hammer","parameters":[],"bounds":[1,1,1],
+            "placement":"center","clearance_front":0,"recipe":)";
+        source += Recipe::serialize(document) + "}";
+        broken.add(source);
+    }catch(const std::exception& problem){ toolWithoutGrip = std::string(problem.what()).find("grip") != std::string::npos; }
+    report.check("an unknown category and a tool without a grip do not load", badCategory && toolWithoutGrip, "");
+
+    // A sword to .glb with its grip, and back through Loom's glTF reader.
+    {
+        Proc::MeshData sword;
+        std::vector<Proc::AssetGrip> grips;
+        library.build("sword_basic", {}, sword, error);
+        library.grips("sword_basic", {}, grips, error);
+        error.clear();
+        const std::string path = (std::filesystem::temp_directory_path() / "loom_test_sword.glb").string();
+        const bool written = Recipe::writeGlb(sword, path, [](uint16_t){ return glm::vec3(0.5f); }, "weapon", grips, error);
+        Spool::GltfScene scene;
+        std::string loadError;
+        const bool loaded = written && Spool::loadGltf(path, scene, loadError);
+        std::size_t triangles = 0;
+        std::set<uint16_t> materials;
+        for(const Proc::TriangleAttributes& t : sword.triangles) materials.insert(t.material);
+        if(loaded) for(const Spool::GltfPrimitive& primitive : scene.meshes.at(0).primitives) triangles += primitive.indices.size() / 3;
+        std::ifstream in(path, std::ios::binary);
+        const std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        report.check("a sword exports to .glb with one primitive per material, all triangles and its grip in extras",
+                     loaded && scene.meshes.size() == 1 && scene.meshes[0].primitives.size() == materials.size() &&
+                     triangles == sword.indices.size() / 3 && bytes.find("\"loom_tool\"") != std::string::npos &&
+                     bytes.find("\"weapon\"") != std::string::npos,
+                     error + loadError + fmt(" %zu/%zu triangles", triangles, sword.indices.size() / 3));
+        std::filesystem::remove(path);
+    }
     report.check("furnish without a room plan says so", !noPlan.succeeded && noPlan.error.find("RoomSplit") != std::string::npos, noPlan.error);
     return report.result();
 }

@@ -20,7 +20,7 @@ def P(name, scale=1.0, offset=0.0):
 class Asset:
     def __init__(self, ident, category, placement="wall", clearance=0.6, style="basic"):
         self.id, self.category, self.placement, self.clearance, self.style = ident, category, placement, clearance, style
-        self.parameters, self.nodes, self.links, self.parts = [], [], [], []
+        self.parameters, self.nodes, self.links, self.parts, self.grips = [], [], [], [], []
 
     def param(self, name, default, low, high):
         self.parameters.append({"name": name, "default": default, "min": low, "max": high})
@@ -43,9 +43,14 @@ class Asset:
             n = self.node(params); self.link(cur, n); cur = n
         self.parts.append(cur)
 
-    def cylinder(self, size, at, material, semantic="furniture"):
-        """Valjak (os Y) velicine size sa sredistem u at."""
-        cur = self.node({"type": "add_primitive", "primitive": "cylinder", "size": size, "tube_ratio": 0.25})
+    def grip(self, point, thickness, axis=(0, 1, 0), palm=(1, 0, 0), preset="grip", name="Main"):
+        """Hvat kao Warp Grip: tocka na osi drske, os od malog prsta prema palcu, strana dlana."""
+        self.grips.append({"name": name, "point": point, "axis": list(axis), "palm": list(palm),
+                           "thickness": thickness, "preset": preset, "hand": 0})
+
+    def cylinder(self, size, at, material, semantic="furniture", primitive="cylinder"):
+        """Valjak (os Y) velicine size sa sredistem u at (ili drugi primitiv iz jedinicne kutije)."""
+        cur = self.node({"type": "add_primitive", "primitive": primitive, "size": size, "tube_ratio": 0.25})
         for params in ({"type": "move", "offset": at},
                        {"type": "set_semantic", "semantic": semantic, "filter": ALL},
                        {"type": "set_material", "material": material, "filter": ALL},
@@ -66,13 +71,18 @@ class Asset:
             parts = merged
         doc = {"format": "loom.weaverprocedura.asset", "id": self.id, "category": self.category,
                "style": self.style, "parameters": self.parameters, "bounds": bounds, "placement": self.placement,
-               "clearance_front": self.clearance,
+               "clearance_front": self.clearance, **({"grips": self.grips} if self.grips else {}),
                "recipe": {"format": "loom.weaverprocedura.recipe", "schema_version": 8, "name": self.id, "seed": 1,
                           "nodes": self.nodes, "links": self.links}}
-        folder = os.path.join(HERE, "furniture")
+        folder = os.path.join(HERE, FOLDER.get(self.category, "furniture"))
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, self.id + ".loomasset.json"), "w") as f: json.dump(doc, f, indent=1)
 
+
+# Mapa po vrsti, da se alati, oruzje i rekviziti mogu uciti odvojeno od namjestaja.
+FOLDER = {**{c: "tools" for c in ("hammer", "axe", "saw", "shovel", "pickaxe", "wrench", "screwdriver", "knife")},
+          **{c: "weapons" for c in ("sword", "spear", "mace", "club")},
+          **{c: "props" for c in ("crate", "barrel", "bucket", "lantern", "bottle", "book", "plant_pot", "chest")}}
 
 WOOD, DARK, FABRIC, METAL, CERAMIC, GLASS = "wood_planks", "wood_beam", "fabric", "metal", "ceramic", "glass"
 LACQUER, LEATHER, LINEN, STONE = "lacquer", "leather", "linen", "stone"
@@ -494,6 +504,166 @@ def rustic_set():
     a.box([P("width", 1, -0.3), 0.002, P("depth", 1, -0.3)], [0, 0.016, 0], LINEN)
     a.save([P("width"), 0.017, P("depth")])
 
+
+# ---- Alati, oruzje, rekviziti --------------------------------------------------------------
+# Prostor alata: kraj drske na y = 0, glava ili ostrica prema +Y, udarna strana / ostrica prema +Z.
+# Kutija je i ovdje centrirana u X i Z, pa drska smije biti pomaknuta od sredine (hvat to kaze).
+P_ = "prop"
+
+
+def tool_set():
+    a = Asset("hammer_basic", "hammer", placement="center", clearance=0.0)
+    a.param("length", 0.33, 0.25, 0.45); a.param("head", 0.12, 0.09, 0.16)
+    a.cylinder([0.03, P("length", 1, -0.02), 0.03], [0, P("length", 0.5, -0.01), 0], DARK, P_)
+    a.box([0.035, 0.035, P("head")], [0, P("length", 1, -0.0175), 0], METAL, P_)
+    a.grip([0, P("length", 0.3), 0], 0.015)
+    a.save([0.035, P("length"), P("head")])
+
+    a = Asset("axe_basic", "axe", placement="center", clearance=0.0)
+    a.param("length", 0.7, 0.4, 0.9)
+    a.cylinder([0.035, P("length", 1, -0.02), 0.035], [0, P("length", 0.5, -0.01), -0.07], DARK, P_)
+    a.box([0.025, 0.12, 0.18], [0, P("length", 1, -0.06), 0], METAL, P_)
+    a.grip([0, P("length", 0.2), -0.07], 0.0175)
+    a.save([0.035, P("length"), 0.18])
+
+    a = Asset("saw_basic", "saw", placement="center", clearance=0.0)
+    a.param("length", 0.5, 0.35, 0.6)
+    a.box([0.03, 0.14, 0.12], [0, 0.07, 0], DARK, P_)
+    a.box([0.002, P("length"), 0.12], [0, P("length", 0.5, 0.12), 0], METAL, P_)
+    a.grip([0, 0.07, -0.02], 0.015, axis=(0, 0, 1), preset="pistol")
+    a.save([0.03, P("length", 1, 0.12), 0.12])
+
+    a = Asset("shovel_basic", "shovel", placement="center", clearance=0.0)
+    a.param("length", 1.0, 0.8, 1.3)
+    a.cylinder([0.035, P("length"), 0.035], [0, P("length", 0.5), 0], DARK, P_)
+    a.box([0.22, 0.28, 0.02], [0, P("length", 1, 0.14), 0], METAL, P_)
+    a.grip([0, 0.1, 0], 0.0175)
+    a.grip([0, P("length", 0.55), 0], 0.0175, name="Support")
+    a.save([0.22, P("length", 1, 0.28), 0.035])
+
+    a = Asset("pickaxe_basic", "pickaxe", placement="center", clearance=0.0)
+    a.param("length", 0.8, 0.6, 0.9)
+    a.cylinder([0.035, P("length", 1, -0.02), 0.035], [0, P("length", 0.5, -0.01), 0], DARK, P_)
+    a.box([0.03, 0.04, 0.6], [0, P("length", 1, -0.02), 0], METAL, P_)
+    a.grip([0, P("length", 0.2), 0], 0.0175)
+    a.save([0.035, P("length"), 0.6])
+
+    a = Asset("wrench_basic", "wrench", placement="center", clearance=0.0)
+    a.param("length", 0.25, 0.15, 0.35)
+    a.box([0.025, P("length", 1, -0.04), 0.008], [0, P("length", 0.5, -0.02), 0], METAL, P_)
+    a.box([0.05, 0.04, 0.012], [0, P("length", 1, -0.02), 0], METAL, P_)
+    a.grip([0, P("length", 0.3), 0], 0.012)
+    a.save([0.05, P("length"), 0.012])
+
+    a = Asset("screwdriver_basic", "screwdriver", placement="center", clearance=0.0)
+    a.param("length", 0.12, 0.06, 0.2)
+    a.cylinder([0.03, 0.1, 0.03], [0, 0.05, 0], "fabric", P_)
+    a.cylinder([0.006, P("length"), 0.006], [0, P("length", 0.5, 0.1), 0], METAL, P_)
+    a.grip([0, 0.05, 0], 0.015)
+    a.save([0.03, P("length", 1, 0.1), 0.03])
+
+    a = Asset("knife_basic", "knife", placement="center", clearance=0.0)
+    a.param("length", 0.18, 0.1, 0.25)
+    a.box([0.02, 0.11, 0.025], [0, 0.055, 0], DARK, P_)
+    a.box([0.002, P("length"), 0.03], [0, P("length", 0.5, 0.11), 0], METAL, P_)
+    a.grip([0, 0.055, 0], 0.0125)
+    a.save([0.02, P("length", 1, 0.11), 0.03])
+
+
+def weapon_set():
+    a = Asset("sword_basic", "sword", placement="center", clearance=0.0)
+    a.param("length", 0.8, 0.5, 1.0)
+    a.box([0.045, 0.03, 0.045], [0, 0.015, 0], METAL, P_)
+    a.cylinder([0.03, 0.13, 0.03], [0, 0.095, 0], LEATHER, P_)
+    a.box([0.03, 0.025, 0.2], [0, 0.1725, 0], METAL, P_)
+    a.box([0.006, P("length"), 0.05], [0, P("length", 0.5, 0.185), 0], METAL, P_)
+    a.grip([0, 0.095, 0], 0.015)
+    a.save([0.045, P("length", 1, 0.185), 0.2])
+
+    a = Asset("spear_basic", "spear", placement="center", clearance=0.0)
+    a.param("length", 2.0, 1.6, 2.4)
+    a.cylinder([0.035, P("length"), 0.035], [0, P("length", 0.5), 0], DARK, P_)
+    a.cylinder([0.05, 0.25, 0.05], [0, P("length", 1, 0.125), 0], METAL, P_, primitive="pyramid")
+    a.grip([0, P("length", 0.35), 0], 0.0175)
+    a.grip([0, P("length", 0.6), 0], 0.0175, name="Support")
+    a.save([0.05, P("length", 1, 0.25), 0.05])
+
+    a = Asset("mace_basic", "mace", placement="center", clearance=0.0)
+    a.param("length", 0.6, 0.5, 0.8)
+    a.cylinder([0.035, P("length"), 0.035], [0, P("length", 0.5), 0], DARK, P_)
+    a.cylinder([0.14, 0.14, 0.14], [0, P("length"), 0], METAL, P_, primitive="sphere")
+    a.grip([0, P("length", 0.2), 0], 0.0175)
+    a.save([0.14, P("length", 1, 0.07), 0.14])
+
+    a = Asset("club_basic", "club", placement="center", clearance=0.0)
+    a.param("length", 0.7, 0.5, 0.9)
+    a.cylinder([0.04, P("length", 0.5), 0.04], [0, P("length", 0.25), 0], DARK, P_)
+    a.cylinder([0.09, P("length", 0.5), 0.09], [0, P("length", 0.75), 0], DARK, P_)
+    a.grip([0, P("length", 0.2), 0], 0.02)
+    a.save([0.09, P("length"), 0.09])
+
+
+def prop_set():
+    a = Asset("crate_basic", "crate", placement="center", clearance=0.0)
+    a.param("size", 0.6, 0.3, 1.0)
+    a.box([P("size", 1, -0.02), P("size", 1, -0.02), P("size", 1, -0.02)], [0, P("size", 0.5), 0], WOOD, P_)
+    for sx in (-1, 1):
+        for sz in (-1, 1):
+            a.box([0.04, P("size"), 0.04], [P("size", 0.5 * sx, -0.02 * sx), P("size", 0.5), P("size", 0.5 * sz, -0.02 * sz)], DARK, P_)
+    a.save([P("size"), P("size"), P("size")])
+
+    a = Asset("barrel_basic", "barrel", placement="center", clearance=0.0)
+    a.param("height", 0.9, 0.5, 1.2)
+    a.cylinder([0.6, P("height"), 0.6], [0, P("height", 0.5), 0], WOOD, P_)
+    for f in (0.12, 0.88):
+        a.cylinder([0.62, 0.04, 0.62], [0, P("height", f), 0], METAL, P_)
+    a.save([0.62, P("height"), 0.62])
+
+    a = Asset("bucket_basic", "bucket", placement="center", clearance=0.0)
+    a.cylinder([0.3, 0.3, 0.3], [0, 0.15, 0], METAL, P_)
+    for sx in (-1, 1):
+        a.box([0.01, 0.1, 0.01], [sx * 0.145, 0.35, 0], METAL, P_)
+    a.box([0.3, 0.01, 0.01], [0, 0.395, 0], METAL, P_)
+    a.grip([0, 0.395, 0], 0.006, axis=(1, 0, 0), palm=(0, 1, 0))
+    a.save([0.3, 0.4, 0.3])
+
+    a = Asset("lantern_basic", "lantern", placement="center", clearance=0.0)
+    a.box([0.16, 0.02, 0.16], [0, 0.01, 0], METAL, P_)
+    a.box([0.14, 0.2, 0.14], [0, 0.12, 0], GLASS, P_)
+    a.cylinder([0.16, 0.06, 0.16], [0, 0.25, 0], METAL, P_, primitive="pyramid")
+    a.box([0.006, 0.04, 0.006], [0, 0.295, 0], METAL, P_)
+    a.box([0.08, 0.01, 0.01], [0, 0.315, 0], METAL, P_)
+    a.grip([0, 0.315, 0], 0.005, axis=(1, 0, 0), palm=(0, 1, 0))
+    a.save([0.16, 0.32, 0.16])
+
+    a = Asset("bottle_basic", "bottle", placement="center", clearance=0.0)
+    a.cylinder([0.08, 0.22, 0.08], [0, 0.11, 0], GLASS, P_)
+    a.cylinder([0.03, 0.08, 0.03], [0, 0.26, 0], GLASS, P_)
+    a.grip([0, 0.1, 0], 0.04, preset="cup")
+    a.save([0.08, 0.3, 0.08])
+
+    a = Asset("book_basic", "book", placement="center", clearance=0.0)
+    a.box([0.17, 0.004, 0.24], [0, 0.002, 0], LEATHER, P_)
+    a.box([0.17, 0.004, 0.24], [0, 0.028, 0], LEATHER, P_)
+    a.box([0.004, 0.03, 0.24], [-0.083, 0.015, 0], LEATHER, P_)
+    a.box([0.16, 0.022, 0.23], [0.004, 0.015, 0], LINEN, P_)
+    a.save([0.17, 0.03, 0.24])
+
+    a = Asset("plant_pot_basic", "plant_pot", placement="center", clearance=0.0)
+    a.param("height", 0.8, 0.4, 1.4)
+    a.cylinder([0.35, 0.3, 0.35], [0, 0.15, 0], CERAMIC, P_)
+    a.cylinder([0.04, P("height", 0.5, -0.1), 0.04], [0, P("height", 0.25, 0.25), 0], WOOD, P_)
+    a.cylinder([0.5, P("height", 0.5), 0.5], [0, P("height", 0.75), 0], "grass", P_, primitive="sphere")
+    a.save([0.5, P("height"), 0.5])
+
+    a = Asset("chest_basic", "chest", placement="wall", clearance=0.5)
+    a.param("width", 0.9, 0.6, 1.2)
+    a.box([P("width"), 0.4, 0.5], [0, 0.2, 0], DARK, P_)
+    a.box([P("width"), 0.12, 0.5], [0, 0.46, 0], WOOD, P_)
+    for sx in (-1, 1):
+        a.box([0.04, 0.52, 0.52], [P("width", 0.3 * sx), 0.26, 0], METAL, P_)
+    a.save([P("width"), 0.52, 0.52])
+
 if __name__ == "__main__":
     for make in (bed, nightstand, wardrobe, desk, chair, sofa, coffee_table, tv_stand, shelf, table,
                  kitchen_counter, fridge, toilet, sink, bathtub, shower, shoe_cabinet, rug, floor_lamp,
@@ -502,4 +672,7 @@ if __name__ == "__main__":
     sofa("armchair_basic", "armchair", (0.85, 0.7, 1.0))
     modern_set()
     rustic_set()
-    print("gotovo:", len(os.listdir(os.path.join(HERE, "furniture"))), "asseta")
+    tool_set()
+    weapon_set()
+    prop_set()
+    print("gotovo:", sum(len(os.listdir(os.path.join(HERE, f))) for f in ("furniture", "tools", "weapons", "props")), "asseta")

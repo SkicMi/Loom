@@ -8,6 +8,8 @@
 //    "parameters":[{"name":"width","default":1.6,"min":0.9,"max":2.0}, ...],
 //    "bounds":[{"param":"width"}, 1.0, {"param":"length","offset":0.05}],
 //    "placement":"wall", "clearance_front":0.6, "style":"basic",
+//    "grips":[{"name":"Main", "point":[0,{"param":"length","scale":0.3},0], "axis":[0,1,0], "palm":[1,0,0],
+//              "thickness":0.015, "preset":"grip", "hand":0}],        (tools and weapons must have one)
 //    "recipe":{ ... a loom.weaverprocedura.recipe ... }}
 //
 // A number written as {"param":name, "scale":s, "offset":o} becomes value * s + o (scale 1 and
@@ -22,6 +24,12 @@
 #include <mutex>
 
 namespace Loom::WeaverProceduraRecipe{
+
+// Finger poses a grip may ask for; the same names as gripPresets() in LoomHandPose.h (a test checks).
+inline const std::vector<std::string>& assetGripPresetNames(){
+    static const std::vector<std::string> names = {"grip", "pistol", "cup", "fist", "point", "relaxed", "open"};
+    return names;
+}
 
 inline const std::vector<std::string>& assetPlacementNames(){
     static const std::vector<std::string> names = {"wall", "center", "corner"};
@@ -67,6 +75,8 @@ public:
         if(info.id.empty() || info.id.size() > 120) throw std::runtime_error("asset id must contain 1 to 120 characters");
         if(assets.count(info.id)) throw std::runtime_error("two assets are called " + info.id);
         info.category = readString(required(root, "category"), "category");
+        const std::string kind = Proc::assetKind(info.category);
+        if(kind.empty()) throw std::runtime_error("unknown asset category " + info.category);
         if(const AgentJsonValue* style = root.get("style")) info.style = readString(*style, "style");
         if(std::find(Proc::styleNames().begin(), Proc::styleNames().end(), info.style) == Proc::styleNames().end())
             throw std::runtime_error("unknown style " + info.style + " (known: basic, modern, rustic)");
@@ -89,6 +99,11 @@ public:
         if(entry.bounds.kind != AgentJsonValue::Kind::Array || entry.bounds.array.size() != 3)
             throw std::runtime_error("bounds must hold width, height and depth");
         entry.recipe = required(root, "recipe");
+        if(const AgentJsonValue* grips = root.get("grips")){
+            if(grips->kind != AgentJsonValue::Kind::Array || grips->array.size() > 8)
+                throw std::runtime_error("grips must be an array of at most 8 entries");
+            entry.grips = *grips;
+        }
         // The defaults must give a valid recipe and box, so a broken asset fails when it loads.
         const std::string id = info.id;
         assets.emplace(id, std::move(entry));
@@ -96,6 +111,9 @@ public:
             glm::vec3 size;
             std::string error;
             if(!bounds(id, {}, size, error)) throw std::runtime_error(error);
+            std::vector<Proc::AssetGrip> held;
+            if(!grips(id, {}, held, error)) throw std::runtime_error(error);
+            if((kind == "tool" || kind == "weapon") && held.empty()) throw std::runtime_error("a " + kind + " needs a grip");
             parse(resolve(assets.at(id).recipe, values(assets.at(id).info, {})));
         }catch(...){
             assets.erase(id);
@@ -124,6 +142,35 @@ public:
         if(!(size.x > 0.0f && size.y > 0.0f && size.z > 0.0f)){ error = "asset " + id + " has an empty box"; return false; }
         return true;
     }
+    bool grips(const std::string& id, const Proc::AssetParameters& parameters, std::vector<Proc::AssetGrip>& output,
+               std::string& error) const override{
+        output.clear();
+        const auto found = assets.find(id);
+        if(found == assets.end()){ error = "unknown asset: " + id; return false; }
+        try{
+            const AgentJsonValue resolved = resolve(found->second.grips, values(found->second.info, parameters));
+            for(const AgentJsonValue& g : resolved.array){
+                Proc::AssetGrip grip;
+                if(const AgentJsonValue* name = g.get("name")) grip.name = readString(*name, "grip.name");
+                grip.point = readVec3(required(g, "point"), "grip.point");
+                grip.axis = readVec3(required(g, "axis"), "grip.axis");
+                grip.palm = readVec3(required(g, "palm"), "grip.palm");
+                if(const AgentJsonValue* thick = g.get("thickness")) grip.thickness = readFloat(*thick, "grip.thickness");
+                if(const AgentJsonValue* preset = g.get("preset")) grip.preset = readString(*preset, "grip.preset");
+                if(const AgentJsonValue* hand = g.get("hand")) grip.hand = int(readU32(*hand, "grip.hand"));
+                if(glm::length(grip.axis) < 1e-4f || glm::length(grip.palm) < 1e-4f)
+                    throw std::runtime_error("grip " + grip.name + " needs an axis and a palm direction");
+                grip.axis = glm::normalize(grip.axis);
+                grip.palm = glm::normalize(grip.palm - grip.axis * glm::dot(grip.palm, grip.axis));
+                if(std::find(assetGripPresetNames().begin(), assetGripPresetNames().end(), grip.preset) == assetGripPresetNames().end())
+                    throw std::runtime_error("unknown grip preset " + grip.preset);
+                if(grip.hand < 0 || grip.hand > 2 || grip.thickness < 0.0f) throw std::runtime_error("grip hand is 0..2 and thickness >= 0");
+                output.push_back(grip);
+            }
+        }catch(const std::exception& problem){ error = problem.what(); output.clear(); return false; }
+        return true;
+    }
+
     bool build(const std::string& id, const Proc::AssetParameters& parameters, Proc::MeshData& output, std::string& error) const override{
         const auto found = assets.find(id);
         if(found == assets.end()){ error = "unknown asset: " + id; return false; }
@@ -152,7 +199,7 @@ public:
 private:
     struct Entry{
         Proc::AssetInfo info;
-        AgentJsonValue bounds, recipe;
+        AgentJsonValue bounds, recipe, grips;       // grips: an empty array when the asset has none
     };
     std::map<std::string, Entry> assets;
     mutable std::mutex cacheMutex;
