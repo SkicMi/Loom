@@ -7,6 +7,7 @@
 //               [--sunce elevacija azimut jakost] [--velicina-sunca 0.53] [--zamucenost 3] [--nebo 0.35]
 //               [--hdri nebo.hdr] [--hdri-jakost 1] [--hdri-rotacija 0] [--jednoliko]
 //               [--agx] [--ekspozicija 0] [--bez-exr] [--bez-png] [--dretve N] [--procesor]
+//               [--motion-blur 0.5] [--koraci 16]
 //               [--post] [--bloom 0.04] [--vinjeta 0.15] [--aberacija 1.5] [--zrno 0.03] ...
 //
 // Racuna na KARTICI (Vulkan compute, TracerGpu) kad je ima; bez Vulkana, ili s --procesor, na
@@ -45,6 +46,7 @@ void usage(){
         "  --sunce E A J  --velicina-sunca STUP  --zamucenost T  --nebo L\n"
         "  --hdri DATOTEKA --hdri-jakost J --hdri-rotacija STUP  --jednoliko\n"
         "  --scena               nebo i svjetla samo iz scene (kupola, sunce, lampe)\n"
+        "  --motion-blur Z       zatvarac otvoren Z kadra (0.5 = 180 st); --koraci N trenutaka (16)\n"
         "  --agx --ekspozicija EV --bez-exr --bez-png --dretve N\n"
         "  --procesor            racunaj na procesoru i kad kartica postoji\n"
         "  --post                post s zadanim (bloom 0.04, vinjeta 0.15); ili pojedinacno:\n"
@@ -113,6 +115,8 @@ int main(int argc, char** argv){
         else if(a == "--zasicenje"){ options.post.enabled = true; options.post.saturation = float(number(i)); }
         else if(a == "--zrno"){ options.post.enabled = true; options.post.grain = float(number(i)); }
         else if(a == "--post"){ options.post.enabled = true; }
+        else if(a == "--motion-blur"){ options.motionBlur = true; options.shutter = float(number(i)); }
+        else if(a == "--koraci") options.motionSteps = uint32_t(std::max(2.0, number(i)));
         else{ std::fprintf(stderr, "Nepoznata zastavica: %s\n", a.c_str()); usage(); return 1; }
     }
     Warp::Stage stage;

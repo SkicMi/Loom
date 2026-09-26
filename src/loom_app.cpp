@@ -2854,6 +2854,15 @@ int main(int argc, char** argv){
                 ui.slider("Clamp Indirect", &renderOptions.indirectClamp, 0.0f, 100.0f);
                 ui.checkbox("Denoise", &renderOptions.denoise);
 
+                //MOTION BLUR: scena se gradi u vise trenutaka unutar otvora; Shutter u kadrovima
+                //(0.5 = 180 st), sredinom na kadru. Snimka ostaje ona kadra - mutnoca je vec u njoj
+                ui.checkbox("Motion Blur", &renderOptions.motionBlur);
+                if(renderOptions.motionBlur){
+                    ui.slider("Shutter", &renderOptions.shutter, 0.0f, 1.0f, "frame");
+                    float steps = float(renderOptions.motionSteps);
+                    if(ui.slider("Time Steps", &steps, 2.0f, 64.0f)) renderOptions.motionSteps = uint32_t(std::lround(steps));
+                }
+
                 ui.separator();
                 ui.label("LIGHT");
                 int sky = int(renderOptions.sky);

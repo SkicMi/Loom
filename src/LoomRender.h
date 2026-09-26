@@ -89,6 +89,13 @@ struct RenderOptions{
     bool denoise = true;
     uint32_t threads = 0;                   //0 = sve jezgre
 
+    //MOTION BLUR: zatvarac otvoren `shutter` kadra (0.5 = 180 st), sredinom na kadru. Scena se
+    //gradi u `motionSteps` trenutaka unutar otvora (kamera, objekti, kosti) i uzorci se podijele
+    //medju njima; snimka ostaje ona samog kadra - njena mutnoca je vec u njoj
+    bool motionBlur = false;
+    float shutter = 0.5f;
+    uint32_t motionSteps = 16;
+
     //Svjetlo
     //Scene: nebo je kupola (Warp::Light Dome) iz scene, a svjetla samo ona iz scene. Svjetla scene
     //(sunce, kugle, reflektori, pravokutnici) su u renderu UVIJEK, uz bilo koje nebo
@@ -344,8 +351,10 @@ struct BuiltScene{
     std::vector<std::string> warnings;
 };
 
+//plateFrame: kadar ciju snimku uzeti (motion blur gradi scenu u trenucima izmedju kadrova, a
+//snimka je i dalje ona jednog kadra); < 0 znaci isti kao frame
 inline bool buildTracerScene(const Warp::Stage& stage, double frame, const RenderOptions& options, RenderAssets& assets,
-                             BuiltScene& out, std::string& error){
+                             BuiltScene& out, std::string& error, double plateFrame = -1.0){
     out = BuiltScene{};
     Tracer::Scene& scene = out.scene;
     const Warp::Id cameraId = options.camera != Warp::None ? options.camera : firstCameraIn(stage);
@@ -388,7 +397,7 @@ inline bool buildTracerScene(const Warp::Stage& stage, double frame, const Rende
     if(wantPlate){
         Spool::Image plate;
         std::string problem;
-        if(assets.plate(lens.plate, plateIndexFor(lens, frame), plate, problem)){
+        if(assets.plate(lens.plate, plateIndexFor(lens, plateFrame >= 0.0 ? plateFrame : frame), plate, problem)){
             scene.backplate = tracerTexture(plate, true);
             scene.backplate.repeat = false;
             out.plateLoaded = true;
@@ -829,6 +838,7 @@ public:
         bool plateLoaded = false;
         double frame = 1.0;
         size_t index = 0, count = 1;
+        size_t slice = 0, slices = 1;       //vremenski odsjecak (motion blur)
         uint64_t id = 0;
     };
     void attachGpu(bool attached){ gpuAttached = attached; }
@@ -843,12 +853,14 @@ public:
     }
     void gpuProgress(const GpuJob& job, uint32_t samples, double mraysPerSecond = 0.0){
         std::lock_guard<std::mutex> guard(lock);
-        state.samples = samples;
+        const uint32_t done = uint32_t(job.slice) * job.settings.samples + samples;
+        const uint32_t total = uint32_t(job.slices) * job.settings.samples;
+        state.samples = done;
         state.frameDone = uint32_t(job.index);
-        state.progress = (float(job.index) + float(samples) / float(std::max(1u, job.settings.samples))) / float(job.count);
+        state.progress = (float(job.index) + float(done) / float(std::max(1u, total))) / float(job.count);
         char text[192];
         std::snprintf(text, sizeof(text), "Rendering frame %.0f (%zu/%zu) on GPU: %u/%u samples%s", job.frame, job.index + 1,
-                      job.count, samples, job.settings.samples, mraysPerSecond > 0.0 ? "" : "");
+                      job.count, done, total, mraysPerSecond > 0.0 ? "" : "");
         state.status = text;
     }
     void publishPreview(std::vector<uint8_t> rgba, uint32_t width, uint32_t height){
@@ -882,6 +894,11 @@ public:
     bool hasResult() const{
         std::lock_guard<std::mutex> guard(lock);
         return last != nullptr && !state.running;
+    }
+    //Linearni film zadnjeg gotovog kadra (prazan dok ga nema)
+    Tracer::Frame lastFrame() const{
+        std::lock_guard<std::mutex> guard(lock);
+        return last ? last->frame : Tracer::Frame{};
     }
     void restyle(const RenderOptions& options){
         std::shared_ptr<Last> frame;
@@ -1050,6 +1067,28 @@ private:
         previewFresh = true;
     }
 
+    //Tekuci prosjek vremenskih odsjecaka motion blura (slice od nule). Svi imaju isti broj uzoraka,
+    //pa je tezina novog 1 / (slice + 1); varijanca prosjeka neovisnih procjena je zbroj kvadrata
+    //tezina puta varijance
+    static void blendSlice(Tracer::Frame& sum, const Tracer::Frame& add, uint32_t slice, bool takeDepth){
+        if(slice == 0 || sum.pixelCount() != add.pixelCount()){
+            sum = add;
+            return;
+        }
+        const float w = 1.0f / float(slice + 1), keep = 1.0f - w;
+        auto mix = [&](std::vector<float>& into, const std::vector<float>& from){
+            for(size_t i = 0; i < into.size() && i < from.size(); ++i) into[i] = into[i] * keep + from[i] * w;
+        };
+        mix(sum.cg, add.cg);
+        mix(sum.background, add.background);
+        mix(sum.shadow, add.shadow);
+        mix(sum.albedo, add.albedo);
+        mix(sum.normal, add.normal);
+        for(size_t i = 0; i < sum.variance.size() && i < add.variance.size(); ++i)
+            sum.variance[i] = keep * keep * sum.variance[i] + w * w * add.variance[i];
+        if(takeDepth) sum.depth = add.depth;
+    }
+
     void run(Warp::Stage stage, RenderOptions options, std::string folder){
         const auto started = std::chrono::steady_clock::now();
         RenderAssets assets;
@@ -1065,66 +1104,96 @@ private:
         bool failed = false;
         for(size_t index = 0; index < frames.size() && !stopFlag; ++index){
             const double frame = frames[index];
-            BuiltScene built;
             std::string error;
-            if(!buildTracerScene(stage, frame, options, assets, built, error)){ say("Render failed: " + error); failed = true; break; }
-            if(index == 0) for(const std::string& w : built.warnings) say("Warning: " + w);
-            char line[256];
-            std::snprintf(line, sizeof(line), "Frame %.0f: %zu triangles, %zu objects (%zu shadow catchers), %ux%u",
-                          frame, built.scene.triangles.size(), built.objects, built.catchers,
-                          built.scene.camera.width, built.scene.camera.height);
-            say(line);
-            const bool plateLoaded = built.plateLoaded;
-            const bool catchers = built.catchersUsed && built.catchers > 0;
-            const std::shared_ptr<const Tracer::CompiledScene> compiled = Tracer::compile(std::move(built.scene));
-            Tracer::RenderSettings settings;
-            settings.samples = std::max(1u, options.samples);
-            settings.maxBounces = options.maxBounces;
-            settings.indirectClamp = options.indirectClamp;
-            settings.threads = options.threads;
+            //Vremenski odsjeci: jedan bez motion blura, inace motionSteps trenutaka unutar otvora
+            const bool blur = options.motionBlur && options.shutter > 0.0f;
+            const uint32_t samples = std::max(1u, options.samples);
+            const uint32_t slices = blur ? std::clamp(options.motionSteps, 2u, std::max(2u, samples)) : 1u;
+            const uint32_t perSlice = std::max(1u, (samples + slices - 1) / slices);
             Tracer::Frame result;
-            bool rendered = false;
-            if(options.gpu && gpuAttached){
-                GpuJob job;
-                job.scene = compiled;
-                job.settings = settings;
-                job.options = options;
-                job.plateLoaded = plateLoaded;
-                job.frame = frame;
-                job.index = index;
-                job.count = frames.size();
-                std::string problem;
-                rendered = renderOnGpu(job, result, problem);
-                if(stopFlag){ say("Render cancelled."); break; }
-                if(!rendered) say("GPU render failed (" + problem + ") - rendering this frame on the CPU.");
-                else if(options.denoise) Tracer::denoiseFrame(result);
+            std::shared_ptr<const Tracer::CompiledScene> compiled;       //srednji odsjecak: kamera i snimka za zapis
+            bool plateLoaded = false, catchers = false, sliceFailed = false;
+            for(uint32_t slice = 0; slice < slices && !stopFlag; ++slice){
+                const double time = blur ? frame + double(options.shutter) * ((double(slice) + 0.5) / double(slices) - 0.5) : frame;
+                BuiltScene built;
+                if(!buildTracerScene(stage, time, options, assets, built, error, frame)){ say("Render failed: " + error); sliceFailed = true; break; }
+                if(slice == 0){
+                    if(index == 0) for(const std::string& w : built.warnings) say("Warning: " + w);
+                    char line[256];
+                    std::snprintf(line, sizeof(line), "Frame %.0f: %zu triangles, %zu objects (%zu shadow catchers), %ux%u%s",
+                                  frame, built.scene.triangles.size(), built.objects, built.catchers,
+                                  built.scene.camera.width, built.scene.camera.height,
+                                  blur ? (", motion blur " + std::to_string(slices) + " steps").c_str() : "");
+                    say(line);
+                    plateLoaded = built.plateLoaded;
+                    catchers = built.catchersUsed && built.catchers > 0;
+                }
+                const std::shared_ptr<const Tracer::CompiledScene> sliceScene = Tracer::compile(std::move(built.scene));
+                if(slice == slices / 2) compiled = sliceScene;
+                Tracer::RenderSettings settings;
+                settings.samples = perSlice;
+                settings.maxBounces = options.maxBounces;
+                settings.indirectClamp = options.indirectClamp;
+                settings.threads = options.threads;
+                settings.seed = slice * 7919u;          //svaki odsjecak svoj sum, inace bi se isti uzorci ponovili
+                Tracer::Frame raw;
+                bool rendered = false;
+                if(options.gpu && gpuAttached){
+                    GpuJob job;
+                    job.scene = sliceScene;
+                    job.settings = settings;
+                    job.options = options;
+                    job.plateLoaded = plateLoaded;
+                    job.frame = frame;
+                    job.index = index;
+                    job.count = frames.size();
+                    job.slice = slice;
+                    job.slices = slices;
+                    std::string problem;
+                    rendered = renderOnGpu(job, raw, problem);
+                    if(stopFlag) break;
+                    if(!rendered) say("GPU render failed (" + problem + ") - rendering on the CPU.");
+                }
+                if(!rendered){
+                    Tracer::Renderer renderer(sliceScene);
+                    auto lastPublish = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+                    renderer.render(settings, [&](const Tracer::RenderProgress& progress){
+                        {
+                            std::lock_guard<std::mutex> guard(lock);
+                            state.samples = slice * perSlice + progress.samplesDone;
+                            state.frameDone = uint32_t(index);
+                            state.progress = (float(index) + (float(slice) + float(progress.samplesDone) / float(progress.samplesTotal)) /
+                                              float(slices)) / float(frames.size());
+                            state.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+                            char text[160];
+                            std::snprintf(text, sizeof(text), "Rendering frame %.0f (%zu/%zu) on CPU: %u/%u samples, %.1f Mrays/s", frame,
+                                          index + 1, frames.size(), slice * perSlice + progress.samplesDone, perSlice * slices,
+                                          progress.seconds > 0.0 ? double(progress.rays) / progress.seconds / 1e6 : 0.0);
+                            state.status = text;
+                        }
+                        //Slika u prozor najvise dvaput u sekundi: kompozit velikog kadra nije besplatan
+                        const auto now = std::chrono::steady_clock::now();
+                        if(slices == 1 && (now - lastPublish > std::chrono::milliseconds(500) || progress.samplesDone == progress.samplesTotal)){
+                            lastPublish = now;
+                            publish(renderer.frame(false), renderer.scene(), options, plateLoaded, frame);
+                        }
+                    }, &stopFlag);
+                    if(stopFlag) break;
+                    raw = renderer.frame(false);
+                }
+                //Tekuci prosjek odsjecaka; dubina iz srednjeg (prosjek dubina je dubina na kojoj nista ne stoji)
+                blendSlice(result, raw, slice, slice == slices / 2);
+                if(slices > 1 && compiled) publish(result, compiled->world, options, plateLoaded, frame);
             }
-            if(!rendered){
-                Tracer::Renderer renderer(compiled);
-                auto lastPublish = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-                renderer.render(settings, [&](const Tracer::RenderProgress& progress){
-                    {
-                        std::lock_guard<std::mutex> guard(lock);
-                        state.samples = progress.samplesDone;
-                        state.frameDone = uint32_t(index);
-                        state.progress = (float(index) + float(progress.samplesDone) / float(progress.samplesTotal)) / float(frames.size());
-                        state.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-                        char text[160];
-                        std::snprintf(text, sizeof(text), "Rendering frame %.0f (%zu/%zu) on CPU: %u/%u samples, %.1f Mrays/s", frame,
-                                      index + 1, frames.size(), progress.samplesDone, progress.samplesTotal,
-                                      progress.seconds > 0.0 ? double(progress.rays) / progress.seconds / 1e6 : 0.0);
-                        state.status = text;
-                    }
-                    //Slika u prozor najvise dvaput u sekundi: kompozit velikog kadra nije besplatan
-                    const auto now = std::chrono::steady_clock::now();
-                    if(now - lastPublish > std::chrono::milliseconds(500) || progress.samplesDone == progress.samplesTotal){
-                        lastPublish = now;
-                        publish(renderer.frame(false), renderer.scene(), options, plateLoaded, frame);
-                    }
-                }, &stopFlag);
-                if(stopFlag){ say("Render cancelled."); break; }
-                result = renderer.frame(options.denoise);
+            if(stopFlag){ say("Render cancelled."); break; }
+            if(sliceFailed || !compiled){ failed = true; break; }
+            if(slices > 1) for(size_t i = 0; i < result.pixelCount(); ++i){
+                glm::vec3 n(result.normal[i * 3], result.normal[i * 3 + 1], result.normal[i * 3 + 2]);
+                if(glm::dot(n, n) > 0.0f) n = glm::normalize(n);
+                for(int k = 0; k < 3; ++k) result.normal[i * 3 + size_t(k)] = n[k];
             }
+            result.samples = perSlice * slices;
+            if(options.denoise) Tracer::denoiseFrame(result);
             publish(result, compiled->world, options, plateLoaded, frame);
             const std::vector<std::string> files = writeRender(result, compiled->world, options, plateLoaded, catchers, folder,
                                                                frameStem(options, frame), error, frame);
